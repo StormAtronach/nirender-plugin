@@ -152,17 +152,15 @@ impl Player {
             self.plan_step(step);
         }
         // The world of a view of its own begins here too, in a texture as in the back buffer.
-        self.begin_view_world("the walk event");
-        self.view_table_item();
+        self.begin_view_world();
+        self.view_world_items();
     }
 
-    /// The world of the scene in progress begins ([`Player::view_world_begun`]); `why` goes into
-    /// its line `view table: ...`.
-    pub(crate) fn begin_view_world(&mut self, why: &'static str) {
-        if !self.view_world_begun {
-            self.view_world_begun = true;
-            self.view_world_why = why;
-        }
+    /// The world of the scene in progress begins ([`Player::view_world_begun`]): at the walk
+    /// event, at its first draw after the sky (or with the sky hidden), at its first place of
+    /// the world, or at the scene's end.
+    pub(crate) fn begin_view_world(&mut self) {
+        self.view_world_begun = true;
     }
 
     /// A draw of the game in the scene in progress is a draw of its world that reaches the target
@@ -290,7 +288,7 @@ impl Player {
         self.view_scene_draws[0] += 1;
         self.view_scene_draws[1] += u32::from(sky);
         if crate::retained::view_world_begins(sky, sky_hidden, walk_marked, self.view_sky_seen) {
-            self.begin_view_world(if sky_hidden { "a draw with the sky hidden" } else { "the first draw after the sky" });
+            self.begin_view_world();
         } else if self.is_early_world_draw(sky, sky_hidden, walk_marked, hold) {
             self.view_early_draws += 1;
         }
@@ -486,7 +484,7 @@ impl Player {
             let centre = self.stream.sort_centre(&draw.data.world[0], draw.origin);
             self.wait_for_sorted(centre, crate::Waiting::Draw(draw));
         } else {
-            self.view_table_item();
+            self.view_world_items();
             self.items.push(Item::Draw(draw));
         }
     }

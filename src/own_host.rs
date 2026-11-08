@@ -648,6 +648,13 @@ unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool
             }
         }
     }
+    // A read of the back buffer (a lock of it, or a copy out of it): the main view's list goes
+    // before the read's record.
+    if target == 0 {
+        if let Some(t) = crate::main_thread::MainThread::here() {
+            crate::instance_stream::send_shown_list(&t);
+        }
+    }
     let start = crate::capture::ticks();
     let read = crate::capture::read_pixels(target);
     {
@@ -1224,8 +1231,64 @@ pub unsafe fn report() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{lock_offset, nothing_to_do, read_within, LevelCopies, CUTSCENE_SHADER_CALLS, REMOVE_LIGHT_CALL};
+    use super::{copy_pixels, lock_offset, new_object, nothing_to_do, read_within, release, surface_lock, Kind, LevelCopies, Object, BACK_BUFFER, CUTSCENE_SHADER_CALLS, OK, REMOVE_LIGHT_CALL, SURFACE_TABLE};
     use crate::d3d::{DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
+    use crate::instance_stream::{test_list_one, test_shown_state};
+    use core::sync::atomic::Ordering;
+
+    /// A surface of this host of 4 x 4 pixels of 4 bytes, for the tests of the reads.
+    unsafe fn test_surface() -> *mut Object {
+        let lock = crate::sync::device_lock();
+        let surface = new_object(&lock, Kind::Surface, &SURFACE_TABLE);
+        (*surface).width = 4;
+        (*surface).height = 4;
+        (*surface).format = 21;
+        surface
+    }
+
+    /// A read of the back buffer (`read`, with the back buffer and another surface) sends the main
+    /// view's list of a world scene before the read's record. The next read sends nothing: no
+    /// scene of the list began since the first.
+    unsafe fn the_list_goes_at(read: impl Fn(*mut Object, *mut Object)) {
+        let _turn = crate::main_thread::TestTurn::take();
+        let before = crate::shadow::main_thread_for_test();
+        let mt = crate::main_thread::MainThread::claim();
+        crate::capture::test_record_deletes(true);
+        let (back, other) = (test_surface(), test_surface());
+        let kept = BACK_BUFFER.swap(back as u32, Ordering::Relaxed);
+        test_list_one(&mt, 61);
+        let reads = test_shown_state(&mt).2;
+        assert_eq!(test_shown_state(&mt), (vec![61], true, reads));
+        read(back, other);
+        assert_eq!(test_shown_state(&mt), (vec![], false, reads + 1));
+        read(back, other);
+        assert_eq!(test_shown_state(&mt), (vec![], false, reads + 1));
+        BACK_BUFFER.store(kept, Ordering::Relaxed);
+        release(back);
+        release(other);
+        crate::capture::test_record_deletes(false);
+        crate::shadow::restore_main_thread(before);
+    }
+
+    #[test]
+    fn the_list_goes_at_a_back_buffer_lock_and_starts_again() {
+        unsafe {
+            the_list_goes_at(|back, _| {
+                let mut locked = [0u32; 2];
+                assert_eq!(surface_lock(back, locked.as_mut_ptr(), 0, 0), OK);
+            });
+        }
+    }
+
+    #[test]
+    fn the_list_goes_at_a_copy_out_of_the_back_buffer() {
+        unsafe {
+            the_list_goes_at(|back, other| {
+                let lock = crate::sync::device_lock();
+                assert_eq!(copy_pixels(&lock, back as u32, other as u32), OK);
+            });
+        }
+    }
 
     #[test]
     fn the_reads_stop_at_the_budget_and_say_so() {

@@ -18,9 +18,9 @@
 //! - `off`: no instance.
 //! - `dual`: every record as before, plus the instance records. The shape record is the
 //!   twin of an instance draw, and the helper draws one of the two (`MGE_XE_RETAINED`).
-//! - `gpu`: the helper draws the instance from its table and culls it with its bound. The
-//!   plugin sends no draw, only the changes of the lights (`INSTANCE_LIGHTS`) and of the
-//!   visibility (`INSTANCE_STATE`).
+//! - `gpu`: the helper draws the instance from its table. The plugin sends no draw, only the
+//!   changes of the lights (`INSTANCE_LIGHTS`) and, for the main view, the list of the
+//!   instances that the engine displayed (`INSTANCE_SHOWN`, `ShownList`).
 //!
 //! `NIRENDER_RETAINED` sets the mode at the start (default `gpu`); `nirender.retained(mode)`
 //! sets it from Lua.
@@ -47,13 +47,13 @@
 use crate::ptr_hash::{HashMap, HashSet};
 
 use crate::capture;
-use crate::engine::{thiscall1, vcall0};
+use crate::engine::vcall0;
 use crate::gen::layouts::{InterfaceNiTimeController, NiAVObject, NiGeometry, NiProperty, NiPropertyState, NiRTTI};
-use crate::gen::layouts::{NiCamera as C, NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
-use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_OTHER, SCENE_RACE_MENU_HEAD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
+use crate::gen::layouts::{NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
+use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_OTHER, SCENE_RACE_MENU_HEAD, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
 use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
-use crate::view_slots::{Click, Closed, Opening, ViewKey, ViewTable, VIEW_SLOTS};
+use crate::view_slots::{Click, Opening, ViewKey, ViewTable, VIEW_SLOTS};
 use crate::mem::{rd, wr};
 
 const CONTROLLERS: usize = NiAVObject::controllers;
@@ -62,8 +62,6 @@ const WORLD: usize = NiAVObject::worldTransform;
 const WORLD_TRANSLATION: usize = NiAVObject::worldTransform_translation;
 /// The centre and the radius.
 const WORLD_BOUND: usize = NiAVObject::worldBound;
-/// `NiBound::WhichSide(plane)`: 0 across the plane, 1 in front, 2 behind (out of the view).
-const WHICH_SIDE: usize = 0x6F2660;
 /// The flag of an instance record of the mode gpu: the helper draws it from its table.
 const BLOCK: u32 = 0x100;
 /// `NiAVObject::flags` bit 12: the plugin's mark on a shape the helper draws from its table.
@@ -84,9 +82,6 @@ const PROPERTY_FLAGS: usize = NiProperty::flags;
 /// The bits of an alpha property's flags: blending, and the no-sorter hint (bit 13).
 const ALPHA_BLEND: u16 = 1;
 const ALPHA_NO_SORTER: u16 = 0x2000;
-/// The engine camera's culling planes in their order (`NiCamera::UpdateWorldData` 0x6CC940),
-/// then any plane after the six.
-const PLANE_NAMES: [&str; 7] = ["near", "far", "left", "right", "top", "bottom", "another"];
 /// The display of a shape calls it for each of its controllers before the draw (a morpher
 /// writes its vertices then).
 const SLOT_ON_PRE_DISPLAY: usize = InterfaceNiTimeController::OnPreDisplay;
@@ -174,18 +169,9 @@ struct Instance {
     /// light of its own effect state at the last lights record.
     lights: Vec<u32>,
     ambient: u32,
-    /// The views that show the instance in the helper (bit v for view slot v, `view_slots`),
-    /// and its key in the visible lists of the views other than view 0 ([`ViewLists`]):
-    /// [`NO_KEY`] until its first display in one of them.
-    visible: u32,
-    list_key: u32,
-    /// The count of view 0's closes at its last display in view 0
-    /// ([`ViewLists::main_closes`]): view 0 displayed it since its last close when the two are
-    /// equal. 0 before its first display there.
-    main_shown: u32,
-    /// Its `INSTANCE` record goes again for the start of a capture file (`reset`): the state
-    /// records of its views follow the record (`restate`).
-    restate: bool,
+    /// The number of the main view's send that it joined last ([`ShownList::send`]); 0 before
+    /// its first.
+    listed_send: u32,
     /// A billboard node is above the shape: its display reads the world transform of the
     /// last view's turn (design 3.4a, until stage 2b). The frame of its last display and the
     /// views that displayed it in that frame, for [`BILLBOARD_IN_TWO_VIEWS`].
@@ -284,23 +270,18 @@ struct Tables {
     /// The draw in progress is of a retained shape: the shape and its id.
     pending: Option<(usize, u32)>,
     mode: Option<Mode>,
-    /// The camera of the world scene in progress, for the check of the visibility at its
-    /// end (mode gpu).
+    /// The camera of the world scene in progress, for the effect checks at its end (mode
+    /// gpu, `effect_chain::send_checks`).
     world_camera: usize,
     /// The kind of the scene in progress (`SCENE_*` of `link.rs`), for `skipped_display`.
     scene_kind: u32,
     /// Where the engine's displays of retained shapes go in the scene in progress.
     scene_route: Route,
-    /// The view slot of the scene in progress (`view_slots`); 0 for a scene that is not a
-    /// view, whose displays show in view 0 as before. `scene_camera` is the scene's camera
-    /// when the scene is a view, else 0.
-    scene_view: u8,
-    scene_camera: usize,
-    /// The visible list of each view slot ([`ViewLists`]), and the culling planes of its camera
-    /// at the end of its last scene (`NiPlane`: the normal, then the constant).
-    lists: ViewLists,
-    view_planes: Vec<Vec<[f32; 4]>>,
-    states: u64,
+    /// The view slot of the scene in progress (`view_slots`), or [`None`] for a scene that is
+    /// not a view.
+    scene_view: Option<u8>,
+    /// The main view's list of displays ([`ShownList`]).
+    shown: ShownList,
     light_records: u64,
     /// The displays the engine skipped, and the device values of the lights of the frame
     /// (built once a frame for each light, as the light manager builds its entry).
@@ -311,11 +292,6 @@ struct Tables {
     scene_frame: u32,
     scene_values: (u32, Option<[u32; 4]>),
     scene_mixed: u64,
-    /// Risk 34, for a while: the shapes other than sorted blends that the engine did not
-    /// display in a world scene and that `scene_end` left visible because an engine plane
-    /// puts them out of view, by that plane ([`PLANE_NAMES`]): the helper's own frustum
-    /// decides for them, and a wider one draws in the main view what the engine does not.
-    undisplayed_left: [u64; 7],
     /// The texture effects of the instances ([`EffectWatch`]), and the notes of the material
     /// of a sent instance because one of its effects changed.
     effects: HashMap<usize, EffectWatch>,
@@ -382,144 +358,114 @@ struct Tables {
     skipped_by: [u64; 5],
 }
 
-/// The key of an instance that no view listed yet ([`Instance::list_key`]).
-const NO_KEY: u32 = u32::MAX;
-/// The place of a key that a view does not list ([`ViewLists::places`]).
-const NOT_LISTED: u32 = u32::MAX;
-/// The index bits of a place; bit 31 is the list.
-const PLACE_INDEX: u32 = 0x7FFF_FFFF;
-
-/// The visible lists of the view slots (`view_slots`, design 3.1). Each view has two lists of
-/// entries (the shape and the instance's key): one holds the entries that the view's scenes
-/// displayed since its last close, the other the entries that they did not display yet. A
-/// display moves its entry into the first list; a close visits only the second, and then the
-/// first list becomes the second.
-///
-/// View 0 closes in every frame and has no lists: a display in it marks the instance with the
-/// count of its closes ([`Instance::main_shown`]), and its close sweeps the instances in the
-/// order of the table ([`close_main_view`]).
-///
-/// An instance has one key for all views, from its first display to its end ([`forget`] and
-/// [`Tables::reject_pending`] give it back). For each view, the place of each key tells the
-/// list (bit 31) and the index of its entry.
-struct ViewLists {
-    /// The closes of view 0 since the start, from 1; 0 is never a count.
-    main_closes: u32,
-    /// For each view: its two lists.
-    entries: Vec<[Vec<(usize, u32)>; 2]>,
-    /// For each view: the list (0 or 1) of the entries displayed since the last close.
-    shown: Vec<u8>,
-    /// For each view, by key: the place of the key's entry, or [`NOT_LISTED`].
-    places: Vec<Vec<u32>>,
-    free_keys: Vec<u32>,
-    next_key: u32,
+/// The main view's list of displays (form D, `INSTANCE_SHOWN`): the ids of the retained
+/// instances that the engine displayed in a world or water scene into the back buffer since the
+/// last send. A send goes at Present and at a read of the back buffer, whichever comes first,
+/// and the list then starts again. Each send has a number; an instance keeps the number of the
+/// send it joined last ([`Instance::listed_send`]), so it joins a send once.
+struct ShownList {
+    ids: Vec<u32>,
+    /// The number of the send in progress, from 1; 0 is never a number.
+    send: u32,
+    /// A scene of the list's kind began since the last send: the next send writes the list,
+    /// even an empty one. Without such a scene (a load, mode off) no list goes.
+    open: bool,
+    /// The sends at Present and at a read of the back buffer, the ids sent, and the most ids
+    /// of one send.
+    sends: [u64; 2],
+    ids_sent: u64,
+    most: usize,
 }
 
-impl ViewLists {
-    fn new() -> ViewLists {
-        ViewLists {
-            main_closes: 1,
-            entries: (0..VIEW_SLOTS).map(|_| [Vec::new(), Vec::new()]).collect(),
-            shown: vec![0; VIEW_SLOTS],
-            places: vec![Vec::new(); VIEW_SLOTS],
-            free_keys: Vec::new(),
-            next_key: 0,
+impl ShownList {
+    const fn new() -> ShownList {
+        ShownList { ids: Vec::new(), send: 1, open: false, sends: [0; 2], ids_sent: 0, most: 0 }
+    }
+
+    /// The instance joins the send in progress, once. A display before the list opened (a mode
+    /// change in the middle of a scene) joins no list: the next send would carry it.
+    fn add(&mut self, id: u32, listed_send: &mut u32) {
+        if self.open && *listed_send != self.send {
+            *listed_send = self.send;
+            self.ids.push(id);
         }
     }
 
-    /// A key for an instance at its first display.
-    fn take_key(&mut self) -> u32 {
-        self.free_keys.pop().unwrap_or_else(|| {
-            let key = self.next_key;
-            self.next_key += 1;
-            key
-        })
-    }
-
-    fn place(&self, view: u8, key: u32) -> u32 {
-        self.places[view as usize].get(key as usize).copied().unwrap_or(NOT_LISTED)
-    }
-
-    fn set_place(&mut self, view: u8, key: u32, place: u32) {
-        let places = &mut self.places[view as usize];
-        if places.len() <= key as usize {
-            places.resize(key as usize + 1, NOT_LISTED);
-        }
-        places[key as usize] = place;
-    }
-
-    /// Appends the entry to the view's list `list`.
-    fn push(&mut self, view: u8, list: usize, shape: usize, key: u32) {
-        let entries = &mut self.entries[view as usize][list];
-        let place = (list as u32) << 31 | entries.len() as u32;
-        entries.push((shape, key));
-        self.set_place(view, key, place);
-    }
-
-    /// Takes the entry of `key` out of its list in the view, if the view lists it. The last
-    /// entry of that list takes its index.
-    fn take_out(&mut self, view: u8, key: u32) {
-        let place = self.place(view, key);
-        if place == NOT_LISTED {
+    /// The instance leaves the send in progress, if it joined it.
+    fn remove(&mut self, id: u32, listed_send: &mut u32) {
+        if *listed_send != self.send {
             return;
         }
-        let entries = &mut self.entries[view as usize][(place >> 31) as usize];
-        let index = (place & PLACE_INDEX) as usize;
-        entries.swap_remove(index);
-        if let Some(&(_, moved)) = entries.get(index) {
-            self.places[view as usize][moved as usize] = place;
+        *listed_send = 0;
+        if let Some(index) = self.ids.iter().position(|&listed| listed == id) {
+            self.ids.swap_remove(index);
         }
-        self.places[view as usize][key as usize] = NOT_LISTED;
     }
 
-    /// A display in the view: the entry is in the list of the displayed entries until the
-    /// view's close.
-    fn show(&mut self, view: u8, shape: usize, key: u32) {
-        let shown = self.shown[view as usize] as usize;
-        let place = self.place(view, key);
-        if place != NOT_LISTED && (place >> 31) as usize == shown {
-            return;
+    /// The list of the send in progress, when a scene of its kind began since the last send;
+    /// the next send starts empty. `at_read`: the send is at a read of the back buffer.
+    fn take(&mut self, at_read: bool) -> Option<Vec<u32>> {
+        if !core::mem::take(&mut self.open) {
+            return None;
         }
-        self.take_out(view, key);
-        self.push(view, shown, shape, key);
+        let ids = core::mem::take(&mut self.ids);
+        self.send = self.send.wrapping_add(1).max(1);
+        self.sends[at_read as usize] += 1;
+        self.ids_sent += ids.len() as u64;
+        self.most = self.most.max(ids.len());
+        Some(ids)
     }
 
-    /// The instance of the key ends: its entries leave every list, and the key is free.
-    fn give_back(&mut self, key: u32) {
-        if key == NO_KEY {
-            return;
-        }
-        for view in 0..VIEW_SLOTS as u8 {
-            self.take_out(view, key);
-        }
-        self.free_keys.push(key);
+    /// No list goes for the displays so far (mode off): the list is empty and closed.
+    fn discard(&mut self) {
+        self.ids.clear();
+        self.open = false;
+        self.send = self.send.wrapping_add(1).max(1);
     }
 
-    /// The entries of the view, in both lists.
-    #[cfg(test)]
-    fn listed(&self, view: u8) -> Vec<(usize, u32)> {
-        self.entries[view as usize].iter().flatten().copied().collect()
+    fn line(&self) -> String {
+        let sends = self.sends[0] + self.sends[1];
+        format!(
+            "main view list: {} sends at Present, {} at a read of the back buffer, {:.1} ids a send, the most {}",
+            self.sends[0],
+            self.sends[1],
+            self.ids_sent as f64 / sends.max(1) as f64,
+            self.most
+        )
     }
+}
+
+/// The scene kinds whose displays join the main view's list, and whose displays may go into the
+/// engine's main sorted queue ([`may_queue`]): the world camera on the world root or on the
+/// water plane. The plugin gives no sorted-alpha scene on wgpu (`link_client::scene_kind`).
+fn main_view_kind(kind: u32) -> bool {
+    matches!(kind, SCENE_WORLD | SCENE_WATER)
+}
+
+/// A display in a scene of this kind and route joins the main view's list: the kind of
+/// [`main_view_kind`] into the back buffer ([`Route::Main`]). A world scene into a texture (the
+/// picture of a save) is not the main view.
+fn lists_main_view(kind: u32, route: Route) -> bool {
+    main_view_kind(kind) && route == Route::Main
 }
 
 static TABLES: MainCell<Option<Tables>> = MainCell::new(None);
 
-/// The table, for the state summary: the id, `sent`, `visible` and light list of each instance,
-/// the mode and the generation. The note counts the records sent
-/// (`geometry_stream::state_part`). Not `light_noted`: frames, which move by themselves.
+/// The table, for the state summary: the id, `sent` and light list of each instance, the mode
+/// and the generation. The note counts the records sent (`geometry_stream::state_part`). Not
+/// `light_noted`: frames, which move by themselves.
 pub fn state_part(mt: &MainThread) -> (crate::state_summary::Part, Option<Mode>, u32) {
     let t = tables(mt);
     let mut part = crate::state_summary::Part::default();
-    let (mut sent, mut visible) = (0, 0);
+    let mut sent = 0;
     for instance in t.instances.values() {
-        let mut words = vec![instance.id, instance.sent as u32, instance.visible];
+        let mut words = vec![instance.id, instance.sent as u32];
         words.extend_from_slice(&instance.lights);
         part.add(&words);
         sent += instance.sent as u32;
-        visible += (instance.visible != 0) as u32;
     }
     let records: u64 = (*RECORD_COUNTS.get(mt))[RC_FIRST..=RC_MOVED_COLOURS].iter().sum();
-    part.note = format!("sent {sent}, visible {visible}, records sent {records}");
+    part.note = format!("sent {sent}, records sent {records}");
     (part, t.mode, t.generation)
 }
 
@@ -543,18 +489,14 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         world_camera: 0,
         scene_kind: SCENE_OTHER,
         scene_route: Route::Main,
-        scene_view: 0,
-        scene_camera: 0,
-        lists: ViewLists::new(),
-        view_planes: vec![Vec::new(); VIEW_SLOTS],
-        states: 0,
+        scene_view: None,
+        shown: ShownList::new(),
         light_records: 0,
         skipped: 0,
         skip: crate::switches::on("NIRENDER_SKIP") != Some(false),
         scene_frame: u32::MAX,
         scene_values: (0, None),
         scene_mixed: 0,
-        undisplayed_left: [0; 7],
         effects: HashMap::default(),
         effect_notes: 0,
         texture_notes: 0,
@@ -590,7 +532,7 @@ impl Instance {
     /// An instance of a shape at its first draw: no record of it went yet.
     #[allow(clippy::too_many_arguments)]
     fn new(id: u32, class: u32, geometry: u32, material: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
-        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, visible: 0, list_key: NO_KEY, main_shown: 0, restate: false, under_billboard: false, views_frame: 0, frame_views: 0, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, listed_send: 0, under_billboard: false, views_frame: 0, frame_views: 0, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
     }
 }
 
@@ -616,22 +558,19 @@ pub unsafe fn set_mode(mt: &MainThread, mode: Mode) -> Mode {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.mode = Some(mode);
+    // Only mode gpu writes the main view's list. In another mode the engine draws every shape,
+    // and the helper, with no list, draws none of its table in the main view.
+    if mode != Mode::Gpu {
+        t.shown.discard();
+    }
     if mode != before {
-        // In mode off the engine draws every shape, so the helper must hide its table. The
-        // next display of a shape in mode gpu shows its instance again.
-        let hide = mode == Mode::Off && capture::recording();
         // Write no mark here: the cell worker can free a kept shape at any time. In mode
         // gpu `draw` marks a shape again at its next draw; in another mode the display
         // clears a stale mark (`skipped_display_timed`).
-        let mut hidden = 0;
         for instance in t.instances.values_mut() {
             instance.sent = false;
             instance.lights.clear();
-            if hide && instance.filled {
-                hidden += hide_everywhere(instance);
-            }
         }
-        t.states += hidden;
     }
     before
 }
@@ -674,7 +613,6 @@ pub unsafe fn reset(mt: &MainThread, cause: &str) {
     for instance in t.instances.values_mut() {
         instance.sent = false;
         instance.lights.clear();
-        instance.restate = true;
     }
     // The LIGHT records go again (`light_stream::reset`): the lights are noted again too.
     t.light_noted.clear();
@@ -728,8 +666,10 @@ pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize, route: Rout
         t.scene_kind = kind;
         t.scene_route = route;
         // `view` is the slot + 1 (`view_open`), 0 for a scene that is not a view.
-        t.scene_view = view.saturating_sub(1) as u8;
-        t.scene_camera = if view != 0 { camera } else { 0 };
+        t.scene_view = view.checked_sub(1).map(|slot| slot as u8);
+        if t.mode == Some(Mode::Gpu) && capture::recording() && lists_main_view(kind, route) {
+            t.shown.open = true;
+        }
     }
     if kind == SCENE_WORLD && camera != 0 {
         crate::animation::note_camera(mt, camera);
@@ -740,10 +680,9 @@ pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize, route: Rout
     }
 }
 
-/// A scene of the game ends. The scene's view keeps the culling planes of its camera for its
-/// close, and a view into a texture closes: it is one scene (design 3.1), so all its state
-/// records come before its `SCENE_END`. A view into the back buffer closes at the swap
-/// (`view_swap`). At the end of the world scene the effect checks go (`effect_chain`).
+/// A scene of the game ends. A view into a texture closes in the view table: it is one scene
+/// (design 3.1). A view into the back buffer closes at the swap (`view_swap`). At the end of
+/// the world scene the effect checks go (`effect_chain`).
 pub unsafe fn scene_end(mt: &MainThread) {
     let view = {
         let mut tables_open = tables(mt);
@@ -752,251 +691,28 @@ pub unsafe fn scene_end(mt: &MainThread) {
         if camera != 0 && t.mode() == Mode::Gpu && capture::recording() {
             crate::effect_chain::send_checks(mt, camera);
         }
-        let view = (t.scene_camera != 0).then_some(t.scene_view);
-        if let Some(view) = view {
-            let planes = &mut t.view_planes[view as usize];
-            planes.clear();
-            let count = rd::<i32>(t.scene_camera, C::countCullingPlanes).max(0) as usize;
-            let storage: usize = rd(t.scene_camera, C::cullingPlanes_storage);
-            planes.extend((0..count).map(|i| rd::<[f32; 4]>(rd::<usize>(storage, i * 4), 0)));
-        }
-        t.scene_view = 0;
-        t.scene_camera = 0;
-        view
+        t.scene_view.take()
     };
     if let Some(view) = view {
-        let closed = VIEWS.get(mt).as_mut().and_then(|views| views.scene_end(view));
-        close_views(mt, closed);
-    }
-}
-
-/// Views close (`view_slots`, design 3.1): in each, a shape that its scenes did not display
-/// since its last close and that is inside the culling planes of its camera is hidden in it
-/// (`INSTANCE_STATE` with the view). After a root change the plane test is skipped: every
-/// shape not displayed is hidden. View 0's close sweeps the instances in the order of the
-/// table; another view's close visits only the entries of its list that its scenes did not
-/// display (`ViewLists`, design 3.1a). Engine-rules R14, R16 (the skill wgpu-renderer-dev).
-/// After the first `display_cost` call the closes are timed.
-pub fn close_views(mt: &MainThread, closed: impl IntoIterator<Item = Closed>) {
-    // SAFETY: the close passes the bounds of the table's instances and copies of the camera's
-    // planes, which `NiBound::WhichSide` reads.
-    unsafe { close_views_with(mt, closed, engine_side) };
-}
-
-/// The side of the plane on which the bound is (`NiBound::WhichSide`): 2 is outside.
-///
-/// # Safety
-///
-/// `bound` is the address of an `NiBound` (the centre, then the radius).
-unsafe fn engine_side(bound: usize, plane: &[f32; 4]) -> u32 {
-    thiscall1(WHICH_SIDE, bound, plane.as_ptr() as u32)
-}
-
-/// The side of a plane for a bound: [`engine_side`], or a stand-in in a test.
-type WhichSide = unsafe fn(usize, &[f32; 4]) -> u32;
-
-/// [`close_views`] with the plane test `side`.
-///
-/// # Safety
-///
-/// `side` is safe to call for the bound of each instance of the table and the planes of the
-/// closed views.
-unsafe fn close_views_with(mt: &MainThread, closed: impl IntoIterator<Item = Closed>, side: WhichSide) {
-    use core::sync::atomic::Ordering::Relaxed;
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
-    let hide = t.mode() == Mode::Gpu && capture::recording();
-    let timed = COST_ON.load(Relaxed);
-    let start = if timed { capture::ticks() } else { 0 };
-    for (slot, root_changed) in closed {
-        let planes = core::mem::take(&mut t.view_planes[slot as usize]);
-        let close = Close { slot, root_changed, hide, planes: &planes, side };
-        let (visits, hides) = if slot == crate::view_slots::MAIN_VIEW { close_main_view(t, &close) } else { close_view(t, &close) };
-        t.view_planes[slot as usize] = planes;
-        t.states += hides[0] + hides[1];
-        CLOSE_HIDES[0].fetch_add(hides[0], Relaxed);
-        CLOSE_HIDES[1].fetch_add(hides[1], Relaxed);
-        CLOSE_VISITS.fetch_add(visits, Relaxed);
-    }
-    if timed {
-        CLOSE_TICKS.fetch_add(capture::ticks() - start, Relaxed);
-    }
-}
-
-/// The close of one view: the view, a root change since its last close, whether the close
-/// hides (mode gpu and a capture running), the planes of its camera, and the plane test.
-struct Close<'a> {
-    slot: u8,
-    root_changed: bool,
-    hide: bool,
-    planes: &'a [[f32; 4]],
-    side: WhichSide,
-}
-
-/// The close of view 0, in every frame: a sweep of the instances in the order of the table, as
-/// the close at the end of stage 1's world scene. Each instance that is visible in view 0 and
-/// that view 0 did not display since its last close stays or is hidden
-/// ([`Instance::stays_at_close`]). Then the count of the closes grows, so that every mark of a
-/// display is old. Without `hide` the close keeps every instance and visits none. Returns the
-/// instances visited and the hides (by the plane test, after a root change).
-///
-/// # Safety
-///
-/// `close.side` is safe to call for the bound of each instance of the table.
-unsafe fn close_main_view(t: &mut Tables, close: &Close) -> (u64, [u64; 2]) {
-    let stamp = t.lists.main_closes;
-    t.lists.main_closes = stamp.wrapping_add(1).max(1);
-    let mut hides = [0u64; 2];
-    let mut visits = 0u64;
-    if close.hide {
-        let bit = 1u32 << close.slot;
-        for instance in t.instances.values_mut() {
-            if instance.visible & bit == 0 || instance.main_shown == stamp {
-                continue;
-            }
-            visits += 1;
-            instance.stays_at_close(close, &mut t.undisplayed_left, &mut hides);
+        if let Some(views) = VIEWS.get(mt).as_mut() {
+            views.scene_end(view);
         }
     }
-    (visits, hides)
 }
 
-/// The close of a view other than view 0. Each entry that the view's scenes did not display
-/// since the last close stays or leaves ([`Instance::stays_at_close`]); an entry whose instance
-/// ended without giving its key back leaves too. Then the displayed entries become the entries
-/// that wait for the next close. Returns the entries visited and the hides.
-///
-/// # Safety
-///
-/// `close.side` is safe to call for the bounds of the listed instances.
-unsafe fn close_view(t: &mut Tables, close: &Close) -> (u64, [u64; 2]) {
-    let (slot, view) = (close.slot, close.slot as usize);
-    let shown = t.lists.shown[view] as usize;
-    let waiting_list = shown ^ 1;
-    let mut waiting = core::mem::take(&mut t.lists.entries[view][waiting_list]);
-    let mut hides = [0u64; 2];
-    for &(shape, key) in &waiting {
-        let stays = match t.instances.get_mut(&shape).filter(|instance| instance.list_key == key) {
-            Some(instance) => instance.stays_at_close(close, &mut t.undisplayed_left, &mut hides),
-            None => false,
-        };
-        if stays {
-            t.lists.push(slot, shown, shape, key);
-        } else {
-            t.lists.set_place(slot, key, NOT_LISTED);
-        }
-    }
-    let visits = waiting.len() as u64;
-    waiting.clear();
-    t.lists.entries[view][waiting_list] = waiting;
-    t.lists.shown[view] = waiting_list as u8;
-    (visits, hides)
-}
-
-impl Instance {
-    /// At the close of a view, for an instance that the view's scenes did not display since its
-    /// last close: true when it stays visible in the view (and in its list); false when it is
-    /// not visible in the view, or when the close hides it (`hide`, with its values from a
-    /// draw): after a root change, or when it is inside every plane. A hide sends its state
-    /// record and counts in `hides` (by the root change). An instance outside a plane stays; in
-    /// view 0 it counts in `undisplayed_left` by that plane, unless it is a sorted blend.
-    ///
-    /// # Safety
-    ///
-    /// `close.side` is safe to call for the bound of the instance.
-    unsafe fn stays_at_close(&mut self, close: &Close, undisplayed_left: &mut [u64; 7], hides: &mut [u64; 2]) -> bool {
-        let bit = 1u32 << close.slot;
-        if self.visible & bit == 0 {
-            return false;
-        }
-        if !close.hide || !self.filled {
-            return true;
-        }
-        if !close.root_changed {
-            let bound = if self.skinned { self.posed_bound.as_ptr() } else { self.bound.as_ptr() } as usize;
-            let outside = rejecting_plane(close.planes.iter().map(|plane| (close.side)(bound, plane)));
-            // Out of the camera's view the instance stays visible and the helper's view
-            // culls it with its own frustum. A sorted blend the engine did not display has
-            // no place in the frame, and the helper's main view does not draw it (risk 34);
-            // for a while the other shapes left so in view 0 are counted by the plane that
-            // puts them out.
-            if let Some(plane) = outside {
-                if close.slot == crate::view_slots::MAIN_VIEW && !self.sorted_blend {
-                    undisplayed_left[plane.min(PLANE_NAMES.len() - 1)] += 1;
-                }
-                return true;
-            }
-        }
-        self.visible &= !bit;
-        capture::instance_state(self.id, false, close.slot);
-        hides[close.root_changed as usize] += 1;
-        false
-    }
-}
-
-/// The hides of the views' closes: by the plane test, and after a root change.
-static CLOSE_HIDES: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
-/// The instances and list entries that the views' closes visited, and the time of the closes
-/// after the first `display_cost` call (`display_cost` reads and resets both).
-static CLOSE_VISITS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static CLOSE_TICKS: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
-
-/// A view slot retires: no instance shows in it any more. The helper clears bit v at the
-/// retirement (`EVENT_VIEW_RETIRE`). View 0 has no lists: its bit clears in every instance.
-fn forget_view(t: &mut Tables, slot: u8) {
-    let bit = 1u32 << slot;
-    let view = slot as usize;
-    if slot == crate::view_slots::MAIN_VIEW {
-        for instance in t.instances.values_mut() {
-            instance.visible &= !bit;
-        }
-    }
-    for list in &mut t.lists.entries[view] {
-        for (shape, key) in list.drain(..) {
-            if let Some(instance) = t.instances.get_mut(&shape).filter(|instance| instance.list_key == key) {
-                instance.visible &= !bit;
-            }
-        }
-    }
-    t.lists.places[view].clear();
-    t.view_planes[view].clear();
-}
-
-/// The work of a destructor of a rendered texture that found a table open
-/// (`view_target_destroyed`): the targets whose slots wait for their keys to go, and the slots
-/// whose marks wait for their clear. `view_open` does it before it takes a slot.
+/// The work of a destructor of a rendered texture that found the view table open
+/// (`view_target_destroyed`): the targets whose slots wait for their keys to go. `view_open`
+/// does it before it takes a slot.
 static PENDING_TARGETS: MainCell<Vec<usize>> = MainCell::new(Vec::new());
-static PENDING_FORGETS: MainCell<Vec<u8>> = MainCell::new(Vec::new());
 /// The destructors whose work waited so.
 pub static VIEW_TARGETS_WAITED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// The work that the destructors left (`PENDING_TARGETS`, `PENDING_FORGETS`), before a slot is
-/// taken: the targets first, then the marks of the freed slots.
+/// The work that the destructors left (`PENDING_TARGETS`), before a slot is taken.
 fn do_pending_destructors(mt: &MainThread) {
     let targets = core::mem::take(&mut *PENDING_TARGETS.get(mt));
     for target in targets {
         view_target_destroyed(mt, target);
     }
-    let slots = core::mem::take(&mut *PENDING_FORGETS.get(mt));
-    forget_views(mt, &slots);
-    // Their retirements go after the marks clear: `view_open` writes them next.
-    RETIRED_VIEWS.get(mt).extend(slots);
-}
-
-/// [`forget_view`] for each retired slot.
-fn forget_views(mt: &MainThread, retired: &[u8]) {
-    if retired.is_empty() {
-        return;
-    }
-    let mut tables_open = tables(mt);
-    for &slot in retired {
-        forget_view(&mut tables_open, slot);
-    }
-}
-
-/// The views of a mask, from view 0.
-fn views_of(mask: u32) -> impl Iterator<Item = u8> {
-    (0..VIEW_SLOTS as u8).filter(move |view| mask & (1 << view) != 0)
 }
 
 /// The instances under a billboard that a second view displayed in one frame, once for each
@@ -1016,70 +732,37 @@ unsafe fn under_billboard(shape: usize) -> bool {
     matches!(found, Ok(Some(())))
 }
 
-/// A display of the instance in the scene's view `view` in the frame `frame`: bit v with its
-/// state record when the bit was clear; in view 0 the count of its closes
-/// ([`Instance::main_shown`]), in another view the shape in v's list of the entries displayed
-/// since its last close ([`ViewLists::show`]). An instance under a billboard notes the views of
-/// the frame.
-unsafe fn show_in_view(instance: &mut Instance, shape: usize, view: u8, frame: u32, lists: &mut ViewLists, states: &mut u64) {
-    let bit = 1u32 << view;
-    if instance.under_billboard {
-        if instance.views_frame != frame {
-            instance.views_frame = frame;
-            instance.frame_views = 0;
-        }
-        if instance.frame_views & bit == 0 {
-            if instance.frame_views.count_ones() == 1 {
-                BILLBOARD_IN_TWO_VIEWS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            }
-            instance.frame_views |= bit;
-        }
+/// A display of the instance in the scene's view slot `view` ([`None`] for a scene that is not
+/// a view: it counts as view 0) in the frame `frame`. With `shown`, the display is in the main
+/// view's list ([`lists_main_view`]): the instance joins it. An instance under a billboard notes
+/// the views of the frame ([`BILLBOARD_IN_TWO_VIEWS`]).
+fn show_in_view(instance: &mut Instance, view: Option<u8>, frame: u32, shown: Option<&mut ShownList>) {
+    if let Some(shown) = shown {
+        shown.add(instance.id, &mut instance.listed_send);
     }
-    if instance.visible & bit == 0 {
-        instance.visible |= bit;
-        capture::instance_state(instance.id, true, view);
-        *states += 1;
-    }
-    if view == crate::view_slots::MAIN_VIEW {
-        instance.main_shown = lists.main_closes;
+    if !instance.under_billboard {
         return;
     }
-    if instance.list_key == NO_KEY {
-        instance.list_key = lists.take_key();
+    let bit = 1u32 << view.unwrap_or(crate::view_slots::MAIN_VIEW);
+    if instance.views_frame != frame {
+        instance.views_frame = frame;
+        instance.frame_views = 0;
     }
-    lists.show(view, shape, instance.list_key);
-}
-
-/// Hides the instance in every view that shows it, with a state record for each. Returns the
-/// records.
-unsafe fn hide_everywhere(instance: &mut Instance) -> u64 {
-    let mut records = 0;
-    for view in views_of(instance.visible) {
-        capture::instance_state(instance.id, false, view);
-        records += 1;
-    }
-    instance.visible = 0;
-    records
-}
-
-/// After an `INSTANCE` record that went again for the start of a capture file (`reset`): the
-/// state records of the views that show the instance. The file's helper starts a new id hidden
-/// in every view (`HEADER_VIEW_BITS`); the live helper keeps its bits, and the records repeat
-/// them.
-unsafe fn restate(instance: &mut Instance, states: &mut u64) {
-    if !core::mem::take(&mut instance.restate) {
-        return;
-    }
-    for view in views_of(instance.visible) {
-        capture::instance_state(instance.id, true, view);
-        *states += 1;
+    if instance.frame_views & bit == 0 {
+        if instance.frame_views.count_ones() == 1 {
+            BILLBOARD_IN_TWO_VIEWS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        instance.frame_views |= bit;
     }
 }
 
-/// The first plane whose side (`NiBound::WhichSide`) is 2, outside: the plane that puts the
-/// bound out of view; [`None`] in view.
-fn rejecting_plane(sides: impl Iterator<Item = u32>) -> Option<usize> {
-    sides.enumerate().find(|&(_, side)| side == 2).map(|(index, _)| index)
+/// A display of the instance of `shape` in the scene in progress, by `draw` or by the display
+/// work ([`show_in_view`]): in a scene of [`lists_main_view`] the instance joins the main view's
+/// list.
+fn note_display(t: &mut Tables, shape: usize) {
+    let Some(instance) = t.instances.get_mut(&shape) else { return };
+    let shown = lists_main_view(t.scene_kind, t.scene_route).then_some(&mut t.shown);
+    show_in_view(instance, t.scene_view, t.frame, shown);
 }
 
 /// The helper draws the skinned instances from its table: mode gpu, and the switch on.
@@ -1124,7 +807,8 @@ fn instance_strips(t: &Tables, shape: usize) -> bool {
 }
 
 /// Sends the bones of a skinned instance (`INSTANCE_BONES`) with the shape's world bound.
-/// Returns false when the bones cannot be made: the instance is hidden then, and counted.
+/// Returns false when the bones cannot be made: the instance leaves the main view's list then,
+/// and is counted.
 unsafe fn send_bones(mt: &MainThread, t: &mut Tables, shape: usize, id: u32) -> bool {
     let mut bones = core::mem::take(&mut t.scratch_bones);
     let software = crate::ports::draw::skinned_in_software(instance_strips(t, shape), rd(shape, GEOMETRY_MODEL_DATA));
@@ -1142,10 +826,10 @@ unsafe fn send_bones(mt: &MainThread, t: &mut Tables, shape: usize, id: u32) -> 
         Err(why) => {
             t.bone_failures += 1;
             if t.bone_failures <= 4 {
-                crate::log!("instances: no bones for the skinned instance {id} (shape 0x{shape:x}): {why}; it is hidden");
+                crate::log!("instances: no bones for the skinned instance {id} (shape 0x{shape:x}): {why}; it leaves the main view's list");
             }
             if let Some(instance) = t.instances.get_mut(&shape) {
-                t.states += hide_everywhere(instance);
+                t.shown.remove(instance.id, &mut instance.listed_send);
             }
             false
         }
@@ -1167,6 +851,31 @@ pub unsafe fn textures_changed(mt: &MainThread) {
 pub unsafe fn begin_draw(mt: &MainThread) {
     tables(mt).pending = None;
 }
+
+/// The main view's list for the record of the frame's end (`capture::frame_end`): [`None`]
+/// when no world or water scene into the back buffer began since the last send.
+pub fn take_shown_list(mt: &MainThread) -> Option<Vec<u32>> {
+    tables(mt).shown.take(false)
+}
+
+/// A read of the back buffer (`own_host`: a lock of it, or a copy out of it): the main view's
+/// list goes before the read's record, so that the helper draws the picture that is read with
+/// its own displays. The next displays start a new list.
+pub fn send_shown_list(mt: &MainThread) {
+    let Some(mut tables_open) = tables_try(mt) else {
+        SHOWN_TABLES_BUSY.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        return;
+    };
+    let Some(ids) = tables_open.shown.take(true) else { return };
+    drop(tables_open);
+    // SAFETY: the main thread (the proof says so), in a read of the back buffer before the
+    // read's own record (`own_host::read_target`).
+    unsafe { capture::instance_shown(&ids) };
+}
+
+/// The reads of the back buffer that found the table open, so that their list waited for the
+/// next send (the report's main view list line).
+static SHOWN_TABLES_BUSY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// The end of a frame.
 pub unsafe fn frame_tick(mt: &MainThread) {
@@ -1232,8 +941,6 @@ fn key_words(key: ViewKey) -> String {
 /// - a full table forces a flush: the open views into a texture close, the helper flushes at
 ///   `EVENT_FLUSH`, the second slots' retirements follow it, and the scene opens again.
 ///
-/// A retirement clears the slot's bit in the plugin's marks too (`forget_view`).
-///
 /// A take of a slot and a forced flush each give a log line, at the rate of `view_line_due`.
 pub fn view_open(mt: &MainThread, click: &Click) -> u32 {
     view_open_with_first(mt, click).0
@@ -1255,9 +962,6 @@ pub fn view_open_with_first(mt: &MainThread, click: &Click) -> (u32, u32) {
         if view_line_due(views.forced_flushes) {
             crate::log!("views: forced flush {} at frame {}: every slot is open or used since the last flush; {} views into a texture close", views.forced_flushes, views.frame(), end.closed.len());
         }
-        // The closes' hides go before the flush, so that the helper runs the views closed.
-        close_views(mt, end.closed);
-        forget_views(mt, &end.retired);
         let _lock = crate::sync::device_lock();
         // SAFETY: the stream records (checked above) and the device lock is held, so the
         // events go into the ring in the order of this thread's records.
@@ -1271,7 +975,6 @@ pub fn view_open_with_first(mt: &MainThread, click: &Click) -> (u32, u32) {
     }
     let Opening::Opened(opened) = opening else { return (0, 0) };
     if opened.taken_back {
-        forget_views(mt, &[opened.slot]);
         let _lock = crate::sync::device_lock();
         // SAFETY: as at the forced flush above.
         unsafe { capture::frame_event(crate::link::EVENT_VIEW_RETIRE, opened.slot as u32, 0) };
@@ -1305,20 +1008,18 @@ pub fn view_of_scene(mt: &MainThread, click: &Click, route: Route) -> (u32, u32)
 }
 
 /// The renderer's SwapBuffers, with the device's target (`None` for the back buffer): the open
-/// views into it close, with their hides.
+/// views into it close in the view table.
 pub fn view_swap(mt: &MainThread, target: Option<usize>) {
-    let closed = VIEWS.get(mt).as_mut().map(|views| views.swap(target)).unwrap_or_default();
-    close_views(mt, closed);
+    if let Some(views) = VIEWS.get(mt).as_mut() {
+        views.swap(target);
+    }
 }
 
 /// A readback or a tile's copy runs the frame's work so far: the open views into a texture
-/// close, with their hides before the flush's record, and the second slots go. Their
-/// retirements wait for [`write_flush_retirements`] after the flush's own record, so that the
-/// helper runs their views first.
+/// close, and the second slots go. Their retirements wait for [`write_flush_retirements`] after
+/// the flush's own record, so that the helper runs their views first.
 pub fn view_flush(mt: &MainThread) {
     let Some(end) = VIEWS.get(mt).as_mut().map(|views| views.flush(false)) else { return };
-    close_views(mt, end.closed);
-    forget_views(mt, &end.retired);
     RETIRED_VIEWS.get(mt).extend(end.retired);
 }
 
@@ -1342,10 +1043,9 @@ pub fn write_flush_retirements(mt: &MainThread) {
 /// record or `FRAME_END` ([`ViewTable::target_gone`]). Without a recording stream the
 /// retirements wait for the next point that writes them.
 ///
-/// The engine can destroy a rendered texture while this module holds a table: then the work
-/// waits for the next `view_open` (`PENDING_TARGETS`, `PENDING_FORGETS`), before any slot is
-/// taken, and `VIEW_TARGETS_WAITED` counts it. The retirements of slots whose marks wait go
-/// after the marks clear, so that no state record sets their bits again in between.
+/// The engine can destroy a rendered texture while this module holds the view table: then the
+/// work waits for the next `view_open` (`PENDING_TARGETS`), before any slot is taken, and
+/// `VIEW_TARGETS_WAITED` counts it.
 pub fn view_target_destroyed(mt: &MainThread, target: usize) {
     let Some(mut views_open) = VIEWS.try_get(mt) else {
         PENDING_TARGETS.get(mt).push(target);
@@ -1356,20 +1056,6 @@ pub fn view_target_destroyed(mt: &MainThread, target: usize) {
     drop(views_open);
     if retired.is_empty() {
         return;
-    }
-    match tables_try(mt) {
-        Some(mut tables_open) => {
-            for &slot in &retired {
-                forget_view(&mut tables_open, slot);
-            }
-        }
-        None => {
-            // The retirements wait with the marks: while the marks keep bit v, a retirement in
-            // the stream would let a restate (`reset`) set bit v again in the helper.
-            PENDING_FORGETS.get(mt).extend_from_slice(&retired);
-            VIEW_TARGETS_WAITED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            return;
-        }
     }
     if !capture::recording() {
         RETIRED_VIEWS.get(mt).extend(retired);
@@ -1386,12 +1072,10 @@ pub fn view_target_destroyed(mt: &MainThread, target: usize) {
 /// their slots until the 60-frame rule frees them.
 pub static VIEW_TARGETS_OFF_MAIN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// Present, the end of the frame (`frame_tick`): the views close and the second and idle slots
-/// retire.
+/// Present, the end of the frame (`frame_tick`): the views close in the view table, and the
+/// second and idle slots retire.
 fn view_present(mt: &MainThread) {
     let Some(end) = VIEWS.get(mt).as_mut().map(|views| views.present()) else { return };
-    close_views(mt, end.closed);
-    forget_views(mt, &end.retired);
     RETIRED_VIEWS.get(mt).extend(end.retired);
 }
 
@@ -1407,7 +1091,7 @@ fn view_report(mt: &MainThread) -> String {
         return "views: no scene yet".to_owned();
     };
     format!(
-        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target ({} destructors off the main thread, {} waited for an open table); hides at the closes: {} by the planes, {} after a root change; {} instances under a billboard displayed in two views of a frame (they draw with the last view's turn)",
+        "views: {} of {VIEW_SLOTS} slots in use, {} slots retired, {} root changes; {} second slots (at most {} in one flush), {} slots taken back, {} flushes forced, {} slots of a destroyed target ({} destructors off the main thread, {} waited for an open table); {} instances under a billboard displayed in two views of a frame (they draw with the last view's turn)",
         views.in_use(),
         views.retired,
         views.root_changes,
@@ -1418,8 +1102,6 @@ fn view_report(mt: &MainThread) -> String {
         views.targets_gone,
         VIEW_TARGETS_OFF_MAIN.load(core::sync::atomic::Ordering::Relaxed),
         VIEW_TARGETS_WAITED.load(core::sync::atomic::Ordering::Relaxed),
-        CLOSE_HIDES[0].load(core::sync::atomic::Ordering::Relaxed),
-        CLOSE_HIDES[1].load(core::sync::atomic::Ordering::Relaxed),
         BILLBOARD_IN_TWO_VIEWS.load(core::sync::atomic::Ordering::Relaxed)
     )
 }
@@ -1433,7 +1115,6 @@ pub unsafe fn forget(mt: &MainThread, shape: usize) -> bool {
     let t = &mut *tables_open;
     t.rejected.remove(&shape);
     if let Some(instance) = t.instances.remove(&shape) {
-        t.lists.give_back(instance.list_key);
         t.note_end(&instance, "destroyed");
         if capture::recording() {
             capture::instance_delete(instance.id);
@@ -1862,7 +1543,7 @@ impl Tables {
         }
         self.ends_without_record += 1;
         if self.ends_without_record <= MOST_END_LINES {
-            crate::log!("instances: instance {} {how} with no record since a reset: class {}, geometry {:#x}, visible in the views {:#x}", instance.id, instance.class, instance.geometry, instance.visible);
+            crate::log!("instances: instance {} {how} with no record since a reset: class {}, geometry {:#x}", instance.id, instance.class, instance.geometry);
         }
     }
 
@@ -1873,7 +1554,6 @@ impl Tables {
         mark(shape, false);
         // The record always goes, as in `forget`.
         if let Some(instance) = self.instances.remove(&shape) {
-            self.lists.give_back(instance.list_key);
             self.note_end(&instance, "rejected");
             if capture::recording() {
                 capture::instance_delete(instance.id);
@@ -1898,10 +1578,16 @@ pub unsafe fn reject_pending(mt: &MainThread, shape: usize, reason_later: bool) 
 /// record), `effects` the stages of the texture effects of the draw and `fog` its fog, for
 /// an `INSTANCE_DRAW` record.
 /// Returns false when the shape has no exact translation (the draw then goes as a shape
-/// record, and the shape is rejected).
+/// record, and the shape is rejected), and in a scene of [`Route::Engine`] (the draw goes as
+/// the engine's shape record, and the instance stays).
 pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], effects: Option<&[u32]>, fog: Option<[u32; 4]>, ambient: u32, lights: &[u32], bones: &[u8], bone_count: u32, queued: bool) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
+    // A world scene into a target that the helper does not have: no table draws there, so the
+    // engine's record draws the shape, as at the engine branch of `skipped_display_timed`.
+    if matches!(t.scene_route, Route::Engine(_)) {
+        return false;
+    }
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
     if sky_table_class(instance.class) && !sky_draws() {
         return false;
@@ -1975,11 +1661,10 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         let name: &[u8] = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes() } else { &[] };
         capture::instance(&words, &name[..name.len().min(96)]);
         t.records += 1;
-        restate(instance, &mut t.states);
     }
     if gpu {
-        // The helper draws the instance: the changes of its lights and its visibility. From
-        // now on the engine does not display the shape (`skipped_display`).
+        // The helper draws the instance: the changes of its lights, and the main view's list.
+        // From now on the engine does not display the shape (`skipped_display`).
         if t.skip {
             mark(shape, true);
         }
@@ -1990,9 +1675,10 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
             capture::instance_lights(id, lights, ambient);
             t.light_records += 1;
         }
-        show_in_view(instance, shape, t.scene_view, t.frame, &mut t.lists, &mut t.states);
-        if skinned {
-            send_bones(mt, t, shape, id);
+        // A skinned instance whose bones cannot be made does not join the main view's list
+        // (`send_bones`).
+        if !skinned || send_bones(mt, t, shape, id) {
+            note_display(t, shape);
         }
         // In a scene of `Route::Places` every displayed shape has its place, also at this draw
         // (the first one, or one after a change), which does not go through `skipped_display`.
@@ -2411,19 +2097,15 @@ pub fn set_note_every(on: bool) -> bool {
     before
 }
 
-/// The cost of the skipped displays and of the views' closes since the last call
-/// ([`display_cost`]); the counters reset.
+/// The cost of the skipped displays since the last call ([`display_cost`]); the counters reset.
 pub struct DisplayCost {
     pub displays: u64,
     pub notes: u64,
     pub display_ms: f64,
-    /// The time of the views' closes ([`close_views`]) and the list entries that they visited.
-    pub close_ms: f64,
-    pub close_visits: u64,
 }
 
-/// The skipped displays since the last call, the notes among them, and their time; the time
-/// of the views' closes and the entries that they visited. The counters reset.
+/// The skipped displays since the last call, the notes among them, and their time. The counters
+/// reset.
 pub fn display_cost() -> DisplayCost {
     use core::sync::atomic::Ordering::Relaxed;
     COST_ON.store(true, Relaxed);
@@ -2432,8 +2114,6 @@ pub fn display_cost() -> DisplayCost {
         displays: COST_CALLS.swap(0, Relaxed),
         notes: COST_NOTES.swap(0, Relaxed),
         display_ms: ms(COST_TICKS.swap(0, Relaxed)),
-        close_ms: ms(CLOSE_TICKS.swap(0, Relaxed)),
-        close_visits: CLOSE_VISITS.swap(0, Relaxed),
     }
 }
 
@@ -2455,7 +2135,7 @@ static QUEUE_COUNTS: MainCell<[u64; 3]> = MainCell::new([0; 3]);
 pub unsafe fn may_queue(mt: &MainThread) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    t.mode == Some(Mode::Gpu) && t.skip && capture::recording() && matches!(t.scene_kind, SCENE_WORLD | SCENE_SORTED_ALPHA | SCENE_WATER)
+    t.mode == Some(Mode::Gpu) && t.skip && capture::recording() && main_view_kind(t.scene_kind)
 }
 
 /// True in a scene of [`Route::Places`].
@@ -2549,6 +2229,9 @@ const ENGINE_PATH_SCENES: [(u32, &str); 4] = [
 static ENGINE_PATH_DISPLAYS: MainCell<[u64; 5]> = MainCell::new([0; 5]);
 /// The places written in the scenes of [`Route::Places`].
 static VIEW_PLACES: MainCell<u64> = MainCell::new(0);
+/// The displays of retained shapes in a scene into the back buffer of a kind outside the main
+/// view's list, which the engine draws (`skipped_display_timed`).
+static HANDED_BACK: MainCell<u64> = MainCell::new(0);
 /// The displays of retained shapes in each frame, by route (D82 stage 0).
 static FRAME_DISPLAYS: MainCell<FrameDisplays> = MainCell::new(FrameDisplays::new());
 
@@ -2639,9 +2322,10 @@ pub fn engine_path_report(mt: &MainThread) -> String {
     let names = ENGINE_PATH_SCENES.iter().map(|&(_, name)| name).chain(["a target the helper lacks"]);
     let parts: Vec<String> = names.zip(counts).map(|(name, count)| format!("{name} {count}")).collect();
     format!(
-        "{} displays of retained shapes on the engine's path outside the table's scenes ({}); {} places in views of their own; {}",
+        "{} displays of retained shapes on the engine's path outside the table's scenes ({}); {} in scenes into the back buffer outside the main view's list; {} places in views of their own; {}",
         counts.iter().sum::<u64>(),
         parts.join(", "),
+        *HANDED_BACK.get(mt),
         *VIEW_PLACES.get(mt),
         FRAME_DISPLAYS.get(mt).line()
     )
@@ -2669,6 +2353,14 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
         // its landscape (records entry 55). The displays are counted ([`engine_path_report`]).
         if let Route::Engine(index) = t.scene_route {
             ENGINE_PATH_DISPLAYS.get(mt)[index] += 1;
+            return false;
+        }
+        // A scene into the back buffer of a kind outside the main view's list (first person, a
+        // shadow scene, the interface, the splash): the helper draws no table there, so the
+        // engine draws the shape at its place, into the scene's target, as on Direct3D 9. The
+        // mark stays, as on the engine's path.
+        if t.scene_route == Route::Main && !main_view_kind(t.scene_kind) {
+            *HANDED_BACK.get(mt) += 1;
             return false;
         }
         if let Some(instance) = t.instances.get_mut(&shape) {
@@ -2859,7 +2551,6 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         }
         if !move_only || moves == CompactMoves::Check {
             send_instance(mt, shape, instance, exact, relative);
-            restate(instance, &mut t.states);
         }
         t.records += 1;
         let send_end = capture::ticks();
@@ -2937,7 +2628,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         t.light_records += 1;
     }
     t.scratch_keys = keys;
-    show_in_view(instance, shape, t.scene_view, t.frame, &mut t.lists, &mut t.states);
+    note_display(t, shape);
     t.skipped += 1;
     true
 }
@@ -3055,10 +2746,11 @@ pub unsafe fn report(mt: &MainThread) -> String {
     if later.iter().any(|&n| n != 0) {
         rejected.push(format!("at the record by cause: geometry {}, material {}, not modelled {}, translation {}", later[0], later[1], later[2], later[3]));
     }
+    let shown_line = format!("{}; {} reads of the back buffer found the table open", t.shown.line(), SHOWN_TABLES_BUSY.load(core::sync::atomic::Ordering::Relaxed));
     let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} hidden with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records, {} state records",
+        "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} left out of the main view's list with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records",
         t.mode().name(),
         t.instances.len(),
         t.instances.values().filter(|i| i.live).count(),
@@ -3078,8 +2770,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.value_updates,
         t.deletes,
         t.ends_without_record,
-        t.light_records,
-        t.states
+        t.light_records
     ) + "\n"
         + &format!(
             "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, display checks {} ({:.3} ms, the worst frame {:.3} ms), shapes hit {}, clears of the changed objects {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}; the note of every 64th frame found changed: {}\n",
@@ -3087,9 +2778,8 @@ pub unsafe fn report(mt: &MainThread) -> String {
             crate::material_stream::GROUP_NAMES.iter().zip(t.periodic_changes).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &format!(
-            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk; shapes other than sorted blends the engine did not display, left visible by the plane that puts them out of the engine's view: {}\n",
-            queue_counts[0], queue_counts[1], queue_counts[2], walk_places,
-            PLANE_NAMES.iter().zip(t.undisplayed_left).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
+            "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
+            queue_counts[0], queue_counts[1], queue_counts[2], walk_places
         )
         + &{
             let engine = crate::shape_stream::engine_particle_records(mt);
@@ -3114,6 +2804,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + "\n" + &crate::freed_fill::report()
         + "\n" + &crate::camera_space::skin_report(mt)
         + "\n" + &view_report(mt)
+        + "\n" + &shown_line
 }
 
 #[cfg(test)]
@@ -3201,444 +2892,42 @@ mod tests {
         }
     }
 
-    /// The take lines: the first 64, then each power of 2; a texture key used again before a
-    /// flush is named as a second slot.
-    /// The marks of each view (D82 stage 2): a display in view v sets bit v and lists the shape
-    /// in v; the close of v keeps a shape that its scenes displayed and hides one that they did
-    /// not (no planes: inside); a display in a scene that is not a view marks view 0 only; a
-    /// retirement clears bit v.
-    #[test]
-    fn a_view_shows_what_its_scenes_displayed_and_hides_the_rest_at_its_close() {
-        let _turn = crate::main_thread::TestTurn::take();
-        unsafe {
-            let before = crate::shadow::main_thread_for_test();
-            let mt = MainThread::claim();
-            capture::test_record_deletes(true);
-            let (a, b) = (0x7920_0000usize, 0x7920_1000usize);
-            let mode = {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                for (shape, id) in [(a, 91), (b, 92)] {
-                    let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
-                    instance.filled = true;
-                    t.instances.insert(shape, instance);
-                }
-                t.mode.replace(Mode::Gpu)
-            };
-            let show = |shape: usize, view: u8| {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                let instance = t.instances.get_mut(&shape).expect("a test instance");
-                show_in_view(instance, shape, view, t.frame, &mut t.lists, &mut t.states);
-            };
-            let mask = |shape: usize| tables(&mt).instances[&shape].visible;
-            show(a, 1);
-            show(b, 1);
-            assert_eq!((mask(a), mask(b)), (0b10, 0b10));
-            close_views(&mt, [(1, false)]);
-            assert_eq!((mask(a), mask(b)), (0b10, 0b10));
-            // The next scene of view 1 displays only a: b goes at the close.
-            show(a, 1);
-            close_views(&mt, [(1, false)]);
-            assert_eq!((mask(a), mask(b)), (0b10, 0));
-            assert_eq!(listed_shapes(&mt, 1), vec![a]);
-            // A display in a scene that is not a view: view 0 only.
-            show(b, 0);
-            assert_eq!(mask(b), 0b1);
-            // The retirement of view 1.
-            forget_views(&mt, &[1]);
-            assert_eq!((mask(a), listed_shapes(&mt, 1)), (0, vec![]));
-            {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                for shape in [a, b] {
-                    let instance = t.instances.remove(&shape).expect("a test instance");
-                    t.lists.give_back(instance.list_key);
-                }
-                t.mode = mode;
-            }
-            capture::test_record_deletes(false);
-            crate::shadow::restore_main_thread(before);
-        }
-    }
-
-    /// The shapes in a view's lists.
-    fn listed_shapes(mt: &MainThread, view: u8) -> Vec<usize> {
-        tables(mt).lists.listed(view).into_iter().map(|(shape, _)| shape).collect()
-    }
-
-    /// The shapes of a view's list of the entries not displayed since its last close.
-    fn waiting_shapes(mt: &MainThread, view: u8) -> Vec<usize> {
-        let t = tables(mt);
-        let waiting = t.lists.shown[view as usize] as usize ^ 1;
-        t.lists.entries[view as usize][waiting].iter().map(|&(shape, _)| shape).collect()
-    }
-
-    /// The shapes that view 0's next close visits: visible in view 0, and not displayed in it
-    /// since its last close.
-    fn main_waiting(mt: &MainThread) -> Vec<usize> {
-        let t = tables(mt);
-        let stamp = t.lists.main_closes;
-        t.instances.iter().filter(|(_, instance)| instance.visible & 1 != 0 && instance.main_shown != stamp).map(|(&shape, _)| shape).collect()
-    }
-
-    /// View 0 closes in every frame: a shape displayed in frame n and not in frame n + 1 stays
-    /// visible at the close of n and is hidden at the close of n + 1. Each close visits only
-    /// the visible shapes that view 0 did not display since its last close, and view 0 lists
-    /// nothing.
-    #[test]
-    fn a_shape_displayed_in_one_frame_and_not_in_the_next_is_hidden_at_the_next_close() {
-        use core::sync::atomic::Ordering::Relaxed;
-        let _turn = crate::main_thread::TestTurn::take();
-        unsafe {
-            let before = crate::shadow::main_thread_for_test();
-            let mt = MainThread::claim();
-            capture::test_record_deletes(true);
-            let main = crate::view_slots::MAIN_VIEW;
-            let (a, b) = (0x7925_0000usize, 0x7925_1000usize);
-            let mode = {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                for (shape, id) in [(a, 81), (b, 82)] {
-                    let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
-                    instance.filled = true;
-                    t.instances.insert(shape, instance);
-                }
-                t.mode.replace(Mode::Gpu)
-            };
-            let show = |shape: usize| {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                let instance = t.instances.get_mut(&shape).expect("a test instance");
-                show_in_view(instance, shape, main, t.frame, &mut t.lists, &mut t.states);
-            };
-            let mask = |shape: usize| tables(&mt).instances[&shape].visible;
-            // A close of view 0: it visits the shapes that waited.
-            let close = || {
-                let waited = main_waiting(&mt).len() as u64;
-                let start = CLOSE_VISITS.load(Relaxed);
-                close_views(&mt, [(main, false)]);
-                let visits = CLOSE_VISITS.load(Relaxed) - start;
-                assert_eq!(visits, waited);
-            };
-            // Frame n displays a and b.
-            show(a);
-            show(b);
-            show(a);
-            assert!(!main_waiting(&mt).iter().any(|&shape| shape == a || shape == b));
-            assert!(listed_shapes(&mt, main).is_empty());
-            close();
-            assert_eq!((mask(a), mask(b)), (1, 1));
-            // Frame n + 1 displays only a: b waits and goes at the close.
-            show(a);
-            let waiting = main_waiting(&mt);
-            assert!(!waiting.contains(&a) && waiting.contains(&b), "{waiting:?}");
-            close();
-            assert_eq!((mask(a), mask(b)), (1, 0));
-            assert!(!main_waiting(&mt).contains(&b));
-            // Frame n + 2 displays nothing: a goes.
-            assert!(main_waiting(&mt).contains(&a));
-            close();
-            assert_eq!(mask(a), 0);
-            assert!(listed_shapes(&mt, main).is_empty());
-            {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                for shape in [a, b] {
-                    let instance = t.instances.remove(&shape).expect("a test instance");
-                    t.lists.give_back(instance.list_key);
-                }
-                t.mode = mode;
-            }
-            capture::test_record_deletes(false);
-            crate::shadow::restore_main_thread(before);
-        }
-    }
-
-    /// A stand-in for `NiBound::WhichSide` in the tests: outside (2) when the x of the bound's
-    /// centre is above the plane's constant, else 1.
-    unsafe fn test_side(bound: usize, plane: &[f32; 4]) -> u32 {
-        if *(bound as *const f32) > plane[3] {
-            2
-        } else {
-            1
-        }
-    }
-
-    /// View 0's sweep gives the result of another view's list close (design 3.1a): the same
-    /// instances, displayed in both views in the same frames, with the same planes, stay visible
-    /// or go in both. A shape displayed stays; one not displayed and inside the planes goes; one
-    /// outside stays; one without values from a draw stays; a sorted blend outside stays; one
-    /// never displayed stays hidden. After a root change each one not displayed goes, except the
-    /// one without values. Only view 0 counts the shape outside, and not the sorted blend.
-    #[test]
-    fn view_0s_sweep_and_a_views_list_close_give_the_same_result() {
-        let _turn = crate::main_thread::TestTurn::take();
-        unsafe {
-            let before = crate::shadow::main_thread_for_test();
-            let mt = MainThread::claim();
-            capture::test_record_deletes(true);
-            let (main, other) = (crate::view_slots::MAIN_VIEW, 6u8);
-            let shapes = [0x7928_0000usize, 0x7928_1000, 0x7928_2000, 0x7928_3000, 0x7928_4000, 0x7928_5000];
-            let [shown, inside, outside, unfilled, blend, never] = shapes;
-            let mode = {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                assert!(t.lists.listed(other).is_empty(), "view {other} lists entries of another test");
-                for (&shape, id) in shapes.iter().zip(61..) {
-                    let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
-                    instance.filled = shape != unfilled;
-                    instance.sorted_blend = shape == blend;
-                    instance.bound[0] = if shape == outside || shape == blend { 20.0 } else { 0.0 };
-                    t.instances.insert(shape, instance);
-                }
-                for view in [main, other] {
-                    t.view_planes[view as usize] = vec![[0.0, 0.0, 0.0, 10.0]];
-                }
-                t.mode.replace(Mode::Gpu)
-            };
-            let show = |shape: usize| {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                for view in [main, other] {
-                    let instance = t.instances.get_mut(&shape).expect("a test instance");
-                    show_in_view(instance, shape, view, t.frame, &mut t.lists, &mut t.states);
-                }
-            };
-            let close = |root_changed: bool| close_views_with(&mt, [(main, root_changed), (other, root_changed)], test_side);
-            // The shape's bits in view 0 and in the other view.
-            let bits = |shape: usize| {
-                let visible = tables(&mt).instances[&shape].visible;
-                (visible & 1 != 0, visible & (1 << other) != 0)
-            };
-            let left = || tables(&mt).undisplayed_left[0];
-            // Frame n displays all but `never`.
-            for shape in [shown, inside, outside, unfilled, blend] {
-                show(shape);
-            }
-            close(false);
-            for shape in [shown, inside, outside, unfilled, blend] {
-                assert_eq!(bits(shape), (true, true), "{shape:#x}");
-            }
-            // Frame n + 1 displays only `shown`.
-            show(shown);
-            let start = left();
-            close(false);
-            for (shape, visible) in [(shown, true), (inside, false), (outside, true), (unfilled, true), (blend, true), (never, false)] {
-                assert_eq!(bits(shape), (visible, visible), "{shape:#x}");
-            }
-            assert_eq!(left() - start, 1);
-            // Frame n + 2 displays only `shown`, after a root change.
-            show(shown);
-            close(true);
-            for (shape, visible) in [(shown, true), (inside, false), (outside, false), (unfilled, true), (blend, false), (never, false)] {
-                assert_eq!(bits(shape), (visible, visible), "{shape:#x}");
-            }
-            {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                for shape in shapes {
-                    let instance = t.instances.remove(&shape).expect("a test instance");
-                    t.lists.give_back(instance.list_key);
-                }
-                assert!(t.lists.listed(other).is_empty());
-                for view in [main, other] {
-                    t.view_planes[view as usize].clear();
-                }
-                t.mode = mode;
-            }
-            capture::test_record_deletes(false);
-            crate::shadow::restore_main_thread(before);
-        }
-    }
-
-    /// Every entry of the view's lists is at the place that its key names, and no other key has
-    /// a place.
-    fn assert_places(mt: &MainThread, view: u8) {
-        let t = tables(mt);
-        let lists = &t.lists;
-        let mut count = 0;
-        for (list, entries) in lists.entries[view as usize].iter().enumerate() {
-            for (index, &(_, key)) in entries.iter().enumerate() {
-                assert_eq!(lists.place(view, key), (list as u32) << 31 | index as u32, "key {key}");
-                count += 1;
-            }
-        }
-        assert_eq!(lists.places[view as usize].iter().filter(|&&place| place != NOT_LISTED).count(), count);
-    }
-
-    /// A display or an end takes an entry out of its list, and the list's last entry takes its
-    /// index. In a view with four entries the moved entry is displayed, or its shape ends, right
-    /// after, in the same frame and in the next: each entry keeps the place its key names, and
-    /// the closes keep, hide and drop the right shapes.
-    #[test]
-    fn an_entry_moved_by_a_take_out_keeps_its_place() {
-        let _turn = crate::main_thread::TestTurn::take();
-        unsafe {
-            let before = crate::shadow::main_thread_for_test();
-            let mt = MainThread::claim();
-            capture::test_record_deletes(true);
-            let view = 5u8;
-            let shapes = [0x7927_0000usize, 0x7927_1000, 0x7927_2000, 0x7927_3000];
-            let [a, b, c, d] = shapes;
-            let mode = {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                assert!(t.lists.listed(view).is_empty(), "view {view} lists entries of another test");
-                for (shape, id) in shapes.iter().zip(71..) {
-                    let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
-                    instance.filled = true;
-                    t.instances.insert(*shape, instance);
-                }
-                t.mode.replace(Mode::Gpu)
-            };
-            let show = |shape: usize| {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                let instance = t.instances.get_mut(&shape).expect("a test instance");
-                show_in_view(instance, shape, view, t.frame, &mut t.lists, &mut t.states);
-                drop(tables_open);
-                assert_places(&mt, view);
-            };
-            let mask = |shape: usize| tables(&mt).instances.get(&shape).map(|instance| instance.visible);
-            let bit = Some(1u32 << view);
-            // Frame n: all four; at the close they wait as a, b, c, d.
-            for shape in shapes {
-                show(shape);
-            }
-            close_views(&mt, [(view, false)]);
-            assert_places(&mt, view);
-            assert_eq!(waiting_shapes(&mt, view), vec![a, b, c, d]);
-            // Frame n + 1: a goes out and d takes its index; then d itself is displayed, and c
-            // takes the index; then b ends.
-            show(a);
-            assert_eq!(waiting_shapes(&mt, view), vec![d, b, c]);
-            show(d);
-            assert_eq!(waiting_shapes(&mt, view), vec![c, b]);
-            assert!(forget(&mt, b));
-            assert_places(&mt, view);
-            assert_eq!(waiting_shapes(&mt, view), vec![c]);
-            close_views(&mt, [(view, false)]);
-            assert_places(&mt, view);
-            assert_eq!((mask(a), mask(b), mask(c), mask(d)), (bit, None, Some(0), bit));
-            assert_eq!(waiting_shapes(&mt, view), vec![a, d]);
-            // Frame n + 2: a goes out and d takes its index; then d ends.
-            show(a);
-            assert_eq!(waiting_shapes(&mt, view), vec![d]);
-            assert!(forget(&mt, d));
-            assert_places(&mt, view);
-            assert!(waiting_shapes(&mt, view).is_empty());
-            close_views(&mt, [(view, false)]);
-            assert_places(&mt, view);
-            assert_eq!((mask(a), mask(d)), (bit, None));
-            assert_eq!(listed_shapes(&mt, view), vec![a]);
-            forget_views(&mt, &[view]);
-            assert_places(&mt, view);
-            {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                for shape in [a, c] {
-                    let instance = t.instances.remove(&shape).expect("a test instance");
-                    t.lists.give_back(instance.list_key);
-                }
-                t.mode = mode;
-            }
-            assert_eq!(capture::test_record_deletes(false), [72, 74]);
-            crate::shadow::restore_main_thread(before);
-        }
-    }
-
-    /// A shape destroyed, and a new one at the same address displayed in the same view before
-    /// the close: the old shape's entry leaves the view's list with it, and the new shape stays
-    /// visible.
-    #[test]
-    fn a_new_shape_at_a_freed_address_stays_visible_at_the_close() {
-        let _turn = crate::main_thread::TestTurn::take();
-        unsafe {
-            let before = crate::shadow::main_thread_for_test();
-            let mt = MainThread::claim();
-            capture::test_record_deletes(true);
-            let a = 0x7930_0000usize;
-            let insert = |id: u32| {
-                let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
-                instance.filled = true;
-                tables(&mt).instances.insert(a, instance);
-            };
-            let show = || {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                let instance = t.instances.get_mut(&a).expect("a test instance");
-                show_in_view(instance, a, 1, t.frame, &mut t.lists, &mut t.states);
-            };
-            let mode = tables(&mt).mode.replace(Mode::Gpu);
-            insert(94);
-            show();
-            assert!(forget(&mt, a));
-            insert(95);
-            show();
-            close_views(&mt, [(1, false)]);
-            assert_eq!(tables(&mt).instances[&a].visible, 0b10);
-            let key = tables(&mt).instances[&a].list_key;
-            assert_eq!(tables(&mt).lists.listed(1), vec![(a, key)]);
-            forget_views(&mt, &[1]);
-            tables(&mt).instances.remove(&a);
-            tables(&mt).mode = mode;
-            assert_eq!(capture::test_record_deletes(false), [94]);
-            crate::shadow::restore_main_thread(before);
-        }
-    }
-
-    /// A texture view whose items ran, with one shape shown in it: gives its slot and the shape.
-    /// The view closes at a swap into its target and a flush runs its items.
-    unsafe fn a_shown_texture_view(mt: &MainThread, target: usize, shape: usize, id: u32) -> u8 {
+    /// A texture view whose items ran: gives its slot. The view closes at a swap into its target
+    /// and a flush runs its items.
+    fn a_texture_view_whose_items_ran(mt: &MainThread, target: usize) -> u8 {
         let picture = Click { kind: SCENE_OTHER, camera: target + 0x100, root: target + 0x200, target: Some(target), world_camera: false };
         let slot = (view_open(mt, &picture) - 1) as u8;
         view_swap(mt, Some(target));
         view_flush(mt);
         take_retired_views(mt);
-        let mut tables_open = tables(mt);
-        let t = &mut *tables_open;
-        let mut instance = Instance::new(id, 0, 1, 2, 0, false, false, false);
-        instance.filled = true;
-        t.instances.insert(shape, instance);
-        let instance = t.instances.get_mut(&shape).expect("a test instance");
-        show_in_view(instance, shape, slot, t.frame, &mut t.lists, &mut t.states);
         slot
     }
 
-    /// The destructor of a rendered texture while the tables are open: no panic. The clear of
-    /// its slot's marks waits for the next scene's start (`view_open`), and so does the slot's
-    /// retirement, which goes only after the clear.
+    /// The destructor of a rendered texture while the tables are open: no panic, and the slot
+    /// of a view whose items ran retires at once. The plugin keeps no marks of a view, so
+    /// nothing waits for the next scene.
     #[test]
-    fn a_target_destroyed_while_the_tables_are_open_waits_for_the_next_scene() {
+    fn a_target_destroyed_while_the_tables_are_open_retires_its_slot_at_once() {
         let _turn = crate::main_thread::TestTurn::take();
         unsafe {
             let before = crate::shadow::main_thread_for_test();
             let mt = MainThread::claim();
             capture::test_record_deletes(true);
-            let a = 0x7940_8000usize;
-            let slot = a_shown_texture_view(&mt, 0x7940_4000, a, 96);
+            let slot = a_texture_view_whose_items_ran(&mt, 0x7940_4000);
             {
                 let _held = tables(&mt);
                 view_target_destroyed(&mt, 0x7940_4000);
             }
-            assert_eq!(tables(&mt).instances[&a].visible, 1 << slot);
-            assert_eq!(*PENDING_FORGETS.get(&mt), vec![slot]);
-            assert!(RETIRED_VIEWS.get(&mt).is_empty(), "a retirement before the clear of the marks");
-            let next = Click { kind: SCENE_OTHER, camera: 0x7941_0000, root: 0x7941_1000, target: Some(0x7941_4000), world_camera: false };
-            assert!(view_open(&mt, &next) > 0);
-            assert_eq!(tables(&mt).instances[&a].visible, 0);
-            assert!(PENDING_FORGETS.get(&mt).is_empty() && RETIRED_VIEWS.get(&mt).is_empty());
-            view_swap(&mt, Some(0x7941_4000));
-            tables(&mt).instances.remove(&a);
-            take_retired_views(&mt);
+            assert!(PENDING_TARGETS.get(&mt).is_empty());
+            assert!(RETIRED_VIEWS.get(&mt).is_empty(), "the retirement waited although the stream records");
+            assert_eq!(VIEWS.get(&mt).as_ref().and_then(|views| views.key(slot)), None);
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
         }
     }
 
     /// The destructor of a rendered texture while the view table is open: the target waits for
-    /// the next scene's start, which frees its slot and clears its marks.
+    /// the next scene's start, which frees its slot.
     #[test]
     fn a_target_destroyed_while_the_view_table_is_open_waits_for_the_next_scene() {
         let _turn = crate::main_thread::TestTurn::take();
@@ -3646,81 +2935,53 @@ mod tests {
             let before = crate::shadow::main_thread_for_test();
             let mt = MainThread::claim();
             capture::test_record_deletes(true);
-            let a = 0x7950_8000usize;
-            let slot = a_shown_texture_view(&mt, 0x7950_4000, a, 99);
+            let slot = a_texture_view_whose_items_ran(&mt, 0x7950_4000);
+            let key = |mt: &MainThread| VIEWS.get(mt).as_ref().and_then(|views| views.key(slot));
+            let kept = key(&mt);
+            assert!(kept.is_some());
             {
                 let _held = VIEWS.get(&mt);
                 view_target_destroyed(&mt, 0x7950_4000);
             }
             assert_eq!(*PENDING_TARGETS.get(&mt), vec![0x7950_4000]);
-            assert_eq!(tables(&mt).instances[&a].visible, 1 << slot);
+            assert_eq!(key(&mt), kept);
             let next = Click { kind: SCENE_OTHER, camera: 0x7951_0000, root: 0x7951_1000, target: Some(0x7951_4000), world_camera: false };
             assert!(view_open(&mt, &next) > 0);
             assert!(PENDING_TARGETS.get(&mt).is_empty());
-            assert_eq!(tables(&mt).instances[&a].visible, 0);
+            assert_ne!(key(&mt), kept);
             view_swap(&mt, Some(0x7951_4000));
-            tables(&mt).instances.remove(&a);
             take_retired_views(&mt);
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
         }
     }
 
-    /// A retirement clears a view's bit only in the instance that its list entry names: a new
-    /// instance at the address of a stale entry keeps its bits.
-    #[test]
-    fn a_retirement_leaves_a_new_instance_at_a_stale_address_alone() {
-        let _turn = crate::main_thread::TestTurn::take();
-        unsafe {
-            let before = crate::shadow::main_thread_for_test();
-            let mt = MainThread::claim();
-            let a = 0x7960_0000usize;
-            {
-                let mut tables_open = tables(&mt);
-                let t = &mut *tables_open;
-                t.lists.push(2, 0, a, 100);
-                let mut instance = Instance::new(101, 0, 1, 2, 0, false, false, false);
-                instance.visible = 0b100;
-                t.instances.insert(a, instance);
-            }
-            forget_views(&mt, &[2]);
-            assert_eq!(tables(&mt).instances[&a].visible, 0b100);
-            assert!(listed_shapes(&mt, 2).is_empty());
-            tables(&mt).instances.remove(&a);
-            crate::shadow::restore_main_thread(before);
-        }
-    }
-
     /// An instance under a billboard that a second view displays in a frame is counted once for
-    /// that frame; a third view adds nothing; the next frame starts again. One not under a
-    /// billboard is not counted.
+    /// that frame; a third view adds nothing; the next frame starts again. A scene that is not a
+    /// view counts as view 0. One not under a billboard is not counted.
     #[test]
     fn an_instance_under_a_billboard_in_two_views_of_a_frame_is_counted_once() {
         use core::sync::atomic::Ordering::Relaxed;
-        let mut lists = ViewLists::new();
-        let mut states = 0;
         let mut under = Instance::new(97, 0, 1, 2, 0, false, false, false);
         under.under_billboard = true;
         let mut plain = Instance::new(98, 0, 1, 2, 0, false, false, false);
         let count = || BILLBOARD_IN_TWO_VIEWS.load(Relaxed);
         let _turn = crate::main_thread::TestTurn::take();
         let start = count();
-        unsafe {
-            show_in_view(&mut under, 0x10, 1, 5, &mut lists, &mut states);
-            show_in_view(&mut under, 0x10, 1, 5, &mut lists, &mut states);
-            assert_eq!(count(), start);
-            show_in_view(&mut under, 0x10, 0, 5, &mut lists, &mut states);
-            assert_eq!(count(), start + 1);
-            show_in_view(&mut under, 0x10, 2, 5, &mut lists, &mut states);
-            assert_eq!(count(), start + 1);
-            show_in_view(&mut under, 0x10, 0, 6, &mut lists, &mut states);
-            assert_eq!(count(), start + 1);
-            show_in_view(&mut under, 0x10, 1, 6, &mut lists, &mut states);
-            assert_eq!(count(), start + 2);
-            show_in_view(&mut plain, 0x20, 1, 6, &mut lists, &mut states);
-            show_in_view(&mut plain, 0x20, 0, 6, &mut lists, &mut states);
-            assert_eq!(count(), start + 2);
-        }
+        show_in_view(&mut under, Some(1), 5, None);
+        show_in_view(&mut under, Some(1), 5, None);
+        assert_eq!(count(), start);
+        show_in_view(&mut under, None, 5, None);
+        assert_eq!(count(), start + 1);
+        show_in_view(&mut under, Some(2), 5, None);
+        assert_eq!(count(), start + 1);
+        show_in_view(&mut under, Some(0), 6, None);
+        assert_eq!(count(), start + 1);
+        show_in_view(&mut under, Some(1), 6, None);
+        assert_eq!(count(), start + 2);
+        show_in_view(&mut plain, Some(1), 6, None);
+        show_in_view(&mut plain, None, 6, None);
+        assert_eq!(count(), start + 2);
     }
 
     /// A scene on the engine's path takes no slot: the local map's tile, the character preview
@@ -3771,6 +3032,8 @@ mod tests {
         }
     }
 
+    /// The take lines: the first 64, then each power of 2; a texture key used again before a
+    /// flush is named as a second slot.
     #[test]
     fn the_view_take_lines_name_a_second_slot_and_keep_their_rate() {
         assert!((1..=64).all(view_line_due));
@@ -3952,16 +3215,316 @@ mod tests {
     }
 
     #[test]
-    fn the_first_plane_with_the_bound_outside_is_named() {
-        assert_eq!(rejecting_plane([0u32, 1, 0, 0, 0, 0].into_iter()), None);
-        // Side 2 is outside: the far plane (index 1) before the top one.
-        assert_eq!(rejecting_plane([0u32, 2, 0, 0, 2, 0].into_iter()), Some(1));
-        assert_eq!(PLANE_NAMES[1], "far");
-    }
-
-    #[test]
     fn an_effect_that_gives_no_stage_still_has_a_version() {
         let mut watch = EffectWatch::default();
         assert_ne!(watch.observe(0, || [0; EFFECT_SIGNATURE_WORDS]), 0);
     }
+
+    /// Instances for the tests of the main view's list (form D), in mode gpu. Each shape is a
+    /// block of zeroed memory, so that `draw` can read it, and its instance has the values of a
+    /// draw with the zero world: a draw of it takes the table's branch and writes no record.
+    struct ListTest {
+        _memory: Vec<Vec<u32>>,
+        shapes: Vec<usize>,
+        mode: Option<Mode>,
+    }
+
+    impl ListTest {
+        fn new(mt: &MainThread, ids: &[u32]) -> ListTest {
+            let memory: Vec<Vec<u32>> = ids.iter().map(|_| vec![0u32; 0x100]).collect();
+            let shapes: Vec<usize> = memory.iter().map(|block| block.as_ptr() as usize).collect();
+            let mut tables_open = tables(mt);
+            let t = &mut *tables_open;
+            for (&shape, &id) in shapes.iter().zip(ids) {
+                let mut instance = Instance::new(id, CLASS_UNKNOWN, 1, 2, t.generation, false, false, false);
+                instance.filled = true;
+                instance.sent = true;
+                t.instances.insert(shape, instance);
+            }
+            t.shown.discard();
+            let mode = t.mode.replace(Mode::Gpu);
+            ListTest { _memory: memory, shapes, mode }
+        }
+
+        /// The table as it was before the test.
+        fn end(self, mt: &MainThread) {
+            let mut tables_open = tables(mt);
+            let t = &mut *tables_open;
+            for shape in &self.shapes {
+                t.instances.remove(shape);
+            }
+            t.shown.discard();
+            t.mode = self.mode;
+        }
+    }
+
+    /// A draw of the retained shape, with the values of [`ListTest`].
+    unsafe fn table_draw(mt: &MainThread, shape: usize, id: u32) -> bool {
+        draw(mt, shape, id, &[0.0; 16], true, &[0; 14], None, None, 0xFF00_0000, &[], &[], 0, false)
+    }
+
+    /// The ids of the main view's send in progress.
+    fn listed_ids(mt: &MainThread) -> Vec<u32> {
+        tables(mt).shown.ids.clone()
+    }
+
+    /// A world display joins view 0's list once, however often the engine displays the shape
+    /// before the send.
+    #[test]
+    fn a_world_display_joins_view_0s_list_once() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[71, 72]);
+            let (a, b) = (test.shapes[0], test.shapes[1]);
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Main, 1);
+            assert!(table_draw(&mt, a, 71));
+            assert!(table_draw(&mt, a, 71));
+            assert!(table_draw(&mt, b, 72));
+            assert!(table_draw(&mt, a, 71));
+            assert_eq!(listed_ids(&mt), vec![71, 72]);
+            assert_eq!(take_shown_list(&mt), Some(vec![71, 72]));
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// The water scene's displays (the queue's flush at its end) join the same list as the
+    /// world's: one list for the frame, each id once.
+    #[test]
+    fn a_water_display_joins_the_same_list() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[73, 74]);
+            let (a, b) = (test.shapes[0], test.shapes[1]);
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Main, 1);
+            assert!(table_draw(&mt, a, 73));
+            scene_end(&mt);
+            scene_begin(&mt, SCENE_WATER, 0, Route::Main, 1);
+            assert!(table_draw(&mt, a, 73));
+            assert!(table_draw(&mt, b, 74));
+            scene_end(&mt);
+            assert_eq!(take_shown_list(&mt), Some(vec![73, 74]));
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// At Present the list is the record before `FRAME_END`; the next send starts empty, and a
+    /// frame with no world or water scene into the back buffer sends no list.
+    #[test]
+    fn the_list_goes_before_frame_end_and_starts_again() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[75]);
+            let a = test.shapes[0];
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Main, 1);
+            assert!(table_draw(&mt, a, 75));
+            let shown = take_shown_list(&mt);
+            let records = capture::frame_end_records(5, 9, shown.as_deref(), &[3]);
+            let tags: Vec<u32> = records.iter().map(|(tag, _)| *tag).collect();
+            assert_eq!(tags, vec![capture::tag::INSTANCE_SHOWN, capture::tag::FRAME_END, capture::tag::FRAME_EVENT]);
+            assert_eq!(records[0].1, [1u32.to_le_bytes(), 75u32.to_le_bytes()].concat());
+            // No scene of the list since the send: no list at the next Present.
+            assert_eq!(take_shown_list(&mt), None);
+            // The next frame's world scene lists the shape again, in a new send.
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Main, 1);
+            assert_eq!(take_shown_list(&mt), Some(vec![]));
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Main, 1);
+            assert!(table_draw(&mt, a, 75));
+            assert_eq!(take_shown_list(&mt), Some(vec![75]));
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// Mode off writes no list: the switch drops the list so far, and a world scene in mode off
+    /// opens none.
+    #[test]
+    fn mode_off_writes_no_list() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[76]);
+            let a = test.shapes[0];
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Main, 1);
+            assert!(table_draw(&mt, a, 76));
+            set_mode(&mt, Mode::Off);
+            assert_eq!(take_shown_list(&mt), None);
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Main, 1);
+            assert_eq!(take_shown_list(&mt), None);
+            assert!(listed_ids(&mt).is_empty());
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// The two predicates on one kind set: `may_queue` takes the world and the water scene into
+    /// any target (the picture of a save keeps the engine's sort); the list takes them only into
+    /// the back buffer (`Route::Main`). No other kind is in the set.
+    #[test]
+    fn may_queue_needs_the_kind_and_the_list_needs_the_kind_and_route_main() {
+        use crate::link::{SCENE_FIRST_PERSON, SCENE_SHADOW_CASTERS, SCENE_SHADOW_VOLUME, SCENE_SORTED_ALPHA, SCENE_SPLASH, SCENE_UI};
+        assert!(main_view_kind(SCENE_WORLD) && main_view_kind(SCENE_WATER));
+        for kind in [SCENE_OTHER, SCENE_SORTED_ALPHA, SCENE_SHADOW_VOLUME, SCENE_SHADOW_CASTERS, SCENE_FIRST_PERSON, SCENE_UI, SCENE_SPLASH, SCENE_LOCAL_MAP] {
+            assert!(!main_view_kind(kind), "kind {kind}");
+            assert!(!lists_main_view(kind, Route::Main), "kind {kind}");
+        }
+        assert!(lists_main_view(SCENE_WORLD, Route::Main));
+        assert!(lists_main_view(SCENE_WATER, Route::Main));
+        assert!(!lists_main_view(SCENE_WORLD, Route::Places));
+        assert!(!lists_main_view(SCENE_WORLD, Route::Engine(ENGINE_PATH_SCENES.len())));
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[]);
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Places, 2);
+            assert!(may_queue(&mt));
+            scene_begin(&mt, SCENE_FIRST_PERSON, 0, Route::Main, 0);
+            assert!(!may_queue(&mt));
+            scene_begin(&mt, SCENE_WATER, 0, Route::Main, 1);
+            assert!(may_queue(&mt));
+            scene_end(&mt);
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// A display in a scene into a rendered texture (a mod's mirror) writes its place and joins
+    /// no list.
+    #[test]
+    fn a_display_into_a_rendered_texture_writes_a_place_and_joins_no_list() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[77]);
+            let a = test.shapes[0];
+            scene_begin(&mt, SCENE_OTHER, 0, Route::Places, 3);
+            let places = *VIEW_PLACES.get(&mt);
+            walk_place(&mt, a);
+            assert_eq!(*VIEW_PLACES.get(&mt), places + 1);
+            note_display(&mut tables(&mt), a);
+            assert!(listed_ids(&mt).is_empty());
+            assert_eq!(take_shown_list(&mt), None);
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// A world scene into a texture (the picture of a save): `draw` still takes the table's
+    /// branch (the mark, and the place of the scene's view), and the shape joins no list.
+    #[test]
+    fn a_world_scene_into_a_texture_keeps_the_table_branch_and_joins_no_list() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[78]);
+            let a = test.shapes[0];
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Places, 2);
+            let places = *VIEW_PLACES.get(&mt);
+            assert!(table_draw(&mt, a, 78));
+            assert_eq!(*VIEW_PLACES.get(&mt), places + 1);
+            assert_ne!(rd::<u16>(a, FLAGS) & RETAINED_BIT, 0);
+            assert!(listed_ids(&mt).is_empty());
+            assert_eq!(take_shown_list(&mt), None);
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// A world display into a target that the helper does not have ([`Route::Engine`] with the
+    /// last index) goes as the engine's shape record: `draw` returns false before any instance
+    /// work, writes no place and no mark, and the shape joins no list.
+    #[test]
+    fn a_world_display_into_a_target_the_helper_lacks_goes_as_the_engines_record() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[80]);
+            let a = test.shapes[0];
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Engine(ENGINE_PATH_SCENES.len()), 3);
+            let places = *VIEW_PLACES.get(&mt);
+            assert!(!table_draw(&mt, a, 80));
+            assert_eq!(*VIEW_PLACES.get(&mt), places);
+            assert_eq!(rd::<u16>(a, FLAGS) & RETAINED_BIT, 0);
+            assert!(listed_ids(&mt).is_empty());
+            assert_eq!(take_shown_list(&mt), None);
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// A retained shape displayed in a scene into the back buffer of a kind outside the main
+    /// view's list (first person, the interface) goes back to the engine: the display is not
+    /// skipped, the mark stays, and the shape joins no list.
+    #[test]
+    fn a_display_in_a_first_person_scene_goes_back_to_the_engine() {
+        use crate::link::{DRAW_SHAPE, SCENE_FIRST_PERSON, SCENE_UI};
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[79]);
+            let a = test.shapes[0];
+            mark(a, true);
+            let handed_back = *HANDED_BACK.get(&mt);
+            for kind in [SCENE_FIRST_PERSON, SCENE_UI] {
+                scene_begin(&mt, kind, 0, Route::Main, 0);
+                assert!(!skipped_display(&mt, a, DRAW_SHAPE), "kind {kind}");
+                assert_ne!(rd::<u16>(a, FLAGS) & RETAINED_BIT, 0, "kind {kind}");
+            }
+            assert_eq!(*HANDED_BACK.get(&mt), handed_back + 2);
+            assert_eq!(take_shown_list(&mt), None);
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+}
+
+/// For the tests of `own_host`: a world scene into the back buffer opens the main view's list,
+/// and the instance `id` joins it.
+#[cfg(test)]
+pub fn test_list_one(mt: &MainThread, id: u32) {
+    let mut tables_open = tables(mt);
+    let t = &mut *tables_open;
+    t.shown.discard();
+    t.shown.open = true;
+    let mut listed_send = 0;
+    t.shown.add(id, &mut listed_send);
+}
+
+/// For the tests of `own_host`: the ids of the main view's send in progress, whether a send
+/// goes, and the sends at a read of the back buffer so far.
+#[cfg(test)]
+pub fn test_shown_state(mt: &MainThread) -> (Vec<u32>, bool, u64) {
+    let t = tables(mt);
+    (t.shown.ids.clone(), t.shown.open, t.shown.sends[1])
 }

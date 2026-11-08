@@ -72,8 +72,10 @@
 /// would read it as view 0 and hide a mirror's shape in the main view. 7: the word at offset 52
 /// of a scene record (56 bytes) holds the first slot of a repeat in its low byte and the bit
 /// `link::SCENE_WALK_DUE` (2026-11-04). A helper of format 6 would read a 0 there as a walk
-/// that it expects, and wait for an event that does not come.
-pub const STREAM_FORMAT: u32 = 7;
+/// that it expects, and wait for an event that does not come. 8: the record `INSTANCE_SHOWN`
+/// carries the main view's displays, and `INSTANCE_STATE` no longer goes for the views (form D,
+/// 2026-11-08). A helper of format 7 would draw nothing of the table in the main view.
+pub const STREAM_FORMAT: u32 = 8;
 
 /// The first stream format whose scene records (56 bytes, under [`HEADER_SCENE_VIEWS`]) hold
 /// `link::SceneV1::repeat_walk`. A capture of an older format has 0 in that word, which a

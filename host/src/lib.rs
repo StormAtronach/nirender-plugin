@@ -290,9 +290,6 @@ enum Item {
     ViewPlaces(usize, usize),
     /// The places of a view of its own in the flush of the engine's queue: the group.
     ViewSorted(usize),
-    /// The table of a view of its own, at the first draw of its scene: the group
-    /// (`Player::draw_view_table`).
-    ViewTable(usize),
     /// The extension draws in place of the draws of this class. The number of world draws
     /// before this item: those after it are not in the picture yet.
     Replace(u32, Box<WorldFacts>, usize),
@@ -340,10 +337,6 @@ struct Retained {
 /// cluster of its pixel (`MGE_XE_LIGHTS=world`, `world_lights_here` in the shader). A lit
 /// draw of the world of the stream and a retained slot with lights have it.
 pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
-
-/// The lines `view table: ...` of a run: one at the end of each scene of a view of its own with
-/// a table, for the first ones only.
-pub(crate) const VIEW_TABLE_LINES: u32 = 64;
 
 /// The lines `early world draws: ...` of a run: one for each scene whose world draws reached the
 /// target before its world began, for the first ones only.
@@ -956,23 +949,17 @@ struct Player {
     world_prepared: bool,
     /// The scene in progress: its world began (the walk of the world camera's root left the sky
     /// root, its first draw after the sky, or its first place), and a draw of the sky came in
-    /// it. The table of a view of its own goes at that start, as the main view's world does,
-    /// or the sky draws over it ([`Player::view_table_item`]).
+    /// it. The items of the world's start of a view of its own go at that start, as the main
+    /// view's do, or the sky draws over them ([`Player::view_world_items`]).
     view_world_begun: bool,
     view_sky_seen: bool,
-    /// The scene in progress: why its world began, its draws so far (all of them and those of
-    /// the sky), and its table item's place (the draws before it and the reason), for the
-    /// line of the scene's end (`view table: ...`, the first [`VIEW_TABLE_LINES`]).
-    view_world_why: &'static str,
+    /// The draws of the scene in progress so far: all of them and those of the sky, for the
+    /// line `early world draws: ...`.
     view_scene_draws: [u32; 2],
-    view_table_at: Option<([u32; 2], &'static str)>,
-    view_table_lines: u32,
     /// The draws of the world of the scene in progress that reached the target before its world
     /// began ([`Player::is_early_world_draw`]).
     view_early_draws: u32,
     split: Option<[f64; 4]>,
-    /// The post-processing of this frame is in the items.
-    posted: bool,
     /// The view and the projection of the last world draw of the frame: the matrices of
     /// the world for a call after the world views, when the stream has those of the user
     /// interface.
