@@ -1316,20 +1316,6 @@ pub fn sky_table_on() -> bool {
     sky_mode() == 2
 }
 
-/// The draws of the sky instances go as `INSTANCE_DRAW` records (`nirender.skyDraws`; on by
-/// default): off, they go as the engine's shape records, for an A/B in one session.
-static SKY_DRAWS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
-
-/// True when the draws of the sky instances go as `INSTANCE_DRAW` records.
-pub fn sky_draws() -> bool {
-    SKY_DRAWS.load(core::sync::atomic::Ordering::Relaxed)
-}
-
-/// Sets whether the draws of the sky instances go as `INSTANCE_DRAW` records.
-pub fn set_sky_draws(on: bool) {
-    SKY_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
-}
-
 /// The switch of the weather's shapes, the rain, snow and storm drops of class 9
 /// (`NIRENDER_WEATHER`): 0 not read, 1 off (the default: the engine's
 /// shape records), 2 the census (`count`), 3 the drops' instances in the
@@ -1565,9 +1551,6 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         return false;
     }
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
-    if sky_table_class(instance.class) && !sky_draws() {
-        return false;
-    }
     if instance.class == CLASS_WEATHER_PARTICLES && !weather_draws() {
         return false;
     }
