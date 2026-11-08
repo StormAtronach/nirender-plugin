@@ -3,8 +3,8 @@
 //! its bound, and the record of its draw ([`DrawData`]) made once from its material and its
 //! geometry, in a segment of the record buffer and of the instance buffer of the frame
 //! that stays from frame to frame. The plugin then sends no draw for it: a change of its
-//! lights (`INSTANCE_LIGHTS`), of its visibility (`INSTANCE_STATE`), of its values (the
-//! `INSTANCE` record again) or its end (`INSTANCE_DELETE`).
+//! lights (`INSTANCE_LIGHTS`), of its values (the `INSTANCE` record again) or its end
+//! (`INSTANCE_DELETE`).
 //!
 //! At the start of the world of a frame, and in each view that the extension replays (the
 //! water's mirror, with only the sky classes; the shadow maps do not use the table), the helper
