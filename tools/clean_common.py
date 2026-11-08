@@ -279,8 +279,12 @@ def own_line(running, pid):
 
 
 def users_of(tree_path, running, skip=None):
-    """The processes that use a tree, by name and id. `skip` holds the process ids to leave out: by default this process."""
+    """The processes that use a tree, by name and id. `skip` holds the process ids to leave out: by default this process.
+    The command line of a process that started this tool names the tree when it gives the tree's path (--name), so for
+    those processes only the program and the current folder count. A shell whose current folder is in the tree still
+    uses it."""
     skip = {os.getpid()} if skip is None else skip
+    starters = own_line(running, os.getpid())
     users = []
     for process in running:
         if process["pid"] in skip:
@@ -288,7 +292,7 @@ def users_of(tree_path, running, skip=None):
         slashes = os.path.normcase(os.path.abspath(tree_path)).replace("\\", "/")
         shell_form = "/" + slashes[0] + slashes[2:]
         command = os.path.normcase(process["command"]).replace("\\", "/")
-        in_command = re.search("(?:" + re.escape(slashes) + "|" + re.escape(shell_form) + r")(?=[/\"' ]|$)", command) is not None
+        in_command = process["pid"] not in starters and re.search("(?:" + re.escape(slashes) + "|" + re.escape(shell_form) + r")(?=[/\"' ]|$)", command) is not None
         if in_command or (process["exe"] and same_or_under(process["exe"], tree_path)) or (process["cwd"] and same_or_under(process["cwd"], tree_path)):
             users.append("%s %d" % (process["name"], process["pid"]))
     return users
@@ -537,6 +541,16 @@ def self_test_common():
     assert not old_play_set("C:\\tmp\\playset\\x", {195, 194}) and not old_play_set("C:\\tmp\\play185\\x", set()) and not old_play_set("C:\\tmp\\walk\\x", {195})
     assert own_line([{"pid": 5, "parent": 3}, {"pid": 3, "parent": 1}, {"pid": 9, "parent": 3}], 5) == {5, 3, 1}
     assert users_of("C:\\t", [{"pid": 3, "name": "sh", "exe": "", "command": "", "cwd": "C:\\t\\x"}], skip={3}) == []
+    # The shell that runs this tool with --name of a tree does not use the tree by that command line (2026-11-09: the
+    # Coordinator's Bash tool showed as "in use: bash.exe 42772"). Another shell with the same command line uses it, and
+    # the starting shell uses it when its current folder is in the tree.
+    me = os.getpid()
+    tool_line = 'python tools/clean_merged_worktrees.py --name "C:\\t"'
+    starter = {"pid": me + 1, "parent": me + 2, "name": "bash.exe", "exe": "", "command": "bash -c '%s'" % tool_line, "cwd": "C:\\other"}
+    this = {"pid": me, "parent": me + 1, "name": "python.exe", "exe": "", "command": tool_line, "cwd": "C:\\other"}
+    stranger = dict(starter, pid=me + 3, parent=me + 2)
+    assert users_of("C:\\t", [this, starter, stranger]) == ["bash.exe %d" % (me + 3)]
+    assert users_of("C:\\t", [this, dict(starter, cwd="C:\\t\\src")]) == ["bash.exe %d" % (me + 1)]
     assert set_treatment(40, False, False, False) == "go" and "younger" in set_treatment(10, False, False, False)
     for kept, used, cited in ((True, False, False), (False, True, False), (False, False, True)):
         assert "stay" in set_treatment(400, cited, kept, used)
