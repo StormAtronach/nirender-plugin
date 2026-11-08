@@ -2653,6 +2653,7 @@ impl SortedPlan {
         for (at, kind) in queue.iter().enumerate() {
             match *kind {
                 QueuedKind::Draw => {
+                    debug_assert!(run.is_empty() || held.is_empty(), "a run and a held group are never both open");
                     plan.close_run(&mut run);
                     plan.close_held(&mut held);
                     plan.steps.push(SortedStep::Draw(at));
@@ -3678,5 +3679,24 @@ mod sorted_plan_tests {
         assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Queue(0)]), run_of(&[1]), SortedStep::Draw(3)]);
         assert_eq!(plan.queued_not_sorted, 1);
         assert!(SortedPlan::build(&[], &[], placed_of).steps.is_empty());
+    }
+
+    /// A place with no entries between two held shapes leaves the held group open: the two shapes
+    /// draw from one copy of the picture, in one call.
+    #[test]
+    fn a_place_without_entries_keeps_the_held_group_open() {
+        use QueuedKind::*;
+        let without = |_id: u32, _placed: &mut Vec<(u64, u32, u32, u32)>| 1;
+        let plan = SortedPlan::build(&[Held, Table(9), Held], &[], without);
+        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Queue(0), HeldSource::Queue(2)])]);
+    }
+
+    /// A held draw that waited belongs to one place. A second place of the same id draws its
+    /// entries.
+    #[test]
+    fn a_wait_is_taken_by_one_place_only() {
+        use QueuedKind::*;
+        let plan = SortedPlan::build(&[Table(2), Table(2)], &[2], placed_of);
+        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Wait(2)]), run_of(&[2])]);
     }
 }
