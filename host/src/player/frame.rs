@@ -40,7 +40,6 @@ impl Player {
                 shape_keeps: false,
                 shape_queued: false,
                 world_walk: false,
-                scene_target: false,
                 queue_flush: false,
                 scene_wireframe: false,
                 envmap_lit: None,

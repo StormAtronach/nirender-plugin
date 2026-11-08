@@ -3,7 +3,7 @@
 
 use crate::*;
 use crate::stream_format::{
-    HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_SCENE_TARGET,
+    HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH,
     HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
@@ -76,7 +76,6 @@ impl Player {
                 self.size = (word(data, HEADER_WIDTH_AT), word(data, HEADER_HEIGHT_AT));
                 let abilities = if data.len() >= HEADER_ABILITIES_AT + 4 { word(data, HEADER_ABILITIES_AT) } else { 0 };
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
-                self.stream.scene_target = abilities & HEADER_SCENE_TARGET != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
                 self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
                 self.views.on = abilities & HEADER_VIEW_PLACES != 0;
@@ -168,9 +167,7 @@ impl Player {
                 self.stream.interior = word(data, 20) & 2 != 0;
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
                 self.stream.wireframe = word(data, 20) & SCENE_WIREFRAME != 0;
-                if self.stream.scene_target {
-                    self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
-                }
+                self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
                 let kind = word(data, 4);
                 if self.views.slots_on {
                     self.views.note_scene_record(data);
