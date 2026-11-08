@@ -148,7 +148,8 @@ pub fn least_length(tag: u32) -> usize {
         GEOMETRY => 32,
         MATERIAL => 4,
         SHAPE => 144,
-        LIGHT => 108,
+        // The key, the device values (104 bytes), the radius.
+        LIGHT => 112,
         INSTANCE => 176,
         INSTANCE_DRAW => 12,
         INSTANCE_DELETE => 4,
