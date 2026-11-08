@@ -922,12 +922,8 @@ struct Player {
     plan: plan::Plan,
     /// The blended world draws of the frame that the engine sorts, and the places of the
     /// table's blends in the engine's queue: they wait for the item `SortedBlends` and keep
-    /// their order of arrival; the table's blends without a place go between them by depth
-    /// (the centre of the bound, the order of arrival, the draw or the place, the generation).
-    frame_sorted: Vec<([f32; 3], u32, Waiting, u32)>,
-    /// The near plane of the world's view of the frame, in the space of the world: the
-    /// depth of the sort of the blends.
-    world_near: Option<[f32; 4]>,
+    /// their order of arrival (the draw or the place, the generation).
+    frame_sorted: Vec<(Waiting, u32)>,
     /// The classes that the extension took in this frame, one bit for each.
     replaced: u32,
     /// The facts of the world at its end in this frame: the camera of the world for the call

@@ -474,15 +474,13 @@ impl Player {
         }
         if hold {
             self.held_draws.push(Item::Draw(draw));
-        } else if draw.world && self.plan.world_begun && self.target.is_none() && (if self.stream.queue_marked { self.stream.shape_queued } else { engine::alpha::sorted_by_engine(class, &derived.blends, derived.no_sorter) }) {
+        } else if draw.world && self.plan.world_begun && self.target.is_none() && self.stream.shape_queued {
             // A draw of the flush of the engine's main sorted queue (the plugin marks it): it
             // waits for the sorted blends of the table, and the table's blends go between the
             // engine's draws by depth (`draw_retained_sorted`). A blend that the engine draws
             // during the walk (no sorter, a sort adjust node in the modes off and sub-sort)
-            // stays in place. An older capture has no mark: there a blend of the material
-            // waits.
-            let centre = self.stream.sort_centre(&draw.data.world[0], draw.origin);
-            self.wait_for_sorted(centre, crate::Waiting::Draw(draw));
+            // stays in place.
+            self.wait_for_sorted(crate::Waiting::Draw(draw));
         } else {
             self.view_world_items();
             self.items.push(Item::Draw(draw));
@@ -490,8 +488,7 @@ impl Player {
     }
 
     /// Puts an entry in the queue of the sorted blends, after those that came before it.
-    pub(crate) fn wait_for_sorted(&mut self, centre: [f32; 3], waiting: crate::Waiting) {
-        let sequence = self.frame_sorted.len() as u32;
-        self.frame_sorted.push((centre, sequence, waiting, self.plan.defer()));
+    pub(crate) fn wait_for_sorted(&mut self, waiting: crate::Waiting) {
+        self.frame_sorted.push((waiting, self.plan.defer()));
     }
 }

@@ -56,16 +56,9 @@ pub(crate) struct Stream {
     /// The shape in progress cannot change the picture (`material::draw_keeps_picture`), set
     /// by `draw_shape` for its passes only.
     pub(crate) shape_keeps: bool,
-    /// The world bound of the shape record in progress (flag 0x400): the centre and the
-    /// radius, for the sort of a blended draw among the blends of the table.
-    pub(crate) shape_bound: Option<[f32; 4]>,
     /// The shape record in progress is a draw of the engine's main sorted queue (flag
     /// 0x800).
     pub(crate) shape_queued: bool,
-    /// The head of the stream says that its shape records carry the flag 0x800 (bit 1 of its
-    /// fourth word). Without it (an older capture), a blend is taken as sorted by its
-    /// material ([`engine::alpha::sorted_by_engine`]).
-    pub(crate) queue_marked: bool,
     /// The head of the stream says that the world camera's Click marks the end of the sky's
     /// walk ([`EVENT_WORLD_WALK`], bit 2 of its fourth word): the world starts at that event,
     /// never at a draw. Without it (an older capture), the plan finds the start from the
@@ -91,18 +84,6 @@ pub(crate) struct Stream {
 }
 
 impl Stream {
-    /// The key of the shape in progress among the sorted blends: the centre of its bound. A
-    /// record without one (an older capture) gives the translation of the draw.
-    pub(crate) fn sort_centre(&self, world: &[f32; 16], origin: Option<[f64; 3]>) -> [f32; 3] {
-        match self.shape_bound {
-            Some(b) => [b[0], b[1], b[2]],
-            None => {
-                let o = origin.unwrap_or([0.0; 3]);
-                [(world[12] as f64 + o[0]) as f32, (world[13] as f64 + o[1]) as f32, (world[14] as f64 + o[2]) as f32]
-            }
-        }
-    }
-
     /// The data of one pass of the shape in progress for the shader.
     pub(crate) fn draw_data(&self, derived: &material::Derived, pass: &Pass, counts: &mut Counts, frame_lights: &mut Vec<LightData>) -> DrawData {
         let shape = &self.shape;

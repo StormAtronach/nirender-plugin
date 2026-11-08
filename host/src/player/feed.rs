@@ -3,7 +3,7 @@
 
 use crate::*;
 use crate::stream_format::{
-    HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
+    HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_SCENE_TARGET,
     HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
@@ -75,7 +75,6 @@ impl Player {
             tag::HEADER => {
                 self.size = (word(data, HEADER_WIDTH_AT), word(data, HEADER_HEIGHT_AT));
                 let abilities = if data.len() >= HEADER_ABILITIES_AT + 4 { word(data, HEADER_ABILITIES_AT) } else { 0 };
-                self.stream.queue_marked = abilities & HEADER_QUEUE_MARKED != 0;
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
                 self.stream.scene_target = abilities & HEADER_SCENE_TARGET != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
@@ -597,8 +596,6 @@ impl Player {
             let axes: [f32; 6] = core::array::from_fn(|i| float(data, tail + 8 + i * 4));
             self.renderer.particles(geometry, float(data, tail + 4), [axes[0], axes[1], axes[2]], [axes[3], axes[4], axes[5]], &data[at..at + count * 20]);
         }
-        // The world bound of the shape (flag 0x400): the last 16 bytes of the record.
-        self.stream.shape_bound = (flags & 0x400 != 0 && data.len() >= 16).then(|| core::array::from_fn(|i| float(data, data.len() - 16 + i * 4)));
         self.stream.shape_queued = flags & 0x800 != 0;
         self.draw_shape(geometry, material, flags, core::array::from_fn(|i| float(data, 20 + i * 4)), &colours, effects.as_ref());
     }
@@ -830,10 +827,10 @@ impl Player {
     /// engine draws nothing before its queue flushes, and the world begins at the scene's
     /// end (`Plan::scene_end`), before the sorted blends of the scene.
     pub(crate) fn instance_queued(&mut self, id: u32) {
-        let Some(centre) = self.retained.centre_of(id) else {
+        if self.retained.centre_of(id).is_none() {
             self.renderer.counts.queued_unknown += 1;
             return;
-        };
+        }
         // A scene with a view of its own: its sorted blends draw in their order of arrival at
         // the flush in that view ([`engine::views`]).
         if self.views.queued(id) {
@@ -845,13 +842,12 @@ impl Player {
             self.renderer.counts.queued_outside += 1;
             return;
         }
-        let sequence = self.frame_sorted.len() as u32;
         let generation = self.plan.defer();
         if generation != 0 {
             // Risk 34: a place after the frame's first sorted blends: the kept list was taken.
             self.renderer.counts.queued_late_places += 1;
         }
-        self.frame_sorted.push((centre, sequence, crate::Waiting::Table(id), generation));
+        self.frame_sorted.push((crate::Waiting::Table(id), generation));
     }
 
     /// The place of a blend of the table in the engine's walk ([`tag::INSTANCE_WALK`]): its
@@ -1018,11 +1014,8 @@ impl Player {
         };
         self.renderer.counts.instance_draws += 1;
         self.stream.object_class = retained.class;
-        // A draw of the flush of the engine's sorted queue (0x800), as the shape record has it,
-        // with the world bound of the instance as the key of its sort (the shape record's
-        // bound words).
+        // A draw of the flush of the engine's sorted queue (0x800), as the shape record has it.
         self.stream.shape_queued = flags & 0x800 != 0;
-        self.stream.shape_bound = Some(retained.bound);
         let mut effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
         // An effect that moves in the play takes its chain's value, as in the table.
         if let (Some(stages), Some(material)) = (effects.as_mut(), self.renderer.materials.get(&retained.material)) {
@@ -1243,12 +1236,11 @@ impl Player {
         // The draws of the flush of the engine's queue wait for the sorted blends (`draw`). A held
         // shape of the flush waits with them, or it goes before them: before the mask whose
         // stencil it tests, when a sort adjust node in MWSE's ordered mode draws both.
-        let of_flush = self.plan.world_begun && self.stream.queue_marked && self.stream.shape_queued;
+        let of_flush = self.plan.world_begun && self.stream.shape_queued;
         let in_queue = of_flush && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&held));
         if in_queue || (of_flush && in_place) {
             let facts = self.world_facts(false);
-            let centre = self.stream.sort_centre(&held.data.world[0], held.origin);
-            self.wait_for_sorted(centre, crate::Waiting::Held(Box::new(held), Box::new(facts)));
+            self.wait_for_sorted(crate::Waiting::Held(Box::new(held), Box::new(facts)));
         } else if in_place {
             let facts = self.world_facts(false);
             self.items.push(Item::HeldHere(Box::new(held), Box::new(facts)));

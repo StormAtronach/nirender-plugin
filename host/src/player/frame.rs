@@ -38,9 +38,7 @@ impl Player {
                 fog: [0; 4],
                 shape_bones: None,
                 shape_keeps: false,
-                shape_bound: None,
                 shape_queued: false,
-                queue_marked: false,
                 world_walk: false,
                 scene_target: false,
                 queue_flush: false,
@@ -90,7 +88,6 @@ impl Player {
             parameters: None,
             plan: plan::Plan::default(),
             frame_sorted: Vec::new(),
-            world_near: None,
             replaced: 0,
             world_end_facts: None,
             takes: 0,
@@ -417,11 +414,10 @@ impl Player {
         self.taken.clear();
         // No flush of the picture came to its place: nothing drew it.
         self.renderer.counts.held_sorted_lost += self.held_sorted_wait.len() as u64;
-        self.renderer.counts.held_sorted_lost += self.frame_sorted.iter().filter(|entry| matches!(entry.2, crate::Waiting::Held(..))).count() as u64;
+        self.renderer.counts.held_sorted_lost += self.frame_sorted.iter().filter(|entry| matches!(entry.0, crate::Waiting::Held(..))).count() as u64;
         self.held_sorted_wait.clear();
         self.frame_sorted.clear();
         self.retained.walk.frame_start();
-        self.world_near = None;
         self.replaced = 0;
         self.world_end_facts = None;
         self.plane_ahead = None;
