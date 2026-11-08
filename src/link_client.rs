@@ -1448,7 +1448,7 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     }
     // A draw of the flush of the Click's sorted queue. A draw with no accumulator outside that
     // flush is a draw in place (a sort adjust node in the modes off and sub-sort).
-    let world_camera = matches!(roots.scene_kind, SCENE_WORLD | SCENE_SORTED_ALPHA | SCENE_WATER);
+    let world_camera = matches!(roots.scene_kind, SCENE_WORLD | SCENE_WATER);
     if world_camera && crate::ports::base::in_main_flush(t) {
         flags |= DRAW_FROM_SORTED_QUEUE;
     }

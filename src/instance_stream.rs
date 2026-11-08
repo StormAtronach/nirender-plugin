@@ -960,7 +960,7 @@ pub fn view_open_with_first(mt: &MainThread, click: &Click) -> (u32, u32) {
     if opening == Opening::Full {
         let end = views.flush(true);
         if view_line_due(views.forced_flushes) {
-            crate::log!("views: forced flush {} at frame {}: every slot is open or used since the last flush; {} views into a texture close", views.forced_flushes, views.frame(), end.closed.len());
+            crate::log!("views: forced flush {} at frame {}: every slot is open or used since the last flush; {} views into a texture close", views.forced_flushes, views.frame(), end.closed);
         }
         let _lock = crate::sync::device_lock();
         // SAFETY: the stream records (checked above) and the device lock is held, so the

@@ -178,11 +178,8 @@ pub mod tag {
     /// ambient lights of the state; a spell's effect carries a white one of its own). Sent
     /// when the lights or the ambient of the instance change.
     pub const INSTANCE_LIGHTS: u32 = 26;
-    /// The visibility of such an instance in a view: id, 1 when the engine draws it in the
-    /// view, 0 when it does not although it is in the view of the view's camera; then the
-    /// view slot (`view_slots`), only for views 1 to 31. A record of 8 bytes is view 0
-    /// (`stream_format::HEADER_VIEW_BITS`).
-    pub const INSTANCE_STATE: u32 = 27;
+    // Tag 27 (the visibility of an instance in a view) is retired: `INSTANCE_SHOWN` carries
+    // the main view's displays (form D). No other tag takes its number.
     /// The values of the frame for the draws of the instances the helper draws from its
     /// table: the ambient light (`D3DRS_AMBIENT`), flags (32: the fog follows), the fog of
     /// a draw (4 words, see `FOG` of the shape record), or with the fog off the colour of the
@@ -1364,12 +1361,12 @@ pub unsafe fn tee_end() {
 
 /// A record that makes a resource, or changes one in a way that has no content: a file that
 /// holds takes these between its frames, so that the resources of a recorded frame are in
-/// the file. The content of buffers and textures comes once, at the frames. The visibility
-/// and the deletion of a retained instance count too: the file has the instance from an
-/// earlier frame, and a release sends again only the instances the engine displays.
+/// the file. The content of buffers and textures comes once, at the frames. The deletion of
+/// a retained instance counts too: the file has the instance from an earlier frame, and a
+/// release sends again only the instances the engine displays.
 /// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
-    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_STATE | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE | tag::EFFECT_CHAIN_GONE)
+    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE | tag::EFFECT_CHAIN_GONE)
 }
 
 /// Ends the capture file of a direct stream.
@@ -2075,13 +2072,6 @@ pub unsafe fn instance_lights(id: u32, lights: &[u32], ambient: u32) {
 pub unsafe fn instance_bones(id: u32, count: u32, bound: &[f32; 4], bones: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_BONES, &[words(&[id, count]), words(&bound.map(f32::to_bits)), bones]);
-}
-
-/// The visibility of an instance. See [`tag::INSTANCE_STATE`].
-pub unsafe fn instance_state(id: u32, visible: bool, view: u8) {
-    let _lock = crate::sync::device_lock();
-    let record = [id, visible as u32, view as u32];
-    write(tag::INSTANCE_STATE, &[words(if view == 0 { &record[..2] } else { &record })]);
 }
 
 /// The bytes of an `INSTANCE_SHOWN` record. See [`tag::INSTANCE_SHOWN`].
