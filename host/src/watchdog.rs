@@ -17,11 +17,15 @@
 //! The frame thread does two atomic writes for each step and reads no clock; the watchdog
 //! thread looks every [`LOOK_MS`] ms whether a step is in progress and whether the count of
 //! the steps moved.
+//!
+//! What a stall leaves to read. The frame thread names the phase of its step with one relaxed
+//! store at each change ([`phase`]). The stall line and the dump carry the phase.
 
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::time::Duration;
 
+use crate::crash::StallEvidence;
 use crate::stream_format::{EXIT_STALLED, LOADING_SECONDS, STALL_SECONDS};
 
 /// The time between two looks of the watchdog thread.
@@ -44,6 +48,53 @@ static FRAMES_STARTED: AtomicBool = AtomicBool::new(false);
 static LOWER_WORD: AtomicBool = AtomicBool::new(false);
 /// A refusal is in progress: the watchdog never ends the program after it.
 static DISARMED: AtomicBool = AtomicBool::new(false);
+/// The phase of the frame thread's step ([`Phase`]).
+static PHASE: AtomicU8 = AtomicU8::new(Phase::Feed as u8);
+
+/// Where in its step the frame thread is, for the line of a stall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum Phase {
+    /// The feed of the record: the start of every step.
+    Feed,
+    /// The items of the frame that wait for the end (`run_items`, the post).
+    Items,
+    /// `CommandEncoder::finish`: the encoding of the frame's passes.
+    Finish,
+    /// `Queue::submit`.
+    Submit,
+    /// The picture files of the frame.
+    Pictures,
+    /// The extension's `after_frame`: its loads and its facts of the frame.
+    AfterFrame,
+    /// The present of the window's frame.
+    Present,
+}
+
+impl Phase {
+    const ALL: [Phase; 7] = [Phase::Feed, Phase::Items, Phase::Finish, Phase::Submit, Phase::Pictures, Phase::AfterFrame, Phase::Present];
+
+    fn name(self) -> &'static str {
+        match self {
+            Phase::Feed => "feed of the record",
+            Phase::Items => "items of the frame",
+            Phase::Finish => "finish of the command encoder",
+            Phase::Submit => "queue submit",
+            Phase::Pictures => "picture files",
+            Phase::AfterFrame => "after_frame of the extension",
+            Phase::Present => "present",
+        }
+    }
+
+    fn of(number: u8) -> Option<Phase> {
+        Phase::ALL.get(number as usize).copied()
+    }
+}
+
+/// The frame thread is in `phase` from now: one relaxed store.
+pub(crate) fn phase(phase: Phase) {
+    PHASE.store(phase as u8, Ordering::Relaxed);
+}
 
 /// Disarms the watchdog for good: the program ends on purpose (`gpu::refuse`).
 pub(crate) fn disarm() {
@@ -57,6 +108,7 @@ impl Step {
     pub(crate) fn begin() -> Step {
         STEPS.fetch_add(1, Ordering::Relaxed);
         IN_STEP.store(true, Ordering::Release);
+        phase(Phase::Feed);
         // The read position moved for this step's record: the plugin's silence starts again.
         if LOWER_WORD.load(Ordering::Relaxed) {
             LOWER_WORD.store(false, Ordering::Relaxed);
@@ -208,17 +260,25 @@ pub(crate) fn start() {
         .expect("the watchdog thread");
 }
 
-/// The frame thread stalled: the exit announced to the plugin, the log line, then the dump
+/// The line that names what the stall left: the phase.
+fn evidence_line(evidence: &StallEvidence) -> String {
+    let phase = Phase::of(evidence.phase).map_or("unknown", Phase::name);
+    format!("stall evidence: phase {phase}")
+}
+
+/// The frame thread stalled: the exit announced to the plugin, the log lines, then the dump
 /// and the end of the program.
-/// The line is printed before the frame thread is suspended: a thread suspended inside a
+/// The lines are printed before the frame thread is suspended: a thread suspended inside a
 /// print or an allocation holds its lock, and a print after it would wait for ever.
 fn stalled(frame_thread: u32, seconds: u64) -> ! {
     use std::io::Write;
     // First the exit for the plugin: a dump that hangs is then ended with the code 30, not 31.
     crate::live::announce_exit(EXIT_STALLED);
     println!("stalled for {seconds} s: the frame thread made no progress in a step; a minidump, then the program ends with the exit code {EXIT_STALLED}");
+    let evidence = StallEvidence { phase: PHASE.load(Ordering::Relaxed) };
+    println!("{}", evidence_line(&evidence));
     let _ = std::io::stdout().flush();
-    crate::crash::stall_dump_and_end(frame_thread, EXIT_STALLED)
+    crate::crash::stall_dump_and_end(frame_thread, EXIT_STALLED, evidence)
 }
 
 #[link(name = "kernel32")]
@@ -305,7 +365,10 @@ mod tests {
         drop(Step::begin());
         assert_eq!(read(), short);
         // A second step writes nothing more, and a rise after a pending fall is written at once.
+        // A step starts in the phase of the feed, whatever phase the step before ended in.
+        phase(Phase::Present);
         drop(Step::begin());
+        assert_eq!(PHASE.load(Ordering::Relaxed), Phase::Feed as u8);
         assert_eq!(read(), short);
         drop(LongStep::begin());
         assert_eq!(read(), long);
@@ -360,4 +423,22 @@ mod tests {
         (0..count).map(|_| watch.look(look())).last().flatten()
     }
 
+    #[test]
+    fn the_phase_numbers_name_every_phase_once() {
+        for (at, phase) in Phase::ALL.iter().enumerate() {
+            assert_eq!(*phase as usize, at);
+            assert_eq!(Phase::of(at as u8), Some(*phase));
+        }
+        assert_eq!(Phase::of(Phase::ALL.len() as u8), None);
+        let mut names: Vec<&str> = Phase::ALL.iter().map(|phase| phase.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), Phase::ALL.len());
+    }
+
+    #[test]
+    fn the_stall_line_names_the_phase() {
+        assert_eq!(evidence_line(&StallEvidence { phase: Phase::Finish as u8 }), "stall evidence: phase finish of the command encoder");
+        assert_eq!(evidence_line(&StallEvidence { phase: 200 }), "stall evidence: phase unknown");
+    }
 }

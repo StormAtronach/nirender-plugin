@@ -314,14 +314,30 @@ unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
     EXCEPTION_EXECUTE_HANDLER
 }
 
+/// What the watchdog knows of a stalled step: the phase of the frame thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StallEvidence {
+    /// The number of the phase (`watchdog::Phase`).
+    pub phase: u8,
+}
+
+/// The exception record of a stall dump: the code, the place of the frame thread, and in the
+/// first information word the phase.
+fn stall_record(rip: usize, evidence: &StallEvidence) -> ExceptionRecord {
+    let mut record = ExceptionRecord { code: STALL_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 1, information: [0; 15] };
+    record.information[0] = evidence.phase as usize;
+    record
+}
+
 /// Writes the minidump with the context of the stalled frame thread `frame_thread` as its
 /// exception (the code [`STALL_EXCEPTION`]), from the watchdog thread, so that a debugger
-/// opens it on the stalled thread, and ends the program with `exit_code`. Everything that
+/// opens it on the stalled thread, and ends the program with `exit_code`. The phase of
+/// `evidence` is in the exception record ([`stall_record`]). Everything that
 /// allocates comes before the frame thread is suspended (the file, a thread that ends the
 /// program after [`STALL_DUMP_SECONDS`]): a thread suspended inside an allocation or a print
 /// holds its lock. After the suspend: the dump to the raw handle, one fixed line to the raw
 /// handle of the log, and `TerminateProcess`.
-pub(crate) fn stall_dump_and_end(frame_thread: u32, exit_code: u32) -> ! {
+pub(crate) fn stall_dump_and_end(frame_thread: u32, exit_code: u32, evidence: StallEvidence) -> ! {
     let file = DUMP.get().and_then(|path| std::fs::File::create(path).ok());
     // The last resort: the dump writer may wait for a lock that the suspended thread holds.
     std::thread::spawn(move || {
@@ -345,7 +361,7 @@ pub(crate) fn stall_dump_and_end(frame_thread: u32, exit_code: u32) -> ! {
                     b"no minidump: the context of the frame thread cannot be read\n"
                 } else {
                     let rip = usize::from_le_bytes(context.0[RIP_AT..RIP_AT + 8].try_into().unwrap_or_default());
-                    let mut record = ExceptionRecord { code: STALL_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 0, information: [0; 15] };
+                    let mut record = stall_record(rip, &evidence);
                     let mut pointers = ExceptionPointers { record: &mut record, context: &mut context as *mut Context as *mut c_void };
                     if dump_to(file.as_raw_handle(), frame_thread, &mut pointers) {
                         b"minidump: written (the frame thread's context)\n"
@@ -393,7 +409,7 @@ fn backtrace() -> Vec<String> {
 }
 
 /// `module+offset` for an address, or the address alone when no module holds it.
-fn place(address: usize) -> String {
+pub(crate) fn place(address: usize) -> String {
     let mut module = core::ptr::null_mut();
     // SAFETY: the flags ask for the module that holds the address, without a reference count
     // on it.
@@ -498,6 +514,14 @@ mod tests {
         assert!(same_file(&wide("numidium.exe"), &program));
         assert!(!same_file(&wide("D:\\Game\\nvoglv64.dll"), &program));
         assert!(!same_file(&wide("D:\\Game\\numidium.exe.bak"), &program));
+    }
+
+    #[test]
+    fn the_stall_record_carries_the_phase() {
+        let record = stall_record(0xABC, &StallEvidence { phase: 2 });
+        assert_eq!((record.code, record.address as usize, record.parameters), (STALL_EXCEPTION, 0xABC, 1));
+        assert_eq!(record.information[0], 2);
+        assert!(record.information[1..].iter().all(|&word| word == 0));
     }
 
     #[test]

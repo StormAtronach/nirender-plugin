@@ -992,6 +992,7 @@ impl ApplicationHandler for App {
                     read = Some(copy_picture(&device, encoder, back_buffer, width, height));
                 }
             });
+            super::watchdog::phase(super::watchdog::Phase::Pictures);
             if let Some((buffer, row)) = read {
                 save_picture(&device, &buffer, row, width, height, blue_first, self.shot.as_ref().unwrap());
                 self.shot_done = true;
@@ -1040,6 +1041,7 @@ impl ApplicationHandler for App {
                 }
             }
             // The facts of the last world draw stand for a frame with no world.
+            super::watchdog::phase(super::watchdog::Phase::AfterFrame);
             if player.extension.is_some() {
                 let facts = player.world_facts(false);
                 let commands = player.renderer.commands.clone();
@@ -1057,6 +1059,7 @@ impl ApplicationHandler for App {
                 }
             }
             let clock = super::ticks::Clock::now();
+            super::watchdog::phase(super::watchdog::Phase::Present);
             if let Some(frame) = frame {
                 player.renderer.queue.present(frame);
             }
