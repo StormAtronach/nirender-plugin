@@ -107,10 +107,8 @@ impl Player {
             println!("world scenes after a main view with a root of its own: {} (the table's main view drew in them, the world did not start again)", c.world_after_main_view);
         }
         self.print_view_times();
-        if self.views.slots_on {
-            println!("{}", self.views.slots_line());
-            println!("{}", self.views.tier.line());
-        }
+        println!("{}", self.views.slots_line());
+        println!("{}", self.views.tier.line());
         println!(
             "scene targets: {} scenes named their target, {} of them another target than the SetRenderTarget calls gave; {} draws of a world view with an orthographic projection",
             c.scene_targets, c.scene_target_changed, c.orthographic_world_draws

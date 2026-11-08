@@ -61,8 +61,8 @@ pub(crate) struct Group {
 
 impl Group {
     /// The plugin's view slot of the group's scene (the view field of its `SCENE_BEGIN` less
-    /// 1), 0 to 31. `None` for a scene without the field: an older plugin, or a stream without
-    /// [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS). A group is one scene,
+    /// 1), 0 to 31. `None` for a scene that is not a view, or a record without the field (an
+    /// older plugin). A group is one scene,
     /// so it never has two slots; a view into the back buffer with several scenes in a frame
     /// has a group for each, all with its slot.
     pub(crate) fn view_slot(&self) -> Option<u32> {
@@ -182,11 +182,7 @@ pub(crate) struct Views {
     /// The view slot of the scene record just read (`note_scene_record`), for the group of
     /// the scene's start.
     scene_slot: Option<u8>,
-    /// The head of the stream says that the scene records carry the view slot
-    /// (`HEADER_SCENE_VIEWS`).
-    pub(crate) slots_on: bool,
-    /// The scene records carry the word of the repeat and the walk (`HEADER_SCENE_VIEWS` and
-    /// a stream format from `FORMAT_SCENE_REPEAT_WALK`). A capture of an older format has a
+    /// The scene records carry the word of the repeat and the walk (a stream format from `FORMAT_SCENE_REPEAT_WALK`). A capture of an older format has a
     /// 0 there: the word then says nothing.
     pub(crate) repeat_walk_on: bool,
     /// The scene in progress has the word and not the bit `SCENE_WALK_DUE`: the plugin does
@@ -206,7 +202,7 @@ pub(crate) struct Views {
 }
 
 impl Views {
-    /// A scene record of a stream with view slots. The camera, the root and the target are its
+    /// A scene record. The camera, the root and the target are its
     /// words 2, 3 and 4. The target is 0 when the record's flag `SCENE_BACK_BUFFER` (word 5) is
     /// set: the plugin keys a view by the device's target, and word 4 is the last target that
     /// the renderer set.
@@ -217,9 +213,8 @@ impl Views {
         self.note_scene(scene_view(data), word(8), word(12), target);
     }
 
-    /// The word of a scene record with the repeat and the walk (`repeat_walk_on`). Every scene
-    /// record goes here, also one of a stream without view slots: a record without the word
-    /// has a walk that is due and no repeat.
+    /// The word of a scene record with the repeat and the walk (`repeat_walk_on`). A record
+    /// without the word has a walk that is due and no repeat.
     pub(crate) fn note_repeat_walk(&mut self, data: &[u8]) {
         let word = (self.repeat_walk_on && data.len() >= SCENE_WITH_VIEW).then(|| crate::data::word(data, SCENE_REPEAT_WALK_AT));
         self.scene_without_walk = word.is_some_and(|word| word & SCENE_WALK_DUE == 0);
@@ -233,7 +228,7 @@ impl Views {
         !self.scene_without_walk
     }
 
-    /// A scene of a stream with view slots: the scene's slot keeps its key.
+    /// A scene: the scene's slot keeps its key.
     fn note_scene(&mut self, view: Option<u8>, camera: u32, root: u32, target: u32) {
         self.scene_slot = view;
         self.slot_counts.scenes += 1;

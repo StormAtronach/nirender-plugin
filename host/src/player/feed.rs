@@ -4,7 +4,7 @@
 use crate::*;
 use crate::stream_format::{
     HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH,
-    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_SCENE_WIREFRAME, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
@@ -77,8 +77,7 @@ impl Player {
                 let abilities = if data.len() >= HEADER_ABILITIES_AT + 4 { word(data, HEADER_ABILITIES_AT) } else { 0 };
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
-                self.views.slots_on = abilities & HEADER_SCENE_VIEWS != 0;
-                self.views.repeat_walk_on = self.views.slots_on && crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
+                self.views.repeat_walk_on = crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
                 self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
@@ -167,11 +166,7 @@ impl Player {
                 self.stream.wireframe = word(data, 20) & SCENE_WIREFRAME != 0;
                 self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
                 let kind = word(data, 4);
-                if self.views.slots_on {
-                    self.views.note_scene_record(data);
-                } else {
-                    self.views.note_repeat_walk(data);
-                }
+                self.views.note_scene_record(data);
                 let in_target = self.target.is_some();
                 let camera = word(data, 8);
                 if !in_target && scene::world_camera(kind) {
@@ -220,15 +215,15 @@ impl Player {
                 if word(data, 0) == EVENT_QUEUE_FLUSHED && self.stream.queue_flush {
                     self.queue_flushed();
                 }
-                if word(data, 0) == EVENT_VIEW_RETIRE && self.views.slots_on {
+                if word(data, 0) == EVENT_VIEW_RETIRE {
                     self.views.retire(word(data, 4));
                 }
-                if word(data, 0) == EVENT_FLUSH && self.views.slots_on {
+                if word(data, 0) == EVENT_FLUSH {
                     self.views.note_forced_flush();
                     // The plugin reads and writes no texture at a forced flush.
                     self.flush_split(Some(super::split::Touch::default()), |_| ());
                 }
-                if word(data, 0) == EVENT_VIEW_OPTIONS && self.views.slots_on {
+                if word(data, 0) == EVENT_VIEW_OPTIONS {
                     self.views.tier.options(word(data, 4), word(data, 8));
                 }
             }
