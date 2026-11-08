@@ -135,6 +135,8 @@ pub fn least_length(tag: u32) -> usize {
         TEXTURE_UPDATE => 24,
         // `SceneV1` of the link: 48 bytes, with the origin at 24.
         SCENE_BEGIN => 48,
+        // The flags (`SCENE_END_*` of the plugin's `link.rs`).
+        SCENE_END => 4,
         FRAME_EVENT => 8,
         READ_PIXELS => 8,
         // The head of a call: kind, result, handle, the index of the data.
@@ -451,7 +453,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_SHOWN] {
+        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_SHOWN] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }
@@ -466,7 +468,7 @@ mod tests {
 
     #[test]
     fn the_records_without_a_head_have_none() {
-        for tag in [SCENE_END, FRAME_END, SHOT, MARK, OVERLAY, 0, 2, 7, 99] {
+        for tag in [FRAME_END, SHOT, MARK, OVERLAY, 0, 2, 7, 99] {
             assert_eq!(least_length(tag), 0, "tag {tag}");
         }
     }

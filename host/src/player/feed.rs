@@ -181,9 +181,8 @@ impl Player {
                 }
             }
             tag::SCENE_END => {
-                // Flag 1: the engine's sorted queue stays open after the scene. An older
-                // capture has no word.
-                let queue_open = data.len() >= 4 && word(data, 0) & 1 != 0;
+                // Flag 1: the engine's sorted queue stays open after the scene.
+                let queue_open = word(data, 0) & 1 != 0;
                 let (extension, in_back_buffer, drawing, queue_flush) = (self.extension.is_some(), self.target.is_none(), self.drawing(), self.stream.queue_flush);
                 let steps = self.plan_now().scene_end(extension, in_back_buffer, drawing, queue_open, queue_flush);
                 for step in steps {
