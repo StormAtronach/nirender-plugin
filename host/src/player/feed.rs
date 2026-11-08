@@ -40,6 +40,21 @@ fn scene_record(data: &[u8]) -> SceneRecord {
     SceneRecord { ambient: word(data, 0), fog, fog_off_color, sun }
 }
 
+/// Reads an `INSTANCE_LIGHTS` record: the instance, the keys of its lights, and the ambient light
+/// of the instance's own effect state, the word after the keys. [`None`] for a record shorter
+/// than its count needs: 12 bytes and 4 for each key.
+fn instance_lights(data: &[u8]) -> Option<(u32, Vec<u32>, u32)> {
+    if data.len() < 12 {
+        return None;
+    }
+    let (id, count) = (word(data, 0), word(data, 4) as usize);
+    if data.len() < 12 + count * 4 {
+        return None;
+    }
+    let keys = (0..count).map(|i| word(data, 8 + i * 4)).collect();
+    Some((id, keys, word(data, 8 + count * 4)))
+}
+
 /// The lines of orphans in the log of a session; the report counts them all.
 const MOST_ORPHAN_LINES: u32 = 256;
 
@@ -235,12 +250,8 @@ impl Player {
             }
             tag::INSTANCE if data.len() >= 176 => self.instance(data, move_check),
             tag::INSTANCE_MOVE => self.instance_move(data),
-            tag::INSTANCE_LIGHTS if data.len() >= 12 => {
-                let (id, count) = (word(data, 0), word(data, 4) as usize);
-                if data.len() >= 12 + count * 4 {
-                    let keys: Vec<u32> = (0..count).map(|i| word(data, 8 + i * 4)).collect();
-                    // The ambient light of the instance's own effect state follows the keys.
-                    let ambient = word(data, 8 + count * 4);
+            tag::INSTANCE_LIGHTS => {
+                if let Some((id, keys, ambient)) = instance_lights(data) {
                     self.retained.set_lights(id, &keys, Some(ambient), &self.renderer.lights_known);
                 }
             }
@@ -1233,7 +1244,25 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use super::{orphans_of, scene_record};
+    use super::{instance_lights, orphans_of, scene_record};
+
+    /// The bytes of a record of words.
+    fn words(values: &[u32]) -> Vec<u8> {
+        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+    }
+
+    /// The ambient light is the word after the keys, and a record without it gives nothing.
+    #[test]
+    fn the_ambient_light_of_an_instance_follows_its_keys() {
+        // The instance 5, two keys, the ambient light.
+        let data = words(&[5, 2, 11, 12, 0x00FF_8040]);
+        assert_eq!(instance_lights(&data), Some((5, vec![11, 12], 0x00FF_8040)));
+        assert_eq!(instance_lights(&data[..data.len() - 4]), None);
+        // No keys: the ambient light is the third word.
+        let no_keys = words(&[6, 0, 7]);
+        assert_eq!(instance_lights(&no_keys), Some((6, vec![], 7)));
+        assert_eq!(instance_lights(&no_keys[..8]), None);
+    }
 
     /// A made-up record: the ambient light, the flags, then each group of words.
     fn record(flags: u32, words: &[u32], sun: bool) -> Vec<u8> {
