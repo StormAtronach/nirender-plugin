@@ -13,10 +13,12 @@
 //!   helper's memory; `MGE_XE_MEMORY_MINUTES`).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 static ERRORS: AtomicU64 = AtomicU64::new(0);
+/// The index of the newest submit, for [`last_submission`].
+static LAST_SUBMISSION: Mutex<Option<wgpu::SubmissionIndex>> = Mutex::new(None);
 static LOST: AtomicBool = AtomicBool::new(false);
 /// `test_loss` destroys the device: its loss is then handled as a loss for an unknown reason.
 static TEST_LOSS: AtomicBool = AtomicBool::new(false);
@@ -87,7 +89,16 @@ pub fn submit<I: IntoIterator<Item = wgpu::CommandBuffer>>(queue: &wgpu::Queue, 
     let index = queue.submit(buffers);
     SUBMITS.fetch_add(1, Ordering::Relaxed);
     SUBMIT_NANOS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    if let Ok(mut last) = LAST_SUBMISSION.lock() {
+        *last = Some(index.clone());
+    }
     index
+}
+
+/// The index of the newest [`submit`]. A wait for this index (`PollType::Wait`) ends when the
+/// commands sent up to now have run, and does not wait for the submits that come after it.
+pub fn last_submission() -> Option<wgpu::SubmissionIndex> {
+    LAST_SUBMISSION.lock().ok().and_then(|last| last.clone())
 }
 
 /// `device.create_bind_group`, counted: for a bind group that is made for one frame.
@@ -522,5 +533,28 @@ mod memory_tests {
     fn the_counter_line_names_each_count() {
         let line = counter_line(&[("buffers", 12), ("bind groups", 3)], 2 * 1024 * 1024, 0, 7);
         assert_eq!(line, "memory: wgpu's objects: buffers 12, bind groups 3; buffer memory 2.0 MB, texture memory 0.0 MB, 7 device memory allocations");
+    }
+}
+
+#[cfg(test)]
+mod submission_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A real device: after a submit, `last_submission` has an index, and a wait for it with a time
+    /// limit ends. Needs a GPU: `cargo test -p nirender-host -- --ignored submission`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_last_submission_can_be_waited_for() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let first = submit(&queue, [device.create_command_encoder(&Default::default()).finish()]);
+        let wait_for = |index: Option<wgpu::SubmissionIndex>| device.poll(wgpu::PollType::Wait { submission_index: index, timeout: Some(Duration::from_secs(10)) });
+        assert!(wait_for(Some(first)).is_ok());
+        let second = submit(&queue, [device.create_command_encoder(&Default::default()).finish()]);
+        let last = last_submission().expect("a submit was made");
+        assert!(wait_for(Some(last)).is_ok());
+        drop(second);
     }
 }
