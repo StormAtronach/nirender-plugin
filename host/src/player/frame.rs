@@ -552,6 +552,7 @@ impl Player {
     /// Ends the frame and sends its commands to the GPU. `before_submit` can add commands,
     /// for example a copy of the picture.
     pub(crate) fn end_frame(&mut self, before_submit: impl FnOnce(&mut wgpu::CommandEncoder)) {
+        crate::watchdog::phase(crate::watchdog::Phase::Items);
         self.post_item();
         self.run_items();
         // The pictures that an extension wants and did not get after its post-processing.
@@ -568,7 +569,11 @@ impl Player {
             let renderer = &mut self.renderer;
             let slot = renderer.timing.as_mut().and_then(|timing| timing.end(&renderer.device, &mut encoder, &mut renderer.counts));
             renderer.upload_indirect(&self.frame_args);
-            crate::gpu::submit(&renderer.queue, renderer.commands.take().into_iter().chain([encoder.finish()]));
+            // The passes are encoded at `finish`, not when they end.
+            crate::watchdog::phase(crate::watchdog::Phase::Finish);
+            let frame_commands = encoder.finish();
+            crate::watchdog::phase(crate::watchdog::Phase::Submit);
+            crate::gpu::submit(&renderer.queue, renderer.commands.take().into_iter().chain([frame_commands]));
             if let (Some(timing), Some(slot)) = (renderer.timing.as_ref(), slot) {
                 timing.map(slot);
             }
