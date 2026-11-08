@@ -152,7 +152,8 @@ pub fn least_length(tag: u32) -> usize {
         INSTANCE => 176,
         INSTANCE_DRAW => 12,
         INSTANCE_DELETE => 4,
-        INSTANCE_LIGHTS => 8,
+        // The id, the count, then the keys and the ambient.
+        INSTANCE_LIGHTS => 12,
         RETAINED_SCENE => 8,
         INSTANCE_BONES => 24,
         COPY_TILE => 12,
@@ -216,7 +217,7 @@ pub fn needed(tag: u32, data: &[u8]) -> usize {
         }
         MORPH_TARGETS => sum(&[16, count(8).saturating_mul(count(12)).saturating_mul(12)]),
         MORPH_WEIGHTS => sum(&[12, count(8).saturating_mul(4)]),
-        INSTANCE_LIGHTS => sum(&[8, count(4).saturating_mul(4)]),
+        INSTANCE_LIGHTS => sum(&[12, count(4).saturating_mul(4)]),
         INSTANCE_BONES => sum(&[24, count(4).saturating_mul(BONE_BYTES)]),
         EFFECT_CHAIN => sum(&[head, count(8).saturating_mul(crate::effect_turn::LINK_WORDS * 4)]),
         INSTANCE_SHOWN => sum(&[4, count(0).saturating_mul(4)]),
@@ -373,7 +374,7 @@ mod tests {
             }
             INSTANCE_LIGHTS => {
                 put(&mut record, 4, 2);
-                record.resize(16, 0);
+                record.resize(20, 0);
             }
             EFFECT_CHAIN => {
                 put(&mut record, 8, 2);

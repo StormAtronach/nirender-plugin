@@ -240,14 +240,13 @@ impl Player {
             }
             tag::INSTANCE if data.len() >= 176 => self.instance(data, move_check),
             tag::INSTANCE_MOVE => self.instance_move(data),
-            tag::INSTANCE_LIGHTS if data.len() >= 8 => {
+            tag::INSTANCE_LIGHTS if data.len() >= 12 => {
                 let (id, count) = (word(data, 0), word(data, 4) as usize);
-                if data.len() >= 8 + count * 4 {
+                if data.len() >= 12 + count * 4 {
                     let keys: Vec<u32> = (0..count).map(|i| word(data, 8 + i * 4)).collect();
-                    // The ambient light of the instance's own effect state follows the keys
-                    // (an older plugin sends none: the instance keeps the scene's).
-                    let ambient = (data.len() >= 12 + count * 4).then(|| word(data, 8 + count * 4));
-                    self.retained.set_lights(id, &keys, ambient, &self.renderer.lights_known);
+                    // The ambient light of the instance's own effect state follows the keys.
+                    let ambient = word(data, 8 + count * 4);
+                    self.retained.set_lights(id, &keys, Some(ambient), &self.renderer.lights_known);
                 }
             }
             // `tag::needed` checked that the record holds its count's ids.
