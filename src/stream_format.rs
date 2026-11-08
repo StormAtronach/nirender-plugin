@@ -6,8 +6,7 @@
 //!
 //! The plugin writes the number into the HEADER record, the first record of the ring and of
 //! every capture file, after the plugin's build id. The live helper reads it before anything
-//! else and stops on a difference (`live::run`); a replay prints the difference and goes on,
-//! because the gate's accepted captures come from before the number existed.
+//! else and stops on a difference (`live::run`); a replay stops on a difference too (D131).
 //!
 //! Bump [`STREAM_FORMAT`] with a change of the meaning or the offset of a word of the ring
 //! head, of the start of the records, of a record tag's layout or meaning, or of the HEADER
@@ -76,11 +75,6 @@
 /// carries the main view's displays, and `INSTANCE_STATE` no longer goes for the views (form D,
 /// 2026-11-08). A helper of format 7 would draw nothing of the table in the main view.
 pub const STREAM_FORMAT: u32 = 8;
-
-/// The first stream format whose scene records (56 bytes, under [`HEADER_SCENE_VIEWS`]) hold
-/// `link::SceneV1::repeat_walk`. A capture of an older format has 0 in that word, which a
-/// reader takes as "no word": a walk that is due, and no repeat.
-pub const FORMAT_SCENE_REPEAT_WALK: u32 = 7;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as

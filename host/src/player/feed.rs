@@ -3,18 +3,13 @@
 
 use crate::*;
 use crate::stream_format::{
-    HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
-    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_ABILITIES_AT, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH,
+    HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
-/// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
-/// plugin before the third word.
+/// The generation of the reply memory that a `READ_PIXELS` record names.
 pub(crate) fn reply_generation(data: &[u8]) -> u32 {
-    if data.len() >= 12 {
-        word(data, 8)
-    } else {
-        0
-    }
+    word(data, 8)
 }
 
 /// The values of a `RETAINED_SCENE` record.
@@ -74,17 +69,10 @@ impl Player {
         match tag {
             tag::HEADER => {
                 self.size = (word(data, HEADER_WIDTH_AT), word(data, HEADER_HEIGHT_AT));
-                let abilities = if data.len() >= HEADER_ABILITIES_AT + 4 { word(data, HEADER_ABILITIES_AT) } else { 0 };
-                self.stream.queue_marked = abilities & HEADER_QUEUE_MARKED != 0;
+                let abilities = word(data, HEADER_ABILITIES_AT);
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
-                self.stream.scene_target = abilities & HEADER_SCENE_TARGET != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
-                self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
-                self.views.on = abilities & HEADER_VIEW_PLACES != 0;
-                self.views.slots_on = abilities & HEADER_SCENE_VIEWS != 0;
-                self.views.repeat_walk_on = self.views.slots_on && crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
-                self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
-                self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
+                self.stream.envmap_lit = abilities & HEADER_ENVMAP_LIT != 0;
             }
             // The game made its renderer again: the live loop makes the back buffer again at
             // the next frame's start; a replay keeps the size of its first record.
@@ -169,15 +157,9 @@ impl Player {
                 self.stream.interior = word(data, 20) & 2 != 0;
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
                 self.stream.wireframe = word(data, 20) & SCENE_WIREFRAME != 0;
-                if self.stream.scene_target {
-                    self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
-                }
+                self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
                 let kind = word(data, 4);
-                if self.views.slots_on {
-                    self.views.note_scene_record(data);
-                } else {
-                    self.views.note_repeat_walk(data);
-                }
+                self.views.note_scene_record(data);
                 let in_target = self.target.is_some();
                 let camera = word(data, 8);
                 if !in_target && scene::world_camera(kind) {
@@ -194,9 +176,8 @@ impl Player {
                 }
             }
             tag::SCENE_END => {
-                // Flag 1: the engine's sorted queue stays open after the scene. An older
-                // capture has no word.
-                let queue_open = data.len() >= 4 && word(data, 0) & 1 != 0;
+                // Flag 1: the engine's sorted queue stays open after the scene.
+                let queue_open = word(data, 0) & 1 != 0;
                 let (extension, in_back_buffer, drawing, queue_flush) = (self.extension.is_some(), self.target.is_none(), self.drawing(), self.stream.queue_flush);
                 let steps = self.plan_now().scene_end(extension, in_back_buffer, drawing, queue_open, queue_flush);
                 for step in steps {
@@ -226,15 +207,15 @@ impl Player {
                 if word(data, 0) == EVENT_QUEUE_FLUSHED && self.stream.queue_flush {
                     self.queue_flushed();
                 }
-                if word(data, 0) == EVENT_VIEW_RETIRE && self.views.slots_on {
+                if word(data, 0) == EVENT_VIEW_RETIRE {
                     self.views.retire(word(data, 4));
                 }
-                if word(data, 0) == EVENT_FLUSH && self.views.slots_on {
+                if word(data, 0) == EVENT_FLUSH {
                     self.views.note_forced_flush();
                     // The plugin reads and writes no texture at a forced flush.
                     self.flush_split(Some(super::split::Touch::default()), |_| ());
                 }
-                if word(data, 0) == EVENT_VIEW_OPTIONS && self.views.slots_on {
+                if word(data, 0) == EVENT_VIEW_OPTIONS {
                     self.views.tier.options(word(data, 4), word(data, 8));
                 }
             }
@@ -254,14 +235,13 @@ impl Player {
             }
             tag::INSTANCE if data.len() >= 176 => self.instance(data, move_check),
             tag::INSTANCE_MOVE => self.instance_move(data),
-            tag::INSTANCE_LIGHTS if data.len() >= 8 => {
+            tag::INSTANCE_LIGHTS if data.len() >= 12 => {
                 let (id, count) = (word(data, 0), word(data, 4) as usize);
-                if data.len() >= 8 + count * 4 {
+                if data.len() >= 12 + count * 4 {
                     let keys: Vec<u32> = (0..count).map(|i| word(data, 8 + i * 4)).collect();
-                    // The ambient light of the instance's own effect state follows the keys
-                    // (an older plugin sends none: the instance keeps the scene's).
-                    let ambient = (data.len() >= 12 + count * 4).then(|| word(data, 8 + count * 4));
-                    self.retained.set_lights(id, &keys, ambient, &self.renderer.lights_known);
+                    // The ambient light of the instance's own effect state follows the keys.
+                    let ambient = word(data, 8 + count * 4);
+                    self.retained.set_lights(id, &keys, Some(ambient), &self.renderer.lights_known);
                 }
             }
             // `tag::needed` checked that the record holds its count's ids.
@@ -298,7 +278,7 @@ impl Player {
             tag::INSTANCE_WALK if data.len() >= 4 => {
                 if self.retained_on && self.views.open().is_some() {
                     self.view_place(word(data, 0));
-                } else if self.retained_on && self.retained.walk.on {
+                } else if self.retained_on {
                     self.walk_place(word(data, 0));
                 }
             }
@@ -307,17 +287,15 @@ impl Player {
                 self.retained_remove(word(data, 0));
             }
             tag::INSTANCE_CENSUS if data.len() >= 4 => self.instance_census(data),
-            tag::LIGHT if data.len() >= 108 => {
+            tag::LIGHT if data.len() >= 112 => {
                 // The engine keeps the radius of a point light in its specular colour
                 // (`game_dynamicLightTest` 0x4D3039). The device values carry that colour times
                 // the dimmer, so a dim or flickering light's reach would follow its dimmer; the
                 // word after them is the radius itself. It goes into the first specular word,
                 // which `light_data` reads as the radius (no shading reads the specular of a
-                // light). An older record without the word keeps the scaled value.
+                // light).
                 let mut light: [u8; 104] = data[4..108].try_into().unwrap();
-                if data.len() >= 112 {
-                    light[20..24].copy_from_slice(&data[108..112]);
-                }
+                light[20..24].copy_from_slice(&data[108..112]);
                 self.renderer.lights_known.insert(word(data, 0), light);
                 self.renderer.counts.light_records += 1;
                 self.retained.light_changed(word(data, 0), &light);
@@ -429,7 +407,7 @@ impl Player {
             // The view and the projection of the camera (D3DTS_VIEW is 2 and
             // D3DTS_PROJECTION is 3). The draws of the game come as shape records and as
             // draws with their vertices, each with its own state; a command of another
-            // kind, in an older capture, does nothing.
+            // kind does nothing.
             tag::COMMAND => match word(data, 0) {
                 COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
                     2 => self.stream.view = floats(data, 16),
@@ -597,8 +575,6 @@ impl Player {
             let axes: [f32; 6] = core::array::from_fn(|i| float(data, tail + 8 + i * 4));
             self.renderer.particles(geometry, float(data, tail + 4), [axes[0], axes[1], axes[2]], [axes[3], axes[4], axes[5]], &data[at..at + count * 20]);
         }
-        // The world bound of the shape (flag 0x400): the last 16 bytes of the record.
-        self.stream.shape_bound = (flags & 0x400 != 0 && data.len() >= 16).then(|| core::array::from_fn(|i| float(data, data.len() - 16 + i * 4)));
         self.stream.shape_queued = flags & 0x800 != 0;
         self.draw_shape(geometry, material, flags, core::array::from_fn(|i| float(data, 20 + i * 4)), &colours, effects.as_ref());
     }
@@ -830,10 +806,10 @@ impl Player {
     /// engine draws nothing before its queue flushes, and the world begins at the scene's
     /// end (`Plan::scene_end`), before the sorted blends of the scene.
     pub(crate) fn instance_queued(&mut self, id: u32) {
-        let Some(centre) = self.retained.centre_of(id) else {
+        if self.retained.centre_of(id).is_none() {
             self.renderer.counts.queued_unknown += 1;
             return;
-        };
+        }
         // A scene with a view of its own: its sorted blends draw in their order of arrival at
         // the flush in that view ([`engine::views`]).
         if self.views.queued(id) {
@@ -845,13 +821,12 @@ impl Player {
             self.renderer.counts.queued_outside += 1;
             return;
         }
-        let sequence = self.frame_sorted.len() as u32;
         let generation = self.plan.defer();
         if generation != 0 {
             // Risk 34: a place after the frame's first sorted blends: the kept list was taken.
             self.renderer.counts.queued_late_places += 1;
         }
-        self.frame_sorted.push((centre, sequence, crate::Waiting::Table(id), generation));
+        self.frame_sorted.push((crate::Waiting::Table(id), generation));
     }
 
     /// The place of a blend of the table in the engine's walk ([`tag::INSTANCE_WALK`]): its
@@ -1018,11 +993,8 @@ impl Player {
         };
         self.renderer.counts.instance_draws += 1;
         self.stream.object_class = retained.class;
-        // A draw of the flush of the engine's sorted queue (0x800), as the shape record has it,
-        // with the world bound of the instance as the key of its sort (the shape record's
-        // bound words).
+        // A draw of the flush of the engine's sorted queue (0x800), as the shape record has it.
         self.stream.shape_queued = flags & 0x800 != 0;
-        self.stream.shape_bound = Some(retained.bound);
         let mut effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
         // An effect that moves in the play takes its chain's value, as in the table.
         if let (Some(stages), Some(material)) = (effects.as_mut(), self.renderer.materials.get(&retained.material)) {
@@ -1114,7 +1086,6 @@ impl Player {
         shape.world = world;
         shape.relative = flags & 1 != 0;
         shape.material = material::d3d_material(colours);
-        shape.fill = derived.fill;
         if self.hold_shape(&m, &derived, flags, effects, entries, &strips) {
             self.stream.shape_bones = None;
             return;
@@ -1243,12 +1214,11 @@ impl Player {
         // The draws of the flush of the engine's queue wait for the sorted blends (`draw`). A held
         // shape of the flush waits with them, or it goes before them: before the mask whose
         // stencil it tests, when a sort adjust node in MWSE's ordered mode draws both.
-        let of_flush = self.plan.world_begun && self.stream.queue_marked && self.stream.shape_queued;
+        let of_flush = self.plan.world_begun && self.stream.shape_queued;
         let in_queue = of_flush && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&held));
         if in_queue || (of_flush && in_place) {
             let facts = self.world_facts(false);
-            let centre = self.stream.sort_centre(&held.data.world[0], held.origin);
-            self.wait_for_sorted(centre, crate::Waiting::Held(Box::new(held), Box::new(facts)));
+            self.wait_for_sorted(crate::Waiting::Held(Box::new(held), Box::new(facts)));
         } else if in_place {
             let facts = self.world_facts(false);
             self.items.push(Item::HeldHere(Box::new(held), Box::new(facts)));

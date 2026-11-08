@@ -158,7 +158,7 @@ impl Player {
     /// gets the answer "no pixels" at once.
     pub(crate) fn answer_lost(&mut self, tag: u32, data: &[u8]) {
         match tag {
-            tag::READ_PIXELS if data.len() >= 8 => {
+            tag::READ_PIXELS if data.len() >= 12 => {
                 if let Some(reply) = self.reply.as_mut() {
                     reply(word(data, 0), super::feed::reply_generation(data), 0, 0, &[]);
                 }

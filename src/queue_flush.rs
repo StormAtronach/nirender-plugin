@@ -26,7 +26,7 @@ pub fn installed() -> bool {
 }
 
 /// Listens to MWSE's event. A refusal (an MWSE without the event) leaves the stream without
-/// the event: the helper then places the flush as an older capture has it.
+/// the event: the helper then places the sorted blends at the ends of the scenes.
 ///
 /// # Safety
 ///

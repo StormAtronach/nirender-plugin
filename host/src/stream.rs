@@ -17,8 +17,6 @@ pub(crate) struct ShapeFacts {
     pub(crate) material: [f32; 17],
     /// `D3DRS_AMBIENT` of the draw.
     pub(crate) ambient: u32,
-    /// The fill mode of the material (D3DFILLMODE: 2 lines, 3 solid).
-    pub(crate) fill: u32,
     /// The lights of the draw from their records: the key, then the `D3DLIGHT8`,
     /// [`STATE_LIGHT_SIZE`] bytes each.
     pub(crate) lights: Vec<u8>,
@@ -56,53 +54,27 @@ pub(crate) struct Stream {
     /// The shape in progress cannot change the picture (`material::draw_keeps_picture`), set
     /// by `draw_shape` for its passes only.
     pub(crate) shape_keeps: bool,
-    /// The world bound of the shape record in progress (flag 0x400): the centre and the
-    /// radius, for the sort of a blended draw among the blends of the table.
-    pub(crate) shape_bound: Option<[f32; 4]>,
     /// The shape record in progress is a draw of the engine's main sorted queue (flag
     /// 0x800).
     pub(crate) shape_queued: bool,
-    /// The head of the stream says that its shape records carry the flag 0x800 (bit 1 of its
-    /// fourth word). Without it (an older capture), a blend is taken as sorted by its
-    /// material ([`engine::alpha::sorted_by_engine`]).
-    pub(crate) queue_marked: bool,
     /// The head of the stream says that the world camera's Click marks the end of the sky's
     /// walk ([`EVENT_WORLD_WALK`], bit 2 of its fourth word): the world starts at that event,
-    /// never at a draw. Without it (an older capture), the plan finds the start from the
-    /// draws (`Plan::world_draw`).
+    /// never at a draw. Without it (the plugin did not get MWSE's override), the plan finds
+    /// the start from the draws (`Plan::world_draw`).
     pub(crate) world_walk: bool,
-    /// The head of the stream says that the scene records carry [`SCENE_BACK_BUFFER`] (bit 4 of
-    /// its fourth word): each scene starts on the target that the flag names. Without it (an
-    /// older capture), the target comes from the `SetRenderTarget` calls alone.
-    pub(crate) scene_target: bool,
     /// The head of the stream says that the end of the flush of the engine's main sorted
     /// queue comes as [`EVENT_QUEUE_FLUSHED`] (bit 8 of its fourth word): the sorted blends go
-    /// there. Without it (an older capture), the plan places them at the ends of the scenes.
+    /// there. Without it (MWSE refused the event), the plan places them at the ends of the
+    /// scenes.
     pub(crate) queue_flush: bool,
-    /// The head of the stream says that the scene records carry [`SCENE_WIREFRAME`] (bit 32 of
-    /// its fourth word). Without it (an older capture), the fill mode of the last draw says.
-    pub(crate) scene_wireframe: bool,
-    /// The head of the stream says how the game combines an environment map (bit 64 of its
-    /// fourth word): with the lit colour (bit 128, the Morrowind Code Patch's hook) or not.
-    /// [`None`] for an older capture ([`material::derive`]).
-    pub(crate) envmap_lit: Option<bool>,
+    /// The head of the stream says that the game's environment map stages take the lit colour
+    /// (bit 128 of its fourth word, the Morrowind Code Patch's hook; [`material::derive`]).
+    pub(crate) envmap_lit: bool,
     /// The scene in progress has the flag [`SCENE_WIREFRAME`].
     pub(crate) wireframe: bool,
 }
 
 impl Stream {
-    /// The key of the shape in progress among the sorted blends: the centre of its bound. A
-    /// record without one (an older capture) gives the translation of the draw.
-    pub(crate) fn sort_centre(&self, world: &[f32; 16], origin: Option<[f64; 3]>) -> [f32; 3] {
-        match self.shape_bound {
-            Some(b) => [b[0], b[1], b[2]],
-            None => {
-                let o = origin.unwrap_or([0.0; 3]);
-                [(world[12] as f64 + o[0]) as f32, (world[13] as f64 + o[1]) as f32, (world[14] as f64 + o[2]) as f32]
-            }
-        }
-    }
-
     /// The data of one pass of the shape in progress for the shader.
     pub(crate) fn draw_data(&self, derived: &material::Derived, pass: &Pass, counts: &mut Counts, frame_lights: &mut Vec<LightData>) -> DrawData {
         let shape = &self.shape;

@@ -180,7 +180,7 @@ impl ViewKey {
 
     /// The key of a view of its own from the plugin's view slot of its scene (0 to 31) and its
     /// place of the full tier. Slot 0 is the main view's, so the key counts from 1; a scene
-    /// without a slot (an older plugin) has no options, so it gets no parts and its key is not
+    /// without a slot (not a view) has no options, so it gets no parts and its key is not
     /// used.
     pub fn of_view(view_slot: Option<u32>, kind: ViewKind, place: Option<u8>) -> ViewKey {
         ViewKey { slot: view_slot.map_or(0, |slot| slot + 1), kind, place }

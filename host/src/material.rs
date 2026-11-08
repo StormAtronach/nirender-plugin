@@ -399,9 +399,8 @@ fn ops(slot: u32, first: bool, apply: bool, has_texture: bool) -> ([u32; 3], [u3
 
 /// Derives the state of a draw for a material with a geometry of `sets` texture sets.
 /// `envmap_lit`: the game's environment map stages of the reflection vector take the lit
-/// colour (the stream header's `HEADER_ENVMAP_LIT`); [`None`] for an older capture without the
-/// fact.
-pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
+/// colour (the stream header's `HEADER_ENVMAP_LIT`).
+pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
     let mut d = Derived { modelled: m.flags & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0, ..Default::default() };
     let apply = m.apply_mode != 0;
 
@@ -544,24 +543,15 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: Option<bool>) -> Derived {
         let first = pass.is_empty();
         let (mut color, alpha) = ops(0, first, true, true);
         let reflection = matches!(m.environment_coordinates, 2 | 3);
-        match envmap_lit {
-            // The Morrowind Code Patch's hook on the coordinate index (0x6C1BA4 to 0x736F80 in
-            // the patched game) scales the map by the lit colour when the index is the
-            // camera-space reflection vector of set 0 and nothing else (it compares the whole
-            // index with 0x30000): SELECTARG1 becomes MODULATE(texture, diffuse) and ADD
-            // becomes MULTIPLYADD(current + texture * diffuse); argument 0 is the current
-            // colour (`stream.rs`). A projected map (mode 0 or 1) and a diffuse cube map
-            // (mode 4) keep the engine's combiner.
-            Some(true) if reflection => color = if first { [4, 2, 0] } else { [25, 2, 0] },
-            Some(true) => {}
-            Some(false) => {}
-            // An older capture without the fact: the rule seen in the test level before the
-            // hook was read (fog with a bump map, or fog without a base texture).
-            None => {
-                if !first && m.flags & FOG != 0 && (has(BUMP) || !has(BASE)) {
-                    color = [25, 2, 0];
-                }
-            }
+        // The Morrowind Code Patch's hook on the coordinate index (0x6C1BA4 to 0x736F80 in the
+        // patched game) scales the map by the lit colour when the index is the camera-space
+        // reflection vector of set 0 and nothing else (it compares the whole index with
+        // 0x30000): SELECTARG1 becomes MODULATE(texture, diffuse) and ADD becomes
+        // MULTIPLYADD(current + texture * diffuse); argument 0 is the current colour
+        // (`stream.rs`). A projected map (mode 0 or 1) and a diffuse cube map (mode 4) keep the
+        // engine's combiner.
+        if envmap_lit && reflection {
+            color = if first { [4, 2, 0] } else { [25, 2, 0] };
         }
         pass.push(Stage { texture: m.environment.texture, color, alpha, set: 0, source: 8, clamp: m.environment.clamp, filter: m.environment.filter });
         if has(GLOSS) {
@@ -679,7 +669,7 @@ mod fog_map_tests {
 
     #[test]
     fn the_fog_map_after_a_stage_blends_by_its_alpha() {
-        let d = derive(&material(true), 1, None);
+        let d = derive(&material(true), 1, false);
         let fog = d.passes[0].iter().find(|s| s.source == 9).unwrap();
         // Slot 1 of the later-stage table: BLENDTEXTUREALPHA (0xD) of the texture and the
         // current colour.
@@ -688,7 +678,7 @@ mod fog_map_tests {
 
     #[test]
     fn without_a_base_map_the_fog_map_follows_the_stage_with_no_texture() {
-        let d = derive(&material(false), 1, None);
+        let d = derive(&material(false), 1, false);
         assert_eq!(d.passes[0][0].source, 10);
         let fog = d.passes[0].iter().find(|s| s.source == 9).unwrap();
         assert_eq!(fog.color, [0xD, 2, 1]);
@@ -733,7 +723,7 @@ mod engine_rule_tests {
         let mut m = material(false, 0);
         m.lighting_mode = lighting_mode;
         m.source_mode = source_mode;
-        derive(&m, 1, None).vertex_sources(has_color)
+        derive(&m, 1, false).vertex_sources(has_color)
     }
 
     #[test]
@@ -754,14 +744,12 @@ mod engine_rule_tests {
     #[test]
     fn the_code_patch_scales_an_environment_map_by_the_lit_colour() {
         // After the base stage: ADD, or MULTIPLYADD with the Code Patch's hook.
-        assert_eq!(environment_stage(&derive(&material(false, 0), 1, Some(false))).color, [7, 2, 1]);
-        assert_eq!(environment_stage(&derive(&material(false, 0), 1, Some(true))).color, [25, 2, 0]);
+        assert_eq!(environment_stage(&derive(&material(false, 0), 1, false)).color, [7, 2, 1]);
+        assert_eq!(environment_stage(&derive(&material(false, 0), 1, true)).color, [25, 2, 0]);
         // First in a pass of its own (with a gloss map): SELECTARG1 of the texture, or
         // MODULATE by the diffuse colour.
-        assert_eq!(environment_stage(&derive(&material(true, 0), 1, Some(false))).color, [2, 2, 0]);
-        assert_eq!(environment_stage(&derive(&material(true, 0), 1, Some(true))).color, [4, 2, 0]);
-        // An older capture without the fact keeps the rule seen before (no fog here: ADD).
-        assert_eq!(environment_stage(&derive(&material(false, 0), 1, None)).color, [7, 2, 1]);
+        assert_eq!(environment_stage(&derive(&material(true, 0), 1, false)).color, [2, 2, 0]);
+        assert_eq!(environment_stage(&derive(&material(true, 0), 1, true)).color, [4, 2, 0]);
     }
 
     #[test]
@@ -771,10 +759,10 @@ mod engine_rule_tests {
         // keep ADD and SELECTARG1 (the rainbow particles of the test level's exhibits 107 and
         // 108 drew black when every map took MULTIPLYADD by their black vertex colour).
         for mode in [0, 1, 4] {
-            assert_eq!(environment_stage(&derive(&material_of_mode(false, 0, mode), 1, Some(true))).color, [7, 2, 1], "mode {mode}");
-            assert_eq!(environment_stage(&derive(&material_of_mode(true, 0, mode), 1, Some(true))).color, [2, 2, 0], "mode {mode}");
+            assert_eq!(environment_stage(&derive(&material_of_mode(false, 0, mode), 1, true)).color, [7, 2, 1], "mode {mode}");
+            assert_eq!(environment_stage(&derive(&material_of_mode(true, 0, mode), 1, true)).color, [2, 2, 0], "mode {mode}");
         }
-        assert_eq!(environment_stage(&derive(&material_of_mode(false, 0, 3), 1, Some(true))).color, [25, 2, 0]);
+        assert_eq!(environment_stage(&derive(&material_of_mode(false, 0, 3), 1, true)).color, [25, 2, 0]);
     }
 
     #[test]
@@ -788,7 +776,7 @@ mod engine_rule_tests {
             words[68] = source;
             words[69] = lighting;
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            derive(&Material::parse(&bytes).unwrap(), 1, Some(false))
+            derive(&Material::parse(&bytes).unwrap(), 1, false)
         };
         for source in [0, 2] {
             let d = of(0, source);
@@ -806,7 +794,7 @@ mod engine_rule_tests {
         // The numbers of `base_map_coordinate_set` of the plugin, which does the work of MWSE's
         // patch at 0x6B42AC.
         for (base_set, sets, expected) in [(2, 3, 2), (2, 2, 1), (0, 3, 0), (3, 0, 0)] {
-            let d = derive(&material(false, base_set), sets, Some(false));
+            let d = derive(&material(false, base_set), sets, false);
             assert_eq!(d.passes[0][0].source, BASE as u32);
             assert_eq!(d.passes[0][0].set, expected, "set {base_set} of {sets}");
         }
@@ -840,7 +828,7 @@ mod pass_slot_tests {
 
     /// The sources of the stages of each pass.
     fn passes(m: &Material) -> Vec<Vec<u32>> {
-        derive(m, 1, Some(false)).passes.iter().map(|pass| pass.iter().map(|stage| stage.source).collect()).collect()
+        derive(m, 1, false).passes.iter().map(|pass| pass.iter().map(|stage| stage.source).collect()).collect()
     }
 
     const ENVIRONMENT: u32 = 8;
@@ -869,7 +857,7 @@ mod pass_slot_tests {
     fn every_decal_of_a_record_has_its_pass() {
         for decals in [0, 1, 2, 3, 8, 40] {
             let m = Material::parse(&with_decals(decals)).unwrap();
-            let d = derive(&m, 1, Some(false));
+            let d = derive(&m, 1, false);
             assert_eq!(d.passes.len(), 1 + decals, "{decals} decals");
             for i in 0..decals {
                 let stage = d.passes[1 + i][0];
@@ -888,7 +876,7 @@ mod pass_slot_tests {
         data.truncate((WORDS_WITH_EFFECTS + MAP_WORDS) * 4);
         let m = Material::parse(&data).unwrap();
         assert_eq!(m.maps.len(), 9);
-        assert_eq!(derive(&m, 1, Some(false)).passes.len(), 4);
+        assert_eq!(derive(&m, 1, false).passes.len(), 4);
     }
 
     #[test]
@@ -902,12 +890,12 @@ mod pass_slot_tests {
     #[test]
     fn a_stage_of_slot_0_does_not_join_a_decal_pass() {
         let [base, decal, glow] = [BASE as u32, DECAL0 as u32, GLOW as u32];
-        let d = derive(&material(&[DECAL0, GLOW], false), 1, Some(false));
+        let d = derive(&material(&[DECAL0, GLOW], false), 1, false);
         assert_eq!(passes(&material(&[DECAL0, GLOW], false)), [vec![base], vec![decal], vec![glow]]);
         // A pass of its own adds: in the decal's pass it blended by the decal's alpha.
         assert_eq!(d.blends[2], ADD);
 
-        let d = derive(&material(&[DECAL0], true), 1, Some(false));
+        let d = derive(&material(&[DECAL0], true), 1, false);
         assert_eq!(passes(&material(&[DECAL0], true)), [vec![base], vec![decal], vec![ENVIRONMENT]]);
         assert_eq!(d.blends[2], ADD);
         // The first stage of a pass takes the texture alone (SELECTARG1).

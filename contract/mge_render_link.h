@@ -362,8 +362,7 @@ typedef struct MgeLinkSceneV1 {
     // src/view_slots.rs). Only the low byte is used. A packet with a structSize of 48 has no
     // view.
     uint32_t view;
-    // MGE_LINK_SCENE_REPEAT_MASK and MGE_LINK_SCENE_WALK_DUE; the other bits are 0. A packet
-    // of the stream format 6 has 0 here, which means no repeat and a walk not known.
+    // MGE_LINK_SCENE_REPEAT_MASK and MGE_LINK_SCENE_WALK_DUE; the other bits are 0.
     uint32_t repeatWalk;
 } MgeLinkSceneV1;
 
