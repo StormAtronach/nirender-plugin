@@ -5,7 +5,8 @@ use crate::retained::BONE_BYTES;
 use crate::{word, CALL_CLEAR, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM, EFFECT_STAGE_WORDS};
 
 pub const TEXTURE: u32 = 1;
-// Tags 2 and 7 are retired: the reader skips them.
+// Tags 2 and 7 are retired (step R7b): this build does not know them, and no other tag takes
+// their numbers.
 pub const SCENE_BEGIN: u32 = 3;
 pub const SCENE_END: u32 = 4;
 pub const FRAME_EVENT: u32 = 5;
@@ -103,10 +104,10 @@ pub const EFFECT_CHAIN_GONE: u32 = 48;
 /// (form D): a count, then the count's ids, each once.
 pub const INSTANCE_SHOWN: u32 = 49;
 
-/// Every tag of this build, the two retired ones (2 and 7) among them. A new tag goes here
-/// with its constant, read by the player or not: a test asks that each constant is here.
-pub const KNOWN: [u32; 48] = [
-    TEXTURE, 2, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, 7, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
+/// Every tag of this build. A new tag goes here with its constant, read by the player or not:
+/// a test asks that each constant is here.
+pub const KNOWN: [u32; 46] = [
+    TEXTURE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
     READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW,
     INSTANCE_DELETE, INSTANCE_LIGHTS, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED,
     INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE,
@@ -326,7 +327,7 @@ pub fn name(tag: u32) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Every tag the player reads: all the known tags but the two retired ones (2 and 7).
+    /// Every tag the player reads: all the known tags.
     const READ_TAGS: [u32; 46] = [
         HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS,
         RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK, EFFECT_CHAIN_GONE,
@@ -334,8 +335,8 @@ mod tests {
     ];
 
     #[test]
-    fn the_test_reads_every_known_tag_but_the_retired_ones() {
-        let known: Vec<u32> = (1..=INSTANCE_SHOWN).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
+    fn the_test_reads_every_known_tag() {
+        let known: Vec<u32> = (1..=INSTANCE_SHOWN).filter(|&tag| is_known(tag)).collect();
         let mut read = READ_TAGS.to_vec();
         read.sort();
         assert_eq!(read, known);
