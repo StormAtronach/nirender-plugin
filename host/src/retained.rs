@@ -1783,7 +1783,7 @@ impl RetainedSet {
         self.order.sort_unstable();
         self.sorted_order.sort_unstable();
         // The main view: a blend out of the sort with a place in the engine's walk draws there.
-        if view.sorted == Sorted::Keep && self.walk.on {
+        if view.sorted == Sorted::Keep {
             let slots = &self.slots;
             self.counts.walk_reordered += self.walk.leave_out(&mut self.order, |slot| slots[slot as usize].as_ref().map(|s| s.id)) as u64;
             self.counts.walk_without_place += self.order.iter().filter(|e| e.0 >> 32 == crate::engine::walk::GROUP_IN_PLACE && slots[e.3 as usize].as_ref().is_some_and(|s| s.in_place)).count() as u64;

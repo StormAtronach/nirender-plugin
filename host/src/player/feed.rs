@@ -4,7 +4,7 @@
 use crate::*;
 use crate::stream_format::{
     HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH,
-    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
@@ -77,7 +77,6 @@ impl Player {
                 let abilities = if data.len() >= HEADER_ABILITIES_AT + 4 { word(data, HEADER_ABILITIES_AT) } else { 0 };
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
-                self.retained.walk.on = abilities & HEADER_WALK_PLACES != 0;
                 self.views.on = abilities & HEADER_VIEW_PLACES != 0;
                 self.views.slots_on = abilities & HEADER_SCENE_VIEWS != 0;
                 self.views.repeat_walk_on = self.views.slots_on && crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
@@ -294,7 +293,7 @@ impl Player {
             tag::INSTANCE_WALK if data.len() >= 4 => {
                 if self.retained_on && self.views.open().is_some() {
                     self.view_place(word(data, 0));
-                } else if self.retained_on && self.retained.walk.on {
+                } else if self.retained_on {
                     self.walk_place(word(data, 0));
                 }
             }
