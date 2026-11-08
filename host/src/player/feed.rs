@@ -7,14 +7,9 @@ use crate::stream_format::{
     HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
-/// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
-/// plugin before the third word.
+/// The generation of the reply memory that a `READ_PIXELS` record names.
 pub(crate) fn reply_generation(data: &[u8]) -> u32 {
-    if data.len() >= 12 {
-        word(data, 8)
-    } else {
-        0
-    }
+    word(data, 8)
 }
 
 /// The values of a `RETAINED_SCENE` record.

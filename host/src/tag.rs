@@ -138,7 +138,8 @@ pub fn least_length(tag: u32) -> usize {
         // The flags (`SCENE_END_*` of the plugin's `link.rs`).
         SCENE_END => 4,
         FRAME_EVENT => 8,
-        READ_PIXELS => 8,
+        // The request, the texture, the generation of the reply memory.
+        READ_PIXELS => 12,
         // The head of a call: kind, result, handle, the index of the data.
         CALL => 16,
         COMMAND => 16,
