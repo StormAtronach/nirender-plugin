@@ -161,6 +161,7 @@ impl Player {
             l.vertices as f64 / frames,
             l.indexes as f64 / frames
         );
+        println!("draw calls joined into the call before them (the buckets that set nothing new): {:.1} a frame, {:.1}% of the pairs", l.calls as f64 / frames, 100.0 * l.calls as f64 / j.pairs.max(1) as f64);
         println!("shown list: {} lists of the main view, {} instances in them", r.shown_lists, r.shown_ids);
         println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
         let (entries, entry_stages) = self.retained.effect_entry_counts();

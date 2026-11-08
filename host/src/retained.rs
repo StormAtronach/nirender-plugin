@@ -271,6 +271,8 @@ pub struct LeftOut {
     pub stencils: u64,
     pub vertices: u64,
     pub indexes: u64,
+    /// The buckets that joined the call of the bucket before them (4B).
+    pub calls: u64,
 }
 
 /// What the draws of one [`draw_retained`] have set in the pass: a set that would repeat the
@@ -293,6 +295,33 @@ impl BoundDraw {
         }
         *bound = Some(value);
         true
+    }
+}
+
+/// The arguments of the indirect call that waits for the buckets that join it: `count` arguments from
+/// `start` in the list of arguments. A count of 0 is no call.
+#[derive(Default)]
+struct CallRun {
+    start: usize,
+    count: usize,
+}
+
+impl CallRun {
+    /// Whether a bucket whose arguments begin at `start` can join the call: there is a call, and the
+    /// bucket's arguments follow its arguments.
+    fn extends(&self, start: usize) -> bool {
+        self.count > 0 && self.start + self.count == start
+    }
+
+    fn open(&mut self, start: usize, count: usize) {
+        (self.start, self.count) = (start, count);
+    }
+
+    /// The call to make now (its first argument and its count), if there is one. The run is then empty.
+    fn take(&mut self) -> Option<(usize, usize)> {
+        let call = (self.count > 0).then_some((self.start, self.count));
+        self.count = 0;
+        call
     }
 }
 
@@ -1674,6 +1703,13 @@ impl Renderer {
         set.counts.buckets = set.buckets.len() as u32;
     }
 
+    /// Makes the indirect call of a run of buckets: `call` is the first argument and the count.
+    fn draw_run(&mut self, pass: &mut wgpu::RenderPass<'static>, (start, count): (usize, usize)) {
+        pass.multi_draw_indexed_indirect(&self.indirect_buffer, (start * ARGS_SIZE) as u64, count as u32);
+        self.counts.indirect_calls += 1;
+        self.counts.indirect_draws += count as u32;
+    }
+
     /// Writes the lights of the retained instances, as the shade of the extension made them
     /// for the frame.
     pub fn upload_retained_lights(&self, lights: &[LightData]) {
@@ -1706,6 +1742,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
     let clock = crate::ticks::Clock::now();
     let mut probe = JoinProbe::default();
     let mut bound = BoundDraw::default();
+    let mut run = CallRun::default();
     let mut arrays_bound = false;
     let mut stages_bound: Option<Rc<wgpu::BindGroup>> = None;
     let mut shared_bound = false;
@@ -1750,6 +1787,34 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
                 other => other,
             };
         }
+        // Scene slot 0 is the main view of the table; a replay has a slot of its own.
+        let origin = if view.scene_slot == 0 { crate::gpu::BindOrigin::Table } else { crate::gpu::BindOrigin::Replay };
+        let (vertices, indexes) = (Rc::as_ptr(&bucket.vertices) as usize, Rc::as_ptr(&bucket.indexes) as usize);
+        let stages = (renderer.tier == crate::request::TextureTier::C).then(|| renderer.stage_group(bucket.textures, bucket.samplers, view.target));
+        let stages_same = match &stages {
+            Some(group) => stages_bound.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, group)),
+            None => arrays_bound,
+        };
+        let direct = renderer.indirect && args.len() <= renderer.indirect_capacity;
+        // A bucket that would set nothing that the bucket before did not set draws with the same state: its
+        // arguments follow those of the bucket before in `args`, so one call draws both (D109 4B).
+        let repeats = bound.key == Some(key) && bound.stencil == Some(bucket.stencil) && bound.vertices == Some(vertices) && bound.indexes == Some(indexes) && stages_same;
+        if repeats && direct && run.extends(start) {
+            run.count += count;
+            let left_out = &mut set.counts.joins.left_out;
+            left_out.pipelines += 1;
+            left_out.stencils += 1;
+            left_out.vertices += 1;
+            left_out.indexes += 1;
+            left_out.calls += 1;
+            probe.note(&mut set.counts.joins, CallState { key, stencil: bucket.stencil, vertices, indexes, stages: stages_bound.clone() });
+            set.counts.calls += 1;
+            continue;
+        }
+        // The call of the run is made before the sets of this bucket, with the state it was built for.
+        if let Some(call) = run.take() {
+            renderer.draw_run(pass, call);
+        }
         if bound.key != Some(key) {
             let Some(pipeline) = renderer.pipeline(key) else {
                 args.truncate(start);
@@ -1770,11 +1835,8 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             pass.set_bind_group(0, &*renderer.frame_group, &[view.scene_slot * SCENE_SIZE as u32]);
             frame_bound = true;
         }
-        // Scene slot 0 is the main view of the table; a replay has a slot of its own.
-        let origin = if view.scene_slot == 0 { crate::gpu::BindOrigin::Table } else { crate::gpu::BindOrigin::Replay };
-        if renderer.tier == crate::request::TextureTier::C {
-            let group = renderer.stage_group(bucket.textures, bucket.samplers, view.target);
-            if !stages_bound.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &group)) {
+        if let Some(group) = stages {
+            if !stages_same {
                 pass.set_bind_group(1, &*group, &[]);
                 crate::gpu::note_array_bind(origin);
                 stages_bound = Some(group);
@@ -1785,11 +1847,8 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             crate::gpu::note_array_bind(origin);
             arrays_bound = true;
         }
-        probe.note(
-            &mut set.counts.joins,
-            CallState { key, stencil: bucket.stencil, vertices: Rc::as_ptr(&bucket.vertices) as usize, indexes: Rc::as_ptr(&bucket.indexes) as usize, stages: stages_bound.clone() },
-        );
-        if BoundDraw::change(&mut bound.vertices, Rc::as_ptr(&bucket.vertices) as usize) {
+        probe.note(&mut set.counts.joins, CallState { key, stencil: bucket.stencil, vertices, indexes, stages: stages_bound.clone() });
+        if BoundDraw::change(&mut bound.vertices, vertices) {
             pass.set_vertex_buffer(0, bucket.vertices.slice(..));
         } else {
             set.counts.joins.left_out.vertices += 1;
@@ -1799,15 +1858,13 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             pass.set_vertex_buffer(2, renderer.instance_buffer.slice(..));
             shared_bound = true;
         }
-        if BoundDraw::change(&mut bound.indexes, Rc::as_ptr(&bucket.indexes) as usize) {
+        if BoundDraw::change(&mut bound.indexes, indexes) {
             pass.set_index_buffer(bucket.indexes.slice(..), wgpu::IndexFormat::Uint16);
         } else {
             set.counts.joins.left_out.indexes += 1;
         }
-        if renderer.indirect && args.len() <= renderer.indirect_capacity {
-            pass.multi_draw_indexed_indirect(&renderer.indirect_buffer, (start * ARGS_SIZE) as u64, count as u32);
-            renderer.counts.indirect_calls += 1;
-            renderer.counts.indirect_draws += count as u32;
+        if direct {
+            run.open(start, count);
         } else {
             for a in &args[start..] {
                 pass.draw_indexed(a.first_index..a.first_index + a.index_count, a.base_vertex, a.first_instance..a.first_instance + 1);
@@ -1815,6 +1872,9 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             args.truncate(start);
         }
         set.counts.calls += 1;
+    }
+    if let Some(call) = run.take() {
+        renderer.draw_run(pass, call);
     }
     probe.end(&mut set.counts.joins);
     if view.sorted == Sorted::Only {
@@ -3394,6 +3454,46 @@ mod join_tests {
         let mut bound = None;
         let sets: Vec<bool> = [4, 4, 4, 7, 7, 4].into_iter().map(|stencil| BoundDraw::change(&mut bound, stencil)).collect();
         assert_eq!(sets, vec![true, false, false, true, false, true]);
+    }
+
+    /// The calls that the loop of `draw_retained` makes for buckets, as it decides them: a bucket joins
+    /// the run when it repeats the state and its arguments follow those of the run; `None` is a bucket
+    /// without a pipeline, which ends the run. Returns the calls (first argument, count).
+    fn calls_of(buckets: &[Option<(usize, usize, bool)>]) -> Vec<(usize, usize)> {
+        let (mut run, mut calls) = (CallRun::default(), Vec::new());
+        for bucket in buckets {
+            match *bucket {
+                Some((start, count, repeats)) if repeats && run.extends(start) => run.count += count,
+                Some((start, count, _)) => {
+                    calls.extend(run.take());
+                    run.open(start, count);
+                }
+                None => calls.extend(run.take()),
+            }
+        }
+        calls.extend(run.take());
+        calls
+    }
+
+    /// Buckets that repeat the state join the call before them, with their arguments in the same
+    /// order: the calls together draw the arguments 0..9 once each, one after the other.
+    #[test]
+    fn buckets_that_repeat_the_state_join_one_call_and_keep_the_arguments_in_order() {
+        let buckets = [Some((0, 2, false)), Some((2, 3, true)), Some((5, 1, true)), Some((6, 2, false)), Some((8, 1, true))];
+        let calls = calls_of(&buckets);
+        assert_eq!(calls, vec![(0, 6), (6, 3)]);
+        let drawn: Vec<usize> = calls.iter().flat_map(|&(start, count)| start..start + count).collect();
+        assert_eq!(drawn, (0..9).collect::<Vec<_>>());
+    }
+
+    /// A bucket without a pipeline ends the run: the bucket after it opens a call, even when it repeats
+    /// the state. So does a bucket whose arguments do not follow the run's (the arguments of a bucket
+    /// before it were cut out).
+    #[test]
+    fn a_bucket_without_a_pipeline_or_a_gap_in_the_arguments_ends_the_run() {
+        assert_eq!(calls_of(&[Some((0, 2, false)), Some((2, 1, true)), None, Some((3, 2, true)), Some((5, 1, true))]), vec![(0, 3), (3, 3)]);
+        assert_eq!(calls_of(&[Some((0, 2, false)), Some((4, 1, true))]), vec![(0, 2), (4, 1)]);
+        assert_eq!(calls_of(&[None, Some((0, 2, true))]), vec![(0, 2)]);
     }
 
     /// A zero is a value like any other: a pass starts with nothing set, not with a zero.
