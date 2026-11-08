@@ -225,6 +225,100 @@ pub struct RetainedCounts {
     pub shown_ids: u64,
     pub turn_seconds: f64,
     pub upload_seconds: f64,
+    /// The repeats between the draw calls of a view, and the time of [`draw_retained`].
+    pub joins: JoinCounts,
+}
+
+/// Runs of two or more draw calls in a row that one call could draw.
+#[derive(Default)]
+pub struct JoinRuns {
+    /// The calls that equal the call before them.
+    pub pairs: u64,
+    pub runs: u64,
+    /// The calls in the runs.
+    pub calls: u64,
+    pub longest: u64,
+}
+
+/// How the draw calls of a view repeat the state of the call before them (D109 gain 4): the
+/// sets that would repeat a bound value, and the runs of calls that repeat all of it. A bucket
+/// with no pipeline ends a run.
+#[derive(Default)]
+pub struct JoinCounts {
+    /// The calls that had a call before them in their view.
+    pub pairs: u64,
+    /// Of those calls: the same pipeline key, stencil reference, vertex buffer and index buffer as
+    /// the call before.
+    pub same_pipeline: u64,
+    pub same_stencil: u64,
+    pub same_vertices: u64,
+    pub same_indexes: u64,
+    /// Calls that repeat all four.
+    pub joins: JoinRuns,
+    /// Calls that repeat all four and the stage group of the call before (tier C only).
+    pub stage_joins: JoinRuns,
+    /// The ticks that [`draw_retained`] takes, from its first line to its last.
+    pub ticks: u64,
+}
+
+/// The state of a draw call that the next call may repeat.
+struct CallState {
+    key: PipelineKey,
+    stencil: u32,
+    vertices: usize,
+    indexes: usize,
+    stages: Option<Rc<wgpu::BindGroup>>,
+}
+
+/// Compares each draw call of a view with the call before it, into a [`JoinCounts`].
+#[derive(Default)]
+struct JoinProbe {
+    last: Option<CallState>,
+    run: u64,
+    stage_run: u64,
+}
+
+impl JoinProbe {
+    fn note(&mut self, counts: &mut JoinCounts, state: CallState) {
+        if let Some(last) = &self.last {
+            counts.pairs += 1;
+            let same = (last.key == state.key, last.stencil == state.stencil, last.vertices == state.vertices, last.indexes == state.indexes);
+            counts.same_pipeline += same.0 as u64;
+            counts.same_stencil += same.1 as u64;
+            counts.same_vertices += same.2 as u64;
+            counts.same_indexes += same.3 as u64;
+            let all = same.0 && same.1 && same.2 && same.3;
+            let stage = all && last.stages.as_ref().zip(state.stages.as_ref()).is_some_and(|(a, b)| Rc::ptr_eq(a, b));
+            Self::extend(&mut self.run, &mut counts.joins, all);
+            Self::extend(&mut self.stage_run, &mut counts.stage_joins, stage);
+        }
+        self.last = Some(state);
+    }
+
+    /// A bucket with no pipeline, or the end of the view: no call follows the call before.
+    fn end(&mut self, counts: &mut JoinCounts) {
+        Self::close(&mut self.run, &mut counts.joins);
+        Self::close(&mut self.stage_run, &mut counts.stage_joins);
+        self.last = None;
+    }
+
+    fn extend(run: &mut u64, runs: &mut JoinRuns, joins: bool) {
+        if joins {
+            runs.pairs += 1;
+            *run = if *run == 0 { 2 } else { *run + 1 };
+        } else {
+            Self::close(run, runs);
+        }
+    }
+
+    fn close(run: &mut u64, runs: &mut JoinRuns) {
+        if *run >= 2 {
+            runs.runs += 1;
+            runs.calls += *run;
+            runs.longest = runs.longest.max(*run);
+        }
+        *run = 0;
+    }
 }
 
 /// What an entry of the table's texture effects holds the stage of.
@@ -1564,6 +1658,8 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         return;
     }
     set.counts.views += 1;
+    let clock = crate::ticks::Clock::now();
+    let mut probe = JoinProbe::default();
     let mut arrays_bound = false;
     let mut stages_bound: Option<Rc<wgpu::BindGroup>> = None;
     let mut shared_bound = false;
@@ -1610,6 +1706,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         }
         let Some(pipeline) = renderer.pipeline(key) else {
             args.truncate(start);
+            probe.end(&mut set.counts.joins);
             continue;
         };
         pass.set_pipeline(&pipeline);
@@ -1633,6 +1730,10 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             crate::gpu::note_array_bind(origin);
             arrays_bound = true;
         }
+        probe.note(
+            &mut set.counts.joins,
+            CallState { key, stencil: bucket.stencil, vertices: Rc::as_ptr(&bucket.vertices) as usize, indexes: Rc::as_ptr(&bucket.indexes) as usize, stages: stages_bound.clone() },
+        );
         pass.set_vertex_buffer(0, bucket.vertices.slice(..));
         if !shared_bound {
             pass.set_vertex_buffer(1, renderer.defaults.slice(..));
@@ -1652,11 +1753,13 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         }
         set.counts.calls += 1;
     }
+    probe.end(&mut set.counts.joins);
     if view.sorted == Sorted::Only {
         set.kept_sorted = order;
     } else {
         set.order = order;
     }
+    set.counts.joins.ticks += clock.elapsed();
 }
 
 impl RetainedSet {
@@ -3282,4 +3385,45 @@ fn rewrite_index(text: &str, open: &str, call: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+
+    fn key(pipeline: u32) -> PipelineKey {
+        PipelineKey { fvf: pipeline, stride: 0, topology: 0, blend: [0; 3], depth: [0; 3], cull: 0, fill: 0, stencil: [0; 7], color_write: 0, samples: 1 }
+    }
+
+    fn state(pipeline: u32, stencil: u32) -> CallState {
+        CallState { key: key(pipeline), stencil, vertices: 1, indexes: 2, stages: None }
+    }
+
+    /// The calls A A A B B C: three pairs repeat all four (two runs, of 3 and 2 calls), and each of
+    /// the four is counted by itself.
+    #[test]
+    fn the_repeats_and_the_runs_of_a_view_are_counted() {
+        let (mut counts, mut probe) = (JoinCounts::default(), JoinProbe::default());
+        for (pipeline, stencil) in [(1, 0), (1, 0), (1, 0), (2, 0), (2, 0), (2, 1)] {
+            probe.note(&mut counts, state(pipeline, stencil));
+        }
+        probe.end(&mut counts);
+        assert_eq!((counts.pairs, counts.same_pipeline, counts.same_stencil, counts.same_vertices, counts.same_indexes), (5, 4, 4, 5, 5));
+        assert_eq!((counts.joins.pairs, counts.joins.runs, counts.joins.calls, counts.joins.longest), (3, 2, 5, 3));
+        assert_eq!(counts.stage_joins.pairs, 0, "no stage group in tiers A and B");
+    }
+
+    /// A bucket with no pipeline ends a run, and the first call of a view has no call before it.
+    #[test]
+    fn a_missing_pipeline_ends_a_run() {
+        let (mut counts, mut probe) = (JoinCounts::default(), JoinProbe::default());
+        for call in [Some(1), Some(1), None, Some(1), Some(1)] {
+            match call {
+                Some(pipeline) => probe.note(&mut counts, state(pipeline, 0)),
+                None => probe.end(&mut counts),
+            }
+        }
+        probe.end(&mut counts);
+        assert_eq!((counts.pairs, counts.joins.pairs, counts.joins.runs, counts.joins.calls, counts.joins.longest), (2, 2, 2, 4, 2));
+    }
 }
