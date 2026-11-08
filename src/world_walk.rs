@@ -84,7 +84,7 @@ unsafe fn walk_due(t: &MainThread, root: usize) -> bool {
     walk_due_for(crate::link_client::scene_kind_now(t), root)
 }
 
-/// [`walk_due`] for a scene of the kind `kind`. The scene record asks it at the scene's start
+/// `walk_due` for a scene of the kind `kind`. The scene record asks it at the scene's start
 /// (`SceneV1::repeat_walk`, with [`installed`]): the recording and the root's class do not
 /// change between the scene's start and the engine's walk of its root.
 ///
