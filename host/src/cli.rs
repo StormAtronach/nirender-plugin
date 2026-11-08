@@ -117,11 +117,12 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     for (tag, data) in &records {
         if *tag == tag::HEADER {
             (width, height) = (word(data, 0), word(data, 4));
-            // A capture of another stream format plays on: the gate's accepted captures are
-            // from before the number. The line says that the picture can differ.
+            // A capture of another stream format is refused, as a live helper refuses the
+            // plugin of another format (D131): its records do not mean what this build reads.
             let format = stream_format::header_format(data);
             if format != stream_format::STREAM_FORMAT {
-                println!("capture of the stream format {format} ({}); this build reads the format {}: the picture can differ", stream_format::header_build_id(data), stream_format::STREAM_FORMAT);
+                eprintln!("capture of the stream format {format} ({}); this build reads the format {}: make the capture again", stream_format::header_build_id(data), stream_format::STREAM_FORMAT);
+                std::process::exit(stream_format::EXIT_STREAM_FORMAT as i32);
             }
             break;
         }

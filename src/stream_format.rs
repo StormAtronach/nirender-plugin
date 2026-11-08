@@ -6,8 +6,7 @@
 //!
 //! The plugin writes the number into the HEADER record, the first record of the ring and of
 //! every capture file, after the plugin's build id. The live helper reads it before anything
-//! else and stops on a difference (`live::run`); a replay prints the difference and goes on,
-//! because the gate's accepted captures come from before the number existed.
+//! else and stops on a difference (`live::run`); a replay stops on a difference too (D131).
 //!
 //! Bump [`STREAM_FORMAT`] with a change of the meaning or the offset of a word of the ring
 //! head, of the start of the records, of a record tag's layout or meaning, or of the HEADER
