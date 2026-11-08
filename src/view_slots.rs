@@ -29,7 +29,7 @@
 //! view of the scene whose click draws the list (`NiClusterAccumulator::FinishAccumulating`
 //! 0x6CF0E0, called inside `NiCamera::Click` at 0x6CC895), and they come in that scene.
 
-use crate::link::{SCENE_FIRST_PERSON, SCENE_SHADOW_CASTERS, SCENE_SHADOW_VOLUME, SCENE_SORTED_ALPHA, SCENE_SPLASH, SCENE_UI};
+use crate::link::{SCENE_FIRST_PERSON, SCENE_SHADOW_CASTERS, SCENE_SHADOW_VOLUME, SCENE_SPLASH, SCENE_UI};
 use crate::ptr_hash::HashMap;
 pub use crate::stream_format::VIEW_SLOTS;
 
@@ -40,7 +40,7 @@ pub const RETIRE_FRAMES: u32 = 60;
 
 /// A scene of this kind is a scene of a view.
 pub fn is_view(kind: u32) -> bool {
-    !matches!(kind, SCENE_SHADOW_VOLUME | SCENE_SHADOW_CASTERS | SCENE_FIRST_PERSON | SCENE_UI | SCENE_SPLASH | SCENE_SORTED_ALPHA)
+    !matches!(kind, SCENE_SHADOW_VOLUME | SCENE_SHADOW_CASTERS | SCENE_FIRST_PERSON | SCENE_UI | SCENE_SPLASH)
 }
 
 /// The key of a view.
