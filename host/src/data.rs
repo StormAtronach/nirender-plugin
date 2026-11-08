@@ -354,6 +354,18 @@ pub(crate) struct Counts {
     pub(crate) instance_uploads_whole: u64,
     pub(crate) instance_upload_runs: u64,
     pub(crate) instance_upload_bytes: u64,
+    /// The counters of D109 gain 3, for the table's upload (`retained_upload`): the frames of
+    /// the case "changed" and their time, the time of the case "all" (its count is
+    /// `instance_uploads_whole`), the records that went up one write each and their bytes, the
+    /// entries of the changed and the moved slots, and the bytes of a run that are not such an
+    /// entry (the gap that a run writes again).
+    pub(crate) upload_changed_cases: u64,
+    pub(crate) upload_changed_seconds: f64,
+    pub(crate) upload_all_seconds: f64,
+    pub(crate) record_writes: u64,
+    pub(crate) record_write_bytes: u64,
+    pub(crate) instance_entries_moved: u64,
+    pub(crate) instance_gap_bytes: u64,
     /// The textures that came again for a handle with a slot of the arrays.
     pub(crate) textures_replaced: u32,
     /// The pinned textures whose last use went (their slot is free for another).

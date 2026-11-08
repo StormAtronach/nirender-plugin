@@ -1399,6 +1399,7 @@ impl Renderer {
         let room = set.slots.len().min(self.retained_records);
         set.dirty.retain(|&i| (i as usize) < room);
         set.moved.retain(|&i| (i as usize) < room);
+        let case_began = std::time::Instant::now();
         if all {
             let mut records = vec![0u8; room * RECORD_SIZE];
             let copy = &mut self.retained_instance_copy;
@@ -1415,6 +1416,7 @@ impl Renderer {
                 self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.retained_instance_copy[..]));
             }
             self.counts.instance_uploads_whole += 1;
+            self.counts.upload_all_seconds += case_began.elapsed().as_secs_f64();
             set.dirty.clear();
             set.moved.clear();
         } else if !switches().instance_upload_all {
@@ -1423,6 +1425,8 @@ impl Renderer {
             for &i in &set.dirty {
                 if let Some(slot) = set.slots[i as usize].as_ref() {
                     self.queue.write_buffer(&self.record_buffer, (i as usize * RECORD_SIZE) as u64, bytemuck::bytes_of(&slot.data));
+                    self.counts.record_writes += 1;
+                    self.counts.record_write_bytes += RECORD_SIZE as u64;
                 }
             }
             // The entries of the changed and the moved slots go into the copy, then up as runs:
@@ -1444,16 +1448,22 @@ impl Renderer {
             while k < set.moved.len() {
                 let first = set.moved[k] as usize;
                 let mut last = first;
+                let mut entries = 1;
                 k += 1;
                 while k < set.moved.len() && set.moved[k] as usize <= last + 1 + RUN_GAP {
                     last = set.moved[k] as usize;
+                    entries += 1;
                     k += 1;
                 }
                 let run = &copy[first..=last];
                 self.queue.write_buffer(&self.instance_buffer, (first * INSTANCE_SIZE) as u64, bytemuck::cast_slice(run));
                 self.counts.instance_upload_runs += 1;
                 self.counts.instance_upload_bytes += (run.len() * INSTANCE_SIZE) as u64;
+                self.counts.instance_entries_moved += entries as u64;
+                self.counts.instance_gap_bytes += ((run.len() - entries) * INSTANCE_SIZE) as u64;
             }
+            self.counts.upload_changed_cases += 1;
+            self.counts.upload_changed_seconds += case_began.elapsed().as_secs_f64();
             set.dirty.clear();
             set.moved.clear();
         } else {
