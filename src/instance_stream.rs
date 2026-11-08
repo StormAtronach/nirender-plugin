@@ -179,9 +179,7 @@ struct Instance {
     /// The generation of the tables at the last check of the handles.
     generation: u32,
     /// A skinned shape (an actor). In mode gpu the helper draws it from its table, and its
-    /// display sends its bones in each frame the engine displays it (`send_bones`); with
-    /// `NIRENDER_SKIN_TABLE=0` its draw carries the palette of its bones each frame, so it
-    /// stays on the draw records (never in the helper's table, never skipped).
+    /// display sends its bones in each frame the engine displays it (`send_bones`).
     skinned: bool,
     /// A controller on the shape or on one of its properties changes its geometry or its
     /// material (a morpher, a UV controller, a flip, alpha or colour controller): the
@@ -293,9 +291,6 @@ struct Tables {
     /// material, by the groups of words that changed (`material_stream::GROUP_NAMES`): what
     /// that note catches that no event reports.
     periodic_changes: [u64; crate::material_stream::GROUPS],
-    /// In mode gpu the helper draws the skinned instances from its table.
-    /// `NIRENDER_SKIN_TABLE=0` keeps them on the engine's display with a palette in each draw.
-    skin_table: bool,
     /// The bones of the instance in progress (`send_bones`), kept between the instances; the
     /// `INSTANCE_BONES` records, and the skinned instances hidden because their bones could
     /// not be made.
@@ -475,7 +470,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         effect_notes: 0,
         texture_notes: 0,
         periodic_changes: [0; crate::material_stream::GROUPS],
-        skin_table: crate::switches::on("NIRENDER_SKIN_TABLE") != Some(false),
         scratch_bones: Vec::new(),
         bone_records: 0,
         bone_failures: 0,
@@ -729,42 +723,6 @@ fn note_display(t: &mut Tables, shape: usize) {
     let Some(instance) = t.instances.get_mut(&shape) else { return };
     let shown = lists_main_view(t.scene_kind, t.scene_route).then_some(&mut t.shown);
     show_in_view(instance, t.scene_view, t.frame, shown);
-}
-
-/// The helper draws the skinned instances from its table: mode gpu, and the switch on.
-unsafe fn table_draws_skins(t: &Tables) -> bool {
-    t.mode == Some(Mode::Gpu) && t.skin_table
-}
-
-/// Whether the table draws the skinned instances (`NIRENDER_SKIN_TABLE`, `nirender.skinTable`).
-pub unsafe fn skin_table(mt: &MainThread) -> bool {
-    tables(mt).skin_table
-}
-
-/// Sets whether the table draws the skinned instances (`nirender.skinTable`) and returns
-/// the state before. Each skinned instance sends its record again at its next draw: on,
-/// `draw` marks it; off, its display clears the mark, and its draw sends the record without
-/// the table's flag, which takes it out of the helper's table.
-pub unsafe fn set_skin_table(mt: &MainThread, on: bool) -> bool {
-    let before = tables(mt).skin_table;
-    if on == before {
-        return before;
-    }
-    // Drain the cell worker's events first, as `set_mode` does.
-    crate::worker_events::drain();
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
-    t.skin_table = on;
-    // Write no mark here, as in `set_mode`: `draw` marks a skinned shape again at its next
-    // draw, and the display clears a stale mark when the table does not draw skins.
-    for instance in t.instances.values_mut() {
-        if !instance.skinned {
-            continue;
-        }
-        instance.sent = false;
-        instance.lights.clear();
-    }
-    before
 }
 
 /// True when the draw function of the instance is that of strips.
@@ -1491,8 +1449,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     }
     // A skinned shape's world matrix is the identity (the palette has the transforms), so
     // only its colours and its first record send the instance again. In mode gpu the table
-    // draws it with the bones of `send_bones`; with `NIRENDER_SKIN_TABLE=0` it stays on the
-    // draw records, with its palette in each draw.
+    // draws it with the bones of `send_bones`.
     let skinned = instance.skinned;
     // A sky instance goes as an `INSTANCE_DRAW` record at the place of the engine's draw (step
     // 2 of milestone 6): the helper draws it from its record there, in the stream's order. In
@@ -1500,7 +1457,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     // A particle instance goes the same way: its particles change every frame (step 2 of the
     // particles plan). A weather instance too: the drops blend, so they keep the stream's order.
     let at_place = sky_table_class(instance.class) || instance.class == CLASS_WEATHER_PARTICLES || instance.points;
-    let gpu = t.mode == Some(Mode::Gpu) && (!skinned || t.skin_table) && !at_place;
+    let gpu = t.mode == Some(Mode::Gpu) && !at_place;
     let rotation: [u32; 12] = core::array::from_fn(|i| world[i].to_bits());
     let stored: [u32; 3] = if skinned { [0; 3] } else { rd(shape, WORLD_TRANSLATION) };
     let bound: [f32; 4] = if skinned { [0.0; 4] } else { rd(shape, WORLD_BOUND) };
@@ -2212,8 +2169,8 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
     {
         let mut tables_open = tables(mt);
         let t = &mut *tables_open;
-        // Clear a stale mark here, on the shape the engine displays: `set_mode` and
-        // `set_skin_table` write no mark into kept shapes.
+        // Clear a stale mark here, on the shape the engine displays: `set_mode` writes no
+        // mark into kept shapes.
         if t.mode != Some(Mode::Gpu) {
             mark(shape, false);
             return false;
@@ -2241,10 +2198,6 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
             return false;
         }
         if let Some(instance) = t.instances.get_mut(&shape) {
-            if instance.skinned && !t.skin_table {
-                mark(shape, false);
-                return false;
-            }
             if instance.kind == 0 {
                 instance.kind = kind;
             }
@@ -2626,12 +2579,11 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained ({} live, {} skinned: the table draws them {}, {} bone records, {} left out of the main view's list with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records",
+        "instances: mode {}, {} retained ({} live, {} skinned, {} bone records, {} left out of the main view's list with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records",
         t.mode().name(),
         t.instances.len(),
         t.instances.values().filter(|i| i.live).count(),
         t.instances.values().filter(|i| i.skinned).count(),
-        if table_draws_skins(&t) { "yes" } else { "no" },
         t.bone_records,
         t.bone_failures,
         t.skin_scene_mixed,
