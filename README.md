@@ -166,8 +166,6 @@ The A/B:
 - `MGE_XE_ONE_DEPTH=1` draws the distant land and the game into one depth buffer, with an
   infinite far plane for every perspective projection of the world view (step 6 of the depth
   design; only with the reversed float depth). Off: depth step 6 stopped.
-- `NIRENDER_CONTROLLERS=0` keeps a shape with a controller on itself or on a property (a
-  morpher, a UV, flip, alpha or colour controller) on the engine's path (the rule before).
 - `NIRENDER_SKIN_TABLE=0` keeps the skinned shapes on the engine's display, with the palette
   of the bones in each draw (`nirender.skinTable`).
 - `NIRENDER_ANIMATION=view|shadows|all`: which actors animate (`nirender.animationPolicy`);

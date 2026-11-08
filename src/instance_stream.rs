@@ -129,17 +129,15 @@ impl Mode {
 }
 
 /// The reasons a shape is not retained, for the report.
-const REASON_CONTROLLER: usize = 0;
-const REASON_NODE_KIND: usize = 1;
-const REASON_PROPERTY_CONTROLLER: usize = 2;
-const REASON_LATER: usize = 3;
+const REASON_NODE_KIND: usize = 0;
+const REASON_LATER: usize = 1;
 /// The depth test of the shape is equal, greater, not equal or greater or equal: the draw
 /// depends on the depth of a draw before it, so its place in the order of the game matters.
-const REASON_DEPTH: usize = 4;
+const REASON_DEPTH: usize = 2;
 /// More nodes above the shape than the walk allows ([`crate::parent_chain::GUARD`]): the nodes
 /// beyond are unread, so the shape stays on the engine's path.
-const REASON_CHAIN: usize = 5;
-const REASONS: usize = 6;
+const REASON_CHAIN: usize = 3;
+const REASONS: usize = 4;
 
 struct Instance {
     id: u32,
@@ -295,9 +293,6 @@ struct Tables {
     /// material, by the groups of words that changed (`material_stream::GROUP_NAMES`): what
     /// that note catches that no event reports.
     periodic_changes: [u64; crate::material_stream::GROUPS],
-    /// A shape with a controller on itself or on a property is retained as a live shape
-    /// (`NIRENDER_CONTROLLERS=0` rejects it).
-    controllers: bool,
     /// In mode gpu the helper draws the skinned instances from its table.
     /// `NIRENDER_SKIN_TABLE=0` keeps them on the engine's display with a palette in each draw.
     skin_table: bool,
@@ -480,7 +475,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         effect_notes: 0,
         texture_notes: 0,
         periodic_changes: [0; crate::material_stream::GROUPS],
-        controllers: crate::switches::on("NIRENDER_CONTROLLERS") != Some(false),
         skin_table: crate::switches::on("NIRENDER_SKIN_TABLE") != Some(false),
         scratch_bones: Vec::new(),
         bone_records: 0,
@@ -1159,7 +1153,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
         return;
     }
     let mut live = false;
-    if let Some(reason) = reject_reason(t, shape, property_state, &mut live) {
+    if let Some(reason) = reject_reason(shape, property_state, &mut live) {
         t.rejected.insert(shape);
         t.rejected_by[reason] += 1;
         return;
@@ -1200,14 +1194,11 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
 /// of shapes left on the engine's path: unfinished work, not a rule to keep (charter 1). `live`
 /// is set when a controller on the shape or on a property changes it.
 /// Engine-rules R1, R6, R7 (the skill wgpu-renderer-dev).
-unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, live: &mut bool) -> Option<usize> {
+unsafe fn reject_reason(shape: usize, property_state: usize, live: &mut bool) -> Option<usize> {
     // A controller on the shape changes its data (a morpher, a UV controller): the shape is
     // live. A controller on a node above only moves the shape, and `skipped_display` moves
     // the instance in place.
     if rd::<usize>(shape, CONTROLLERS) != 0 {
-        if !t.controllers {
-            return Some(REASON_CONTROLLER);
-        }
         *live = true;
     }
     let above = crate::parent_chain::first_answer(
@@ -1235,9 +1226,6 @@ unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, live: &
             let property: usize = rd(property_state, STATE_FIRST + slot * 4);
             if property != 0 && rd::<usize>(property, CONTROLLERS) != 0 {
                 // A flip, alpha or colour controller changes the material record: live.
-                if !t.controllers {
-                    return Some(REASON_PROPERTY_CONTROLLER);
-                }
                 *live = true;
             }
         }
@@ -1374,7 +1362,7 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
     let text: usize = rd(shape, 8);
     let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
     let mut live = false;
-    let reason = reject_reason(&tables(mt), shape, property_state, &mut live);
+    let reason = reject_reason(shape, property_state, &mut live);
     let (z_flags, z_function) = match if property_state != 0 { rd::<usize>(property_state, PS::propZBuffer) } else { 0 } {
         0 => (None, None),
         z => (Some(rd::<u16>(z, PROPERTY_FLAGS)), Some(rd::<u32>(z, ZP::testFunction))),
@@ -2290,7 +2278,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             let rechecks = &mut *RECHECKS.get(mt);
             rechecks[3] += 1;
             let mut live = false;
-            if reject_reason(t, shape, property_state, &mut live).is_some() {
+            if reject_reason(shape, property_state, &mut live).is_some() {
                 rechecks[4] += 1;
                 t.reject_pending(shape, true);
                 return false;
@@ -2628,7 +2616,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let (notes, clears) = CHANGES.get(mt).as_ref().map_or((0, 0), |notes| (notes.count, notes.clears));
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    let reasons = ["controller", "node kind", "property controller", "at the record", "depth function", "parent chain too long"];
+    let reasons = ["node kind", "at the record", "depth function", "parent chain too long"];
     let mut rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     let later = *LATER_BY.get(mt);
     if later.iter().any(|&n| n != 0) {
