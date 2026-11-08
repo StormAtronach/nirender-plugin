@@ -189,12 +189,9 @@ The A/B:
   default (`off`): the engine's records; the takeover of the drops is milestone 11.
 - `NIRENDER_CAPTURE_READS_MS=N`: the time in milliseconds for a capture's reads of the
   rendered textures, 500 by default, for a test of the stop (`src/own_host.rs`).
-- `NIRENDER_PACE=0`: no pacing of the game to the helper (`src/pacing.rs`). The pacing waits
-  at MWSE's start of a frame (native event 8, before the input of the frame) until the
-  helper will need the frame, so that the picture is as new as the helper allows. Without it
-  a frame waits about one frame of the helper in the ring.
-- `NIRENDER_PACE_LEAD_US=<n>`: the lead of the pacing in microseconds (default 200): the
-  frame is complete this long before the helper is free for it. For a test.
+- `NIRENDER_PACE_LEAD_US=<n>`: the lead of the pacing of the game to the helper
+  (`src/pacing.rs`) in microseconds (default 200): the frame is complete this long before the
+  helper is free for it. For a test.
 
 The instruments and the tests:
 
