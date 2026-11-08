@@ -152,7 +152,6 @@ The A/B:
   positions (the geometry line of the log).
 - `NIRENDER_GEOMETRY_CENSUS=1` counts the geometries sent again, by the controllers of their
   shape, and logs the census at each stream mark (`geometry_stream::census_take`).
-- `NIRENDER_SKIP=0` makes the engine display the retained shapes too.
 - `NIRENDER_LANDSCAPE=0`, `NIRENDER_ACTORS=0` and `NIRENDER_ANIMATED=0` keep that class on
   the engine's path.
 - `NIRENDER_NODE_KINDS=0` keeps a shape under a billboard, switch, level of detail, BSP,

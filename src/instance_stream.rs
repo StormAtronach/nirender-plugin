@@ -28,8 +28,7 @@
 //! In mode gpu the engine does not display a retained shape. The shape carries
 //! [`RETAINED_BIT`], and the ports of its `Display` call `skipped_display`, which does the
 //! checks of a draw and returns. The engine's traversal still reaches the shape, so the
-//! engine's draws stay the measure of its visibility. `NIRENDER_SKIP=0` keeps the engine's
-//! display.
+//! engine's draws stay the measure of its visibility.
 //!
 //! The handles of an instance get a check every `CHECK_FRAMES` frames, and at its next draw
 //! after a device texture goes away (`textures_changed`, `reset`). The transform and the
@@ -286,7 +285,6 @@ struct Tables {
     /// The displays the engine skipped, and the device values of the lights of the frame
     /// (built once a frame for each light, as the light manager builds its entry).
     skipped: u64,
-    skip: bool,
     /// The frame of the last `RETAINED_SCENE` record and its values; the skipped shapes
     /// whose own ambient light or fog differed from them.
     scene_frame: u32,
@@ -493,7 +491,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         shown: ShownList::new(),
         light_records: 0,
         skipped: 0,
-        skip: crate::switches::on("NIRENDER_SKIP") != Some(false),
         scene_frame: u32::MAX,
         scene_values: (0, None),
         scene_mixed: 0,
@@ -1607,9 +1604,7 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     if gpu {
         // The helper draws the instance: the changes of its lights, and the main view's list.
         // From now on the engine does not display the shape (`skipped_display`).
-        if t.skip {
-            mark(shape, true);
-        }
+        mark(shape, true);
         if instance.lights != lights || instance.ambient != ambient {
             instance.lights.clear();
             instance.lights.extend_from_slice(lights);
@@ -2058,14 +2053,14 @@ static COST_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool:
 static QUEUE_COUNTS: MainCell<[u64; 3]> = MainCell::new([0; 3]);
 
 /// True when a retained shape that the engine displays now may go into the engine's main
-/// sorted queue: mode gpu, the skip on, a capture running, a scene of the world camera. The
+/// sorted queue: mode gpu, a capture running, a scene of the world camera. The
 /// shape ports then push the shape's state and ask the renderer's accumulator, as the
 /// engine's display does (`NiTriShape::Display`); the queue sorts the table's blends with
 /// the engine's own, and its flush gives their places (`flush_place`).
 pub unsafe fn may_queue(mt: &MainThread) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
-    t.mode == Some(Mode::Gpu) && t.skip && capture::recording() && main_view_kind(t.scene_kind)
+    t.mode == Some(Mode::Gpu) && capture::recording() && main_view_kind(t.scene_kind)
 }
 
 /// True in a scene of [`Route::Places`].
@@ -2271,7 +2266,7 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
             mark(shape, false);
             return false;
         }
-        if !t.skip || !capture::recording() {
+        if !capture::recording() {
             return false;
         }
         FRAME_DISPLAYS.get(mt).count(t.scene_route);
