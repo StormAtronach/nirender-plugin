@@ -192,8 +192,6 @@ The A/B:
   default (`off`): the engine's records; the takeover of the drops is milestone 11.
 - `NIRENDER_MAP_FOG=0`: the engine reads the fog of war of the local map from the GPU; by
   default the plugin keeps a CPU copy (`src/map_fog.rs`).
-- `NIRENDER_READ_CACHE=0` turns off the cache of the reads of rendered textures
-  (`src/own_host.rs`).
 - `NIRENDER_CAPTURE_READS_MS=N`: the time in milliseconds for a capture's reads of the
   rendered textures, 500 by default, for a test of the stop (`src/own_host.rs`).
 - `NIRENDER_PACE=0`: no pacing of the game to the helper (`src/pacing.rs`). The pacing waits

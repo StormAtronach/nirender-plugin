@@ -638,7 +638,7 @@ unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool
         *FAILED_READS.get(lock) += 1;
         return false;
     };
-    let cacheable = target != 0 && read_cache_on() && texture_of(CURRENT_TARGET.load(Ordering::Relaxed)) != target;
+    let cacheable = target != 0 && texture_of(CURRENT_TARGET.load(Ordering::Relaxed)) != target;
     if cacheable {
         if let Some(kept) = READ_CACHE.get(lock).get(&target) {
             if kept.len() == memory.len() {
@@ -688,12 +688,6 @@ unsafe fn read_target(lock: &DeviceLock, target: u32, into: &mut Object) -> bool
 /// current target gives and keeps no read.
 static READ_CACHE: LockCell<std::collections::BTreeMap<u32, Vec<u8>>> = LockCell::new(std::collections::BTreeMap::new());
 static CACHED_READS: LockCell<u32> = LockCell::new(0);
-
-/// `NIRENDER_READ_CACHE=0` turns the cache of the reads off, for an A/B.
-fn read_cache_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| crate::switches::on("NIRENDER_READ_CACHE") != Some(false))
-}
 
 /// Something can draw into `target` (a texture handle, or 0): its read is not kept.
 fn forget_read(lock: &DeviceLock, target: u32) {
@@ -1221,11 +1215,10 @@ pub unsafe fn report() -> String {
         sizes.push_str(&format!(" {width}x{height}{}: {count} reads, {:.1} ms;", if *back { " (back buffer)" } else { "" }, *ticks as f64 * 1000.0 / per_second));
     }
     format!(
-        "own host: {} pixel reads from the host program, {} failed, by target size:{sizes} {} reads from the kept pixels{}; device calls without a call of the link, taken and not done:{text}",
+        "own host: {} pixel reads from the host program, {} failed, by target size:{sizes} {} reads from the kept pixels; device calls without a call of the link, taken and not done:{text}",
         *PIXEL_READS.get(&lock),
         *FAILED_READS.get(&lock),
         *CACHED_READS.get(&lock),
-        if read_cache_on() { "" } else { " (NIRENDER_READ_CACHE=0)" }
     )
 }
 
