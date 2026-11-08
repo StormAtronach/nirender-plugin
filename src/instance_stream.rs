@@ -1700,23 +1700,11 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     true
 }
 
-/// How a move of a sent instance goes (`NIRENDER_COMPACT_MOVES`): as `INSTANCE_MOVE` (the
-/// default); as the whole `INSTANCE` record (`0`, as before, for the A/B); or both (`check`:
-/// the helper compares the values of the two).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CompactMoves {
-    On,
-    Off,
-    Check,
-}
-
-fn compact_moves() -> CompactMoves {
-    static MODE: std::sync::OnceLock<CompactMoves> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match crate::switches::choice("NIRENDER_COMPACT_MOVES", &["0", "1", "check"]) {
-        Some("0") => CompactMoves::Off,
-        Some("check") => CompactMoves::Check,
-        _ => CompactMoves::On,
-    })
+/// A move of a sent instance goes as `INSTANCE_MOVE`; with `NIRENDER_COMPACT_MOVES=check` also
+/// as the whole `INSTANCE` record, and the helper compares the values of the two.
+fn compact_moves_check() -> bool {
+    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHECK.get_or_init(|| crate::switches::choice("NIRENDER_COMPACT_MOVES", &["1", "check"]) == Some("check"))
 }
 
 /// Sends the `INSTANCE_MOVE` record of a sent instance: its rotation, its exact translation,
@@ -2540,8 +2528,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         // space: the record says so whether or not a draw happened this frame. A move of a
         // sent instance with the same colours and space goes as the compact record.
         let relative = crate::camera_space::own();
-        let moves = compact_moves();
-        let move_only = instance.sent && !colours_changed && instance.relative == relative && moves != CompactMoves::Off;
+        let move_only = instance.sent && !colours_changed && instance.relative == relative;
         instance.sent = true;
         instance.relative = relative;
         let exact_end = capture::ticks();
@@ -2549,7 +2536,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             send_move(instance, exact);
             (*RECORD_COUNTS.get(mt))[RC_COMPACT_MOVES] += 1;
         }
-        if !move_only || moves == CompactMoves::Check {
+        if !move_only || compact_moves_check() {
             send_instance(mt, shape, instance, exact, relative);
         }
         t.records += 1;

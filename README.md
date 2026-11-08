@@ -141,9 +141,9 @@ under the home folder.
 The A/B:
 
 - `NIRENDER_PORT_TIMING=1` times each live port call.
-- `NIRENDER_COMPACT_MOVES=0` sends a move of a retained instance as the whole `INSTANCE`
-  record, as before `INSTANCE_MOVE`; `check` sends both, and the helper counts the moves whose
-  values differ from the full record's.
+- `NIRENDER_COMPACT_MOVES=check` sends a move of a retained instance as `INSTANCE_MOVE` and as
+  the whole `INSTANCE` record, and the helper counts the moves whose values differ from the
+  full record's.
 - `NIRENDER_UV_STEPS=0` sends a geometry under a UV controller whole at each new revision,
   as before `GEOMETRY_UV`; `check` sends both, and the plugin compares the step from the sent
   coordinates with the engine's (the geometry line of the log).
