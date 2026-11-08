@@ -172,18 +172,23 @@ pub struct ViewKey {
     /// The number of the place of the full tier, 0 to 3; `None` for a view that has none (the
     /// main view, a view without options or without a place).
     pub place: Option<u8>,
+    /// How many scenes of the same place came before this one in the frame (0 for the first).
+    /// The host counts them, so that every kind of call of one scene names the same repeat,
+    /// whatever kinds the scene skips: an extension gives a repeat a spare set of its own by
+    /// (place, repeat) (D82 R2).
+    pub repeat: u8,
 }
 
 impl ViewKey {
     /// The main view of a frame.
-    pub const MAIN: ViewKey = ViewKey { slot: 0, kind: ViewKind::Main, place: None };
+    pub const MAIN: ViewKey = ViewKey { slot: 0, kind: ViewKind::Main, place: None, repeat: 0 };
 
     /// The key of a view of its own from the plugin's view slot of its scene (0 to 31) and its
     /// place of the full tier. Slot 0 is the main view's, so the key counts from 1; a scene
     /// without a slot (an older plugin) has no options, so it gets no parts and its key is not
     /// used.
-    pub fn of_view(view_slot: Option<u32>, kind: ViewKind, place: Option<u8>) -> ViewKey {
-        ViewKey { slot: view_slot.map_or(0, |slot| slot + 1), kind, place }
+    pub fn of_view(view_slot: Option<u32>, kind: ViewKind, place: Option<u8>, repeat: u8) -> ViewKey {
+        ViewKey { slot: view_slot.map_or(0, |slot| slot + 1), kind, place, repeat }
     }
 }
 
@@ -265,12 +270,13 @@ mod tests {
     /// The key of a view of its own is not the main view's, and the slots stay apart.
     #[test]
     fn a_view_of_its_own_has_a_key_of_its_own() {
-        let first = ViewKey::of_view(Some(0), ViewKind::Picture, Some(2));
-        assert_eq!(first, ViewKey { slot: 1, kind: ViewKind::Picture, place: Some(2) });
+        let first = ViewKey::of_view(Some(0), ViewKind::Picture, Some(2), 0);
+        assert_eq!(first, ViewKey { slot: 1, kind: ViewKind::Picture, place: Some(2), repeat: 0 });
         assert_ne!(first, ViewKey::MAIN);
-        assert_ne!(ViewKey::of_view(Some(1), ViewKind::Picture, Some(2)), first);
-        assert_ne!(ViewKey::of_view(Some(0), ViewKind::OtherScreen, Some(2)), first);
-        assert_ne!(ViewKey::of_view(Some(0), ViewKind::Picture, Some(3)), first);
+        assert_ne!(ViewKey::of_view(Some(1), ViewKind::Picture, Some(2), 0), first);
+        assert_ne!(ViewKey::of_view(Some(0), ViewKind::OtherScreen, Some(2), 0), first);
+        assert_ne!(ViewKey::of_view(Some(0), ViewKind::Picture, Some(3), 0), first);
+        assert_ne!(ViewKey::of_view(Some(0), ViewKind::Picture, Some(2), 1), first);
     }
 
     /// A picture's pass has one sample whatever the frame has; the back buffer keeps the frame's.

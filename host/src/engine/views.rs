@@ -53,6 +53,8 @@ pub(crate) struct Group {
     view_slot: Option<u8>,
     /// The place of the full tier that the view holds in this scene (`FullTier::scene`).
     pub(crate) place: Option<u8>,
+    /// How many scenes of the same place came before this one in the frame ([`ViewKey::repeat`]).
+    pub(crate) repeat: u8,
     /// The runs of places: the ids with no other item between them.
     runs: Vec<Vec<u32>>,
     /// The places in the flush of the engine's queue, in their order of arrival.
@@ -317,7 +319,8 @@ impl Views {
         });
         let additions = view.additions(self.ui_seen).with(Additions::from_option_parts(grant.map_or(0, |grant| grant.parts)));
         let place = grant.map(|grant| grant.place);
-        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions, view_slot, place, ..Group::default() });
+        let repeat = place.map_or(0, |place| self.groups.iter().filter(|group| group.place == Some(place)).count().min(usize::from(u8::MAX)) as u8);
+        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions, view_slot, place, repeat, ..Group::default() });
         self.open = Some(self.groups.len() - 1);
         true
     }
@@ -740,11 +743,16 @@ mod tests {
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert_eq!(views.group(1).unwrap().place, Some(0));
         assert_eq!(views.tier.counts.repeats, 1);
+        // The repeat names how many scenes of its place came before it in the frame; the first
+        // scene and a scene of another place name 0.
+        assert_eq!(views.group(0).unwrap().repeat, 0);
+        assert_eq!(views.group(1).unwrap().repeat, 1);
         // A scene that is no repeat: slot 7 takes the free place.
         views.note_scene(Some(7), 20, 200, 7);
         views.note_repeat_walk(&record_with_word(0));
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert_eq!(views.group(2).unwrap().place, Some(1));
+        assert_eq!(views.group(2).unwrap().repeat, 0);
         // A stream of the format 6 reads the word as nothing, and so does a first slot past the table.
         views.repeat_walk_on = false;
         views.note_repeat_walk(&record_with_word(4));
