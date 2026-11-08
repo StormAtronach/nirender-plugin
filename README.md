@@ -161,9 +161,8 @@ The A/B:
   sends the engine's projection of each texture effect under a turning billboard, after the
   billboard's display, and clears the billboard's displayed flag. The helper compares it with
   its own (`host/src/effect_turn.rs`) and reports the largest difference by the pair of modes.
-- `NIRENDER_PARTICLES=off` keeps the particle systems on the engine's path (the rule before
-  2026-10-24). `nirender.particleDraws(false)` keeps them in the table but sends their draws
-  as the engine's records, live.
+- `nirender.particleDraws(false)` keeps the particle systems in the table but sends their
+  draws as the engine's records, live.
 - `MGE_XE_PARTICLE_QUADS=cpu` makes the quads of the particle systems on the CPU, not on the
   GPU.
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the

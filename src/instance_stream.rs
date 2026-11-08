@@ -1378,26 +1378,6 @@ pub fn set_weather_draws(on: bool) {
     WEATHER_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// The switch of the particle systems (`NIRENDER_PARTICLES`; milestone 5): 0 not read, 1 off
-/// (`off`: the engine's shape records), 2 the table (the default since step 5: a particle system
-/// in a world camera's scene is an instance whose draws go as `INSTANCE_PARTICLES` and
-/// `INSTANCE_DRAW` records at the places of the engine's draws).
-static PARTICLE_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-
-/// True when the table takes the particle systems.
-pub fn particle_table_on() -> bool {
-    use core::sync::atomic::Ordering::Relaxed;
-    let mode = match PARTICLE_MODE.load(Relaxed) {
-        0 => {
-            let mode = if crate::switches::choice("NIRENDER_PARTICLES", &["off", "on"]) == Some("off") { 1 } else { 2 };
-            PARTICLE_MODE.store(mode, Relaxed);
-            mode
-        }
-        mode => mode,
-    };
-    mode == 2
-}
-
 /// The draws of the particle instances go as `INSTANCE_DRAW` records (`nirender.particleDraws`;
 /// on when the table takes them): off, they go as the engine's shape records, for an A/B in one
 /// session.
@@ -2767,8 +2747,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + &{
             let engine = crate::shape_stream::engine_particle_records(mt);
             format!(
-                "particles: the table {}, draws as instance records {}; {} particle instances ({} made), {} draws as INSTANCE_DRAW records; as the engine's shape records {} in scenes of the world camera ({} frames), {} in other scenes\n",
-                if particle_table_on() { "on" } else { "off" },
+                "particles: draws as instance records {}; {} particle instances ({} made), {} draws as INSTANCE_DRAW records; as the engine's shape records {} in scenes of the world camera ({} frames), {} in other scenes\n",
                 if particle_draws() { "on" } else { "off" },
                 t.instances.values().filter(|i| i.points).count(),
                 t.particle_instances_made,
