@@ -103,6 +103,7 @@ type Filter = unsafe extern "system" fn(*mut ExceptionPointers) -> i32;
 extern "system" {
     fn OpenThread(access: u32, inherit: i32, thread_id: u32) -> isize;
     fn SuspendThread(thread: isize) -> u32;
+    fn ResumeThread(thread: isize) -> u32;
     fn GetThreadContext(thread: isize, context: *mut Context) -> i32;
     fn RtlCaptureContext(context: *mut Context);
     fn RtlCaptureStackBackTrace(skip: u32, count: u32, frames: *mut *mut c_void, hash: *mut u32) -> u16;
@@ -155,8 +156,17 @@ const STALL_EXCEPTION: u32 = 0xE04E_4953;
 /// CONTEXT_FULL of x64, the flags that `GetThreadContext` reads at byte 48 of the context.
 const CONTEXT_FULL: u32 = 0x10_000B;
 const CONTEXT_FLAGS_AT: usize = 48;
+/// CONTEXT_CONTROL of x64: Rip, Rsp and the flags, the least that a sample needs.
+const CONTEXT_CONTROL: u32 = 0x10_0001;
 /// THREAD_ALL_ACCESS.
 const THREAD_ALL_ACCESS: u32 = 0x1F_FFFF;
+/// THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION: what a sample needs.
+const THREAD_SAMPLE_ACCESS: u32 = 0x2 | 0x8 | 0x40;
+/// The samples of the frame thread's instruction pointer that a stall keeps.
+pub(crate) const SAMPLES_KEPT: usize = 16;
+/// The samples that go into the exception record of the dump: its information has 15 words,
+/// the first holds the phase.
+const SAMPLES_IN_RECORD: usize = 14;
 /// The filter's answer: the program ends.
 const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
 
@@ -314,25 +324,81 @@ unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
     EXCEPTION_EXECUTE_HANDLER
 }
 
-/// What the watchdog knows of a stalled step: the phase of the frame thread.
+/// What the watchdog knows of a stalled step: the phase of the frame thread and the last
+/// samples of its instruction pointer, the oldest first. A fixed size, so that nothing
+/// allocates while the frame thread is suspended.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StallEvidence {
     /// The number of the phase (`watchdog::Phase`).
     pub phase: u8,
+    pub count: usize,
+    pub samples: [usize; SAMPLES_KEPT],
+}
+
+impl StallEvidence {
+    /// Keeps `rip` as the newest sample; the oldest goes when [`SAMPLES_KEPT`] are held.
+    pub(crate) fn push(&mut self, rip: usize) {
+        if self.count < SAMPLES_KEPT {
+            self.samples[self.count] = rip;
+            self.count += 1;
+        } else {
+            self.samples.copy_within(1.., 0);
+            self.samples[SAMPLES_KEPT - 1] = rip;
+        }
+    }
+
+    /// The samples held, the oldest first.
+    pub(crate) fn held(&self) -> &[usize] {
+        &self.samples[..self.count]
+    }
 }
 
 /// The exception record of a stall dump: the code, the place of the frame thread, and in the
-/// first information word the phase.
+/// information words the phase (word 0) and the newest samples, the oldest first (words 1 to 14).
 fn stall_record(rip: usize, evidence: &StallEvidence) -> ExceptionRecord {
-    let mut record = ExceptionRecord { code: STALL_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 1, information: [0; 15] };
+    let mut record = ExceptionRecord { code: STALL_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 0, information: [0; 15] };
+    let held = evidence.held();
+    let newest = &held[held.len().saturating_sub(SAMPLES_IN_RECORD)..];
     record.information[0] = evidence.phase as usize;
+    record.information[1..=newest.len()].copy_from_slice(newest);
+    record.parameters = 1 + newest.len() as u32;
     record
+}
+
+/// The handle with which the frame thread `thread` is sampled, or 0 when it cannot be opened.
+pub(crate) fn open_for_samples(thread: u32) -> isize {
+    // SAFETY: the id is of a thread of this process; the call has no other argument that can fail
+    // in a way that matters (a refused open gives 0).
+    unsafe { OpenThread(THREAD_SAMPLE_ACCESS, 0, thread) }
+}
+
+/// The instruction pointer of the thread behind `handle` now. The thread stays suspended only
+/// for the call of `GetThreadContext`: the function holds no lock, allocates nothing and
+/// prints nothing between the suspend and the resume, so that a thread suspended inside an
+/// allocation or a print cannot make the caller wait for it.
+pub(crate) fn sample_rip(handle: isize) -> Option<usize> {
+    if handle == 0 {
+        return None;
+    }
+    let mut context = Context([0; 1232]);
+    context.0[CONTEXT_FLAGS_AT..CONTEXT_FLAGS_AT + 4].copy_from_slice(&CONTEXT_CONTROL.to_le_bytes());
+    // SAFETY: the handle is of a thread of this process that was opened with the sample access;
+    // the context has the size and the alignment of CONTEXT with its flags set. A suspend that
+    // fails leaves nothing to resume.
+    unsafe {
+        if SuspendThread(handle) == u32::MAX {
+            return None;
+        }
+        let taken = GetThreadContext(handle, &mut context) != 0;
+        ResumeThread(handle);
+        taken.then(|| usize::from_le_bytes(context.0[RIP_AT..RIP_AT + 8].try_into().unwrap_or_default()))
+    }
 }
 
 /// Writes the minidump with the context of the stalled frame thread `frame_thread` as its
 /// exception (the code [`STALL_EXCEPTION`]), from the watchdog thread, so that a debugger
-/// opens it on the stalled thread, and ends the program with `exit_code`. The phase of
-/// `evidence` is in the exception record ([`stall_record`]). Everything that
+/// opens it on the stalled thread, and ends the program with `exit_code`. The phase and the
+/// samples of `evidence` are in the exception record ([`stall_record`]). Everything that
 /// allocates comes before the frame thread is suspended (the file, a thread that ends the
 /// program after [`STALL_DUMP_SECONDS`]): a thread suspended inside an allocation or a print
 /// holds its lock. After the suspend: the dump to the raw handle, one fixed line to the raw
@@ -517,11 +583,83 @@ mod tests {
     }
 
     #[test]
-    fn the_stall_record_carries_the_phase() {
-        let record = stall_record(0xABC, &StallEvidence { phase: 2 });
-        assert_eq!((record.code, record.address as usize, record.parameters), (STALL_EXCEPTION, 0xABC, 1));
-        assert_eq!(record.information[0], 2);
-        assert!(record.information[1..].iter().all(|&word| word == 0));
+    fn the_evidence_keeps_the_newest_samples_oldest_first() {
+        let mut evidence = StallEvidence::default();
+        assert!(evidence.held().is_empty());
+        for rip in 1..=SAMPLES_KEPT + 3 {
+            evidence.push(rip);
+        }
+        assert_eq!(evidence.held(), &(4..=SAMPLES_KEPT + 3).collect::<Vec<usize>>()[..]);
+    }
+
+    #[test]
+    fn the_stall_record_carries_the_phase_and_the_newest_14_samples() {
+        let mut evidence = StallEvidence { phase: 2, ..StallEvidence::default() };
+        for rip in 100..100 + 5 {
+            evidence.push(rip);
+        }
+        let record = stall_record(0xABC, &evidence);
+        assert_eq!((record.code, record.address as usize, record.parameters), (STALL_EXCEPTION, 0xABC, 6));
+        assert_eq!(&record.information[..6], &[2, 100, 101, 102, 103, 104]);
+        assert!(record.information[6..].iter().all(|&word| word == 0));
+        // 16 samples do not fit the 15 words: the phase and the newest 14.
+        let mut full = StallEvidence { phase: 6, ..StallEvidence::default() };
+        for rip in 1..=SAMPLES_KEPT {
+            full.push(rip);
+        }
+        let record = stall_record(1, &full);
+        assert_eq!(record.parameters, 15);
+        assert_eq!(record.information[0], 6);
+        assert_eq!((record.information[1], record.information[14]), (3, SAMPLES_KEPT));
+    }
+
+    /// The sampler against two real threads: one that spins, one that waits. Prints the time of
+    /// a look, which the report of the sampler quotes.
+    #[test]
+    fn a_sample_of_a_busy_and_of_a_waiting_thread_names_a_module_and_costs_little() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Arc};
+        use std::time::{Duration, Instant};
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let (id_sender, id_receiver) = mpsc::channel();
+        let spinning = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                // SAFETY: a plain read of the id of this thread.
+                id_sender.send(unsafe { GetCurrentThreadId() }).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    core::hint::spin_loop();
+                }
+            })
+        };
+        let (wait_sender, wait_receiver) = mpsc::channel::<()>();
+        let (id_sender_2, id_receiver_2) = mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            // SAFETY: a plain read of the id of this thread.
+            id_sender_2.send(unsafe { GetCurrentThreadId() }).unwrap();
+            let _ = wait_receiver.recv();
+        });
+        for (name, id) in [("spinning", id_receiver.recv().unwrap()), ("waiting", id_receiver_2.recv().unwrap())] {
+            let handle = open_for_samples(id);
+            assert_ne!(handle, 0, "the {name} thread opens");
+            let mut worst = Duration::ZERO;
+            for _ in 0..50 {
+                let began = Instant::now();
+                let rip = sample_rip(handle).unwrap_or_else(|| panic!("the {name} thread gives its place"));
+                worst = worst.max(began.elapsed());
+                assert!(place(rip).contains('+'), "{name}: {} names a module", place(rip));
+            }
+            println!("a look at the {name} thread: the worst of 50 took {worst:?}");
+            // Far under a frame (16 ms); the limit leaves room for a busy test machine.
+            assert!(worst < Duration::from_millis(20), "{name}: {worst:?}");
+        }
+        stop.store(true, Ordering::Relaxed);
+        drop(wait_sender);
+        spinning.join().unwrap();
+        waiting.join().unwrap();
+        // No thread behind a handle of 0.
+        assert_eq!(sample_rip(0), None);
     }
 
     #[test]
