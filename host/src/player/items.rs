@@ -322,9 +322,7 @@ impl Player {
                     self.ask_frame();
                 }
                 let mut facts = self.world_facts(true);
-                // Only a stream that writes the places of the view groups draws the shapes of such
-                // a scene there.
-                facts.own_root = self.plan_now().main_other_root() && self.views.on;
+                facts.own_root = self.plan_now().main_other_root();
                 self.note_early_world_draws("the main view's world start");
                 self.items.push(Item::WorldStart(Box::new(facts)));
             }

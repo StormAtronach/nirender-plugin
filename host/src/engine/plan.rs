@@ -766,24 +766,11 @@ mod tests {
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
     }
 
-    /// A stream with no places of the view groups (a capture from before D82) has the camera
-    /// word but nothing to draw for an Isolate Subject frame: its scene stays another screen
-    /// and starts no world.
+    /// An Isolate Subject frame (another screen with the world camera) is a main view.
     #[test]
-    fn an_old_format_isolate_frame_starts_no_world() {
-        let kind_of = |views: &Views| ViewKind::classify(false, views.camera_is_world(SCENE_OTHER, 7, 7));
-        let old = Views::default();
-        let mut plan = Plan::default();
-        assert_eq!(plan.scene_begin_view(SCENE_OTHER, kind_of(&old)), vec![]);
-        assert!(!plan.main_other_root());
-        assert_eq!(plan.view_first_place(true, true), vec![]);
-        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
-        assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
-        assert!(!plan.world_begun);
-        // The same frame in a stream with the places is a main view.
-        let mut new = Views::default();
-        new.on = true;
-        assert_eq!(kind_of(&new), ViewKind::Main);
+    fn an_isolate_frame_is_a_main_view() {
+        let views = Views::default();
+        assert_eq!(ViewKind::classify(false, views.camera_is_world(SCENE_OTHER, 7, 7)), ViewKind::Main);
     }
 
     /// The additions of MGE XE are the main view's: another screen, a picture and a frame

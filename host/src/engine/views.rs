@@ -176,8 +176,6 @@ struct SlotCounts {
 /// The views of a frame.
 #[derive(Debug, Default)]
 pub(crate) struct Views {
-    /// The head of the stream says that the plugin writes the places.
-    pub(crate) on: bool,
     groups: Vec<Group>,
     /// The group of the scene in progress.
     open: Option<usize>,
@@ -287,12 +285,9 @@ impl Views {
     }
 
     /// The camera of a scene is the world camera: the scene is one of the world camera's
-    /// scenes, or a [`scene::SCENE_OTHER`] with the world camera `world_camera`. The second
-    /// case needs the places of the view groups in the stream (`on`): a stream without them
-    /// (a capture from before D82) has no shapes to draw for such a scene, so the plan keeps
-    /// treating it as another screen.
+    /// scenes, or a [`scene::SCENE_OTHER`] with the world camera `world_camera`.
     pub(crate) fn camera_is_world(&self, kind: u32, camera: u32, world_camera: u32) -> bool {
-        scene::world_camera(kind) || (self.on && kind == scene::SCENE_OTHER && camera != 0 && camera == world_camera)
+        scene::world_camera(kind) || (kind == scene::SCENE_OTHER && camera != 0 && camera == world_camera)
     }
 
     /// The start of a scene. `in_target`: the game draws into a rendered texture of the helper;
@@ -305,7 +300,7 @@ impl Views {
         if kind == scene::SCENE_UI {
             self.ui_seen = true;
         }
-        if !self.on || !(in_target || kind == scene::SCENE_OTHER) {
+        if !(in_target || kind == scene::SCENE_OTHER) {
             return false;
         }
         let view = ViewKind::classify(in_target, camera_is_world);
@@ -443,16 +438,12 @@ mod tests {
     use super::*;
     use crate::engine::scene::{SCENE_FIRST_PERSON, SCENE_OTHER, SCENE_UI, SCENE_WORLD};
 
-    fn on() -> Views {
-        Views { on: true, ..Views::default() }
-    }
-
     /// The scenes of a save's picture: the world and the first person into the texture, then
     /// the main frame into the back buffer. Each target scene has a group; the back buffer's
     /// world scene has none.
     #[test]
     fn a_scene_into_a_target_or_of_another_root_has_a_view_of_its_own() {
-        let mut views = on();
+        let mut views = Views::default();
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert!(views.group(0).unwrap().world_camera);
         assert_eq!(views.scene_end(), None);
@@ -465,15 +456,11 @@ mod tests {
         assert!(!views.scene_begin(SCENE_UI, false, false));
         // A mod's subject on another root, into the back buffer.
         assert!(views.scene_begin(SCENE_OTHER, false, false));
-        // Without the header bit nothing changes.
-        let mut off = Views::default();
-        assert!(!off.scene_begin(SCENE_WORLD, true, true));
-        assert_eq!(off.place(5, true, false), Place::Outside);
     }
 
     #[test]
     fn the_places_of_a_scene_draw_in_runs_and_its_sorted_places_at_the_flush() {
-        let mut views = on();
+        let mut views = Views::default();
         views.scene_begin(SCENE_WORLD, true, true);
         views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [2.0; 16], origin: None, target_size: (128, 128) });
         views.note_facts(|| ViewFacts { view: [3.0; 16], projection: [3.0; 16], origin: None, target_size: (1, 1) });
@@ -572,7 +559,7 @@ mod tests {
     /// places of the full tier. The view over the number and the main view get none.
     #[test]
     fn a_view_with_options_gets_the_parts_of_the_full_tier() {
-        let mut views = on();
+        let mut views = Views::default();
         views.tier.options(3, 0b11);
         views.tier.options(4, 0b1);
         views.tier.options(0, 0b1);
@@ -598,7 +585,7 @@ mod tests {
     /// of another screen has the post cover of its kind, and no call of the picture's post.
     #[test]
     fn a_picture_with_shaders_has_the_post_chain() {
-        let mut views = on();
+        let mut views = Views::default();
         views.tier.options(3, 0b10000);
         views.note_scene(Some(3), 20, 200, 7);
         assert!(views.scene_begin(SCENE_WORLD, true, true));
@@ -640,7 +627,7 @@ mod tests {
     /// it; a texture is a picture.
     #[test]
     fn a_view_has_its_kind_and_additions() {
-        let mut views = on();
+        let mut views = Views::default();
         assert!(views.scene_begin(SCENE_OTHER, false, true));
         assert_eq!(views.group(0).unwrap().kind, ViewKind::Main);
         assert_eq!(views.group(0).unwrap().additions, Additions::ALL);
@@ -671,7 +658,7 @@ mod tests {
             }
             data
         };
-        let mut views = on();
+        let mut views = Views::default();
         views.note_scene_record(&record(4));
         assert!(views.scene_begin(SCENE_OTHER, true, false));
         assert_eq!(views.group(0).and_then(Group::view_slot), Some(3));
@@ -723,7 +710,7 @@ mod tests {
     /// no repeat.
     #[test]
     fn a_repeat_takes_the_place_of_its_first_slot() {
-        let mut views = on();
+        let mut views = Views::default();
         views.repeat_walk_on = true;
         views.tier.set_max(2);
         views.tier.options(3, 0b11);
