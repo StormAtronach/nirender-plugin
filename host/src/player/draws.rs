@@ -171,7 +171,8 @@ impl Player {
     /// main view's parts start the world.
     fn is_early_world_draw(&self, sky: bool, sky_hidden: bool, walk_marked: bool, held: bool) -> bool {
         let world_scene = self.views.open().is_some() || (self.target.is_none() && self.plan.scene_kind == scene::SCENE_WORLD);
-        crate::retained::world_draw_is_early(self.extension.is_some(), world_scene, held, sky, sky_hidden, walk_marked, self.view_sky_seen, self.view_world_begun)
+        let extension_world = self.extension.is_some() && world_scene;
+        crate::retained::world_draw_is_early(extension_world, held, sky, sky_hidden, walk_marked, self.view_sky_seen, self.view_world_begun)
     }
 
     /// The scene in progress starts its world for the extension (`at`): the draws of its world
