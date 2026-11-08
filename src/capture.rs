@@ -37,7 +37,7 @@ use crate::sync::{DeviceLock, LockCell};
 use crate::mem::rd;
 // The layout of the HEADER record and of the shared memories: their one home.
 use crate::stream_format::{
-    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_BITS,
+    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME,
     HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WORLD_WALK, MESSAGES_CAPACITY, MESSAGES_MEMORY, READ_EVENT, RECORDS_EVENT, TILES_MEMORY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_READ, MESSAGES_WRITTEN, REPLY_CAPACITY,
     REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_CAPACITY, RING_CLOSED, RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_READ,
     RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES, TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
@@ -61,7 +61,6 @@ fn header_abilities() -> u32 {
         | HEADER_WALK_PLACES
         | HEADER_VIEW_PLACES
         | HEADER_SCENE_VIEWS
-        | HEADER_VIEW_BITS
         | HEADER_SCENE_WIREFRAME
         | HEADER_ENVMAP_KNOWN
         | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
@@ -281,6 +280,11 @@ pub mod tag {
     /// The plugin forgot the chain of an effect that lit nothing for a while (`effect_chain`): its
     /// id. A later display sends the chain again.
     pub const EFFECT_CHAIN_GONE: u32 = 48;
+    /// The retained instances that the engine displayed in the main view since the last such
+    /// record (form D, stream format 8): the count, then the ids, each once.
+    /// It goes before `FRAME_END`, and before the `READ_PIXELS` record of a read of the back
+    /// buffer (`instance_stream::send_shown_list`).
+    pub const INSTANCE_SHOWN: u32 = 49;
 }
 
 // ---- the ring in shared memory
@@ -2080,6 +2084,16 @@ pub unsafe fn instance_state(id: u32, visible: bool, view: u8) {
     write(tag::INSTANCE_STATE, &[words(if view == 0 { &record[..2] } else { &record })]);
 }
 
+/// The bytes of an `INSTANCE_SHOWN` record. See [`tag::INSTANCE_SHOWN`].
+fn shown_record(ids: &[u32]) -> Vec<u8> {
+    [words(&[ids.len() as u32]), words(ids)].concat()
+}
+
+/// The main view's list of displays. See [`tag::INSTANCE_SHOWN`].
+pub unsafe fn instance_shown(ids: &[u32]) {
+    write(tag::INSTANCE_SHOWN, &[&shown_record(ids)]);
+}
+
 /// The flag of a `RETAINED_SCENE` record that carries the sun: the 26 words of the weather's
 /// sky light as the engine gives them to the device (`D3DLIGHT8`), after the fog.
 pub const SCENE_SUN: u32 = 64;
@@ -2585,12 +2599,14 @@ unsafe fn host_gone(lock: &DeviceLock) {
 }
 
 /// The game showed a frame.
-/// The records of a frame's end, in stream order: `FRAME_END`, then the retirements of the
-/// view slots that this Present freed. The helper runs the frame's items at `FRAME_END`, so a
-/// slot's retirement comes after the record at which its last items run (D82 design, 3.1
-/// rule 1), and before the next frame's first scene.
-fn frame_end_records(start: i64, end: i64, retired: &[u8]) -> Vec<(u32, Vec<u8>)> {
-    let mut records = vec![(tag::FRAME_END, [start.to_le_bytes(), end.to_le_bytes()].concat())];
+/// The records of a frame's end, in stream order: the main view's list (`INSTANCE_SHOWN`) when
+/// the frame has one, `FRAME_END`, then the retirements of the view slots that this Present
+/// freed. The helper runs the frame's items at `FRAME_END`, so the list comes before the main
+/// view's item runs, and a slot's retirement comes after the record at which its last items run
+/// (D82 design, 3.1 rule 1), and before the next frame's first scene.
+pub(crate) fn frame_end_records(start: i64, end: i64, shown: Option<&[u32]>, retired: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    let mut records: Vec<(u32, Vec<u8>)> = shown.map(|ids| (tag::INSTANCE_SHOWN, shown_record(ids))).into_iter().collect();
+    records.push((tag::FRAME_END, [start.to_le_bytes(), end.to_le_bytes()].concat()));
     for &slot in retired {
         records.push((tag::FRAME_EVENT, words(&[crate::link::EVENT_VIEW_RETIRE, slot as u32, 0]).to_vec()));
     }
@@ -2672,12 +2688,13 @@ unsafe fn frame_end(lock: &DeviceLock) {
         Phase::Record(left) => {
             overlay_tick(&lock);
             // The frame ends on the main thread, where the ports present; the proof says so.
-            let retired = match MainThread::here() {
+            let (shown, retired) = match MainThread::here() {
                 Some(t) => {
+                    let shown = crate::instance_stream::take_shown_list(&t);
                     crate::instance_stream::frame_tick(&t);
-                    crate::instance_stream::take_retired_views(&t)
+                    (shown, crate::instance_stream::take_retired_views(&t))
                 }
-                None => Vec::new(),
+                None => (None, Vec::new()),
             };
             // The options of a retired view end with it (`view_options`).
             for &slot in &retired {
@@ -2691,7 +2708,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 0 => end,
                 start => start,
             };
-            for (tag, record) in frame_end_records(start, end, &retired) {
+            for (tag, record) in frame_end_records(start, end, shown.as_deref(), &retired) {
                 write(tag, &[&record]);
             }
             FRAME_START.store(ticks(), Ordering::Relaxed);
@@ -2816,12 +2833,12 @@ mod tests {
     #[test]
     fn the_retirements_of_a_present_follow_the_frame_end() {
         use crate::link::EVENT_VIEW_RETIRE;
-        let records = frame_end_records(5, 9, &[3, 7]);
+        let records = frame_end_records(5, 9, None, &[3, 7]);
         assert_eq!(records.len(), 3);
         assert_eq!(records[0], (tag::FRAME_END, [5i64.to_le_bytes(), 9i64.to_le_bytes()].concat()));
         assert_eq!(records[1], (tag::FRAME_EVENT, bytes(&[EVENT_VIEW_RETIRE, 3, 0])));
         assert_eq!(records[2], (tag::FRAME_EVENT, bytes(&[EVENT_VIEW_RETIRE, 7, 0])));
-        assert_eq!(frame_end_records(5, 9, &[]).len(), 1);
+        assert_eq!(frame_end_records(5, 9, None, &[]).len(), 1);
     }
 
     /// The helper reads a copy's pixels after its arguments (`CALL_COPY_PIXELS`, feed.rs): the
