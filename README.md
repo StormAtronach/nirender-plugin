@@ -217,8 +217,6 @@ switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
   reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose for it.
 - `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
-- `MGE_XE_INSTANCE_UPLOAD=all`: the retained segment of the instances goes up whole when more
-  than 64 slots changed in a frame, as before the copy of `retained_upload`.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),
   over the setting of the extension.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting

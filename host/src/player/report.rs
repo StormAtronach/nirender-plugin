@@ -183,11 +183,10 @@ impl Player {
             c.uv_bases, c.uv_steps, c.uv_missing
         );
         println!(
-            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB{}",
+            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB",
             c.instance_uploads_whole,
             c.instance_upload_runs,
-            c.instance_upload_bytes as f64 / 1e6,
-            if switches().instance_upload_all { " (MGE_XE_INSTANCE_UPLOAD=all: the segment goes whole above 64 changed slots)" } else { "" }
+            c.instance_upload_bytes as f64 / 1e6
         );
         println!(
             "table upload (D109 gain 3): case changed {} frames, {:.3} s; case all {} frames, {:.3} s; {} record writes with {:.1} MB (record {} bytes, instance entry {} bytes); {} entries moved in {} runs, {:.1} MB of runs of which {:.1} MB gap",
