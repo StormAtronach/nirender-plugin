@@ -59,9 +59,6 @@ pub(crate) struct Switches {
     /// infinite far plane (`depth::one_buffer`). Temporary, for the test of step 6 of the depth
     /// design.
     pub(crate) one_depth: bool,
-    /// `MGE_XE_PARTICLE_QUADS=cpu`: the quads of the particle systems made on the CPU, as
-    /// before the compute pass of `particle_quads`: for its A/B.
-    pub(crate) particle_quads_cpu: bool,
     /// `MGE_XE_INSTANCE_UPLOAD=all`: the retained segment of the instances goes up whole when
     /// more than 64 slots changed in a frame, as before the copy of `retained_upload`: for its
     /// A/B.
@@ -128,7 +125,6 @@ impl Switches {
             samples: read.number::<u32>("MGE_XE_SAMPLES").map(|n| n.clamp(1, 8)),
             depth24: read.choice("MGE_XE_DEPTH_FORMAT", &["24", "32"]) == Some("24"),
             one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
-            particle_quads_cpu: read.choice("MGE_XE_PARTICLE_QUADS", &["cpu", "gpu"]) == Some("cpu"),
             instance_upload_all: read.choice("MGE_XE_INSTANCE_UPLOAD", &["all", "changed"]) == Some("all"),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
             wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),

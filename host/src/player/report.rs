@@ -208,7 +208,7 @@ impl Player {
         println!("skinned shapes {}, particle systems {} ({} of them from INSTANCE_PARTICLES records)", c.shape_skinned, c.shape_particles, c.instance_particles);
         match self.renderer.particle_quads_made() {
             Some((systems, particles)) => println!("particle quads made on the GPU: {systems} systems, {particles} particles"),
-            None => println!("particle quads made on the GPU: none ({})", if switches().particle_quads_cpu { "MGE_XE_PARTICLE_QUADS=cpu" } else { "no system yet" }),
+            None => println!("particle quads made on the GPU: none (no system yet)"),
         }
         println!("shapes held for the extension {}, {} of them lost waiting for a place in the sorted queue, {} that blend drawn at the end of the world scene", c.held, c.held_sorted_lost, c.held_sorted_fallback);
         println!("classes of the extension: {} calls at a draw of the class, {} calls in frames without a draw of the class", c.class_calls, c.class_calls_without_draw);

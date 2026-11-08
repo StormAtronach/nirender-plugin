@@ -156,8 +156,6 @@ The A/B:
   sends the engine's projection of each texture effect under a turning billboard, after the
   billboard's display, and clears the billboard's displayed flag. The helper compares it with
   its own (`host/src/effect_turn.rs`) and reports the largest difference by the pair of modes.
-- `MGE_XE_PARTICLE_QUADS=cpu` makes the quads of the particle systems on the CPU, not on the
-  GPU.
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
   adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
   `depth:` names the format in use).
@@ -207,8 +205,8 @@ The instruments and the tests:
   (`src/install.rs`); without them the test uses the paths of this machine.
 
 The helper's diagnostic and test switches (`host/src/switches.rs`, read once; none is a
-setting). The two of the A/B list above (`MGE_XE_PARTICLE_QUADS`, `MGE_XE_DEPTH_FORMAT`) are
-there too. MGE XE's own switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
+setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own
+switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 
 - `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode `dual`
   (and the engine's walk), the engine's own draws of the same capture: the reference of a
