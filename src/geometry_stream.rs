@@ -662,7 +662,7 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         if step {
             send_uv(stream, version.unique, &uv, false);
             *UV_STEPS.get(t) += 1;
-            if uv_mode() == UvMode::Check {
+            if uv_steps_check() {
                 check_uv(t, handle, geom_data, &uv);
             } else {
                 versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: Some(uv.set), morph: false });
@@ -808,7 +808,7 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         if let Some(sent) = versions(t).get_mut(&handle) {
             sent.uv_set = Some(uv.set);
         }
-        if uv_mode() == UvMode::Check {
+        if uv_steps_check() {
             keep_uv_base(t, handle, geom_data, &uv);
         }
     }
@@ -1059,29 +1059,18 @@ struct UvState {
     state: [f32; 4],
 }
 
-/// How a geometry under a UV controller goes (`NIRENDER_UV_STEPS`): its new revisions as the
-/// controller's state (the default); as whole geometries (`0`, as before); or both (`check`:
-/// the plugin compares the step from the last sent coordinates with the engine's).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum UvMode {
-    On,
-    Off,
-    Check,
-}
-
-fn uv_mode() -> UvMode {
-    static MODE: std::sync::OnceLock<UvMode> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match crate::switches::choice("NIRENDER_UV_STEPS", &["0", "1", "check"]) {
-        Some("0") => UvMode::Off,
-        Some("check") => UvMode::Check,
-        _ => UvMode::On,
-    })
+/// A new revision of a geometry under a UV controller goes as the controller's state; with
+/// `NIRENDER_UV_STEPS=check` also as the whole geometry, and the plugin compares the step from
+/// the last sent coordinates with the engine's.
+fn uv_steps_check() -> bool {
+    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHECK.get_or_init(|| crate::switches::choice("NIRENDER_UV_STEPS", &["1", "check"]) == Some("check"))
 }
 
 /// The UV controller of `shape` and its state, when it is the only controller of the shape,
 /// its target is the shape, the shape draws `geom_data`, and the data has its texture set.
 unsafe fn uv_controller(shape: usize, geom_data: usize) -> Option<UvState> {
-    if shape == 0 || uv_mode() == UvMode::Off {
+    if shape == 0 {
         return None;
     }
     let controller: usize = rd(shape, crate::gen::layouts::NiAVObject::controllers);
