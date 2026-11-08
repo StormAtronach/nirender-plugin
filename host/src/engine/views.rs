@@ -182,9 +182,6 @@ pub(crate) struct Views {
     /// The view slot of the scene record just read (`note_scene_record`), for the group of
     /// the scene's start.
     scene_slot: Option<u8>,
-    /// The scene records carry the word of the repeat and the walk (a stream format from `FORMAT_SCENE_REPEAT_WALK`). A capture of an older format has a
-    /// 0 there: the word then says nothing.
-    pub(crate) repeat_walk_on: bool,
     /// The scene in progress has the word and not the bit `SCENE_WALK_DUE`: the plugin does
     /// not walk its root, so no `EVENT_WORLD_WALK` follows. False for a scene record without
     /// the word, and before the first scene.
@@ -213,10 +210,10 @@ impl Views {
         self.note_scene(scene_view(data), word(8), word(12), target);
     }
 
-    /// The word of a scene record with the repeat and the walk (`repeat_walk_on`). A record
-    /// without the word has a walk that is due and no repeat.
+    /// The word of a scene record with the repeat and the walk. A record without the word has
+    /// a walk that is due and no repeat.
     pub(crate) fn note_repeat_walk(&mut self, data: &[u8]) {
-        let word = (self.repeat_walk_on && data.len() >= SCENE_WITH_VIEW).then(|| crate::data::word(data, SCENE_REPEAT_WALK_AT));
+        let word = (data.len() >= SCENE_WITH_VIEW).then(|| crate::data::word(data, SCENE_REPEAT_WALK_AT));
         self.scene_without_walk = word.is_some_and(|word| word & SCENE_WALK_DUE == 0);
         // A first slot past the table is a fault of the stream: no repeat.
         self.scene_first = word.map(|word| word & SCENE_REPEAT_MASK).filter(|&first| first != 0 && first as usize <= VIEW_SLOTS).map(|first| (first - 1) as u8);
@@ -670,12 +667,11 @@ mod tests {
         data
     }
 
-    /// The word says whether the plugin walks the scene's root, from the stream format 7. A
-    /// record of an older format, a record without the word and a stream without view slots
-    /// say nothing: the walk is due, as before.
+    /// The word says whether the plugin walks the scene's root. A record without the word says
+    /// nothing: the walk is due.
     #[test]
     fn the_word_of_a_scene_record_says_whether_its_walk_is_due() {
-        let mut views = Views { repeat_walk_on: true, ..Views::default() };
+        let mut views = Views::default();
         assert!(views.scene_walk_due(), "before any scene");
         views.note_repeat_walk(&record_with_word(SCENE_WALK_DUE));
         assert!(views.scene_walk_due());
@@ -689,24 +685,17 @@ mod tests {
         views.note_repeat_walk(&record_with_word(0));
         views.note_repeat_walk(&record_with_word(0)[..48]);
         assert!(views.scene_walk_due());
-        // The stream format 6 wrote 0 in the word: the walk is due.
-        views.repeat_walk_on = false;
-        views.note_repeat_walk(&record_with_word(0));
-        assert!(views.scene_walk_due());
         // `note_scene_record` takes the word too.
-        views.repeat_walk_on = true;
         views.note_scene_record(&record_with_word(0));
         assert!(!views.scene_walk_due());
     }
 
     /// A scene whose record names a first slot gets the place and the parts of that slot, not
-    /// a place of its own: a mirror that renders twice in a frame holds one place. The first
-    /// slot is read from the word only from the stream format 7, and a slot past the table is
-    /// no repeat.
+    /// a place of its own: a mirror that renders twice in a frame holds one place. A first slot
+    /// past the table is no repeat.
     #[test]
     fn a_repeat_takes_the_place_of_its_first_slot() {
         let mut views = Views::default();
-        views.repeat_walk_on = true;
         views.tier.set_max(2);
         views.tier.options(3, 0b11);
         views.tier.options(7, 0b11);
@@ -727,11 +716,7 @@ mod tests {
         views.note_repeat_walk(&record_with_word(0));
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert_eq!(views.group(2).unwrap().place, Some(1));
-        // A stream of the format 6 reads the word as nothing, and so does a first slot past the table.
-        views.repeat_walk_on = false;
-        views.note_repeat_walk(&record_with_word(4));
-        assert_eq!(views.scene_first, None);
-        views.repeat_walk_on = true;
+        // A first slot past the table is no repeat; the last slot of the table is one.
         views.note_repeat_walk(&record_with_word(VIEW_SLOTS as u32 + 1));
         assert_eq!(views.scene_first, None);
         views.note_repeat_walk(&record_with_word(VIEW_SLOTS as u32));
@@ -745,7 +730,7 @@ mod tests {
     #[test]
     fn the_world_of_a_view_with_no_walk_event_begins_after_the_sky() {
         use crate::retained::view_world_begins;
-        let mut views = Views { repeat_walk_on: true, ..Views::default() };
+        let mut views = Views::default();
         views.note_repeat_walk(&record_with_word(0));
         let walk_marked = views.scene_walk_due();
         assert!(!walk_marked);
@@ -758,15 +743,13 @@ mod tests {
         assert!(!view_world_begins(false, false, walk_marked, true));
     }
 
-    /// The same walk in a stream of the format 6 (a 0 in the word) and in one of the format 7
-    /// (the bit set) gives the same plan for the world's start: the walk is marked, the event
-    /// starts the world and no draw does. A scene of the format 7 whose walk is not due starts
-    /// the world at a draw.
+    /// A scene whose walk is due: the event starts the world and no draw does. A scene whose
+    /// walk is not due starts the world at a draw.
     #[test]
-    fn a_stream_of_format_6_and_one_of_format_7_with_the_same_walk_give_the_same_plan() {
+    fn the_walk_word_decides_whether_the_event_or_a_draw_starts_the_world() {
         use crate::engine::plan::Plan;
-        let plan_of = |repeat_walk_on: bool, word: u32| {
-            let mut views = Views { repeat_walk_on, ..Views::default() };
+        let plan_of = |word: u32| {
+            let mut views = Views::default();
             views.note_repeat_walk(&record_with_word(word));
             // The stream marks the walk (`stream.world_walk`), so the scene's word decides.
             let walk_marked = views.scene_walk_due();
@@ -777,13 +760,12 @@ mod tests {
             let event = plan.world_walk(true, true);
             (sky, held, event)
         };
-        let format_6 = plan_of(false, 0);
-        let format_7 = plan_of(true, SCENE_WALK_DUE);
-        assert_eq!(format_6, format_7);
-        assert!(!format_7.2.is_empty(), "the event starts the world");
+        let due = plan_of(SCENE_WALK_DUE);
+        assert!(!due.2.is_empty(), "the event starts the world");
+        assert!(due.1.0.is_empty(), "no draw starts the world");
         // Not due: the draw after the sky starts the world, as in a stream without the event.
-        let (_, started, _) = plan_of(true, 0);
-        assert_ne!(started, format_7.1);
+        let (_, started, _) = plan_of(0);
+        assert_ne!(started, due.1);
         assert!(!started.0.is_empty());
     }
 }

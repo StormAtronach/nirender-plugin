@@ -77,7 +77,6 @@ impl Player {
                 let abilities = if data.len() >= HEADER_ABILITIES_AT + 4 { word(data, HEADER_ABILITIES_AT) } else { 0 };
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
-                self.views.repeat_walk_on = crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
                 self.stream.envmap_lit = abilities & HEADER_ENVMAP_LIT != 0;
             }
             // The game made its renderer again: the live loop makes the back buffer again at
