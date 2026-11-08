@@ -10,6 +10,7 @@ state packets, the stage states and the draws of the device; the helper does not
     python -I tools/capture_dump.py <capture.nircap> ui-geometry <frame> --shapes 3,5
     python -I tools/capture_dump.py <capture.nircap> ui-textures <frame>
     python -I tools/capture_dump.py <capture.nircap> first-draw
+    python -I tools/capture_dump.py <capture.nircap> shown
 
 sequence   the records of one frame in their order: the objects, the shape records, the
            render state commands (in a capture from before the cut: those that the
@@ -34,6 +35,9 @@ ui-textures  the TEXTURE records by frame, and the interface shapes of the frame
            base texture, or "NOT IN THE CAPTURE" for a handle with no record.
 first-draw the frames whose first draw into the back buffer comes before a colour clear of
            it: such a frame draws over the picture of the frame before.
+shown      the main view's lists (INSTANCE_SHOWN, form D) of each frame: the frames
+           with a list, the ids of each send, and the frames with more than one send (a
+           read of the back buffer before the frame's end).
 
 The frames count from 0, as `replay.py --frame` does.
 """
@@ -46,6 +50,7 @@ TAG_OBJECT, TAG_DRAW_STATE, TAG_COMMAND, TAG_CALL, TAG_FRAME_END = 6, 7, 8, 9, 1
 TAG_SCENE_BEGIN, TAG_SCENE_END, TAG_GEOMETRY, TAG_MATERIAL, TAG_SHAPE = 3, 4, 18, 19, 20
 TAG_INSTANCE, TAG_INSTANCE_DRAW, TAG_INSTANCE_DELETE = 23, 24, 25
 TAG_INSTANCE_LIGHTS, TAG_INSTANCE_STATE, TAG_RETAINED_SCENE = 26, 27, 28
+TAG_INSTANCE_SHOWN = 49
 TAG_LIGHT = 21
 TAG_TEXTURE, TAG_INSTANCE_PARTICLES = 1, 35
 # SCENE_BEGIN's kind of the interface, and the calls `first-draw` follows.
@@ -136,6 +141,9 @@ def sequence(path, wanted):
         elif tag == TAG_INSTANCE_STATE:
             i, visible = words(body, 0, 2)
             print("INSTANCE_STATE %d visible %d" % (i, visible))
+        elif tag == TAG_INSTANCE_SHOWN:
+            count = words(body, 0, 1)[0]
+            print("INSTANCE_SHOWN %d ids %s" % (count, list(words(body, 4, min(count, 8)))))
         elif tag == TAG_RETAINED_SCENE:
             ambient, flags = words(body, 0, 2)
             print("RETAINED_SCENE ambient %#x flags %#x" % (ambient, flags))
@@ -256,6 +264,23 @@ def calls(path):
     print("commands for each frame:", per_frame(commands))
 
 
+def shown(path):
+    """The main view's lists (INSTANCE_SHOWN, form D) of each frame: the sends and their ids."""
+    frames = 0
+    sends = collections.defaultdict(list)
+    for frame, tag, body in records(path):
+        frames = frame + 1
+        if tag == TAG_INSTANCE_SHOWN:
+            sends[frame].append(words(body, 0, 1)[0])
+    counts = [count for frame in sends for count in sends[frame]]
+    more = sorted(frame for frame, counts_of_frame in sends.items() if len(counts_of_frame) > 1)
+    print("frames %d, frames with a list %d, sends %d, ids a send %.1f (the most %d)" % (
+        frames, len(sends), len(counts), sum(counts) / max(len(counts), 1), max(counts, default=0)))
+    print("frames with more than one send (a read of the back buffer): %d%s" % (len(more), ": frames " + ", ".join(map(str, more[:12])) if more else ""))
+    for frame in sorted(sends)[:8]:
+        print("  frame %d: ids of each send %s" % (frame, sends[frame]))
+
+
 def interface_shapes(path, wanted):
     """(number, body, name) for each interface shape of the frame, from 1, in draw order, and
     the tables of the records up to the frame's end: the textures (width, height, levels,
@@ -372,7 +397,7 @@ def first_draw(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("capture")
-    ap.add_argument("what", choices=["sequence", "materials", "particles", "calls", "ui", "ui-geometry", "ui-textures", "first-draw"])
+    ap.add_argument("what", choices=["sequence", "materials", "particles", "calls", "ui", "ui-geometry", "ui-textures", "first-draw", "shown"])
     ap.add_argument("frame", nargs="?", type=int, default=0)
     ap.add_argument("--geometry", type=lambda v: int(v, 0), default=None)
     ap.add_argument("--box", nargs=4, type=float, default=None, metavar=("X0", "Y0", "X1", "Y1"))
@@ -392,6 +417,8 @@ def main():
         ui_textures(args.capture, args.frame)
     elif args.what == "first-draw":
         first_draw(args.capture)
+    elif args.what == "shown":
+        shown(args.capture)
     else:
         calls(args.capture)
     return 0
