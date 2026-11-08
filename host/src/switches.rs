@@ -69,10 +69,6 @@ pub(crate) struct Switches {
     /// more than 64 slots changed in a frame, as before the copy of `retained_upload`: for its
     /// A/B.
     pub(crate) instance_upload_all: bool,
-    /// `MGE_XE_PASS_GROUPS=0`: the game's draws before the world and after the post chain bind
-    /// the whole group of the texture arrays, as before `Renderer::small_array_group`: for its
-    /// A/B.
-    pub(crate) pass_groups: bool,
     /// `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the
     /// setting of the extension ([`crate::Extension::frame_latency`]): for an A/B of the
     /// mouse's lag.
@@ -138,7 +134,6 @@ impl Switches {
             one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
             particle_quads_cpu: read.choice("MGE_XE_PARTICLE_QUADS", &["cpu", "gpu"]) == Some("cpu"),
             instance_upload_all: read.choice("MGE_XE_INSTANCE_UPLOAD", &["all", "changed"]) == Some("all"),
-            pass_groups: read.on("MGE_XE_PASS_GROUPS") != Some(false),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
             wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),
             present: read.choice("MGE_XE_PRESENT", &["immediate", "mailbox", "fifo", "auto"]).map(|mode| match mode {

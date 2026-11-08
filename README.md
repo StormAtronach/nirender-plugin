@@ -240,8 +240,6 @@ MGE-XE-G7 render-link worktree.
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
 - `MGE_XE_INSTANCE_UPLOAD=all`: the retained segment of the instances goes up whole when more
   than 64 slots changed in a frame, as before the copy of `retained_upload`.
-- `MGE_XE_PASS_GROUPS=0`: the game's draws before the world and after the post chain bind the
-  whole group of the texture arrays, as before `Renderer::small_array_group`.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),
   over the setting of the extension.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting
