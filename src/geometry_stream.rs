@@ -662,7 +662,7 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         if step {
             send_uv(stream, version.unique, &uv, false);
             *UV_STEPS.get(t) += 1;
-            if uv_mode() == UvMode::Check {
+            if uv_steps_check() {
                 check_uv(t, handle, geom_data, &uv);
             } else {
                 versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: Some(uv.set), morph: false });
@@ -683,7 +683,7 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
             morph_weights(morph, weights);
             crate::capture::morph_weights(&[stream, version.unique, weights.len() as u32], weights);
             *MORPH_STEPS.get(t) += 1;
-            if morph_mode() == MorphMode::Check {
+            if morph_weights_check() {
                 check_morph(t, morph, weights, geom_data);
             } else {
                 versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None, morph: true });
@@ -808,7 +808,7 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         if let Some(sent) = versions(t).get_mut(&handle) {
             sent.uv_set = Some(uv.set);
         }
-        if uv_mode() == UvMode::Check {
+        if uv_steps_check() {
             keep_uv_base(t, handle, geom_data, &uv);
         }
     }
@@ -840,23 +840,12 @@ struct Morph {
     time: f32,
 }
 
-/// How a geometry under a morph controller goes (`NIRENDER_MORPH_WEIGHTS`): its new revisions
-/// as the weights of its targets (the default); as whole geometries (`0`, as before); or both
-/// (`check`: the plugin compares the weighted targets with the engine's positions).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MorphMode {
-    On,
-    Off,
-    Check,
-}
-
-fn morph_mode() -> MorphMode {
-    static MODE: std::sync::OnceLock<MorphMode> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match crate::switches::choice("NIRENDER_MORPH_WEIGHTS", &["0", "1", "check"]) {
-        Some("0") => MorphMode::Off,
-        Some("check") => MorphMode::Check,
-        _ => MorphMode::On,
-    })
+/// A new revision of a geometry under a morph controller goes as the weights of its targets;
+/// with `NIRENDER_MORPH_WEIGHTS=check` also as the whole geometry, and the plugin compares the
+/// weighted targets with the engine's positions.
+fn morph_weights_check() -> bool {
+    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHECK.get_or_init(|| crate::switches::choice("NIRENDER_MORPH_WEIGHTS", &["1", "check"]) == Some("check"))
 }
 
 /// The morph controller of `shape`, when it is the only controller of the shape, its target
@@ -865,7 +854,7 @@ fn morph_mode() -> MorphMode {
 /// its targets are at most [`MORPH_MOST_TARGETS`], each with vertices.
 unsafe fn morph_controller(shape: usize, geom_data: usize) -> Option<Morph> {
     use crate::gen::layouts::{NiMorphData as MD, NiMorphData_MorphTarget as MT, NiMorpherController as MC};
-    if shape == 0 || morph_mode() == MorphMode::Off {
+    if shape == 0 {
         return None;
     }
     let controller: usize = rd(shape, crate::gen::layouts::NiAVObject::controllers);
@@ -1059,29 +1048,18 @@ struct UvState {
     state: [f32; 4],
 }
 
-/// How a geometry under a UV controller goes (`NIRENDER_UV_STEPS`): its new revisions as the
-/// controller's state (the default); as whole geometries (`0`, as before); or both (`check`:
-/// the plugin compares the step from the last sent coordinates with the engine's).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum UvMode {
-    On,
-    Off,
-    Check,
-}
-
-fn uv_mode() -> UvMode {
-    static MODE: std::sync::OnceLock<UvMode> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match crate::switches::choice("NIRENDER_UV_STEPS", &["0", "1", "check"]) {
-        Some("0") => UvMode::Off,
-        Some("check") => UvMode::Check,
-        _ => UvMode::On,
-    })
+/// A new revision of a geometry under a UV controller goes as the controller's state; with
+/// `NIRENDER_UV_STEPS=check` also as the whole geometry, and the plugin compares the step from
+/// the last sent coordinates with the engine's.
+fn uv_steps_check() -> bool {
+    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHECK.get_or_init(|| crate::switches::choice("NIRENDER_UV_STEPS", &["1", "check"]) == Some("check"))
 }
 
 /// The UV controller of `shape` and its state, when it is the only controller of the shape,
 /// its target is the shape, the shape draws `geom_data`, and the data has its texture set.
 unsafe fn uv_controller(shape: usize, geom_data: usize) -> Option<UvState> {
-    if shape == 0 || uv_mode() == UvMode::Off {
+    if shape == 0 {
         return None;
     }
     let controller: usize = rd(shape, crate::gen::layouts::NiAVObject::controllers);

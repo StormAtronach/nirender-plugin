@@ -26,8 +26,8 @@
 //! in another way) keeps the engine's lock. A copy goes when its texture is freed or when
 //! pixels are copied into it (`own_host`).
 //!
-//! `NIRENDER_MAP_FOG=0` leaves the engine's locks in place. `NIRENDER_FOG_CHECK=1` also reads
-//! each locked fog texture from the GPU and counts the differences, for a test.
+//! `NIRENDER_FOG_CHECK=1` also reads each locked fog texture from the GPU and counts the
+//! differences, for a test.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::collections::HashMap;
@@ -100,11 +100,6 @@ fn check_on() -> bool {
 /// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
     if !INSTALLED.begin() {
-        return;
-    }
-    if crate::switches::on("NIRENDER_MAP_FOG") == Some(false) {
-        crate::log!("map fog: NIRENDER_MAP_FOG=0, the engine reads the fog from the GPU");
-        INSTALLED.finish(false);
         return;
     }
     use crate::mwse_native::{claim, claim_all, NATIVE_OVERRIDE_FOG_BLOB, NATIVE_OVERRIDE_FOG_RENDER, NATIVE_OVERRIDE_RENDER_TARGET_LOCK, NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK};

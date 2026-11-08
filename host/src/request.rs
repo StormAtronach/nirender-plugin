@@ -191,12 +191,11 @@ impl Request {
             println!("window: the present modes of the surface are {:?}", self.present_modes);
         }
         println!(
-            "depth: {:?}, {} (the adapter {} Depth32FloatStencil8{}{})",
+            "depth: {:?}, {} (the adapter {} Depth32FloatStencil8{})",
             self.depth_format,
             if depth::reversed() { "reversed" } else { "plain" },
             if self.features.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) { "has" } else { "lacks" },
-            if switches().depth24 { "; MGE_XE_DEPTH_FORMAT=24" } else { "" },
-            if switches().depth_plain { "; MGE_XE_DEPTH_REVERSED=0" } else { "" }
+            if switches().depth24 { "; MGE_XE_DEPTH_FORMAT=24" } else { "" }
         );
         println!("multisampling: {} samples for each pixel of the frame", self.samples);
         if let Some(old) = switches().old_gpu {
@@ -398,7 +397,7 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     // from it.
     let float_depth = features.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) && !switches().depth24;
     let depth_format = if float_depth { wgpu::TextureFormat::Depth32FloatStencil8 } else { DEPTH_FORMAT };
-    depth::set_reversed(float_depth && !switches().depth_plain);
+    depth::set_reversed(float_depth);
     depth::set_one_buffer(switches().one_depth);
     if switches().one_depth && !depth::one_buffer() {
         println!("depth: MGE_XE_ONE_DEPTH needs the reversed float depth; the land keeps its own depth");

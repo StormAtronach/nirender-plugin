@@ -10,7 +10,6 @@
 //! its own work. The margin follows the measured lead of each frame: the time the helper was
 //! free for the frame less the end of the frame. A positive lead is a frame that waited in the
 //! ring (lag), a negative one a helper that waited for the frame (frames lost).
-//! `NIRENDER_PACE=0` turns the pacing off.
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
@@ -79,11 +78,6 @@ static WAITED: AtomicI64 = AtomicI64::new(0);
 /// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
     if !INSTALLED.begin() {
-        return;
-    }
-    if crate::switches::on("NIRENDER_PACE") == Some(false) {
-        crate::log!("pacing: NIRENDER_PACE=0, no pacing of the game to the helper");
-        INSTALLED.finish(false);
         return;
     }
     use crate::mwse_native::{subscribe, NATIVE_EVENT_FRAME_STARTED};
