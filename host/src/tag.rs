@@ -5,7 +5,8 @@ use crate::retained::BONE_BYTES;
 use crate::{word, CALL_CLEAR, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM, EFFECT_STAGE_WORDS};
 
 pub const TEXTURE: u32 = 1;
-// Tags 2 and 7 are retired: the reader skips them.
+// Tags 2 and 7 are retired (step R7b): this build does not know them, and no other tag takes
+// their numbers.
 pub const SCENE_BEGIN: u32 = 3;
 pub const SCENE_END: u32 = 4;
 pub const FRAME_EVENT: u32 = 5;
@@ -103,10 +104,10 @@ pub const EFFECT_CHAIN_GONE: u32 = 48;
 /// (form D): a count, then the count's ids, each once.
 pub const INSTANCE_SHOWN: u32 = 49;
 
-/// Every tag of this build, the two retired ones (2 and 7) among them. A new tag goes here
-/// with its constant, read by the player or not: a test asks that each constant is here.
-pub const KNOWN: [u32; 48] = [
-    TEXTURE, 2, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, 7, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
+/// Every tag of this build. A new tag goes here with its constant, read by the player or not:
+/// a test asks that each constant is here.
+pub const KNOWN: [u32; 46] = [
+    TEXTURE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
     READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW,
     INSTANCE_DELETE, INSTANCE_LIGHTS, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED,
     INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE,
@@ -126,17 +127,22 @@ pub fn is_known(tag: u32) -> bool {
 /// or reads with a check of its own on the whole record.
 pub fn least_length(tag: u32) -> usize {
     match tag {
-        HEADER => 8,
+        // The width, the height, the window and the abilities of the stream.
+        HEADER => 16,
         // The handle, the unique id, the width, the height, the levels, the format, then
         // the table of the offsets of the levels (levels + 1 words), the widths and the
         // heights (a word each for each level).
         TEXTURE => 36,
         // The handle, the level, the width, the height, the format, the size.
         TEXTURE_UPDATE => 24,
-        // `SceneV1` of the link: 48 bytes, with the origin at 24.
-        SCENE_BEGIN => 48,
+        // `SceneV1` of the link: 56 bytes, with the origin at 24, the view at 48 and the word
+        // of the repeat and the walk at 52.
+        SCENE_BEGIN => 56,
+        // The flags (`SCENE_END_*` of the plugin's `link.rs`).
+        SCENE_END => 4,
         FRAME_EVENT => 8,
-        READ_PIXELS => 8,
+        // The request, the texture, the generation of the reply memory.
+        READ_PIXELS => 12,
         // The head of a call: kind, result, handle, the index of the data.
         CALL => 16,
         COMMAND => 16,
@@ -146,11 +152,13 @@ pub fn least_length(tag: u32) -> usize {
         GEOMETRY => 32,
         MATERIAL => 4,
         SHAPE => 144,
-        LIGHT => 108,
+        // The key, the device values (104 bytes), the radius.
+        LIGHT => 112,
         INSTANCE => 176,
         INSTANCE_DRAW => 12,
         INSTANCE_DELETE => 4,
-        INSTANCE_LIGHTS => 8,
+        // The id, the count, then the keys and the ambient.
+        INSTANCE_LIGHTS => 12,
         RETAINED_SCENE => 8,
         INSTANCE_BONES => 24,
         COPY_TILE => 12,
@@ -214,7 +222,7 @@ pub fn needed(tag: u32, data: &[u8]) -> usize {
         }
         MORPH_TARGETS => sum(&[16, count(8).saturating_mul(count(12)).saturating_mul(12)]),
         MORPH_WEIGHTS => sum(&[12, count(8).saturating_mul(4)]),
-        INSTANCE_LIGHTS => sum(&[8, count(4).saturating_mul(4)]),
+        INSTANCE_LIGHTS => sum(&[12, count(4).saturating_mul(4)]),
         INSTANCE_BONES => sum(&[24, count(4).saturating_mul(BONE_BYTES)]),
         EFFECT_CHAIN => sum(&[head, count(8).saturating_mul(crate::effect_turn::LINK_WORDS * 4)]),
         INSTANCE_SHOWN => sum(&[4, count(0).saturating_mul(4)]),
@@ -319,7 +327,7 @@ pub fn name(tag: u32) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Every tag the player reads: all the known tags but the two retired ones (2 and 7).
+    /// Every tag the player reads: all the known tags.
     const READ_TAGS: [u32; 46] = [
         HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS,
         RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK, EFFECT_CHAIN_GONE,
@@ -327,8 +335,8 @@ mod tests {
     ];
 
     #[test]
-    fn the_test_reads_every_known_tag_but_the_retired_ones() {
-        let known: Vec<u32> = (1..=INSTANCE_SHOWN).filter(|&tag| is_known(tag) && tag != 2 && tag != 7).collect();
+    fn the_test_reads_every_known_tag() {
+        let known: Vec<u32> = (1..=INSTANCE_SHOWN).filter(|&tag| is_known(tag)).collect();
         let mut read = READ_TAGS.to_vec();
         read.sort();
         assert_eq!(read, known);
@@ -371,7 +379,7 @@ mod tests {
             }
             INSTANCE_LIGHTS => {
                 put(&mut record, 4, 2);
-                record.resize(16, 0);
+                record.resize(20, 0);
             }
             EFFECT_CHAIN => {
                 put(&mut record, 8, 2);
@@ -451,7 +459,7 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_SHOWN] {
+        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_SHOWN] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }
@@ -466,7 +474,7 @@ mod tests {
 
     #[test]
     fn the_records_without_a_head_have_none() {
-        for tag in [SCENE_END, FRAME_END, SHOT, MARK, OVERLAY, 0, 2, 7, 99] {
+        for tag in [FRAME_END, SHOT, MARK, OVERLAY, 0, 2, 7, 99] {
             assert_eq!(least_length(tag), 0, "tag {tag}");
         }
     }
@@ -502,20 +510,16 @@ mod tests {
 
     #[test]
     fn the_scene_record_is_the_packet_of_the_link() {
-        // `SceneV1` of `src/link.rs` of the plugin is 56 bytes since the view field; a plugin
-        // before it sends 48. The origin is read at 24.
-        assert_eq!(least_length(SCENE_BEGIN), 48);
+        // `SceneV1` of `src/link.rs` of the plugin is 56 bytes. The origin is read at 24.
+        assert_eq!(least_length(SCENE_BEGIN), 56);
     }
 
     #[test]
-    fn a_scene_record_of_48_bytes_has_no_view_and_one_of_56_has_its_slot() {
+    fn a_scene_record_has_its_slot() {
         use crate::engine::views::scene_view;
         let mut record = vec![0u8; 56];
         record[48..52].copy_from_slice(&3u32.to_le_bytes());
         assert_eq!(scene_view(&record), Some(2));
-        assert_eq!(scene_view(&record[..48]), None);
-        // The view word without the whole struct: no view.
-        assert_eq!(scene_view(&record[..52]), None);
         // 0: a scene that is not a view; past the 32 slots: no slot.
         record[48..52].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(scene_view(&record), None);

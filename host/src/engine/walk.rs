@@ -43,9 +43,6 @@ struct Run {
 /// another.
 #[derive(Default)]
 pub(crate) struct Walk {
-    /// The head of the stream says that the plugin writes the places. Without it nothing
-    /// changes: the blends out of the sort draw by bucket at the start of the world.
-    pub(crate) on: bool,
     runs: Vec<Run>,
     /// The places of the frame, in the walk's order, once each for each view.
     order: Vec<(u8, u32)>,
@@ -182,7 +179,7 @@ mod tests {
     #[test]
     fn the_places_give_the_walk_order() {
         // The walk has B1, an engine draw, then B0: each draws at its own item, B1 first.
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         assert_eq!(walk.place(11, true, false), Place::New(0));
         assert_eq!(walk.place(10, true, false), Place::New(1));
         let mut order = order();
@@ -194,7 +191,7 @@ mod tests {
 
     #[test]
     fn no_place_keeps_the_old_order() {
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         let mut order = order();
         assert_eq!(walk.leave_out(&mut order, id_of), 0);
         assert_eq!(order, self::order());
@@ -202,7 +199,7 @@ mod tests {
 
     #[test]
     fn adjacent_places_draw_as_one_run() {
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         assert_eq!(walk.place(11, true, false), Place::New(0));
         assert_eq!(walk.place(10, true, true), Place::Joined);
         let mut order = order();
@@ -214,7 +211,7 @@ mod tests {
 
     #[test]
     fn a_place_of_an_unknown_instance_is_ignored() {
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         assert_eq!(walk.place(99, false, false), Place::Unknown);
         let mut order = order();
         assert_eq!(walk.leave_out(&mut order, id_of), 0);
@@ -223,7 +220,7 @@ mod tests {
 
     #[test]
     fn an_opaque_slot_of_a_placed_instance_stays() {
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         walk.place(12, true, false);
         let mut order = order();
         walk.leave_out(&mut order, id_of);
@@ -234,7 +231,7 @@ mod tests {
     #[test]
     fn a_place_after_the_main_view_is_late() {
         // A part of the frame ran before the place came: the view drew the blend by bucket.
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         let mut order = order();
         walk.leave_out(&mut order, id_of);
         walk.place(10, true, false);
@@ -243,7 +240,7 @@ mod tests {
 
     #[test]
     fn the_places_in_bucket_order_count_no_change() {
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         walk.place(10, true, false);
         walk.place(11, true, false);
         walk.place(13, true, false);
@@ -256,7 +253,7 @@ mod tests {
     /// order leaves out only its places; the runs of two views never join.
     #[test]
     fn a_place_in_one_view_leaves_the_other_view_alone() {
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         assert_eq!(walk.place_in(3, 11, true, false), Place::New(0));
         // The last item is view 3's run: a place of view 0 starts its own run.
         assert_eq!(walk.place(10, true, true), Place::New(1));
@@ -274,7 +271,7 @@ mod tests {
     /// one transform (design 3.4a). The next frame starts again.
     #[test]
     fn an_id_placed_in_two_views_is_counted() {
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         walk.place(10, true, false);
         walk.place(10, true, true);
         assert_eq!(walk.in_two_views, 0);
@@ -292,7 +289,7 @@ mod tests {
     /// the first one's entries; another view's stay.
     #[test]
     fn a_second_leave_out_of_a_view_replaces_its_entries() {
-        let mut walk = Walk { on: true, ..Default::default() };
+        let mut walk = Walk::default();
         walk.place(10, true, false);
         walk.place_in(4, 11, true, false);
         let mut main = order();

@@ -61,8 +61,7 @@ pub(crate) struct Group {
 
 impl Group {
     /// The plugin's view slot of the group's scene (the view field of its `SCENE_BEGIN` less
-    /// 1), 0 to 31. `None` for a scene without the field: an older plugin, or a stream without
-    /// [`HEADER_SCENE_VIEWS`](crate::stream_format::HEADER_SCENE_VIEWS). A group is one scene,
+    /// 1), 0 to 31. `None` for a scene that is not a view. A group is one scene,
     /// so it never has two slots; a view into the back buffer with several scenes in a frame
     /// has a group for each, all with its slot.
     pub(crate) fn view_slot(&self) -> Option<u32> {
@@ -115,9 +114,6 @@ pub(crate) enum Place {
 const MAIN_VIEW: u8 = 0;
 /// The offset of the view field in a scene record (the plugin's `SceneV1::view`).
 const SCENE_VIEW_AT: usize = 48;
-/// The size of a scene record with the view field (the plugin's `SceneV1`, design section
-/// 3.4c): a shorter record, such as the 48 bytes of an older plugin, has no view.
-const SCENE_WITH_VIEW: usize = 56;
 
 /// The offset of the word of a scene record with the first slot of a repeat and the walk bit
 /// (the plugin's `SceneV1::repeat_walk`, stream format 7).
@@ -130,11 +126,8 @@ const SCENE_REPEAT_MASK: u32 = 0xFF;
 const SCENE_WALK_DUE: u32 = 0x100;
 
 /// The view slot of a scene record: the field holds the slot plus 1, 0 for a scene that is not
-/// a view. `None` for a record without the field, for 0, or for a slot past the table.
+/// a view. `None` for 0, or for a slot past the table.
 pub(crate) fn scene_view(data: &[u8]) -> Option<u8> {
-    if data.len() < SCENE_WITH_VIEW {
-        return None;
-    }
     let view = crate::data::word(data, SCENE_VIEW_AT) & 0xFF;
     (view != 0 && view as usize <= VIEW_SLOTS).then(|| (view - 1) as u8)
 }
@@ -176,24 +169,14 @@ struct SlotCounts {
 /// The views of a frame.
 #[derive(Debug, Default)]
 pub(crate) struct Views {
-    /// The head of the stream says that the plugin writes the places.
-    pub(crate) on: bool,
     groups: Vec<Group>,
     /// The group of the scene in progress.
     open: Option<usize>,
     /// The view slot of the scene record just read (`note_scene_record`), for the group of
     /// the scene's start.
     scene_slot: Option<u8>,
-    /// The head of the stream says that the scene records carry the view slot
-    /// (`HEADER_SCENE_VIEWS`).
-    pub(crate) slots_on: bool,
-    /// The scene records carry the word of the repeat and the walk (`HEADER_SCENE_VIEWS` and
-    /// a stream format from `FORMAT_SCENE_REPEAT_WALK`). A capture of an older format has a
-    /// 0 there: the word then says nothing.
-    pub(crate) repeat_walk_on: bool,
     /// The scene in progress has the word and not the bit `SCENE_WALK_DUE`: the plugin does
-    /// not walk its root, so no `EVENT_WORLD_WALK` follows. False for a scene record without
-    /// the word, and before the first scene.
+    /// not walk its root, so no `EVENT_WORLD_WALK` follows. False before the first scene.
     scene_without_walk: bool,
     /// The slot of the first scene of the key of the scene in progress, when the scene repeats
     /// its key in the same flush (the low byte of the word less 1), for the scene's group.
@@ -208,7 +191,7 @@ pub(crate) struct Views {
 }
 
 impl Views {
-    /// A scene record of a stream with view slots. The camera, the root and the target are its
+    /// A scene record. The camera, the root and the target are its
     /// words 2, 3 and 4. The target is 0 when the record's flag `SCENE_BACK_BUFFER` (word 5) is
     /// set: the plugin keys a view by the device's target, and word 4 is the last target that
     /// the renderer set.
@@ -219,14 +202,13 @@ impl Views {
         self.note_scene(scene_view(data), word(8), word(12), target);
     }
 
-    /// The word of a scene record with the repeat and the walk (`repeat_walk_on`). Every scene
-    /// record goes here, also one of a stream without view slots: a record without the word
-    /// has a walk that is due and no repeat.
+    /// The word of a scene record with the repeat and the walk.
     pub(crate) fn note_repeat_walk(&mut self, data: &[u8]) {
-        let word = (self.repeat_walk_on && data.len() >= SCENE_WITH_VIEW).then(|| crate::data::word(data, SCENE_REPEAT_WALK_AT));
-        self.scene_without_walk = word.is_some_and(|word| word & SCENE_WALK_DUE == 0);
+        let word = crate::data::word(data, SCENE_REPEAT_WALK_AT);
+        self.scene_without_walk = word & SCENE_WALK_DUE == 0;
         // A first slot past the table is a fault of the stream: no repeat.
-        self.scene_first = word.map(|word| word & SCENE_REPEAT_MASK).filter(|&first| first != 0 && first as usize <= VIEW_SLOTS).map(|first| (first - 1) as u8);
+        let first = word & SCENE_REPEAT_MASK;
+        self.scene_first = (first != 0 && first as usize <= VIEW_SLOTS).then(|| (first - 1) as u8);
     }
 
     /// The engine's walk of the scene in progress marks its world with an event: the stream
@@ -235,7 +217,7 @@ impl Views {
         !self.scene_without_walk
     }
 
-    /// A scene of a stream with view slots: the scene's slot keeps its key.
+    /// A scene: the scene's slot keeps its key.
     fn note_scene(&mut self, view: Option<u8>, camera: u32, root: u32, target: u32) {
         self.scene_slot = view;
         self.slot_counts.scenes += 1;
@@ -287,12 +269,9 @@ impl Views {
     }
 
     /// The camera of a scene is the world camera: the scene is one of the world camera's
-    /// scenes, or a [`scene::SCENE_OTHER`] with the world camera `world_camera`. The second
-    /// case needs the places of the view groups in the stream (`on`): a stream without them
-    /// (a capture from before D82) has no shapes to draw for such a scene, so the plan keeps
-    /// treating it as another screen.
+    /// scenes, or a [`scene::SCENE_OTHER`] with the world camera `world_camera`.
     pub(crate) fn camera_is_world(&self, kind: u32, camera: u32, world_camera: u32) -> bool {
-        scene::world_camera(kind) || (self.on && kind == scene::SCENE_OTHER && camera != 0 && camera == world_camera)
+        scene::world_camera(kind) || (kind == scene::SCENE_OTHER && camera != 0 && camera == world_camera)
     }
 
     /// The start of a scene. `in_target`: the game draws into a rendered texture of the helper;
@@ -305,7 +284,7 @@ impl Views {
         if kind == scene::SCENE_UI {
             self.ui_seen = true;
         }
-        if !self.on || !(in_target || kind == scene::SCENE_OTHER) {
+        if !(in_target || kind == scene::SCENE_OTHER) {
             return false;
         }
         let view = ViewKind::classify(in_target, camera_is_world);
@@ -443,16 +422,12 @@ mod tests {
     use super::*;
     use crate::engine::scene::{SCENE_FIRST_PERSON, SCENE_OTHER, SCENE_UI, SCENE_WORLD};
 
-    fn on() -> Views {
-        Views { on: true, ..Views::default() }
-    }
-
     /// The scenes of a save's picture: the world and the first person into the texture, then
     /// the main frame into the back buffer. Each target scene has a group; the back buffer's
     /// world scene has none.
     #[test]
     fn a_scene_into_a_target_or_of_another_root_has_a_view_of_its_own() {
-        let mut views = on();
+        let mut views = Views::default();
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert!(views.group(0).unwrap().world_camera);
         assert_eq!(views.scene_end(), None);
@@ -465,15 +440,11 @@ mod tests {
         assert!(!views.scene_begin(SCENE_UI, false, false));
         // A mod's subject on another root, into the back buffer.
         assert!(views.scene_begin(SCENE_OTHER, false, false));
-        // Without the header bit nothing changes.
-        let mut off = Views::default();
-        assert!(!off.scene_begin(SCENE_WORLD, true, true));
-        assert_eq!(off.place(5, true, false), Place::Outside);
     }
 
     #[test]
     fn the_places_of_a_scene_draw_in_runs_and_its_sorted_places_at_the_flush() {
-        let mut views = on();
+        let mut views = Views::default();
         views.scene_begin(SCENE_WORLD, true, true);
         views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [2.0; 16], origin: None, target_size: (128, 128) });
         views.note_facts(|| ViewFacts { view: [3.0; 16], projection: [3.0; 16], origin: None, target_size: (1, 1) });
@@ -572,7 +543,7 @@ mod tests {
     /// places of the full tier. The view over the number and the main view get none.
     #[test]
     fn a_view_with_options_gets_the_parts_of_the_full_tier() {
-        let mut views = on();
+        let mut views = Views::default();
         views.tier.options(3, 0b11);
         views.tier.options(4, 0b1);
         views.tier.options(0, 0b1);
@@ -598,7 +569,7 @@ mod tests {
     /// of another screen has the post cover of its kind, and no call of the picture's post.
     #[test]
     fn a_picture_with_shaders_has_the_post_chain() {
-        let mut views = on();
+        let mut views = Views::default();
         views.tier.options(3, 0b10000);
         views.note_scene(Some(3), 20, 200, 7);
         assert!(views.scene_begin(SCENE_WORLD, true, true));
@@ -640,7 +611,7 @@ mod tests {
     /// it; a texture is a picture.
     #[test]
     fn a_view_has_its_kind_and_additions() {
-        let mut views = on();
+        let mut views = Views::default();
         assert!(views.scene_begin(SCENE_OTHER, false, true));
         assert_eq!(views.group(0).unwrap().kind, ViewKind::Main);
         assert_eq!(views.group(0).unwrap().additions, Additions::ALL);
@@ -660,8 +631,8 @@ mod tests {
         assert!(views.group(0).unwrap().additions.contains(Additions::POST_COVER));
     }
 
-    /// A group keeps the view slot of its scene record; a scene with no record of a view
-    /// (an older plugin) gives none, and a slot does not pass to the next scene.
+    /// A group keeps the view slot of its scene record, and a slot does not pass to the next
+    /// scene.
     #[test]
     fn a_group_keeps_the_view_slot_of_its_scene() {
         let record = |view: u32| {
@@ -671,7 +642,7 @@ mod tests {
             }
             data
         };
-        let mut views = on();
+        let mut views = Views::default();
         views.note_scene_record(&record(4));
         assert!(views.scene_begin(SCENE_OTHER, true, false));
         assert_eq!(views.group(0).and_then(Group::view_slot), Some(3));
@@ -688,12 +659,11 @@ mod tests {
         data
     }
 
-    /// The word says whether the plugin walks the scene's root, from the stream format 7. A
-    /// record of an older format, a record without the word and a stream without view slots
-    /// say nothing: the walk is due, as before.
+    /// The word says whether the plugin walks the scene's root. Before any scene the walk is
+    /// due.
     #[test]
     fn the_word_of_a_scene_record_says_whether_its_walk_is_due() {
-        let mut views = Views { repeat_walk_on: true, ..Views::default() };
+        let mut views = Views::default();
         assert!(views.scene_walk_due(), "before any scene");
         views.note_repeat_walk(&record_with_word(SCENE_WALK_DUE));
         assert!(views.scene_walk_due());
@@ -701,30 +671,20 @@ mod tests {
         assert!(!views.scene_walk_due());
         views.note_repeat_walk(&record_with_word(0x3));
         assert!(!views.scene_walk_due(), "a repeat names a first slot and no walk");
-        // The next scene's record decides again; a record of 48 bytes has no word.
+        // The next scene's record decides again.
         views.note_repeat_walk(&record_with_word(SCENE_WALK_DUE | 0x3));
         assert!(views.scene_walk_due());
-        views.note_repeat_walk(&record_with_word(0));
-        views.note_repeat_walk(&record_with_word(0)[..48]);
-        assert!(views.scene_walk_due());
-        // The stream format 6 wrote 0 in the word: the walk is due.
-        views.repeat_walk_on = false;
-        views.note_repeat_walk(&record_with_word(0));
-        assert!(views.scene_walk_due());
         // `note_scene_record` takes the word too.
-        views.repeat_walk_on = true;
         views.note_scene_record(&record_with_word(0));
         assert!(!views.scene_walk_due());
     }
 
     /// A scene whose record names a first slot gets the place and the parts of that slot, not
-    /// a place of its own: a mirror that renders twice in a frame holds one place. The first
-    /// slot is read from the word only from the stream format 7, and a slot past the table is
-    /// no repeat.
+    /// a place of its own: a mirror that renders twice in a frame holds one place. A first slot
+    /// past the table is no repeat.
     #[test]
     fn a_repeat_takes_the_place_of_its_first_slot() {
-        let mut views = on();
-        views.repeat_walk_on = true;
+        let mut views = Views::default();
         views.tier.set_max(2);
         views.tier.options(3, 0b11);
         views.tier.options(7, 0b11);
@@ -745,11 +705,7 @@ mod tests {
         views.note_repeat_walk(&record_with_word(0));
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         assert_eq!(views.group(2).unwrap().place, Some(1));
-        // A stream of the format 6 reads the word as nothing, and so does a first slot past the table.
-        views.repeat_walk_on = false;
-        views.note_repeat_walk(&record_with_word(4));
-        assert_eq!(views.scene_first, None);
-        views.repeat_walk_on = true;
+        // A first slot past the table is no repeat; the last slot of the table is one.
         views.note_repeat_walk(&record_with_word(VIEW_SLOTS as u32 + 1));
         assert_eq!(views.scene_first, None);
         views.note_repeat_walk(&record_with_word(VIEW_SLOTS as u32));
@@ -763,7 +719,7 @@ mod tests {
     #[test]
     fn the_world_of_a_view_with_no_walk_event_begins_after_the_sky() {
         use crate::retained::view_world_begins;
-        let mut views = Views { repeat_walk_on: true, ..Views::default() };
+        let mut views = Views::default();
         views.note_repeat_walk(&record_with_word(0));
         let walk_marked = views.scene_walk_due();
         assert!(!walk_marked);
@@ -776,15 +732,13 @@ mod tests {
         assert!(!view_world_begins(false, false, walk_marked, true));
     }
 
-    /// The same walk in a stream of the format 6 (a 0 in the word) and in one of the format 7
-    /// (the bit set) gives the same plan for the world's start: the walk is marked, the event
-    /// starts the world and no draw does. A scene of the format 7 whose walk is not due starts
-    /// the world at a draw.
+    /// A scene whose walk is due: the event starts the world and no draw does. A scene whose
+    /// walk is not due starts the world at a draw.
     #[test]
-    fn a_stream_of_format_6_and_one_of_format_7_with_the_same_walk_give_the_same_plan() {
+    fn the_walk_word_decides_whether_the_event_or_a_draw_starts_the_world() {
         use crate::engine::plan::Plan;
-        let plan_of = |repeat_walk_on: bool, word: u32| {
-            let mut views = Views { repeat_walk_on, ..Views::default() };
+        let plan_of = |word: u32| {
+            let mut views = Views::default();
             views.note_repeat_walk(&record_with_word(word));
             // The stream marks the walk (`stream.world_walk`), so the scene's word decides.
             let walk_marked = views.scene_walk_due();
@@ -795,13 +749,12 @@ mod tests {
             let event = plan.world_walk(true, true);
             (sky, held, event)
         };
-        let format_6 = plan_of(false, 0);
-        let format_7 = plan_of(true, SCENE_WALK_DUE);
-        assert_eq!(format_6, format_7);
-        assert!(!format_7.2.is_empty(), "the event starts the world");
+        let due = plan_of(SCENE_WALK_DUE);
+        assert!(!due.2.is_empty(), "the event starts the world");
+        assert!(due.1.0.is_empty(), "no draw starts the world");
         // Not due: the draw after the sky starts the world, as in a stream without the event.
-        let (_, started, _) = plan_of(true, 0);
-        assert_ne!(started, format_7.1);
+        let (_, started, _) = plan_of(0);
+        assert_ne!(started, due.1);
         assert!(!started.0.is_empty());
     }
 }

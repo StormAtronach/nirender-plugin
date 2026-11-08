@@ -434,6 +434,11 @@ mod tests {
         Opening::Opened(Opened { slot, new: true, taken_back: false, first: Some(first) })
     }
 
+    /// A slot taken back from another key (rule 4).
+    fn taken_back(slot: u8) -> Opening {
+        Opening::Opened(Opened { slot, new: true, taken_back: true, first: None })
+    }
+
     /// The slot of an opening.
     fn slot_of(opening: Opening) -> Option<u8> {
         match opening {
@@ -684,6 +689,40 @@ mod tests {
         assert_eq!(scene_end(&mut views, 1), vec![]);
         assert_eq!(scene_end(&mut views, 9), vec![]);
         assert_eq!(swap(&mut views, None), (vec![MAIN_VIEW], 0));
+    }
+
+    /// The end of a texture view's scene is a close in the order of all closes: the take-back
+    /// (rule 4) takes the slot whose scene ended longest ago, not the lowest slot.
+    #[test]
+    fn a_scene_end_takes_its_place_in_the_close_order() {
+        let mut views = ViewTable::default();
+        views.open(&world(SCENE_WORLD, WORLD_ROOT));
+        for i in 1..VIEW_SLOTS {
+            let opening = views.open(&texture(0x7000, WORLD_ROOT, 0x10_0000 + i));
+            assert_eq!(slot_of(opening), Some(i as u8));
+        }
+        // The scenes end in the reverse order of their slots: the last slot closes first.
+        for i in (1..VIEW_SLOTS).rev() {
+            assert_eq!(scene_end(&mut views, i as u8), vec![i as u8]);
+        }
+        views.flush(false);
+        let last = VIEW_SLOTS as u8 - 1;
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)), taken_back(last));
+        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0001)), taken_back(last - 1));
+    }
+
+    /// A view into the back buffer that no swap closed closes at Present, and a change of its
+    /// roots counts there as at a swap.
+    #[test]
+    fn a_close_at_present_counts_its_root_change() {
+        let mut views = ViewTable::default();
+        let one_closed = || FrameEnd { closed: 1, retired: vec![] };
+        views.open(&world(SCENE_WORLD, WORLD_ROOT));
+        assert_eq!(closing(&mut views, ViewTable::present), (vec![MAIN_VIEW], 0, one_closed()));
+        // The NPC's node in place of the world root (JoP's Isolate Subject), with no swap.
+        views.open(&world(SCENE_OTHER, 0x4000));
+        assert_eq!(closing(&mut views, ViewTable::present), (vec![MAIN_VIEW], 1, one_closed()));
+        assert_eq!(views.root_changes, 1);
     }
 
     /// Rule 3: the destructor of a target takes the keys of the views into it, its first and

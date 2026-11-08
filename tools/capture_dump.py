@@ -1,6 +1,5 @@
 """Reads the records of a capture, for the root cause of a difference of a picture of the
-retained pipeline. A capture from before the cut of the device path (step R7b) also has the
-state packets, the stage states and the draws of the device; the helper does not read them.
+retained pipeline.
 
     python -I tools/capture_dump.py <capture.nircap> sequence <frame>
     python -I tools/capture_dump.py <capture.nircap> materials <frame> [--geometry 0x...]
@@ -12,15 +11,13 @@ state packets, the stage states and the draws of the device; the helper does not
     python -I tools/capture_dump.py <capture.nircap> first-draw
     python -I tools/capture_dump.py <capture.nircap> shown
 
-sequence   the records of one frame in their order: the objects, the shape records, the
-           render state commands (in a capture from before the cut: those that the
-           pipeline of the device sets for a draw, and the draws of the device).
+sequence   the records of one frame in their order: the scenes, the objects, the shape
+           records, the instance records and the lights.
 materials  the material of each shape record of the frame, decoded, once for each
            material: the flags, the blend modes, the maps present, the vertex colour
            modes, the stencil, the effects. `--geometry` keeps one geometry.
 particles  the particle records of the frame: the count, the radius, the camera axes,
-           the first particles, the material, and the material of the device draw that
-           follows (a capture from before the cut).
+           the first particles and the material.
 calls      the CALL and COMMAND records of the whole capture by their kind, for each
            frame: the calls of the frame (clear, viewport, targets), the view and the
            projection, and the render states of code outside the renderer.
@@ -46,7 +43,7 @@ import collections
 import struct
 import sys
 
-TAG_OBJECT, TAG_DRAW_STATE, TAG_COMMAND, TAG_CALL, TAG_FRAME_END = 6, 7, 8, 9, 10
+TAG_OBJECT, TAG_COMMAND, TAG_CALL, TAG_FRAME_END = 6, 8, 9, 10
 TAG_SCENE_BEGIN, TAG_SCENE_END, TAG_GEOMETRY, TAG_MATERIAL, TAG_SHAPE = 3, 4, 18, 19, 20
 TAG_INSTANCE, TAG_INSTANCE_DRAW, TAG_INSTANCE_DELETE = 23, 24, 25
 TAG_INSTANCE_LIGHTS, TAG_RETAINED_SCENE = 26, 28
@@ -56,11 +53,6 @@ TAG_TEXTURE, TAG_INSTANCE_PARTICLES = 1, 35
 # SCENE_BEGIN's kind of the interface, and the calls `first-draw` follows.
 SCENE_INTERFACE = 7
 CALL_CLEAR, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL, CALL_CREATE_TEXTURE = 4, 7, 15, 20
-RENDER_STATES = {7: "ZENABLE", 8: "FILLMODE", 14: "ZWRITEENABLE", 22: "CULLMODE", 28: "FOGENABLE", 34: "FOGCOLOR",
-                 35: "FOGTABLEMODE", 36: "FOGSTART", 37: "FOGEND", 38: "FOGDENSITY", 48: "RANGEFOGENABLE",
-                 52: "STENCILENABLE", 53: "STENCILFAIL", 54: "STENCILZFAIL", 55: "STENCILPASS", 56: "STENCILFUNC",
-                 57: "STENCILREF", 58: "STENCILMASK", 59: "STENCILWRITEMASK", 140: "FOGVERTEXMODE",
-                 147: "AMBIENTMATERIALSOURCE", 168: "COLORWRITEENABLE"}
 CALLS = {1: "TestDevice", 2: "BeginScene", 3: "EndScene", 4: "Clear", 5: "SetViewport", 6: "Present", 7: "SetRenderTarget",
          8: "CreateVertexBuffer", 9: "CreateIndexBuffer", 10: "AddRef", 11: "Release", 12: "BufferLock", 13: "BufferUnlock",
          14: "BufferDescription", 15: "TextureLevel", 16: "CubeFace", 17: "SurfaceDescription", 18: "SurfaceLock",
@@ -122,8 +114,8 @@ def sequence(path, wanted):
             kind, flags = words(body, 4, 1)[0], words(body, 20, 1)[0]
             print("SCENE_BEGIN kind %d flags %#x%s" % (kind, flags, " sky hidden" if flags & 4 else ""))
         elif tag == TAG_SCENE_END:
-            # Flag 1: the engine's sorted queue stays open after the scene. An older capture has no word.
-            flags = words(body, 0, 1)[0] if len(body) >= 4 else 0
+            # Flag 1: the engine's sorted queue stays open after the scene.
+            flags = words(body, 0, 1)[0]
             print("SCENE_END%s" % (" queue open" if flags & 1 else ""))
         elif tag == TAG_OBJECT:
             kind, cls, flags = words(body, 0, 3)
@@ -154,15 +146,6 @@ def sequence(path, wanted):
             key = words(body, 0, 1)[0]
             values = words(body, 4, 26)
             print("LIGHT %d values %08x" % (key, hash(values) & 0xFFFFFFFF))
-        elif tag == TAG_COMMAND:
-            command, a, b, c = words(body, 0, 4)
-            if command == 1 and a in RENDER_STATES:
-                print("  RS %s = %d" % (RENDER_STATES[a], b))
-            elif command in (4, 5):
-                print("  DRAW command %d" % command)
-        elif tag == TAG_DRAW_STATE:
-            flags, fvf = words(body, 4, 1)[0], words(body, 40, 1)[0]
-            print("  DRAW_STATE flags %#x vertices %d format %#x stencil %s" % (flags, words(body, 20, 1)[0], fvf, words(body, 1532, 8)))
 
 
 def materials(path, wanted, geometry):
@@ -198,19 +181,10 @@ def materials(path, wanted, geometry):
 
 
 def particles(path, wanted):
-    known = {}
-    last = None
     for frame, tag, body in records(path):
         if frame > wanted:
             break
-        if tag == TAG_MATERIAL:
-            known[words(body, 0, 1)[0]] = words(body, 4, (len(body) - 4) // 4)
         if frame != wanted:
-            continue
-        if tag == TAG_DRAW_STATE and last is not None:
-            print("  device material %s; lighting %d fog %d diffuse source %d emissive source %d" % (
-                tuple(round(v, 3) for v in struct.unpack_from("<17f", body, 168)), *words(body, 148, 4)))
-            last = None
             continue
         if tag != TAG_SHAPE or words(body, 8, 1)[0] & FLAG_PARTICLES == 0:
             continue
@@ -226,7 +200,6 @@ def particles(path, wanted):
         for i in range(min(count, 3)):
             p = struct.unpack_from("<4fI", body, tail + 32 + i * 20)
             print("  particle at %s size %.3f colour %#x" % (tuple(round(v, 1) for v in p[:3]), p[3], p[4]))
-        last = m
 
 
 def calls(path):
