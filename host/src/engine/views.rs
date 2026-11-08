@@ -61,8 +61,7 @@ pub(crate) struct Group {
 
 impl Group {
     /// The plugin's view slot of the group's scene (the view field of its `SCENE_BEGIN` less
-    /// 1), 0 to 31. `None` for a scene that is not a view, or a record without the field (an
-    /// older plugin). A group is one scene,
+    /// 1), 0 to 31. `None` for a scene that is not a view. A group is one scene,
     /// so it never has two slots; a view into the back buffer with several scenes in a frame
     /// has a group for each, all with its slot.
     pub(crate) fn view_slot(&self) -> Option<u32> {
@@ -115,9 +114,6 @@ pub(crate) enum Place {
 const MAIN_VIEW: u8 = 0;
 /// The offset of the view field in a scene record (the plugin's `SceneV1::view`).
 const SCENE_VIEW_AT: usize = 48;
-/// The size of a scene record with the view field (the plugin's `SceneV1`, design section
-/// 3.4c): a shorter record, such as the 48 bytes of an older plugin, has no view.
-const SCENE_WITH_VIEW: usize = 56;
 
 /// The offset of the word of a scene record with the first slot of a repeat and the walk bit
 /// (the plugin's `SceneV1::repeat_walk`, stream format 7).
@@ -130,11 +126,8 @@ const SCENE_REPEAT_MASK: u32 = 0xFF;
 const SCENE_WALK_DUE: u32 = 0x100;
 
 /// The view slot of a scene record: the field holds the slot plus 1, 0 for a scene that is not
-/// a view. `None` for a record without the field, for 0, or for a slot past the table.
+/// a view. `None` for 0, or for a slot past the table.
 pub(crate) fn scene_view(data: &[u8]) -> Option<u8> {
-    if data.len() < SCENE_WITH_VIEW {
-        return None;
-    }
     let view = crate::data::word(data, SCENE_VIEW_AT) & 0xFF;
     (view != 0 && view as usize <= VIEW_SLOTS).then(|| (view - 1) as u8)
 }
@@ -183,8 +176,7 @@ pub(crate) struct Views {
     /// the scene's start.
     scene_slot: Option<u8>,
     /// The scene in progress has the word and not the bit `SCENE_WALK_DUE`: the plugin does
-    /// not walk its root, so no `EVENT_WORLD_WALK` follows. False for a scene record without
-    /// the word, and before the first scene.
+    /// not walk its root, so no `EVENT_WORLD_WALK` follows. False before the first scene.
     scene_without_walk: bool,
     /// The slot of the first scene of the key of the scene in progress, when the scene repeats
     /// its key in the same flush (the low byte of the word less 1), for the scene's group.
@@ -210,13 +202,13 @@ impl Views {
         self.note_scene(scene_view(data), word(8), word(12), target);
     }
 
-    /// The word of a scene record with the repeat and the walk. A record without the word has
-    /// a walk that is due and no repeat.
+    /// The word of a scene record with the repeat and the walk.
     pub(crate) fn note_repeat_walk(&mut self, data: &[u8]) {
-        let word = (data.len() >= SCENE_WITH_VIEW).then(|| crate::data::word(data, SCENE_REPEAT_WALK_AT));
-        self.scene_without_walk = word.is_some_and(|word| word & SCENE_WALK_DUE == 0);
+        let word = crate::data::word(data, SCENE_REPEAT_WALK_AT);
+        self.scene_without_walk = word & SCENE_WALK_DUE == 0;
         // A first slot past the table is a fault of the stream: no repeat.
-        self.scene_first = word.map(|word| word & SCENE_REPEAT_MASK).filter(|&first| first != 0 && first as usize <= VIEW_SLOTS).map(|first| (first - 1) as u8);
+        let first = word & SCENE_REPEAT_MASK;
+        self.scene_first = (first != 0 && first as usize <= VIEW_SLOTS).then(|| (first - 1) as u8);
     }
 
     /// The engine's walk of the scene in progress marks its world with an event: the stream
@@ -639,8 +631,8 @@ mod tests {
         assert!(views.group(0).unwrap().additions.contains(Additions::POST_COVER));
     }
 
-    /// A group keeps the view slot of its scene record; a scene with no record of a view
-    /// (an older plugin) gives none, and a slot does not pass to the next scene.
+    /// A group keeps the view slot of its scene record, and a slot does not pass to the next
+    /// scene.
     #[test]
     fn a_group_keeps_the_view_slot_of_its_scene() {
         let record = |view: u32| {
@@ -667,8 +659,8 @@ mod tests {
         data
     }
 
-    /// The word says whether the plugin walks the scene's root. A record without the word says
-    /// nothing: the walk is due.
+    /// The word says whether the plugin walks the scene's root. Before any scene the walk is
+    /// due.
     #[test]
     fn the_word_of_a_scene_record_says_whether_its_walk_is_due() {
         let mut views = Views::default();
@@ -679,11 +671,8 @@ mod tests {
         assert!(!views.scene_walk_due());
         views.note_repeat_walk(&record_with_word(0x3));
         assert!(!views.scene_walk_due(), "a repeat names a first slot and no walk");
-        // The next scene's record decides again; a record of 48 bytes has no word.
+        // The next scene's record decides again.
         views.note_repeat_walk(&record_with_word(SCENE_WALK_DUE | 0x3));
-        assert!(views.scene_walk_due());
-        views.note_repeat_walk(&record_with_word(0));
-        views.note_repeat_walk(&record_with_word(0)[..48]);
         assert!(views.scene_walk_due());
         // `note_scene_record` takes the word too.
         views.note_scene_record(&record_with_word(0));

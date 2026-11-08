@@ -134,8 +134,9 @@ pub fn least_length(tag: u32) -> usize {
         TEXTURE => 36,
         // The handle, the level, the width, the height, the format, the size.
         TEXTURE_UPDATE => 24,
-        // `SceneV1` of the link: 48 bytes, with the origin at 24.
-        SCENE_BEGIN => 48,
+        // `SceneV1` of the link: 56 bytes, with the origin at 24, the view at 48 and the word
+        // of the repeat and the walk at 52.
+        SCENE_BEGIN => 56,
         // The flags (`SCENE_END_*` of the plugin's `link.rs`).
         SCENE_END => 4,
         FRAME_EVENT => 8,
@@ -508,20 +509,16 @@ mod tests {
 
     #[test]
     fn the_scene_record_is_the_packet_of_the_link() {
-        // `SceneV1` of `src/link.rs` of the plugin is 56 bytes since the view field; a plugin
-        // before it sends 48. The origin is read at 24.
-        assert_eq!(least_length(SCENE_BEGIN), 48);
+        // `SceneV1` of `src/link.rs` of the plugin is 56 bytes. The origin is read at 24.
+        assert_eq!(least_length(SCENE_BEGIN), 56);
     }
 
     #[test]
-    fn a_scene_record_of_48_bytes_has_no_view_and_one_of_56_has_its_slot() {
+    fn a_scene_record_has_its_slot() {
         use crate::engine::views::scene_view;
         let mut record = vec![0u8; 56];
         record[48..52].copy_from_slice(&3u32.to_le_bytes());
         assert_eq!(scene_view(&record), Some(2));
-        assert_eq!(scene_view(&record[..48]), None);
-        // The view word without the whole struct: no view.
-        assert_eq!(scene_view(&record[..52]), None);
         // 0: a scene that is not a view; past the 32 slots: no slot.
         record[48..52].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(scene_view(&record), None);
