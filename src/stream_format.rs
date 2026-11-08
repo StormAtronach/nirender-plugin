@@ -76,11 +76,6 @@
 /// 2026-11-08). A helper of format 7 would draw nothing of the table in the main view.
 pub const STREAM_FORMAT: u32 = 8;
 
-/// The first stream format whose scene records (56 bytes, under [`HEADER_SCENE_VIEWS`]) hold
-/// `link::SceneV1::repeat_walk`. A capture of an older format has 0 in that word, which a
-/// reader takes as "no word": a walk that is due, and no repeat.
-pub const FORMAT_SCENE_REPEAT_WALK: u32 = 7;
-
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as
 /// ASCII, zero-padded. A HEADER of 16 bytes comes from a plugin before the handshake.
