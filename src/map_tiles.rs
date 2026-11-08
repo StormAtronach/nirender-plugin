@@ -31,8 +31,6 @@
 //! - A save writes the world map. The call of `createSaveScreenshot` at 0x4B586D, at the
 //!   start of each save, completes all open tiles first, with a wait.
 //! - `-createmaps` (`DataHandler::flagTestingCells`) keeps the engine's read.
-//!
-//! `NIRENDER_MAP_TILES=0` leaves the engine's read in place, for an A/B.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
@@ -120,11 +118,6 @@ static MOST_OPEN: AtomicUsize = AtomicUsize::new(0);
 /// time. It is `unsafe` because of the calls of MWSE's table.
 pub unsafe fn install() {
     if !INSTALLED.begin() {
-        return;
-    }
-    if crate::switches::on("NIRENDER_MAP_TILES") == Some(false) {
-        crate::log!("map tiles: NIRENDER_MAP_TILES=0, the engine reads each tile");
-        INSTALLED.finish(false);
         return;
     }
     use crate::mwse_native::{claim_all, NATIVE_OVERRIDE_MAP_CELL_PAINT, NATIVE_OVERRIDE_MAP_TILE_READ, NATIVE_OVERRIDE_SAVE_PICTURE, NATIVE_OVERRIDE_TEXTURE_PURGE};
