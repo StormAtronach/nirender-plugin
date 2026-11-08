@@ -300,10 +300,6 @@ struct Tables {
     /// material, by the groups of words that changed (`material_stream::GROUP_NAMES`): what
     /// that note catches that no event reports.
     periodic_changes: [u64; crate::material_stream::GROUPS],
-    /// The shapes of class 0 (under no root the classes know: the actors and their parts, and
-    /// objects hung elsewhere) are retained too (`NIRENDER_ACTORS=0` keeps them out). The class
-    /// does not say what a shape is; the reference of its scene node would.
-    actors: bool,
     /// A shape under an animated node, and a shape of class 0 that is not skinned, are
     /// retained too (`NIRENDER_ANIMATED=0` keeps them out).
     animated: bool,
@@ -496,7 +492,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         effect_notes: 0,
         texture_notes: 0,
         periodic_changes: [0; crate::material_stream::GROUPS],
-        actors: crate::switches::on("NIRENDER_ACTORS") != Some(false),
         animated: crate::switches::on("NIRENDER_ANIMATED") != Some(false),
         node_kinds: crate::switches::on("NIRENDER_NODE_KINDS") != Some(false),
         controllers: crate::switches::on("NIRENDER_CONTROLLERS") != Some(false),
@@ -572,14 +567,14 @@ pub unsafe fn set_mode(mt: &MainThread, mode: Mode) -> Mode {
 /// True for a class of object the plugin retains: the objects of the references, the
 /// landscape, and class 0. Class 0 is a shape of the world scene under no root the classes
 /// know: the actors and their parts, and objects hung elsewhere. By default every shape of
-/// class 0 is retained, skinned or not. `NIRENDER_ACTORS=0` keeps class 0 out;
-/// `NIRENDER_ANIMATED=0` keeps out the class 0 shapes that are not skinned.
+/// class 0 is retained, skinned or not. `NIRENDER_ANIMATED=0` keeps out the class 0 shapes
+/// that are not skinned.
 pub unsafe fn class_retained(mt: &MainThread, class: u32, skinned: bool) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     class == CLASS_OBJECT
         || class == CLASS_LANDSCAPE
-        || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated))
+        || (class == CLASS_UNKNOWN && (skinned || t.animated))
         || (sky_table_class(class) && sky_table_on())
         || (class == CLASS_WEATHER_PARTICLES && weather_table_on())
 }
