@@ -518,9 +518,6 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
         | if crate::ports::base::in_main_flush(t) { QUEUED } else { 0 };
     // A draw of a retained shape: its instance records in the place of this one (mode gpu:
     // the first draw of the instance), or before it (mode dual).
-    // The engine's record of a particle instance that `nirender.particleDraws(false)` asks for:
-    // not counted by `count_engine_particles`.
-    let mut switched_off = false;
     let pending = crate::instance_stream::take_pending(t);
     if pending.is_none() && kind == PARTICLES {
         (*POINTS_PENDING.get(t)) = false;
@@ -533,10 +530,7 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
         // `reject_reason` keeps the kinds the table cannot draw). A draw at the engine's place
         // (`INSTANCE_DRAW`) carries the engine's stages of this draw.
         let points = kind == PARTICLES && crate::instance_stream::is_points(t, shape);
-        if points && !crate::instance_stream::particle_draws() {
-            // `nirender.particleDraws(false)`: the engine's record, the instance kept.
-            switched_off = true;
-        } else if (kind & !SKINNED != 0 && !points) || flags & CODE_PATCH_PICTURE != 0 {
+        if (kind & !SKINNED != 0 && !points) || flags & CODE_PATCH_PICTURE != 0 {
             crate::instance_stream::reject_pending(t, shape, true);
         } else {
             if points && tail.len() >= 8 {
@@ -551,7 +545,7 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
             }
         }
     }
-    if kind == PARTICLES && flags & RETAINED_TWIN == 0 && !switched_off {
+    if kind == PARTICLES && flags & RETAINED_TWIN == 0 {
         count_engine_particles(t);
     }
     // The tail of the record: the effects, the fog, then `tail`. On the stack: a draw does not

@@ -1364,20 +1364,6 @@ pub fn set_weather_draws(on: bool) {
     WEATHER_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// The draws of the particle instances go as `INSTANCE_DRAW` records (`nirender.particleDraws`;
-/// on when the table takes them): off, they go as the engine's shape records, for an A/B in one
-/// session.
-static PARTICLE_DRAWS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
-
-/// True when the draws of the particle instances go as `INSTANCE_DRAW` records.
-pub fn particle_draws() -> bool {
-    PARTICLE_DRAWS.load(core::sync::atomic::Ordering::Relaxed)
-}
-
-/// Sets whether the draws of the particle instances go as `INSTANCE_DRAW` records.
-pub fn set_particle_draws(on: bool) {
-    PARTICLE_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
-}
 
 /// What the table knows of a shape, for a log line: an instance (with its id and kind),
 /// rejected, or not considered.
@@ -1394,7 +1380,7 @@ pub unsafe fn describe(mt: &MainThread, shape: usize) -> String {
 }
 
 /// True when the shape is a particle instance (`shape_stream::record` sends its particles
-/// before its `INSTANCE_DRAW`, or keeps the engine's record when `particle_draws` is off).
+/// before its `INSTANCE_DRAW`).
 pub unsafe fn is_points(mt: &MainThread, shape: usize) -> bool {
     tables(mt).instances.get(&shape).is_some_and(|instance| instance.points)
 }
@@ -1552,9 +1538,6 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     }
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
     if instance.class == CLASS_WEATHER_PARTICLES && !weather_draws() {
-        return false;
-    }
-    if instance.points && !particle_draws() {
         return false;
     }
     // A skinned shape's world matrix is the identity (the palette has the transforms), so
@@ -2730,8 +2713,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
         + &{
             let engine = crate::shape_stream::engine_particle_records(mt);
             format!(
-                "particles: draws as instance records {}; {} particle instances ({} made), {} draws as INSTANCE_DRAW records; as the engine's shape records {} in scenes of the world camera ({} frames), {} in other scenes\n",
-                if particle_draws() { "on" } else { "off" },
+                "particles: {} particle instances ({} made), {} draws as INSTANCE_DRAW records; as the engine's shape records {} in scenes of the world camera ({} frames), {} in other scenes\n",
                 t.instances.values().filter(|i| i.points).count(),
                 t.particle_instances_made,
                 t.particle_draws,
