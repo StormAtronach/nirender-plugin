@@ -145,6 +145,21 @@ impl Player {
             c.instance_upload_bytes as f64 / 1e6,
             if switches().instance_upload_all { " (MGE_XE_INSTANCE_UPLOAD=all: the segment goes whole above 64 changed slots)" } else { "" }
         );
+        println!(
+            "table upload (D109 gain 3): case changed {} frames, {:.3} s; case all {} frames, {:.3} s; {} record writes with {:.1} MB (record {} bytes, instance entry {} bytes); {} entries moved in {} runs, {:.1} MB of runs of which {:.1} MB gap",
+            c.upload_changed_cases,
+            c.upload_changed_seconds,
+            c.instance_uploads_whole,
+            c.upload_all_seconds,
+            c.record_writes,
+            c.record_write_bytes as f64 / 1e6,
+            crate::data::RECORD_SIZE,
+            crate::data::INSTANCE_SIZE,
+            c.instance_entries_moved,
+            c.instance_upload_runs,
+            c.instance_upload_bytes as f64 / 1e6,
+            c.instance_gap_bytes as f64 / 1e6
+        );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("skinned shapes {}, particle systems {} ({} of them from INSTANCE_PARTICLES records)", c.shape_skinned, c.shape_particles, c.instance_particles);
         match self.renderer.particle_quads_made() {
