@@ -183,11 +183,10 @@ impl Player {
             c.uv_bases, c.uv_steps, c.uv_missing
         );
         println!(
-            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB{}",
+            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB",
             c.instance_uploads_whole,
             c.instance_upload_runs,
-            c.instance_upload_bytes as f64 / 1e6,
-            if switches().instance_upload_all { " (MGE_XE_INSTANCE_UPLOAD=all: the segment goes whole above 64 changed slots)" } else { "" }
+            c.instance_upload_bytes as f64 / 1e6
         );
         println!(
             "table upload (D109 gain 3): case changed {} frames, {:.3} s; case all {} frames, {:.3} s; {} record writes with {:.1} MB (record {} bytes, instance entry {} bytes); {} entries moved in {} runs, {:.1} MB of runs of which {:.1} MB gap",
@@ -208,7 +207,7 @@ impl Player {
         println!("skinned shapes {}, particle systems {} ({} of them from INSTANCE_PARTICLES records)", c.shape_skinned, c.shape_particles, c.instance_particles);
         match self.renderer.particle_quads_made() {
             Some((systems, particles)) => println!("particle quads made on the GPU: {systems} systems, {particles} particles"),
-            None => println!("particle quads made on the GPU: none ({})", if switches().particle_quads_cpu { "MGE_XE_PARTICLE_QUADS=cpu" } else { "no system yet" }),
+            None => println!("particle quads made on the GPU: none (no system yet)"),
         }
         println!("shapes held for the extension {}, {} of them lost waiting for a place in the sorted queue, {} that blend drawn at the end of the world scene", c.held, c.held_sorted_lost, c.held_sorted_fallback);
         println!("classes of the extension: {} calls at a draw of the class, {} calls in frames without a draw of the class", c.class_calls, c.class_calls_without_draw);

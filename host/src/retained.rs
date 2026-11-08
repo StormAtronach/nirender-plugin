@@ -1577,7 +1577,7 @@ impl Renderer {
             self.counts.upload_all_seconds += case_began.elapsed().as_secs_f64();
             set.dirty.clear();
             set.moved.clear();
-        } else if !switches().instance_upload_all {
+        } else {
             set.dirty.sort_unstable();
             set.dirty.dedup();
             for &i in &set.dirty {
@@ -1622,38 +1622,6 @@ impl Renderer {
             }
             self.counts.upload_changed_cases += 1;
             self.counts.upload_changed_seconds += case_began.elapsed().as_secs_f64();
-            set.dirty.clear();
-            set.moved.clear();
-        } else {
-            set.dirty.sort_unstable();
-            set.dirty.dedup();
-            for &i in &set.dirty {
-                if let Some(slot) = set.slots[i as usize].as_ref() {
-                    self.queue.write_buffer(&self.record_buffer, (i as usize * RECORD_SIZE) as u64, bytemuck::bytes_of(&slot.data));
-                }
-            }
-            // The instances of the changed and the moved slots: one write of the segment when
-            // there are many (an animated scene moves hundreds a frame), else one each.
-            set.moved.sort_unstable();
-            set.moved.dedup();
-            let instance_of = |i: usize, slot: &Slot| slot_instance(i, slot);
-            if set.dirty.len() + set.moved.len() > 64 {
-                let mut instances = vec![0u8; room * INSTANCE_SIZE];
-                for (i, slot) in set.slots.iter().take(room).enumerate() {
-                    if let Some(slot) = slot {
-                        instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&instance_of(i, slot)));
-                    }
-                }
-                if !instances.is_empty() {
-                    self.queue.write_buffer(&self.instance_buffer, 0, &instances);
-                }
-            } else {
-                for &i in set.dirty.iter().chain(set.moved.iter()) {
-                    if let Some(slot) = set.slots[i as usize].as_ref() {
-                        self.queue.write_buffer(&self.instance_buffer, (i as usize * INSTANCE_SIZE) as u64, bytemuck::bytes_of(&instance_of(i as usize, slot)));
-                    }
-                }
-            }
             set.dirty.clear();
             set.moved.clear();
         }

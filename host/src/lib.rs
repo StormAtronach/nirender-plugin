@@ -736,7 +736,7 @@ struct Renderer {
     /// number of quads it has, and the buffer. It grows to the largest system seen.
     quad_indexes: Option<(u32, Rc<wgpu::Buffer>)>,
     /// The quads of the particle systems made on the GPU (`particle_quads`), made at the
-    /// first system; none with `MGE_XE_PARTICLE_QUADS=cpu`.
+    /// first system.
     particle_quads: Option<particle_quads::ParticleQuads>,
     /// The morphs of the geometries whose targets the plugin sent (`morph.rs`), made at the
     /// first `MORPH_TARGETS` record.

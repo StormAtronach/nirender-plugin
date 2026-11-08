@@ -156,8 +156,6 @@ The A/B:
   sends the engine's projection of each texture effect under a turning billboard, after the
   billboard's display, and clears the billboard's displayed flag. The helper compares it with
   its own (`host/src/effect_turn.rs`) and reports the largest difference by the pair of modes.
-- `MGE_XE_PARTICLE_QUADS=cpu` makes the quads of the particle systems on the CPU, not on the
-  GPU.
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
   adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
   `depth:` names the format in use).
@@ -207,8 +205,8 @@ The instruments and the tests:
   (`src/install.rs`); without them the test uses the paths of this machine.
 
 The helper's diagnostic and test switches (`host/src/switches.rs`, read once; none is a
-setting). The two of the A/B list above (`MGE_XE_PARTICLE_QUADS`, `MGE_XE_DEPTH_FORMAT`) are
-there too. MGE XE's own switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
+setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own
+switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 
 - `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode `dual`
   (and the engine's walk), the engine's own draws of the same capture: the reference of a
@@ -219,8 +217,6 @@ there too. MGE XE's own switches are in the RENDERER.md of the MGE-XE-G7 render-
   reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose for it.
 - `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
-- `MGE_XE_INSTANCE_UPLOAD=all`: the retained segment of the instances goes up whole when more
-  than 64 slots changed in a frame, as before the copy of `retained_upload`.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),
   over the setting of the extension.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting
