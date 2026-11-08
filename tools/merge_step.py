@@ -280,10 +280,18 @@ def take_options(slots, stages):
     return {}
 
 
+# The refusal of slot.py when this session already holds the build slot under another label: another run of this
+# session, usually an earlier merge_step that still runs. The first form is slot.py's until 2026-11-09, the second its
+# plainer form after it.
+OWN_HOLD = ("this session holds it as", "your session already holds the build slot as")
+
+
 def take_build(slots, what, no_wait, options=None):
-    """Takes the build slot, and asks again in its queue, so that the place stays. False with --no-wait, when it must wait,
-    and on a refusal, as waiting cannot pass that."""
+    """Takes the build slot, and asks again in its queue, so that the place stays. A hold of another run of this session
+    (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN" line, with
+    --no-wait when it must wait, and on any other refusal, as waiting cannot pass that."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
+    waiting_for_own = False
     while True:
         try:
             reply = slots.take("build", what, minutes=SLOT_MINUTES, **(options or {}))
@@ -295,12 +303,21 @@ def take_build(slots, what, no_wait, options=None):
             # All lines: a take of the build slot names the free space on C, and warns when the cleaning is due.
             say(reply.text)
             return True
-        say(reply.text.splitlines()[0])
-        if reply.code == slots.REFUSED:
+        first = reply.text.splitlines()[0]
+        own = reply.code == slots.REFUSED and any(phrase in first for phrase in OWN_HOLD)
+        if reply.code == slots.REFUSED and not own:
+            say("NOT RUN: the take of the build slot was refused: %s" % first)
             return False
         if no_wait:
-            slots.leave("build", what)
+            if not own:
+                slots.leave("build", what)
+            say("NOT RUN: --no-wait, and the build slot is not free: %s" % first)
             return False
+        if own and not waiting_for_own:
+            say("waiting: another run of this session holds the build slot, and this run starts after its release: %s" % first)
+        elif not own:
+            say(first)
+        waiting_for_own = own
         time.sleep(WAIT_SECONDS)
 
 
@@ -477,8 +494,9 @@ def self_test():
 
             @classmethod
             def take(cls, *_, **__):
-                code = cls.replies.pop(0)
-                return types.SimpleNamespace(code=code, text="a reply\nmore")
+                reply = cls.replies.pop(0)
+                code, text = reply if isinstance(reply, tuple) else (reply, "a reply\nmore")
+                return types.SimpleNamespace(code=code, text=text)
 
             @staticmethod
             def leave(*_):
@@ -496,9 +514,41 @@ def self_test():
         shown = io.StringIO()
         with contextlib.redirect_stdout(shown):
             assert take_build(Slots, "x", False) is False
-        assert shown.getvalue() == "a reply\n", shown.getvalue()
+        assert shown.getvalue() == "NOT RUN: the take of the build slot was refused: a reply\n", shown.getvalue()
         Slots.replies = [Slots.QUEUED]
-        assert take_build(Slots, "x", True) is False and Slots.replies == []
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            assert take_build(Slots, "x", True) is False and Slots.replies == []
+        assert shown.getvalue() == "NOT RUN: --no-wait, and the build slot is not free: a reply\n", shown.getvalue()
+
+        # Another run of this session holds the slot (2026-11-08 23:22:44, the Coordinator): this run waits for its
+        # release, with one line, and then takes the slot. With --no-wait it ends with NOT RUN.
+        own = (Slots.REFUSED, 'build: refused: this session holds it as "merge_step: other" (since t); a take with another label is a second run.\nRun...')
+        Slots.replies = [own, own, own, Slots.DONE]
+        sleeps = []
+        real_sleep, time.sleep = time.sleep, sleeps.append
+        try:
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                assert take_build(Slots, "x", False) is True and Slots.replies == []
+        finally:
+            time.sleep = real_sleep
+        lines = shown.getvalue().splitlines()
+        assert len(sleeps) == 3 and lines[0].startswith("waiting: another run of this session holds the build slot") and lines[1:] == ["a reply", "more"], lines
+        Slots.replies = [own]
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            assert take_build(Slots, "x", True) is False
+        assert shown.getvalue().startswith("NOT RUN: --no-wait, and the build slot is not free: build: refused: this session holds it"), shown.getvalue()
+        # The plainer form of the refusal waits alike.
+        plainer = (Slots.REFUSED, 'build: refused: your session already holds the build slot as "merge_step: other" (since t); work in this session runs under that hold')
+        Slots.replies = [plainer, Slots.DONE]
+        real_sleep, time.sleep = time.sleep, sleeps.append
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert take_build(Slots, "x", False) is True and Slots.replies == []
+        finally:
+            time.sleep = real_sleep
 
         # A round with the replay gate takes the whole build side (D139); one without takes a place; a slot.py from
         # before D139 has no such option, and its take gets none.
