@@ -1103,7 +1103,7 @@ impl ApplicationHandler for App {
 
 /// The file name of this program, for a message to the player: numidium.exe as the helper
 /// of MGE XE, nirender-host.exe on its own.
-fn program_name() -> String {
+pub(crate) fn program_name() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))

@@ -112,31 +112,21 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         Some(&last) => last,
         None => option(&args, "--frame").and_then(|text| text.parse().ok()).unwrap_or(frames.saturating_sub(1)),
     };
-    // The size of the back buffer: the first record, or the largest viewport of an old capture.
-    let (mut width, mut height) = (0u32, 0u32);
-    for (tag, data) in &records {
-        if *tag == tag::HEADER {
-            (width, height) = (word(data, 0), word(data, 4));
-            // A capture of another stream format is refused, as a live helper refuses the
-            // plugin of another format (D131): its records do not mean what this build reads.
-            let format = stream_format::header_format(data);
-            if format != stream_format::STREAM_FORMAT {
-                eprintln!("capture of the stream format {format} ({}); this build reads the format {}: make the capture again", stream_format::header_build_id(data), stream_format::STREAM_FORMAT);
-                std::process::exit(stream_format::EXIT_STREAM_FORMAT as i32);
+    let reader = format!("{} ({})", live::program_name(), live::reader_build(extension.as_deref()));
+    let header = match capture_header(&records, &reader) {
+        Ok(header) => header,
+        Err(message) => {
+            for line in message.lines() {
+                eprintln!("{line}");
             }
-            break;
+            eprintln!("make the capture again with this build");
+            std::process::exit(stream_format::EXIT_STREAM_FORMAT as i32);
         }
-        if *tag == tag::CALL && word(data, 0) == CALL_VIEWPORT {
-            // A short call, or an index past its end, has no viewport: the scan goes on.
-            let Some(viewport) = (word(data, 12) as usize).checked_mul(4).and_then(|index| data.get(16usize.saturating_add(index)..)) else {
-                continue;
-            };
-            if viewport.len() >= 24 {
-                width = width.max(word(viewport, 0) + word(viewport, 8));
-                height = height.max(word(viewport, 4) + word(viewport, 12));
-            }
-        }
-    }
+    };
+    // The size of the back buffer. The plugin writes 0 when the game has no renderer at the
+    // end of the warm-up.
+    let mut width = word(header, stream_format::HEADER_WIDTH_AT);
+    let mut height = word(header, stream_format::HEADER_HEIGHT_AT);
     if width == 0 || height == 0 {
         (width, height) = (1280, 720);
     }
@@ -198,4 +188,47 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         }
     }
     player.print_counts();
+}
+
+/// The head of the stream of a capture: its first record. A capture whose first record is not
+/// a `HEADER`, or whose `HEADER` names another stream format, is refused, as a live helper
+/// refuses the stream of the plugin (D131).
+fn capture_header<'a>(records: &[(u32, &'a [u8])], reader: &str) -> Result<&'a [u8], String> {
+    match records.first() {
+        Some(&(tag::HEADER, header)) => stream_format::accept_header(header, reader).map(|_| header),
+        Some(&(other, _)) => {
+            let name = tag::name(other);
+            Err(format!("The first record of the capture has the tag {other} ({name}), not HEADER."))
+        }
+        None => Err("The capture has no record.".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `HEADER` record of a 1920 x 1080 picture in the stream format `format`.
+    fn header(format: u32) -> Vec<u8> {
+        let mut record = vec![0; stream_format::HEADER_BUILD_ID_AT + stream_format::HEADER_BUILD_ID_BYTES];
+        record[0..4].copy_from_slice(&1920u32.to_le_bytes());
+        record[4..8].copy_from_slice(&1080u32.to_le_bytes());
+        record[stream_format::HEADER_FORMAT_AT..stream_format::HEADER_FORMAT_AT + 4].copy_from_slice(&format.to_le_bytes());
+        record
+    }
+
+    /// The replay takes the first record as the head of the stream: a capture of this build's
+    /// format plays; one of another format, one with another record first and an empty one
+    /// are refused.
+    #[test]
+    fn a_capture_plays_only_with_a_header_of_this_format_first() {
+        let ours = header(stream_format::STREAM_FORMAT);
+        let scene = [0u8; 56];
+        let played = capture_header(&[(tag::HEADER, &ours), (tag::SCENE_BEGIN, &scene)], "test");
+        assert_eq!(played, Ok(&ours[..]));
+        let older = header(stream_format::STREAM_FORMAT - 1);
+        assert!(capture_header(&[(tag::HEADER, &older)], "test").is_err());
+        assert!(capture_header(&[(tag::SCENE_BEGIN, &scene), (tag::HEADER, &ours)], "test").is_err());
+        assert!(capture_header(&[], "test").is_err());
+    }
 }
