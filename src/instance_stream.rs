@@ -300,9 +300,6 @@ struct Tables {
     /// material, by the groups of words that changed (`material_stream::GROUP_NAMES`): what
     /// that note catches that no event reports.
     periodic_changes: [u64; crate::material_stream::GROUPS],
-    /// A shape under an animated node, and a shape of class 0 that is not skinned, are
-    /// retained too (`NIRENDER_ANIMATED=0` keeps them out).
-    animated: bool,
     /// A shape under a billboard, a switch, a level of detail, a BSP, an animation or a
     /// particle node is retained too (`NIRENDER_NODE_KINDS=0` keeps them out). See
     /// [`REJECTED_KINDS`].
@@ -492,7 +489,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         effect_notes: 0,
         texture_notes: 0,
         periodic_changes: [0; crate::material_stream::GROUPS],
-        animated: crate::switches::on("NIRENDER_ANIMATED") != Some(false),
         node_kinds: crate::switches::on("NIRENDER_NODE_KINDS") != Some(false),
         controllers: crate::switches::on("NIRENDER_CONTROLLERS") != Some(false),
         skin_table: crate::switches::on("NIRENDER_SKIN_TABLE") != Some(false),
@@ -566,15 +562,12 @@ pub unsafe fn set_mode(mt: &MainThread, mode: Mode) -> Mode {
 
 /// True for a class of object the plugin retains: the objects of the references, the
 /// landscape, and class 0. Class 0 is a shape of the world scene under no root the classes
-/// know: the actors and their parts, and objects hung elsewhere. By default every shape of
-/// class 0 is retained, skinned or not. `NIRENDER_ANIMATED=0` keeps out the class 0 shapes
-/// that are not skinned.
-pub unsafe fn class_retained(mt: &MainThread, class: u32, skinned: bool) -> bool {
-    let mut tables_open = tables(mt);
-    let t = &mut *tables_open;
+/// know: the actors and their parts, and objects hung elsewhere, skinned or not. The sky and
+/// the weather's drops when their switches put them into the table.
+pub fn class_retained(class: u32) -> bool {
     class == CLASS_OBJECT
         || class == CLASS_LANDSCAPE
-        || (class == CLASS_UNKNOWN && (skinned || t.animated))
+        || class == CLASS_UNKNOWN
         || (sky_table_class(class) && sky_table_on())
         || (class == CLASS_WEATHER_PARTICLES && weather_table_on())
 }
@@ -1227,15 +1220,12 @@ unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, skinned
         }
         *live = true;
     }
-    let animated = t.animated;
     let above = crate::parent_chain::first_answer(
         rd(shape, PARENT),
         crate::parent_chain::GUARD,
         |node| rd(node, PARENT),
         |node| {
-            if !animated && !skinned && rd::<usize>(node, CONTROLLERS) != 0 {
-                Some(REASON_CONTROLLER)
-            } else if kind_rejected(t.node_kinds, node, skinned) {
+            if kind_rejected(t.node_kinds, node, skinned) {
                 Some(REASON_NODE_KIND)
             } else {
                 None
