@@ -2530,50 +2530,32 @@ impl Player {
         if !self.pass_wanted() {
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
-        // The places of the table that follow each other draw as one run.
-        let mut run: Vec<(u64, u32, u32, u32)> = Vec::new();
-        // The held shapes that follow each other in the queue, with no other draw between them,
-        // go in one call. They draw from one copy of the picture, so that no surface shows another
-        // through its refraction (`flushWaterVolumes` of the Direct3D 9 path).
-        let mut surfaces: Vec<HeldDraw> = Vec::new();
-        let mut surfaces_facts: Option<WorldFacts> = None;
-        for (waiting, _) in &deferred {
-            match waiting {
-                crate::Waiting::Draw(draw) => {
-                    self.draw_sorted_run(view, core::mem::take(&mut run));
-                    self.give_held_run(&mut surfaces, surfaces_facts);
-                    let draw = draw.clone();
-                    self.issue(&draw);
-                }
-                crate::Waiting::Held(held, facts) => {
-                    self.draw_sorted_run(view, core::mem::take(&mut run));
-                    surfaces.push((**held).clone());
-                    surfaces_facts = Some(**facts);
-                }
-                &crate::Waiting::Table(id) => {
-                    self.renderer.counts.queued_places += 1;
-                    // A held instance of a blended slot draws here, at its place in the
-                    // engine's queue, with the run before it drawn first.
-                    if let Some(at) = self.held_sorted_wait.iter().position(|waiting| waiting.0 == id) {
-                        let (_, held, facts) = self.held_sorted_wait.remove(at);
-                        self.draw_sorted_run(view, core::mem::take(&mut run));
-                        surfaces.push(held);
-                        surfaces_facts = Some(facts);
-                    } else {
-                        let mut placed = Vec::new();
-                        if self.retained.placed_entries(id, &mut placed) != 0 {
-                            self.renderer.counts.queued_not_sorted += 1;
-                        }
-                        if !placed.is_empty() {
-                            self.give_held_run(&mut surfaces, surfaces_facts);
-                            run.append(&mut placed);
-                        }
+        // The order of the flush is a plan made from the kinds of the queue (`SortedPlan`); the
+        // steps run here in that order.
+        let kinds: Vec<QueuedKind> = deferred
+            .iter()
+            .map(|(waiting, _)| match waiting {
+                crate::Waiting::Draw(_) => QueuedKind::Draw,
+                crate::Waiting::Held(..) => QueuedKind::Held,
+                &crate::Waiting::Table(id) => QueuedKind::Table(id),
+            })
+            .collect();
+        let waits: Vec<u32> = self.held_sorted_wait.iter().map(|waiting| waiting.0).collect();
+        let plan = SortedPlan::build(&kinds, &waits, |id, placed| self.retained.placed_entries(id, placed));
+        self.renderer.counts.queued_places += plan.queued_places;
+        self.renderer.counts.queued_not_sorted += plan.queued_not_sorted;
+        for step in plan.steps {
+            match step {
+                SortedStep::Run(entries) => self.draw_sorted_run(view, entries),
+                SortedStep::Draw(at) => {
+                    if let crate::Waiting::Draw(draw) = &deferred[at].0 {
+                        let draw = draw.clone();
+                        self.issue(&draw);
                     }
                 }
+                SortedStep::Held(sources) => self.give_held_sources(&deferred, sources),
             }
         }
-        self.draw_sorted_run(view, run);
-        self.give_held_run(&mut surfaces, surfaces_facts);
         self.retained.kept_sorted = all_kept;
         if late {
             self.merge_late_depth();
@@ -2581,7 +2563,136 @@ impl Player {
     }
 }
 
+/// An entry of the engine's sorted queue, as [`SortedPlan`] reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum QueuedKind {
+    /// A draw of the engine's path.
+    Draw,
+    /// A held shape.
+    Held,
+    /// A place of the table: the id of its instance.
+    Table(u32),
+}
+
+/// Where a held shape of a [`SortedStep::Held`] comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HeldSource {
+    /// The entry of the queue with this index.
+    Queue(usize),
+    /// The held draw of the table place with this id, which waited.
+    Wait(u32),
+}
+
+/// A step of the flush of the sorted queue.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SortedStep {
+    /// The places of the table that follow each other, as one `draw_retained` call.
+    Run(Vec<(u64, u32, u32, u32)>),
+    /// The held shapes that follow each other, with no other draw between them, in one call. They
+    /// draw from one copy of the picture, so that no surface shows another through its refraction
+    /// (`flushWaterVolumes` of the Direct3D 9 path).
+    Held(Vec<HeldSource>),
+    /// The draw of the engine's path at this index of the queue.
+    Draw(usize),
+}
+
+/// The order in which the sorted queue is flushed: the steps, and the counts of the places that
+/// the plan read.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SortedPlan {
+    pub(crate) steps: Vec<SortedStep>,
+    /// The places of the table in the queue.
+    pub(crate) queued_places: u64,
+    /// The places of the table with a slot that the table does not sort.
+    pub(crate) queued_not_sorted: u64,
+}
+
+impl SortedPlan {
+    /// Plans the flush of a queue of the kinds `queue`, in its order. `held_waits` are the ids of the
+    /// table places whose held draw waits for its place; a place takes the first one with its id.
+    /// `placed_entries` puts the sorted entries of an instance into the list and returns the number
+    /// of its slots that the table does not sort. A run or a held group ends at a draw of the
+    /// engine's path, and a run ends at a held shape. A place with entries ends a held group.
+    pub(crate) fn build(queue: &[QueuedKind], held_waits: &[u32], mut placed_entries: impl FnMut(u32, &mut Vec<(u64, u32, u32, u32)>) -> u32) -> SortedPlan {
+        let mut plan = SortedPlan::default();
+        let mut waits = held_waits.to_vec();
+        let mut run: Vec<(u64, u32, u32, u32)> = Vec::new();
+        let mut held: Vec<HeldSource> = Vec::new();
+        for (at, kind) in queue.iter().enumerate() {
+            match *kind {
+                QueuedKind::Draw => {
+                    debug_assert!(run.is_empty() || held.is_empty(), "a run and a held group are never both open");
+                    plan.close_run(&mut run);
+                    plan.close_held(&mut held);
+                    plan.steps.push(SortedStep::Draw(at));
+                }
+                QueuedKind::Held => {
+                    plan.close_run(&mut run);
+                    held.push(HeldSource::Queue(at));
+                }
+                QueuedKind::Table(id) => {
+                    plan.queued_places += 1;
+                    if let Some(wait) = waits.iter().position(|&waiting| waiting == id) {
+                        waits.remove(wait);
+                        plan.close_run(&mut run);
+                        held.push(HeldSource::Wait(id));
+                    } else {
+                        let mut placed = Vec::new();
+                        if placed_entries(id, &mut placed) != 0 {
+                            plan.queued_not_sorted += 1;
+                        }
+                        if !placed.is_empty() {
+                            plan.close_held(&mut held);
+                            run.append(&mut placed);
+                        }
+                    }
+                }
+            }
+        }
+        plan.close_run(&mut run);
+        plan.close_held(&mut held);
+        plan
+    }
+
+    fn close_run(&mut self, run: &mut Vec<(u64, u32, u32, u32)>) {
+        if !run.is_empty() {
+            self.steps.push(SortedStep::Run(core::mem::take(run)));
+        }
+    }
+
+    fn close_held(&mut self, held: &mut Vec<HeldSource>) {
+        if !held.is_empty() {
+            self.steps.push(SortedStep::Held(core::mem::take(held)));
+        }
+    }
+}
+
 impl Player {
+    /// Gives the extension the held shapes of a [`SortedStep::Held`] in one call: the held shapes
+    /// of the queue's entries, and the held draws of table places that waited, each taken out of
+    /// the waiting list. The facts of the last one are those of the call.
+    fn give_held_sources(&mut self, deferred: &[(crate::Waiting, u32)], sources: Vec<HeldSource>) {
+        let (mut held, mut facts) = (Vec::new(), None);
+        for source in sources {
+            match source {
+                HeldSource::Queue(at) => {
+                    if let crate::Waiting::Held(shape, shape_facts) = &deferred[at].0 {
+                        held.push((**shape).clone());
+                        facts = Some(**shape_facts);
+                    }
+                }
+                HeldSource::Wait(id) => {
+                    if let Some(at) = self.held_sorted_wait.iter().position(|waiting| waiting.0 == id) {
+                        let (_, shape, shape_facts) = self.held_sorted_wait.remove(at);
+                        held.push(shape);
+                        facts = Some(shape_facts);
+                    }
+                }
+            }
+        }
+        self.give_held_run(&mut held, facts);
+    }
+
     /// Gives the extension the held shapes that wait in `surfaces`, in one call, and empties
     /// the list. Nothing without shapes.
     fn give_held_run(&mut self, surfaces: &mut Vec<HeldDraw>, facts: Option<WorldFacts>) {
@@ -3470,5 +3581,90 @@ mod join_tests {
         let mut bound = None;
         assert!(BoundDraw::change(&mut bound, 0u32));
         assert!(!BoundDraw::change(&mut bound, 0u32));
+    }
+}
+
+#[cfg(test)]
+mod sorted_plan_tests {
+    use super::*;
+
+    /// One entry per place: the id, so that a run shows which places it holds and in which order.
+    fn placed_of(id: u32, placed: &mut Vec<(u64, u32, u32, u32)>) -> u32 {
+        placed.push((id as u64, 0, 0, id));
+        0
+    }
+
+    fn run_of(ids: &[u32]) -> SortedStep {
+        SortedStep::Run(ids.iter().map(|&id| (id as u64, 0, 0, id)).collect())
+    }
+
+    /// The three kinds of the queue in a known order: places of the table, a draw of the engine's
+    /// path, a held shape, a place whose held draw waited. The steps keep the order of the queue,
+    /// a run ends at a draw and at a held shape, and a place with entries ends a held group.
+    #[test]
+    fn the_flush_keeps_the_order_of_the_queue() {
+        use QueuedKind::*;
+        let queue = [Table(1), Table(2), Draw, Table(3), Held, Held, Table(4), Table(5), Draw, Held, Table(6)];
+        let plan = SortedPlan::build(&queue, &[6], placed_of);
+        assert_eq!(
+            plan.steps,
+            vec![
+                run_of(&[1, 2]),
+                SortedStep::Draw(2),
+                run_of(&[3]),
+                SortedStep::Held(vec![HeldSource::Queue(4), HeldSource::Queue(5)]),
+                run_of(&[4, 5]),
+                SortedStep::Draw(8),
+                SortedStep::Held(vec![HeldSource::Queue(9), HeldSource::Wait(6)]),
+            ]
+        );
+        assert_eq!((plan.queued_places, plan.queued_not_sorted), (6, 0));
+    }
+
+    /// A held draw that waited takes the place of its id once, and the run before it is closed.
+    #[test]
+    fn a_waiting_held_draw_joins_the_held_group_at_its_place() {
+        use QueuedKind::*;
+        let plan = SortedPlan::build(&[Table(1), Table(2), Table(3)], &[2, 2], placed_of);
+        assert_eq!(plan.steps, vec![run_of(&[1]), SortedStep::Held(vec![HeldSource::Wait(2)]), run_of(&[3])]);
+        // The second wait of the id stays for a second place with that id.
+        let twice = SortedPlan::build(&[Table(2), Table(2)], &[2, 2], placed_of);
+        assert_eq!(twice.steps, vec![SortedStep::Held(vec![HeldSource::Wait(2), HeldSource::Wait(2)])]);
+    }
+
+    /// A place with no entries leaves the run and the held group as they are, and a place with slots
+    /// that the table does not sort is counted.
+    #[test]
+    fn a_place_without_entries_changes_no_step() {
+        use QueuedKind::*;
+        let without = |id: u32, placed: &mut Vec<(u64, u32, u32, u32)>| {
+            if id != 9 {
+                placed.push((id as u64, 0, 0, id));
+            }
+            (id == 9) as u32
+        };
+        let plan = SortedPlan::build(&[Held, Table(9), Table(1), Draw], &[], without);
+        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Queue(0)]), run_of(&[1]), SortedStep::Draw(3)]);
+        assert_eq!(plan.queued_not_sorted, 1);
+        assert!(SortedPlan::build(&[], &[], placed_of).steps.is_empty());
+    }
+
+    /// A place with no entries between two held shapes leaves the held group open: the two shapes
+    /// draw from one copy of the picture, in one call.
+    #[test]
+    fn a_place_without_entries_keeps_the_held_group_open() {
+        use QueuedKind::*;
+        let without = |_id: u32, _placed: &mut Vec<(u64, u32, u32, u32)>| 1;
+        let plan = SortedPlan::build(&[Held, Table(9), Held], &[], without);
+        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Queue(0), HeldSource::Queue(2)])]);
+    }
+
+    /// A held draw that waited belongs to one place. A second place of the same id draws its
+    /// entries.
+    #[test]
+    fn a_wait_is_taken_by_one_place_only() {
+        use QueuedKind::*;
+        let plan = SortedPlan::build(&[Table(2), Table(2)], &[2], placed_of);
+        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Wait(2)]), run_of(&[2])]);
     }
 }
