@@ -41,6 +41,9 @@ pub(crate) struct TierCounts {
     pub(crate) refused: u64,
     /// A place passed from an idle holder to a waiting view.
     pub(crate) taken_over: u64,
+    /// The scenes that repeated the key of an earlier scene in the same flush and got the
+    /// parts and the place of that scene's slot ([`FullTier::scene_of_repeat`]).
+    pub(crate) repeats: u64,
 }
 
 /// What a view gets in a scene: the number of its place and the parts.
@@ -151,16 +154,28 @@ impl FullTier {
         Some(Grant { place: place as u8, parts: wanted })
     }
 
+    /// A scene that repeats the key of an earlier scene in the same flush (it has a second
+    /// slot, which the mod set no options on): it gets what the key's first slot `first`
+    /// gets, the same parts in the same place, so that a mirror that renders twice in a
+    /// frame keeps its place and does not take another one (D82, design 3.4f). The extension
+    /// serves two scenes of one place in a frame, the later ones on spare sets (R2).
+    pub(crate) fn scene_of_repeat(&mut self, first: u8) -> Option<Grant> {
+        let grant = self.scene(first)?;
+        self.counts.repeats += 1;
+        Some(grant)
+    }
+
     /// The report line of the full tier.
     pub(crate) fn line(&self) -> String {
         let c = &self.counts;
         format!(
-            "full tier: {} places of at most {}; {} option events set parts, {} cleared them; {} scenes of a view got their parts, {} were refused by the bound (views.full_tier_max); {} places passed to a waiting view",
+            "full tier: {} places of at most {}; {} option events set parts, {} cleared them; {} scenes of a view got their parts ({} of them repeats of a key in a flush), {} were refused by the bound (views.full_tier_max); {} places passed to a waiting view",
             self.holding(),
             self.max,
             c.set,
             c.cleared,
             c.granted,
+            c.repeats,
             c.refused,
             c.taken_over
         )
