@@ -300,8 +300,6 @@ struct Tables {
     /// material, by the groups of words that changed (`material_stream::GROUP_NAMES`): what
     /// that note catches that no event reports.
     periodic_changes: [u64; crate::material_stream::GROUPS],
-    /// The landscape (class 11) is retained too (`NIRENDER_LANDSCAPE=0` keeps it out).
-    landscape: bool,
     /// The shapes of class 0 (under no root the classes know: the actors and their parts, and
     /// objects hung elsewhere) are retained too (`NIRENDER_ACTORS=0` keeps them out). The class
     /// does not say what a shape is; the reference of its scene node would.
@@ -498,7 +496,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         effect_notes: 0,
         texture_notes: 0,
         periodic_changes: [0; crate::material_stream::GROUPS],
-        landscape: crate::switches::on("NIRENDER_LANDSCAPE") != Some(false),
         actors: crate::switches::on("NIRENDER_ACTORS") != Some(false),
         animated: crate::switches::on("NIRENDER_ANIMATED") != Some(false),
         node_kinds: crate::switches::on("NIRENDER_NODE_KINDS") != Some(false),
@@ -581,7 +578,7 @@ pub unsafe fn class_retained(mt: &MainThread, class: u32, skinned: bool) -> bool
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     class == CLASS_OBJECT
-        || (class == CLASS_LANDSCAPE && t.landscape)
+        || class == CLASS_LANDSCAPE
         || (class == CLASS_UNKNOWN && t.actors && (skinned || t.animated))
         || (sky_table_class(class) && sky_table_on())
         || (class == CLASS_WEATHER_PARTICLES && weather_table_on())
