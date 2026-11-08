@@ -1578,10 +1578,16 @@ pub unsafe fn reject_pending(mt: &MainThread, shape: usize, reason_later: bool) 
 /// record), `effects` the stages of the texture effects of the draw and `fog` its fog, for
 /// an `INSTANCE_DRAW` record.
 /// Returns false when the shape has no exact translation (the draw then goes as a shape
-/// record, and the shape is rejected).
+/// record, and the shape is rejected), and in a scene of [`Route::Engine`] (the draw goes as
+/// the engine's shape record, and the instance stays).
 pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], effects: Option<&[u32]>, fog: Option<[u32; 4]>, ambient: u32, lights: &[u32], bones: &[u8], bone_count: u32, queued: bool) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
+    // A world scene into a target that the helper does not have: no table draws there, so the
+    // engine's record draws the shape, as at the engine branch of `skipped_display_timed`.
+    if matches!(t.scene_route, Route::Engine(_)) {
+        return false;
+    }
     let Some(instance) = t.instances.get_mut(&shape) else { return false };
     if sky_table_class(instance.class) && !sky_draws() {
         return false;
@@ -3441,6 +3447,31 @@ mod tests {
             assert!(table_draw(&mt, a, 78));
             assert_eq!(*VIEW_PLACES.get(&mt), places + 1);
             assert_ne!(rd::<u16>(a, FLAGS) & RETAINED_BIT, 0);
+            assert!(listed_ids(&mt).is_empty());
+            assert_eq!(take_shown_list(&mt), None);
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// A world display into a target that the helper does not have ([`Route::Engine`] with the
+    /// last index) goes as the engine's shape record: `draw` returns false before any instance
+    /// work, writes no place and no mark, and the shape joins no list.
+    #[test]
+    fn a_world_display_into_a_target_the_helper_lacks_goes_as_the_engines_record() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[80]);
+            let a = test.shapes[0];
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Engine(ENGINE_PATH_SCENES.len()), 3);
+            let places = *VIEW_PLACES.get(&mt);
+            assert!(!table_draw(&mt, a, 80));
+            assert_eq!(*VIEW_PLACES.get(&mt), places);
+            assert_eq!(rd::<u16>(a, FLAGS) & RETAINED_BIT, 0);
             assert!(listed_ids(&mt).is_empty());
             assert_eq!(take_shown_list(&mt), None);
             test.end(&mt);
