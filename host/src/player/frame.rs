@@ -163,9 +163,8 @@ impl Player {
             Some(texture) => Some((texture.view.clone(), texture.depth.clone(), texture.size, None, 1)),
             None => self.color.clone().zip(self.depth.clone()).map(|(color, depth)| (color, depth, self.frame_size, self.back_view.clone(), self.renderer.samples)),
         };
-        let lazy = switches().lazy_pass;
         let carried = match (&views, self.pending.as_ref()) {
-            (Some((color, depth, ..)), Some(pending)) if lazy && Rc::ptr_eq(color, &pending.color) && Rc::ptr_eq(depth, &pending.depth) => self.pending.take(),
+            (Some((color, depth, ..)), Some(pending)) if Rc::ptr_eq(color, &pending.color) && Rc::ptr_eq(depth, &pending.depth) => self.pending.take(),
             _ => None,
         };
         self.close_pass();
@@ -183,9 +182,6 @@ impl Player {
             reason,
         });
         self.forget_bound();
-        if !lazy {
-            self.begin_pass();
-        }
     }
 
     /// Begins the pass that was asked for ([`Player::open_pass`]), if it has not begun. Call

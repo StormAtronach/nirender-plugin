@@ -69,9 +69,6 @@ pub(crate) struct Switches {
     /// more than 64 slots changed in a frame, as before the copy of `retained_upload`: for its
     /// A/B.
     pub(crate) instance_upload_all: bool,
-    /// `MGE_XE_LAZY_PASS=0`: a pass on the game's targets begins when it is asked for, and a
-    /// clear does not carry into the next pass, as before `Player::begin_pass`: for its A/B.
-    pub(crate) lazy_pass: bool,
     /// `MGE_XE_PASS_GROUPS=0`: the game's draws before the world and after the post chain bind
     /// the whole group of the texture arrays, as before `Renderer::small_array_group`: for its
     /// A/B.
@@ -141,7 +138,6 @@ impl Switches {
             one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
             particle_quads_cpu: read.choice("MGE_XE_PARTICLE_QUADS", &["cpu", "gpu"]) == Some("cpu"),
             instance_upload_all: read.choice("MGE_XE_INSTANCE_UPLOAD", &["all", "changed"]) == Some("all"),
-            lazy_pass: read.on("MGE_XE_LAZY_PASS") != Some(false),
             pass_groups: read.on("MGE_XE_PASS_GROUPS") != Some(false),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
             wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),
