@@ -161,8 +161,6 @@ The A/B:
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
   adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
   `depth:` names the format in use).
-- `MGE_XE_DEPTH_REVERSED=0` keeps the float depth in the plain convention (near 0, far 1), not
-  reversed (near 1, far 0): for an A/B of the reversed depth (`host/src/depth.rs`).
 - `MGE_XE_ONE_DEPTH=1` draws the distant land and the game into one depth buffer, with an
   infinite far plane for every perspective projection of the world view (step 6 of the depth
   design; only with the reversed float depth). Off: depth step 6 stopped.
@@ -209,9 +207,8 @@ The instruments and the tests:
   (`src/install.rs`); without them the test uses the paths of this machine.
 
 The helper's diagnostic and test switches (`host/src/switches.rs`, read once; none is a
-setting). The three of the A/B list above (`MGE_XE_PARTICLE_QUADS`, `MGE_XE_DEPTH_FORMAT`,
-`MGE_XE_DEPTH_REVERSED`) are there too. MGE XE's own switches are in the RENDERER.md of the
-MGE-XE-G7 render-link worktree.
+setting). The two of the A/B list above (`MGE_XE_PARTICLE_QUADS`, `MGE_XE_DEPTH_FORMAT`) are
+there too. MGE XE's own switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 
 - `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode `dual`
   (and the engine's walk), the engine's own draws of the same capture: the reference of a

@@ -55,9 +55,6 @@ pub(crate) struct Switches {
     /// `MGE_XE_DEPTH_FORMAT=24`: the depth of the frame in `Depth24PlusStencil8` even when the
     /// adapter has `Depth32FloatStencil8`: for an A/B of the format and the test of its fallback.
     pub(crate) depth24: bool,
-    /// `MGE_XE_DEPTH_REVERSED=0`: the float depth of the frame keeps the plain convention (near
-    /// 0, far 1): for an A/B of the reversed depth (`depth::reversed`).
-    pub(crate) depth_plain: bool,
     /// `MGE_XE_ONE_DEPTH=1`: the distant land and the game in one depth buffer, with an
     /// infinite far plane (`depth::one_buffer`). Temporary, for the test of step 6 of the depth
     /// design.
@@ -130,7 +127,6 @@ impl Switches {
             record_limit: read.number::<usize>("MGE_XE_RECORD_LIMIT").map(|n| n.max(1024)),
             samples: read.number::<u32>("MGE_XE_SAMPLES").map(|n| n.clamp(1, 8)),
             depth24: read.choice("MGE_XE_DEPTH_FORMAT", &["24", "32"]) == Some("24"),
-            depth_plain: read.on("MGE_XE_DEPTH_REVERSED") == Some(false),
             one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
             particle_quads_cpu: read.choice("MGE_XE_PARTICLE_QUADS", &["cpu", "gpu"]) == Some("cpu"),
             instance_upload_all: read.choice("MGE_XE_INSTANCE_UPLOAD", &["all", "changed"]) == Some("all"),
