@@ -53,7 +53,7 @@ pub(crate) struct Group {
     view_slot: Option<u8>,
     /// The place of the full tier that the view holds in this scene (`FullTier::scene`).
     pub(crate) place: Option<u8>,
-    /// How many scenes of the same place came before this one in the frame ([`ViewKey::repeat`]).
+    /// How many scenes of the same place came before this one in the frame ([`crate::view_kind::ViewKey::repeat`]).
     pub(crate) repeat: u8,
     /// The runs of places: the ids with no other item between them.
     runs: Vec<Vec<u32>>,
