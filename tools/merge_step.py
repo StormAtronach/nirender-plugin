@@ -50,6 +50,7 @@ The gate needs what a diff cannot give:
 """
 import argparse
 import contextlib
+import inspect
 import io
 import os
 import subprocess
@@ -270,13 +271,22 @@ def is_ancestor(repo, older, newer):
     return subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", older, newer]).returncode == 0
 
 
-def take_build(slots, what, no_wait):
+def take_options(slots, stages):
+    """The options of the take: the whole build side (both places) when a stage replays, as a replay needs it (the
+    owner's D139). A slot.py from before D139 has one place, and its take has no such option."""
+    replays = any(name == "replay gate" for name, _, _ in stages)
+    if replays and "whole" in inspect.signature(slots.take).parameters:
+        return {"whole": True}
+    return {}
+
+
+def take_build(slots, what, no_wait, options=None):
     """Takes the build slot, and asks again in its queue, so that the place stays. False with --no-wait, when it must wait,
     and on a refusal, as waiting cannot pass that."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     while True:
         try:
-            reply = slots.take("build", what, minutes=SLOT_MINUTES)
+            reply = slots.take("build", what, minutes=SLOT_MINUTES, **(options or {}))
         except slots.StateBusy as error:
             say("the state of the slots is busy, and I ask again: %s" % error)
             time.sleep(WAIT_SECONDS)
@@ -490,6 +500,22 @@ def self_test():
         Slots.replies = [Slots.QUEUED]
         assert take_build(Slots, "x", True) is False and Slots.replies == []
 
+        # A round with the replay gate takes the whole build side (D139); one without takes a place; a slot.py from
+        # before D139 has no such option, and its take gets none.
+        def two_places_take(slot, who, *, minutes=None, timing=False, whole=False):
+            pass
+
+        def one_place_take(slot, who, *, minutes=None, timing=False):
+            pass
+
+        gate = [("plugin tests", root, good), ("replay gate", root, good)]
+        assert take_options(types.SimpleNamespace(take=two_places_take), gate) == {"whole": True}
+        assert take_options(types.SimpleNamespace(take=two_places_take), gate[:1]) == {}
+        assert take_options(types.SimpleNamespace(take=one_place_take), gate) == {}
+        asked = []
+        Slots.take = classmethod(lambda cls, *args, **options: asked.append(options) or types.SimpleNamespace(code=cls.DONE, text="a reply"))
+        assert take_build(Slots, "x", False, {"whole": True}) is True and asked == [{"minutes": SLOT_MINUTES, "whole": True}], asked
+
         # The log keeps its name, and its folder is made.
         logs = os.path.join(root, "new", "logs")
         assert log_path_of("0123456789abcdef", logs) == os.path.join(logs, "merge-step-0123456789.log") and os.path.isdir(logs)
@@ -543,7 +569,7 @@ def main():
 
     slots = load_slots()
     what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
-    if not take_build(slots, what, args.no_wait):
+    if not take_build(slots, what, args.no_wait, take_options(slots, stages)):
         return 3
     try:
         log_path = log_path_of(commit)
