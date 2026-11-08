@@ -154,6 +154,15 @@ impl Player {
             crate::ticks::duration(j.ticks).as_secs_f64() * 1000.0 / views,
             crate::ticks::duration(j.ticks).as_secs_f64() * 1000.0 / r.calls.max(1) as f64
         );
+        let l = &j.left_out;
+        let frames = c.frames.max(1) as f64;
+        println!(
+            "state sets left out (the pass had the value): pipeline lookups {:.1} a frame, stencil {:.1}, vertex buffer {:.1}, index buffer {:.1}",
+            l.pipelines as f64 / frames,
+            l.stencils as f64 / frames,
+            l.vertices as f64 / frames,
+            l.indexes as f64 / frames
+        );
         println!("shown list: {} lists of the main view, {} instances in them", r.shown_lists, r.shown_ids);
         println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
         let (entries, entry_stages) = self.retained.effect_entry_counts();

@@ -259,6 +259,41 @@ pub struct JoinCounts {
     pub stage_joins: JoinRuns,
     /// The ticks that [`draw_retained`] takes, from its first line to its last.
     pub ticks: u64,
+    /// The sets that [`draw_retained`] left out because the pass had the value (D109 4A).
+    pub left_out: LeftOut,
+}
+
+/// The sets of a view that repeated the value in the pass, by kind.
+#[derive(Default)]
+pub struct LeftOut {
+    /// The pipeline lookups and sets.
+    pub pipelines: u64,
+    pub stencils: u64,
+    pub vertices: u64,
+    pub indexes: u64,
+}
+
+/// What the draws of one [`draw_retained`] have set in the pass: a set that would repeat the
+/// bound value is left out. The pass starts with none of it set, and a bucket without a
+/// pipeline sets nothing, so it leaves the values as they are.
+#[derive(Default)]
+struct BoundDraw {
+    key: Option<PipelineKey>,
+    stencil: Option<u32>,
+    vertices: Option<usize>,
+    indexes: Option<usize>,
+}
+
+impl BoundDraw {
+    /// Makes `value` the bound one. Returns whether it differs from the one bound before, that
+    /// is, whether the pass needs the set.
+    fn change<T: PartialEq>(bound: &mut Option<T>, value: T) -> bool {
+        if bound.as_ref() == Some(&value) {
+            return false;
+        }
+        *bound = Some(value);
+        true
+    }
 }
 
 /// The state of a draw call that the next call may repeat.
@@ -1660,6 +1695,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
     set.counts.views += 1;
     let clock = crate::ticks::Clock::now();
     let mut probe = JoinProbe::default();
+    let mut bound = BoundDraw::default();
     let mut arrays_bound = false;
     let mut stages_bound: Option<Rc<wgpu::BindGroup>> = None;
     let mut shared_bound = false;
@@ -1704,13 +1740,22 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
                 other => other,
             };
         }
-        let Some(pipeline) = renderer.pipeline(key) else {
-            args.truncate(start);
-            probe.end(&mut set.counts.joins);
-            continue;
-        };
-        pass.set_pipeline(&pipeline);
-        pass.set_stencil_reference(bucket.stencil);
+        if bound.key != Some(key) {
+            let Some(pipeline) = renderer.pipeline(key) else {
+                args.truncate(start);
+                probe.end(&mut set.counts.joins);
+                continue;
+            };
+            pass.set_pipeline(&pipeline);
+            bound.key = Some(key);
+        } else {
+            set.counts.joins.left_out.pipelines += 1;
+        }
+        if BoundDraw::change(&mut bound.stencil, bucket.stencil) {
+            pass.set_stencil_reference(bucket.stencil);
+        } else {
+            set.counts.joins.left_out.stencils += 1;
+        }
         if !frame_bound {
             pass.set_bind_group(0, &*renderer.frame_group, &[view.scene_slot * SCENE_SIZE as u32]);
             frame_bound = true;
@@ -1734,13 +1779,21 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             &mut set.counts.joins,
             CallState { key, stencil: bucket.stencil, vertices: Rc::as_ptr(&bucket.vertices) as usize, indexes: Rc::as_ptr(&bucket.indexes) as usize, stages: stages_bound.clone() },
         );
-        pass.set_vertex_buffer(0, bucket.vertices.slice(..));
+        if BoundDraw::change(&mut bound.vertices, Rc::as_ptr(&bucket.vertices) as usize) {
+            pass.set_vertex_buffer(0, bucket.vertices.slice(..));
+        } else {
+            set.counts.joins.left_out.vertices += 1;
+        }
         if !shared_bound {
             pass.set_vertex_buffer(1, renderer.defaults.slice(..));
             pass.set_vertex_buffer(2, renderer.instance_buffer.slice(..));
             shared_bound = true;
         }
-        pass.set_index_buffer(bucket.indexes.slice(..), wgpu::IndexFormat::Uint16);
+        if BoundDraw::change(&mut bound.indexes, Rc::as_ptr(&bucket.indexes) as usize) {
+            pass.set_index_buffer(bucket.indexes.slice(..), wgpu::IndexFormat::Uint16);
+        } else {
+            set.counts.joins.left_out.indexes += 1;
+        }
         if renderer.indirect && args.len() <= renderer.indirect_capacity {
             pass.multi_draw_indexed_indirect(&renderer.indirect_buffer, (start * ARGS_SIZE) as u64, count as u32);
             renderer.counts.indirect_calls += 1;
@@ -3425,5 +3478,22 @@ mod join_tests {
         }
         probe.end(&mut counts);
         assert_eq!((counts.pairs, counts.joins.pairs, counts.joins.runs, counts.joins.calls, counts.joins.longest), (2, 2, 2, 4, 2));
+    }
+
+    /// The first set of a pass is always made, a repeat is left out, and a value that comes
+    /// back after another one is set again.
+    #[test]
+    fn a_set_is_left_out_only_when_the_pass_has_the_value() {
+        let mut bound = None;
+        let sets: Vec<bool> = [4, 4, 4, 7, 7, 4].into_iter().map(|stencil| BoundDraw::change(&mut bound, stencil)).collect();
+        assert_eq!(sets, vec![true, false, false, true, false, true]);
+    }
+
+    /// A zero is a value like any other: a pass starts with nothing set, not with a zero.
+    #[test]
+    fn the_first_value_is_set_even_when_it_is_zero() {
+        let mut bound = None;
+        assert!(BoundDraw::change(&mut bound, 0u32));
+        assert!(!BoundDraw::change(&mut bound, 0u32));
     }
 }
