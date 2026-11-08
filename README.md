@@ -152,8 +152,6 @@ The A/B:
   positions (the geometry line of the log).
 - `NIRENDER_GEOMETRY_CENSUS=1` counts the geometries sent again, by the controllers of their
   shape, and logs the census at each stream mark (`geometry_stream::census_take`).
-- `NIRENDER_NODE_KINDS=0` keeps a shape under a billboard, switch, level of detail, BSP,
-  animation or particle node on the engine's path (the rule before 2026-10-16).
 - `NIRENDER_EFFECT_TURN_CHECK=1` (a test switch): at the end of each world scene the plugin
   sends the engine's projection of each texture effect under a turning billboard, after the
   billboard's display, and clears the billboard's displayed flag. The helper compares it with

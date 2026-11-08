@@ -101,11 +101,6 @@ const CHECK_FRAMES: u32 = 64;
 /// kinds that change what or how they draw need nothing of the table, as long as the
 /// engine's traversal reaches the shape. Engine-rules R5 (the skill wgpu-renderer-dev).
 const REJECTED_KINDS: [&[u8]; 1] = [b"NiSortAdjustNode"];
-/// The list of `NIRENDER_NODE_KINDS=0`: every kind that changes what or how it draws.
-const REJECTED_KINDS_BEFORE: [&[u8]; 7] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode", b"BSAnimationNode", b"BSParticleNode"];
-/// The list of `NIRENDER_NODE_KINDS=0` for a skinned shape: only the kinds that change
-/// which shape draws. The palette of each draw carries the animated bones.
-const REJECTED_KINDS_SKINNED_BEFORE: [&[u8]; 5] = [b"NiBillboardNode", b"NiSwitchNode", b"NiLODNode", b"NiBSPNode", b"NiSortAdjustNode"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -300,10 +295,6 @@ struct Tables {
     /// material, by the groups of words that changed (`material_stream::GROUP_NAMES`): what
     /// that note catches that no event reports.
     periodic_changes: [u64; crate::material_stream::GROUPS],
-    /// A shape under a billboard, a switch, a level of detail, a BSP, an animation or a
-    /// particle node is retained too (`NIRENDER_NODE_KINDS=0` keeps them out). See
-    /// [`REJECTED_KINDS`].
-    node_kinds: bool,
     /// A shape with a controller on itself or on a property is retained as a live shape
     /// (`NIRENDER_CONTROLLERS=0` rejects it).
     controllers: bool,
@@ -489,7 +480,6 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         effect_notes: 0,
         texture_notes: 0,
         periodic_changes: [0; crate::material_stream::GROUPS],
-        node_kinds: crate::switches::on("NIRENDER_NODE_KINDS") != Some(false),
         controllers: crate::switches::on("NIRENDER_CONTROLLERS") != Some(false),
         skin_table: crate::switches::on("NIRENDER_SKIN_TABLE") != Some(false),
         scratch_bones: Vec::new(),
@@ -1169,7 +1159,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
         return;
     }
     let mut live = false;
-    if let Some(reason) = reject_reason(t, shape, property_state, skinned, &mut live) {
+    if let Some(reason) = reject_reason(t, shape, property_state, &mut live) {
         t.rejected.insert(shape);
         t.rejected_by[reason] += 1;
         return;
@@ -1210,7 +1200,7 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
 /// of shapes left on the engine's path: unfinished work, not a rule to keep (charter 1). `live`
 /// is set when a controller on the shape or on a property changes it.
 /// Engine-rules R1, R6, R7 (the skill wgpu-renderer-dev).
-unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, skinned: bool, live: &mut bool) -> Option<usize> {
+unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, live: &mut bool) -> Option<usize> {
     // A controller on the shape changes its data (a morpher, a UV controller): the shape is
     // live. A controller on a node above only moves the shape, and `skipped_display` moves
     // the instance in place.
@@ -1225,7 +1215,7 @@ unsafe fn reject_reason(t: &Tables, shape: usize, property_state: usize, skinned
         crate::parent_chain::GUARD,
         |node| rd(node, PARENT),
         |node| {
-            if kind_rejected(t.node_kinds, node, skinned) {
+            if kind_rejected(node) {
                 Some(REASON_NODE_KIND)
             } else {
                 None
@@ -1384,7 +1374,7 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
     let text: usize = rd(shape, 8);
     let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
     let mut live = false;
-    let reason = reject_reason(&tables(mt), shape, property_state, false, &mut live);
+    let reason = reject_reason(&tables(mt), shape, property_state, &mut live);
     let (z_flags, z_function) = match if property_state != 0 { rd::<usize>(property_state, PS::propZBuffer) } else { 0 } {
         0 => (None, None),
         z => (Some(rd::<u16>(z, PROPERTY_FLAGS)), Some(rd::<u32>(z, ZP::testFunction))),
@@ -1412,16 +1402,8 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
     );
 }
 
-/// True when the run-time type of the node, or a base of it, is one of the rejected kinds
-/// (with `NIRENDER_NODE_KINDS=0`, the `*_BEFORE` lists: the narrower one for a skinned shape).
-unsafe fn kind_rejected(node_kinds: bool, node: usize, skinned: bool) -> bool {
-    let kinds: &[&[u8]] = if node_kinds {
-        &REJECTED_KINDS
-    } else if skinned {
-        &REJECTED_KINDS_SKINNED_BEFORE
-    } else {
-        &REJECTED_KINDS_BEFORE
-    };
+/// True when the run-time type of the node, or a base of it, is one of [`REJECTED_KINDS`].
+unsafe fn kind_rejected(node: usize) -> bool {
     let mut rtti = crate::ports::ni::get_rtti(node);
     for _ in 0..16 {
         if rtti == 0 {
@@ -1430,7 +1412,7 @@ unsafe fn kind_rejected(node_kinds: bool, node: usize, skinned: bool) -> bool {
         let name: usize = rd(rtti, RTTI_NAME);
         if name != 0 {
             let text = core::ffi::CStr::from_ptr(name as *const core::ffi::c_char).to_bytes();
-            if kinds.iter().any(|kind| text.ends_with(kind)) {
+            if REJECTED_KINDS.iter().any(|kind| text.ends_with(kind)) {
                 return true;
             }
         }
@@ -2301,14 +2283,14 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         }
         // A new property or effect state since the classification, or a Lua change: classify
         // again.
-        if let Some((skinned, was_live)) = t.instances.get_mut(&shape).filter(|i| i.recheck).map(|i| {
+        if let Some(was_live) = t.instances.get_mut(&shape).filter(|i| i.recheck).map(|i| {
             i.recheck = false;
-            (i.skinned, i.live)
+            i.live
         }) {
             let rechecks = &mut *RECHECKS.get(mt);
             rechecks[3] += 1;
             let mut live = false;
-            if reject_reason(t, shape, property_state, skinned, &mut live).is_some() {
+            if reject_reason(t, shape, property_state, &mut live).is_some() {
                 rechecks[4] += 1;
                 t.reject_pending(shape, true);
                 return false;
