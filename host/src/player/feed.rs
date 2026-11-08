@@ -407,7 +407,7 @@ impl Player {
             // The view and the projection of the camera (D3DTS_VIEW is 2 and
             // D3DTS_PROJECTION is 3). The draws of the game come as shape records and as
             // draws with their vertices, each with its own state; a command of another
-            // kind, in an older capture, does nothing.
+            // kind does nothing.
             tag::COMMAND => match word(data, 0) {
                 COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
                     2 => self.stream.view = floats(data, 16),

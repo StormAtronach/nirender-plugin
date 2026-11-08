@@ -379,10 +379,11 @@ impl Player {
     }
 
     /// The facts of the world scene as the stream has them now. With `first`, the sun and
-    /// the ambient light come from the frame's `RETAINED_SCENE` record; in an older capture
-    /// without it, from the shape record in progress (the first draw of the world), or from
-    /// the last one for a world scene without a draw. Without `first`, they are those of the
-    /// world's start.
+    /// the ambient light come from the frame's `RETAINED_SCENE` record; before the first such
+    /// record (the menus before the first world, and the modes off and dual without MWSE's
+    /// override), from the shape record in progress (the first draw of the world), or from the
+    /// last one for a world scene without a draw. Without `first`, they are those of the world's
+    /// start.
     pub(crate) fn world_facts(&mut self, first: bool) -> WorldFacts {
         let shape = &self.stream.shape;
         if first {
@@ -429,9 +430,6 @@ impl Player {
             self.world_sun = sun;
             self.world_ambient = [ambient[0], ambient[1], ambient[2]];
         }
-        // The fill mode: the scene record's flag, from the game's own wireframe property; only
-        // in an older capture the last draw's (D3DFILL_WIREFRAME is 2), which a mod's mesh with
-        // a wireframe property can give.
         let (fog_on, fog) = world_fog(self.retained_values, self.fog_off_color, self.stream.fog);
         WorldFacts {
             target_size: self.size_of_target(),
@@ -442,6 +440,7 @@ impl Player {
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
+            // The fill mode: the scene record's flag, from the game's own wireframe property.
             wireframe: self.stream.wireframe,
             fog_on,
             fog_color: color(fog[0]),
@@ -1121,7 +1120,8 @@ impl Player {
 /// Whether the fog of the world is on, and its words: the colour, the start, the end, the range
 /// flag. The scene record has the game's own fog property, which the plugin reads each frame: a
 /// record without fog means that the property is off, with its colour kept and no distances.
-/// Only without a record (an older capture), the fog of the last draw with fog.
+/// Only before the first record (the menus before the first world, and the modes off and dual
+/// without MWSE's override), the fog of the last draw with fog.
 fn world_fog(record: Option<(u32, Option<[u32; 4]>)>, off_color: u32, last_draw: [u32; 4]) -> (bool, [u32; 4]) {
     match record {
         Some((_, Some(fog))) => (true, fog),

@@ -76,8 +76,9 @@ pub struct SceneView<'a> {
     pub projection: [f32; 16],
     /// The position of the camera in the world space of the game: the exact origin of the
     /// world camera that the plugin's scene record carries (64-bit), else the position that
-    /// `view` gives (an older capture). One source of the eye for an extension: a position
-    /// made again from the 32-bit `view` loses precision far from the origin of the world.
+    /// `view` gives (the plugin has no hook for the origin, or the world controller does not
+    /// own the camera). One source of the eye for an extension: a position made again from the
+    /// 32-bit `view` loses precision far from the origin of the world.
     pub eye: [f64; 3],
     /// The player is in an interior cell.
     pub interior: bool,
@@ -87,7 +88,8 @@ pub struct SceneView<'a> {
     pub wireframe: bool,
     /// The game's own fog property is on, as the plugin's scene record says. A mod can turn it
     /// off; `fog_color` then stays the colour of the property, as a mix with the distant land's
-    /// fog needs it, and the distances are 0. In an older capture without the record, true.
+    /// fog needs it, and the distances are 0. Before the first record, true: the menus before
+    /// the first world, and the modes off and dual without MWSE's override.
     pub fog_on: bool,
     /// The fog of the game: its colour, and the distances of its start and its end.
     pub fog_color: [f32; 4],

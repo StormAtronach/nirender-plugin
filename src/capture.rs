@@ -79,7 +79,7 @@ pub mod tag {
     // R7b): no other tag takes its number.
     /// A `MgeLinkSceneV1`.
     pub const SCENE_BEGIN: u32 = 3;
-    /// flags (`SCENE_END_*` of `link.rs`). An older capture file has no word.
+    /// flags (`SCENE_END_*` of `link.rs`).
     pub const SCENE_END: u32 = 4;
     /// kind, a, b
     pub const FRAME_EVENT: u32 = 5;
