@@ -442,7 +442,7 @@ impl Player {
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
-            wireframe: if self.stream.scene_wireframe { self.stream.wireframe } else { self.stream.shape.fill == 2 },
+            wireframe: self.stream.wireframe,
             fog_on,
             fog_color: color(fog[0]),
             fog_start: f32::from_bits(fog[1]),

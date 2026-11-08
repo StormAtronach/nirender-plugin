@@ -33,7 +33,7 @@ impl Player {
                 object_class: 0,
                 sky: None,
                 // D3DFILL_SOLID is 3.
-                shape: ShapeFacts { geometry: 0, fvf: 0, stride: 0, world: [0.0; 16], relative: false, material: [0.0; 17], ambient: 0, fill: 3, lights: Vec::new() },
+                shape: ShapeFacts { geometry: 0, fvf: 0, stride: 0, world: [0.0; 16], relative: false, material: [0.0; 17], ambient: 0, lights: Vec::new() },
                 shape_fog: None,
                 fog: [0; 4],
                 shape_bones: None,
@@ -41,7 +41,6 @@ impl Player {
                 shape_queued: false,
                 world_walk: false,
                 queue_flush: false,
-                scene_wireframe: false,
                 envmap_lit: None,
                 wireframe: false,
             },

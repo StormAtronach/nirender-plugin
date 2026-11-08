@@ -17,8 +17,6 @@ pub(crate) struct ShapeFacts {
     pub(crate) material: [f32; 17],
     /// `D3DRS_AMBIENT` of the draw.
     pub(crate) ambient: u32,
-    /// The fill mode of the material (D3DFILLMODE: 2 lines, 3 solid).
-    pub(crate) fill: u32,
     /// The lights of the draw from their records: the key, then the `D3DLIGHT8`,
     /// [`STATE_LIGHT_SIZE`] bytes each.
     pub(crate) lights: Vec<u8>,
@@ -68,9 +66,6 @@ pub(crate) struct Stream {
     /// queue comes as [`EVENT_QUEUE_FLUSHED`] (bit 8 of its fourth word): the sorted blends go
     /// there. Without it (an older capture), the plan places them at the ends of the scenes.
     pub(crate) queue_flush: bool,
-    /// The head of the stream says that the scene records carry [`SCENE_WIREFRAME`] (bit 32 of
-    /// its fourth word). Without it (an older capture), the fill mode of the last draw says.
-    pub(crate) scene_wireframe: bool,
     /// The head of the stream says how the game combines an environment map (bit 64 of its
     /// fourth word): with the lit colour (bit 128, the Morrowind Code Patch's hook) or not.
     /// [`None`] for an older capture ([`material::derive`]).

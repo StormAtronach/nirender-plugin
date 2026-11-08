@@ -1919,7 +1919,6 @@ impl Player {
             shape.world = self.retained.world_of(r);
             shape.relative = false;
             shape.material = material::d3d_material(&r.colours);
-            shape.fill = derived.fill;
             shape.lights.clear();
         }
         self.stream.shape_fog = None;

@@ -4,7 +4,7 @@
 use crate::*;
 use crate::stream_format::{
     HEADER_ABILITIES_AT, HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH,
-    HEADER_SCENE_WIREFRAME, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
 /// The generation of the reply memory that a `READ_PIXELS` record names: 0 in a record of a
@@ -78,7 +78,6 @@ impl Player {
                 self.stream.world_walk = abilities & HEADER_WORLD_WALK != 0;
                 self.stream.queue_flush = abilities & HEADER_QUEUE_FLUSH != 0;
                 self.views.repeat_walk_on = crate::stream_format::header_format(data) >= crate::stream_format::FORMAT_SCENE_REPEAT_WALK;
-                self.stream.scene_wireframe = abilities & HEADER_SCENE_WIREFRAME != 0;
                 self.stream.envmap_lit = (abilities & HEADER_ENVMAP_KNOWN != 0).then_some(abilities & HEADER_ENVMAP_LIT != 0);
             }
             // The game made its renderer again: the live loop makes the back buffer again at
@@ -1097,7 +1096,6 @@ impl Player {
         shape.world = world;
         shape.relative = flags & 1 != 0;
         shape.material = material::d3d_material(colours);
-        shape.fill = derived.fill;
         if self.hold_shape(&m, &derived, flags, effects, entries, &strips) {
             self.stream.shape_bones = None;
             return;

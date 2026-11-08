@@ -83,8 +83,7 @@ pub struct SceneView<'a> {
     pub interior: bool,
     /// The game draws the world in wireframe: its shared wireframe property is on (the console
     /// command ToggleWireframe), as the plugin's scene record says. An extension then draws
-    /// lines too, as MGE XE on Direct3D 9 does. In an older capture without the flag, the
-    /// fill mode of the game's last draw.
+    /// lines too, as MGE XE on Direct3D 9 does.
     pub wireframe: bool,
     /// The game's own fog property is on, as the plugin's scene record says. A mod can turn it
     /// off; `fog_color` then stays the colour of the property, as a mix with the distant land's
