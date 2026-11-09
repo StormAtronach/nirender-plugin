@@ -232,6 +232,29 @@ mod tests {
     }
 
     #[test]
+    fn the_trampoline_keeps_the_call_target_that_is_in_memory() {
+        // A scratch copy of the head of NiDX8Renderer::deleting_dtor whose call goes to `live_target`;
+        // the database head names `database_target`.
+        unsafe {
+            let block = win::VirtualAlloc(core::ptr::null_mut(), 0x1000, win::MEM_COMMIT_RESERVE, win::PAGE_EXECUTE_READWRITE) as usize;
+            assert_ne!(block, 0);
+            let (database_target, live_target) = (block + 0x100, block + 0x200);
+            let call = |target: usize| rel32(block + 8, target);
+            let mut head = vec![0x56, 0x8B, 0xF1, 0xE8];
+            head.extend_from_slice(&call(database_target));
+            let mut live = vec![0x56, 0x8B, 0xF1, 0xE8];
+            live.extend_from_slice(&call(live_target));
+            live.extend_from_slice(&[0xC3; 8]);
+            core::ptr::copy_nonoverlapping(live.as_ptr(), block as *mut u8, live.len());
+
+            let trampoline = install_raw(block, &head, &[4], block + 0x300, 1, Cleanup::Callee).expect("the head matches");
+            assert_eq!(crate::site::call_target(trampoline + 3), live_target);
+            // The jump of the detour is at the entry now.
+            assert_eq!(*(block as *const u8), 0xE9);
+        }
+    }
+
+    #[test]
     fn another_opcode_or_another_byte_in_the_head_does_not_match() {
         let func = find(0x6A9D80).unwrap();
         let head = &func.head[..func.steal];

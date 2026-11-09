@@ -312,14 +312,26 @@ class Run:
     def refusal(self):
         """The plugin's refusal of the renderer in this run so far, with its cause (`refusal_of`),
         or None: from the live mgeXE.log of the game (fresh since the start), the plugin's own log
-        and the progress file. For `launch(stop=...)`."""
-        lines = []
+        and the progress file. For `launch(stop=...)`, every 2 s: each call reads only the whole
+        lines that each file got since the call before."""
+        if not hasattr(self, "_seen"):
+            self._seen = {}
         fresh = [path for path in MGE_LOGS if os.path.isfile(path) and self.started and os.path.getmtime(path) > self.started]
         for path in fresh[:1] + [self.log, self.progress]:
-            if os.path.isfile(path):
-                text = open(path, encoding="utf-8", errors="replace").read().splitlines()
-                lines += [line[len(common.PLUGIN_PREFIX):] if line.startswith(common.PLUGIN_PREFIX) else line for line in text]
-        return refusal_of(lines)
+            if not os.path.isfile(path):
+                continue
+            offset, lines = self._seen.get(path, (0, []))
+            with open(path, "rb") as file:
+                file.seek(offset)
+                new = file.read()
+            # A line without its end yet waits for the next call.
+            whole = new[:new.rfind(b"\n") + 1]
+            text = whole.decode("utf-8", errors="replace").splitlines()
+            # Only the lines of a refusal and of its cause are kept.
+            text = [line[len(common.PLUGIN_PREFIX):] if line.startswith(common.PLUGIN_PREFIX) else line for line in text]
+            lines = lines + [line for line in text if any(mark in line for mark in REFUSAL_MARKS + CAUSE_MARKS)]
+            self._seen[path] = (offset + len(whole), lines)
+        return refusal_of([line for _, lines in self._seen.values() for line in lines])
 
     def plugin_lines(self):
         """The plugin's lines of this run (`common.plugin_lines`)."""

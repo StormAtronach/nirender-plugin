@@ -84,11 +84,35 @@ fn code_form(text: &[u8], at: usize) -> Option<Form> {
         Some(0xB8..=0xBF) => return Some(Form::MovReg),
         _ => {}
     }
-    // `mov [m], imm32`: C7, a ModR/M byte, at most a SIB byte and a byte of displacement.
-    if (2..=4).any(|back| before(back) == Some(0xC7)) {
+    // `mov r/m32, imm32` (C7 /0): C7, a ModR/M byte, a SIB byte when the ModR/M asks for one, a
+    // displacement of 0, 1 or 4 bytes, then the value. So the C7 is 2 to 7 bytes before it.
+    if (2..=7).any(|back| at >= back && text[at - back] == 0xC7 && mov_imm_offset(&text[at - back..]) == Some(back)) {
         return Some(Form::MovMem);
     }
     None
+}
+
+/// The offset of the 32-bit value in a `mov r/m32, imm32` at the start of `code` (C7, then the
+/// ModR/M byte with the register field 0), from the ModR/M and SIB bytes; None for another
+/// instruction.
+fn mov_imm_offset(code: &[u8]) -> Option<usize> {
+    let modrm = *code.get(1)?;
+    let (mode, reg, rm) = (modrm >> 6, (modrm >> 3) & 7, modrm & 7);
+    if code[0] != 0xC7 || reg != 0 {
+        return None;
+    }
+    if mode == 3 {
+        return Some(2);
+    }
+    let sib = rm == 4;
+    let base = if sib { *code.get(2)? & 7 } else { rm };
+    let displacement = match mode {
+        0 if base == 5 => 4,
+        0 => 0,
+        1 => 1,
+        _ => 4,
+    };
+    Some(2 + sib as usize + displacement)
 }
 
 /// Each value of `pe` for which `inside` is true, by form, with the number of its occurrences.
@@ -295,6 +319,31 @@ mod tests {
         assert_eq!(found.get(&(DTOR_SITE, Form::MovReg)), Some(&1));
         assert_eq!(found.get(&(DTOR_SITE, Form::MovMem)), Some(&1));
         assert_eq!(found.values().sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn a_mov_to_memory_is_found_by_its_modrm_and_sib() {
+        // Each `mov r/m32, imm32` and the place of the value, from the ModR/M and SIB bytes.
+        let forms: [&[u8]; 7] = [
+            &[0xC7, 0xC1],                               // mov ecx, imm32 (register form)
+            &[0xC7, 0x00],                               // mov [eax], imm32
+            &[0xC7, 0x45, 0xF8],                         // mov [ebp-8], imm32
+            &[0xC7, 0x44, 0x24, 0x08],                   // mov [esp+8], imm32
+            &[0xC7, 0x05, 0x10, 0x20, 0x7C, 0x00],       // mov [0x7C2010], imm32 (disp32)
+            &[0xC7, 0x84, 0x24, 0x00, 0x01, 0x00, 0x00], // mov [esp+0x100], imm32 (SIB, disp32)
+            &[0xC7, 0x04, 0x85, 0x00, 0x10, 0x7C, 0x00], // mov [eax*4+0x7C1000], imm32 (SIB, no base)
+        ];
+        for head in forms {
+            let mut text = head.to_vec();
+            text.extend_from_slice(&le(DTOR_SITE));
+            let found = operands(&made_up_pe(&text, &[]), |value| value == DTOR_SITE);
+            assert_eq!(found.get(&(DTOR_SITE, Form::MovMem)), Some(&1), "{head:02x?}");
+        }
+        // A C7 whose register field is not 0, or whose instruction ends elsewhere, is no such mov.
+        assert_eq!(mov_imm_offset(&[0xC7, 0x08]), None);
+        let mut text = vec![0xC7, 0x05];
+        text.extend_from_slice(&le(DTOR_SITE));
+        assert!(operands(&made_up_pe(&text, &[]), |value| value == DTOR_SITE).is_empty());
     }
 
     #[test]

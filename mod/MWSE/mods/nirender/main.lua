@@ -141,7 +141,13 @@ elseif ownDevice then
         mwse.log("[nirender] the renderer is refused because of the Morrowind Code Patch option \"%s\" (feature %d), which is %s", option.name, option.id, state)
     end
     local cause = nirender.refusalCause and nirender.refusalCause() or "not known"
-    local message = string.format("MGE XE: the wgpu renderer is off for this session. The cause: %s. See MWSE.log, and the lines of mgeXE.log that start with \"nirender: \", in the Morrowind folder.", cause)
+    -- The message box names the first cause; the log has all of them.
+    local parts = {}
+    for part in (cause .. "; "):gmatch("(.-); ") do
+        parts[#parts + 1] = part
+    end
+    local shown = #parts > 1 and string.format("%s; and %d more", parts[1], #parts - 1) or cause
+    local message = string.format("MGE XE: the wgpu renderer is off for this session. The cause: %s. See MWSE.log, and the lines of mgeXE.log that start with \"nirender: \", in the Morrowind folder.", shown)
     -- A test run stops at this line, not at the end of its budget.
     if spec and spec.progressFile then
         local f = io.open(spec.progressFile, "ab")
