@@ -586,6 +586,8 @@ unsafe fn lock_level(texture: *mut Object, level: u32, locked: *mut u32) -> u32 
     if object.freed_levels & bit != 0 {
         object.freed_levels &= !bit;
         LEVEL_FREES.locks_after_free.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        tests::count_here(|here| here.locks_after_free += 1);
         if !object.dynamic {
             object.dynamic = true;
             LEVEL_FREES.made_dynamic.fetch_add(1, Ordering::Relaxed);
@@ -632,6 +634,8 @@ unsafe fn unlock_level_into(texture: *mut Object, level: u32, file_open: bool, s
     if !keep {
         LEVEL_FREES.levels.fetch_add(1, Ordering::Relaxed);
         LEVEL_FREES.bytes.fetch_add(memory.len() as u64, Ordering::Relaxed);
+        #[cfg(test)]
+        tests::count_here(|here| here.levels += 1);
         *memory = Vec::new();
         object.freed_levels |= level_bit(level);
     }
@@ -689,7 +693,10 @@ unsafe fn note_lock(texture: *const Object, level: u32, rectangle: usize, flags:
         LEVEL_FREES.part_locks_of_freed.fetch_add(1, Ordering::Relaxed);
     }
     #[cfg(test)]
-    tests::count_risky_here(read_only, part);
+    tests::count_here(|here| {
+        here.read_only += u64::from(read_only);
+        here.part += u64::from(part);
+    });
     if (read_only || part) && !FREED_LOCK_LOGGED.swap(true, Ordering::Relaxed) {
         crate::log!(
             "own host: ERROR (risk 42): a lock of the freed level {level} of the texture {:#x} ({} x {}, format {}) with the flags {flags:#x}{}: it gets zeros, and its unlock sends them; only the first such lock is logged, the mark line counts all",
@@ -1390,43 +1397,74 @@ mod tests {
     use core::cell::Cell;
     use core::sync::atomic::Ordering;
 
-    thread_local! {
-        /// The risky locks that [`note_lock`] counted on this thread: (read-only, with a rectangle).
-        static RISKY_HERE: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// The counts of [`LEVEL_FREES`] that the tests check: the levels freed at an unlock, the
+    /// locks of a freed level, and of those the read-only ones and the ones with a rectangle.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    pub(super) struct Counts {
+        pub(super) levels: u64,
+        pub(super) locks_after_free: u64,
+        pub(super) read_only: u64,
+        pub(super) part: u64,
     }
 
-    /// Counts a risky lock on this thread too, beside [`LEVEL_FREES`]. The tests run on many
-    /// threads at once, and a lock in another test changes the global counters: a check of
-    /// "more than before" on them can hide a lock that was not counted. The count of this
-    /// thread gives an exact delta.
-    pub(super) fn count_risky_here(read_only: bool, part: bool) {
-        RISKY_HERE.with(|here| {
-            let (read, rectangle) = here.get();
-            here.set((read + u64::from(read_only), rectangle + u64::from(part)));
+    /// No count.
+    const NONE: Counts = Counts { levels: 0, locks_after_free: 0, read_only: 0, part: 0 };
+
+    impl Counts {
+        /// The global counters now.
+        fn global() -> Counts {
+            Counts {
+                levels: LEVEL_FREES.levels.load(Ordering::Relaxed),
+                locks_after_free: LEVEL_FREES.locks_after_free.load(Ordering::Relaxed),
+                read_only: LEVEL_FREES.read_only_locks_of_freed.load(Ordering::Relaxed),
+                part: LEVEL_FREES.part_locks_of_freed.load(Ordering::Relaxed),
+            }
+        }
+
+        /// The counts made since `before`.
+        fn since(self, before: Counts) -> Counts {
+            Counts {
+                levels: self.levels - before.levels,
+                locks_after_free: self.locks_after_free - before.locks_after_free,
+                read_only: self.read_only - before.read_only,
+                part: self.part - before.part,
+            }
+        }
+
+        /// Each count is at least the one of `other`.
+        fn covers(self, other: Counts) -> bool {
+            self.levels >= other.levels
+                && self.locks_after_free >= other.locks_after_free
+                && self.read_only >= other.read_only
+                && self.part >= other.part
+        }
+    }
+
+    thread_local! {
+        /// The counts that the host made on this thread.
+        static COUNTED_HERE: Cell<Counts> = const { Cell::new(NONE) };
+    }
+
+    /// Counts on this thread too, beside [`LEVEL_FREES`]. The tests run on many threads at
+    /// once, and the locks and unlocks of another test change the global counters: a check of
+    /// "more than before" on them can hide a count that is missing. The counts of this thread
+    /// give an exact delta.
+    pub(super) fn count_here(add: impl FnOnce(&mut Counts)) {
+        COUNTED_HERE.with(|here| {
+            let mut counts = here.get();
+            add(&mut counts);
+            here.set(counts);
         });
     }
 
-    /// The risky locks counted on this thread, and in the global counters: (read-only, with a
-    /// rectangle).
-    fn risky_locks() -> ((u64, u64), (u64, u64)) {
-        let global = (
-            LEVEL_FREES.read_only_locks_of_freed.load(Ordering::Relaxed),
-            LEVEL_FREES.part_locks_of_freed.load(Ordering::Relaxed),
-        );
-        (RISKY_HERE.with(Cell::get), global)
-    }
-
-    /// Runs `lock` and checks the risky locks that it counted: exactly `expected` on this
-    /// thread, and at least as many in the global counters (other tests can add to those).
-    fn assert_counts(expected: (u64, u64), what: &str, lock: impl FnOnce()) {
-        let (here, global) = risky_locks();
-        lock();
-        let (here_after, global_after) = risky_locks();
-        assert_eq!((here_after.0 - here.0, here_after.1 - here.1), expected, "{what}: the count of this thread");
-        assert!(
-            global_after.0 - global.0 >= expected.0 && global_after.1 - global.1 >= expected.1,
-            "{what}: the global counters"
-        );
+    /// Runs `action` and checks what it counted: exactly `expected` on this thread, and at least
+    /// as much in the global counters (other tests can add to those).
+    fn assert_counts(expected: Counts, what: &str, action: impl FnOnce()) {
+        let (here, global) = (COUNTED_HERE.with(Cell::get), Counts::global());
+        action();
+        let (here_after, global_after) = (COUNTED_HERE.with(Cell::get), Counts::global());
+        assert_eq!(here_after.since(here), expected, "{what}: the count of this thread");
+        assert!(global_after.since(global).covers(expected), "{what}: the global counters");
     }
 
     /// A surface of this host of 4 x 4 pixels of 4 bytes, for the tests of the reads.
@@ -1576,19 +1614,19 @@ mod tests {
             let texture = test_texture();
             lock_and_fill(texture, 0, 7);
             lock_and_fill(texture, 1, 9);
-            let frees = LEVEL_FREES.levels.load(Ordering::Relaxed);
-            assert_eq!(unlock(texture, 0, false), vec![7u8; 8 * 8 * 4], "the stream gets the bytes before the free");
+            assert_counts(Counts { levels: 1, ..NONE }, "the unlock frees the level", || {
+                assert_eq!(unlock(texture, 0, false), vec![7u8; 8 * 8 * 4], "the stream gets the bytes before the free");
+            });
             assert!((&(*texture).level_memory)[0].is_empty() && (&(*texture).level_memory)[0].capacity() == 0);
             assert_eq!((*texture).freed_levels, level_bit(0));
             // The other level is still locked: it keeps its bytes.
             assert_eq!((&(*texture).level_memory)[1], vec![9u8; 4 * 4 * 4]);
-            assert!(LEVEL_FREES.levels.load(Ordering::Relaxed) > frees);
             assert_eq!(LevelCopies::of([(*texture).level_memory.as_slice()].into_iter()), LevelCopies { levels: 1, textures: 1, bytes: 64 });
 
-            let locks = LEVEL_FREES.locks_after_free.load(Ordering::Relaxed);
-            assert_eq!(lock_and_fill(texture, 0, 3), vec![0u8; 8 * 8 * 4]);
+            assert_counts(Counts { locks_after_free: 1, ..NONE }, "the lock of the freed level", || {
+                assert_eq!(lock_and_fill(texture, 0, 3), vec![0u8; 8 * 8 * 4]);
+            });
             assert_eq!((*texture).freed_levels, 0);
-            assert!(LEVEL_FREES.locks_after_free.load(Ordering::Relaxed) > locks);
             release(texture);
         }
     }
@@ -1686,12 +1724,16 @@ mod tests {
             let rectangle = rectangle.as_ptr() as usize;
 
             lock_and_fill(texture, 0, 1);
-            assert_counts((0, 0), "a level that holds its bytes", || note_lock(texture, 0, rectangle, D3DLOCK_READONLY));
+            assert_counts(NONE, "a level that holds its bytes", || note_lock(texture, 0, rectangle, D3DLOCK_READONLY));
             unlock(texture, 0, false);
 
-            assert_counts((1, 0), "a read-only lock of a freed level", || note_lock(texture, 0, 0, D3DLOCK_READONLY));
-            assert_counts((0, 1), "a lock with a rectangle of a freed level", || note_lock(texture, 0, rectangle, 0));
-            assert_counts((0, 0), "a whole lock of a freed level", || note_lock(texture, 0, 0, 0));
+            assert_counts(Counts { read_only: 1, ..NONE }, "a read-only lock of a freed level", || {
+                note_lock(texture, 0, 0, D3DLOCK_READONLY);
+            });
+            assert_counts(Counts { part: 1, ..NONE }, "a lock with a rectangle of a freed level", || {
+                note_lock(texture, 0, rectangle, 0);
+            });
+            assert_counts(NONE, "a whole lock of a freed level", || note_lock(texture, 0, 0, 0));
             release(texture);
         }
     }
@@ -1710,14 +1752,14 @@ mod tests {
             assert_eq!((*texture).freed_levels, level_bit(0) | level_bit(1));
 
             let mut locked = [0u32; 2];
-            assert_counts((1, 0), "texture_lock", || {
+            assert_counts(Counts { read_only: 1, locks_after_free: 1, ..NONE }, "texture_lock", || {
                 assert_eq!(texture_lock(texture, 0, locked.as_mut_ptr(), 0, D3DLOCK_READONLY), OK);
             });
 
             let mut surface = 0usize;
             assert_eq!(texture_surface_level(texture, 1, &mut surface), OK);
             let rectangle = [0u32, 0, 2, 2];
-            assert_counts((0, 1), "surface_lock of a level surface", || {
+            assert_counts(Counts { part: 1, locks_after_free: 1, ..NONE }, "surface_lock of a level surface", || {
                 assert_eq!(surface_lock(surface as *mut Object, locked.as_mut_ptr(), rectangle.as_ptr() as usize, 0), OK);
             });
             release(surface as *mut Object);
