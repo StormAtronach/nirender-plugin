@@ -9,7 +9,7 @@
    has the same text, line ends aside.
 
 The header is `MWSE/MWSENativeApi.h` of the MWSE repository, a sibling of this repository by
-default. The exit code is 0 when all checks pass.
+default, else a sibling of its main checkout. The exit code is 0 when all checks pass.
 """
 import argparse
 import os
@@ -17,11 +17,12 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import REPO  # noqa: E402
+from common import REPO, sibling  # noqa: E402
 
-DEFAULT_HEADER = os.path.join(os.path.dirname(REPO), "MWSE", "MWSE", "MWSE", "MWSENativeApi.h")
+# Beside this tree, else beside its main checkout (a group of worktrees in C:/tmp has neither beside it).
+DEFAULT_HEADER = sibling("MWSE", "MWSE", "MWSE", "MWSENativeApi.h")
 RUST = os.path.join(REPO, "src", "mwse_native.rs")
-DEFAULT_MGE = os.path.join(os.path.dirname(REPO), "MGE-XE-G7-render-link")
+DEFAULT_MGE = sibling("MGE-XE-G7-render-link")
 COPY_IN_MGE = os.path.join("d3d8", "cpp", "mwse", "MWSENativeApi.h")
 
 

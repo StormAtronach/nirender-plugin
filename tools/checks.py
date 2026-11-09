@@ -20,20 +20,39 @@ The checks of each list:
 - `build_module_map.py` (docs): every module of ours has a `//!` header.
 - `check_names.py` (docs): no skill names a switch or a Lua call the code lost.
 
+The docs and MWSE are the siblings of this tree, else the siblings of its main checkout
+(`common.sibling`): a group of worktrees in C:/tmp has neither beside it. The docs checks read
+the code of this tree (`--plugin`), not the code of the checkout beside the docs.
+
 Each takes well under a second. A check whose repository is not on this machine is skipped
 with a line; with `--strict` (release.py) such a check is a failure, since a release needs
 every check. The exit code is 1 when a check fails; its output is printed. `tools/docs.py`
 compiles, so it is not here: release.py runs it. `tools/install_hooks.py` writes the hooks.
+
+    python -I tools/checks.py --self-test   # the places of the docs and MWSE
 """
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common  # noqa: E402
+
 PLUGIN = Path(__file__).resolve().parents[1]
 REPOS = PLUGIN.parent
-STATE = REPOS / "moreFPS" / "docs" / "Numidium Project" / "scripts" / "state-page"
-MWSE_HEADER = REPOS / "MWSE" / "MWSE" / "MWSE" / "MWSENativeApi.h"
+STATE_PARTS = ("moreFPS", "docs", "Numidium Project", "scripts", "state-page")
+MWSE_PARTS = ("MWSE", "MWSE")
+
+
+def places(siblings, main):
+    """The folder of the docs scripts and of the MWSE repository: beside `siblings`, else beside the main checkout
+    `main` (`common.find_sibling`)."""
+    return Path(common.find_sibling(siblings, main, STATE_PARTS)), Path(common.find_sibling(siblings, main, MWSE_PARTS))
+
+
+STATE, MWSE = places(str(REPOS), common.main_checkout())
+MWSE_HEADER = MWSE / "MWSE" / "MWSENativeApi.h"
 
 CHECKS = {
     "readme": (PLUGIN / "tools" / "check_readme.py", PLUGIN),
@@ -48,14 +67,16 @@ CHECKS = {
     "handshake search": (PLUGIN / "tools" / "check_handshake.py", PLUGIN, ["--self-test"]),
     "mge handshake": (PLUGIN / "tools" / "check_handshake.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     "mwse native": (PLUGIN / "tools" / "check_mwse_native.py", MWSE_HEADER),
-    "module headers": (STATE / "build_module_map.py", STATE),
-    "skill names": (STATE / "check_names.py", STATE),
+    "module headers": (STATE / "build_module_map.py", STATE, ["--plugin", str(PLUGIN)]),
+    "skill names": (STATE / "check_names.py", STATE, ["--plugin", str(PLUGIN)]),
     # No new hand-written engine offset (src/gen/layouts.rs has them), and each one moved there
     # keeps its value.
     "hand offsets": (PLUGIN / "tools" / "hand_offsets.py", PLUGIN, ["--check"]),
     "offset moves": (PLUGIN / "tools" / "check_offset_moves.py", PLUGIN, ["--cached"]),
     # The IDA types of the layouts against MWSE's SharedSE and TES3 layouts.
-    "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", REPOS / "MWSE" / "MWSE" / "SharedSE"),
+    # It also needs this tree's IDA export, which git ignores: a new worktree has none, and the export of another
+    # checkout is not this tree's.
+    "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", (MWSE / "SharedSE", PLUGIN / "tools" / "out" / "structs.json")),
     # The fixture test of the third-party notices writer of the release archive.
     "notices": (PLUGIN / "tools" / "third_party_notices.py", PLUGIN, ["--self-test"]),
     # The tests of the pure parts of the release tool (the untracked-file stop, the tag name,
@@ -75,11 +96,13 @@ CHECKS = {
     "clean results": (PLUGIN / "tools" / "clean_results.py", PLUGIN, ["--self-test"]),
     # The hook texts: the checks of the tree the commit is in.
     "hooks": (PLUGIN / "tools" / "install_hooks.py", PLUGIN, ["--self-test"]),
+    # The places of the docs and MWSE for a tree with no siblings.
+    "check places": (PLUGIN / "tools" / "checks.py", PLUGIN, ["--self-test"]),
     # The pure parts of the corrupted-capture tool (the record walk, the mutations, the verdicts).
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "clippy arguments", "gate", "clean worktrees", "clean results", "hooks", "fuzz"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "clippy arguments", "gate", "clean worktrees", "clean results", "hooks", "check places", "fuzz"],
     "mge": ["mge readme", "mge handshake", "mge contract", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
@@ -90,7 +113,37 @@ LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 MGE_OPTION = {"mge readme": "--mge-dir", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge"}
 
 
+def self_test():
+    """The places of the docs and MWSE for a tree with no siblings (a group of worktrees in C:/tmp): those beside the
+    main checkout. With none there either, those beside the tree, so that the checks are skipped."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+        group = os.path.join(temp, "group")
+        repos = os.path.join(temp, "repos")
+        main = os.path.join(repos, "nirender-plugin")
+        os.makedirs(os.path.join(group, "nirender-plugin"))
+        os.makedirs(main)
+        beside_tree = (Path(group, *STATE_PARTS), Path(group, *MWSE_PARTS))
+        assert places(group, main) == beside_tree, "nothing anywhere: the places beside the tree, which do not exist"
+
+        os.makedirs(os.path.join(repos, *STATE_PARTS))
+        os.makedirs(os.path.join(repos, *MWSE_PARTS))
+        assert places(group, main) == (Path(repos, *STATE_PARTS), Path(repos, *MWSE_PARTS)), "no sibling: the main checkout's"
+
+        os.makedirs(os.path.join(group, *STATE_PARTS))
+        assert places(group, main)[0] == beside_tree[0], "a sibling of the tree comes first"
+
+    for name in ("module headers", "skill names"):
+        assert CHECKS[name][2] == ["--plugin", str(PLUGIN)], "the docs checks read the code of this tree"
+    assert PLUGIN / "tools" / "out" / "structs.json" in CHECKS["sharedse layouts"][1], "the layouts check needs this tree's export"
+    print("checks self-test: ok")
+    return 0
+
+
 def main(argv):
+    if argv[:1] == ["--self-test"]:
+        return self_test()
     # `--strict`: a check that would be skipped is a failure (a release needs every check).
     strict = "--strict" in argv
     if "--mge" in argv and argv.index("--mge") + 1 >= len(argv):
@@ -108,10 +161,11 @@ def main(argv):
             args += [MGE_OPTION[name], mge]
             if needs == REPOS / "MGE-XE-G7-render-link":
                 needs = Path(mge)
-        if not script.exists() or not needs.exists():
+        missing = [path for path in (script, *(needs if isinstance(needs, tuple) else (needs,))) if not path.exists()]
+        if missing:
             if strict:
                 failed.append(name)
-                print("== the check '%s' cannot run (--strict): %s is not on this machine" % (name, script if not script.exists() else needs))
+                print("== the check '%s' cannot run (--strict): %s is not on this machine" % (name, missing[0]))
             else:
                 skipped.append(name)
             continue
