@@ -9,17 +9,17 @@
 0x6ad000 data 1 NiDX8Renderer::RenderTriStrips+0x40: a round constant (a multiple of 0x1000) in data, not a site list
 0x6ae000 data 1 NiDX8Renderer::DrawSkinnedPrimitive+0x190: a round constant (a multiple of 0x1000) in data, not a site list
 0x6af000 data 1 NiDX8Renderer::DrawSkinnedPrimitive2+0x70: a round constant (a multiple of 0x1000) in data, not a site list
-0x6afef0 mov-r32 2 NiDX8Renderer::precacheGeometryData+0x160: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6afef0 push 1 NiDX8Renderer::precacheGeometryData+0x160: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6aff07 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x177: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6aff0a mov-r32 1 NiDX8Renderer::precacheGeometryData+0x17a: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6aff37 mov-r32 4 NiDX8Renderer::precacheGeometryData+0x1a7: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6aff44 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x1b4: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6aff77 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x1e7: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6afffa mov-r32 3 NiDX8Renderer::precacheGeometryData+0x26a: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6afffc mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26c: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6afffd mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26d: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
-0x6afffe mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26e: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6afef0 mov-r32 2 NiDX8Renderer::precacheGeometryData+0x160: a window across a call's target and the next instruction: no instruction
+0x6afef0 push 1 NiDX8Renderer::precacheGeometryData+0x160: a window across a call's target and the next instruction: no instruction
+0x6aff07 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x177: a window across a call's target and the next instruction: no instruction
+0x6aff0a mov-r32 1 NiDX8Renderer::precacheGeometryData+0x17a: a window across a call's target and the next instruction: no instruction
+0x6aff37 mov-r32 4 NiDX8Renderer::precacheGeometryData+0x1a7: a window across a call's target and the next instruction: no instruction
+0x6aff44 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x1b4: a window across a call's target and the next instruction: no instruction
+0x6aff77 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x1e7: a window across a call's target and the next instruction: no instruction
+0x6afffa mov-r32 3 NiDX8Renderer::precacheGeometryData+0x26a: a window across a call's target and the next instruction: no instruction
+0x6afffc mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26c: a window across a call's target and the next instruction: no instruction
+0x6afffd mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26d: a window across a call's target and the next instruction: no instruction
+0x6afffe mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26e: a window across a call's target and the next instruction: no instruction
 0x6b0000 data 1 NiDX8Renderer::precacheGeometryData+0x270: a round constant (a multiple of 0x1000) in data, not a site list
 0x6b0061 data 1 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x31: text in data (bytes "a.k."), not a site list
 0x6b0063 data 1 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x33: text in data (bytes "c.k."), not a site list
