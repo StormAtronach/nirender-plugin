@@ -31,12 +31,27 @@ unsafe fn before_begin_paint(args: &[usize]) {
 unsafe fn port_follows(change: &census::Change) -> bool {
     let func = change.func;
     let live = core::slice::from_raw_parts(func.ea as *const u8, func.size);
-    follows_change(func, live, change.offset, change.len, |addr| *(addr as *const u8))
+    follows_change(func, live, change.offset, change.len, |addr| *(addr as *const u8), module_name_of)
+}
+
+/// The file name of the module that holds `address`, or [`ports::THIS_PLUGIN`] for this plugin's own
+/// DLL, whose file name changes with the build.
+fn module_name_of(address: usize) -> String {
+    // SAFETY: any address is allowed; the functions only ask Windows which module holds it.
+    unsafe {
+        let own = census::module_base_of(module_name_of as *const () as usize);
+        if own != 0 && census::module_base_of(address) == own {
+            ports::THIS_PLUGIN.to_string()
+        } else {
+            census::module_of(address)
+        }
+    }
 }
 
 /// True when a port follows the run of `len` changed bytes at `offset` of `func`. `live` is
-/// the function in memory, and `read` gives the byte in memory at an address.
-fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, len: usize, read: impl Fn(usize) -> u8) -> bool {
+/// the function in memory, `read` gives the byte in memory at an address, and `module_of` the module that
+/// holds an address.
+fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, len: usize, read: impl Fn(usize) -> u8, module_of: impl Fn(usize) -> String) -> bool {
     // A port that runs the whole engine function keeps a change past its stolen bytes.
     if ports::wraps_engine(func.ea) && offset >= func.steal {
         return true;
@@ -45,7 +60,7 @@ fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, le
         return ports::serves_site(at);
     }
     let expected = census::expected(func);
-    (offset..offset + len).filter(|&i| live[i] != expected[i]).all(|i| ports::follows(func.ea + i, &read))
+    (offset..offset + len).filter(|&i| live[i] != expected[i]).all(|i| ports::follows(func.ea + i, &read, &module_of))
 }
 
 /// Does the census and writes it to the log. It locks the port of a function that another
@@ -351,7 +366,12 @@ mod tests {
         let runs = census::runs(live, census::expected(func));
         assert!(!runs.is_empty(), "{}: the bytes are those of the database", func.name);
         let read = |addr: usize| if (at..at + bytes.len()).contains(&addr) { bytes[addr - at] } else { live[addr - func.ea] };
-        runs.iter().all(|&(offset, len)| follows_change(func, live, offset, len, read))
+        runs.iter().all(|&(offset, len)| follows_change(func, live, offset, len, read, fake_module))
+    }
+
+    /// The modules of the tests: MWSE.dll at 0x2000_0000 and above, the game below.
+    fn fake_module(address: usize) -> String {
+        if address >= 0x2000_0000 { "MWSE.dll".to_string() } else { "Morrowind.exe".to_string() }
     }
 
     #[test]
@@ -369,17 +389,24 @@ mod tests {
         assert_eq!(func.name, "NiDX8MaterialManager::dtor");
         let mut live = census::expected(func).to_vec();
         let (call, write) = (0x6C2578 - func.ea, 0x6C259B - func.ea);
-        live[call..call + 5].copy_from_slice(&[0xE8, 1, 2, 3, 4]);
+        live[call..call + 5].copy_from_slice(&dtor_call_to(0x2000_1000));
         live[call + 5..call + 30].fill(0x90);
         live[write..write + 3].fill(0x90);
         (func, live)
+    }
+
+    /// The 5 bytes of a `call` at 0x6C2578 to `target`.
+    fn dtor_call_to(target: u32) -> [u8; 5] {
+        let mut bytes = [0xE8, 0, 0, 0, 0];
+        bytes[1..].copy_from_slice(&target.wrapping_sub(0x6C2578 + 5).to_le_bytes());
+        bytes
     }
 
     /// True when the census follows each run of changed bytes of `live` (all in `func`).
     fn followed_in(func: &crate::gen::funcs::Func, live: &[u8]) -> bool {
         let runs = census::runs(live, census::expected(func));
         assert!(!runs.is_empty(), "{}: the bytes are those of the database", func.name);
-        runs.iter().all(|&(offset, len)| follows_change(func, live, offset, len, |addr| live[addr - func.ea]))
+        runs.iter().all(|&(offset, len)| follows_change(func, live, offset, len, |addr| live[addr - func.ea], fake_module))
     }
 
     #[test]
@@ -409,6 +436,12 @@ mod tests {
         let mut other = census::expected(func).to_vec();
         other[0x6C2460 - func.ea] ^= 0xFF;
         assert!(!followed_in(func, &other), "a change that no entry names");
+        // The right opcode with a target in the game itself, or in no module: not followed.
+        for target in [0x0040_1000u32, 0x1000_0000] {
+            let mut wrong_target = live.clone();
+            wrong_target[call..call + 5].copy_from_slice(&dtor_call_to(target));
+            assert!(!followed_in(func, &wrong_target), "a call to {target:#x} is not the patch of MWSE");
+        }
         // The nops of the patch without the call: not followed.
         let mut no_call = live.clone();
         no_call[call..call + 5].copy_from_slice(&census::expected(func)[call..call + 5]);

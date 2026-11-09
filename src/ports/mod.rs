@@ -273,8 +273,37 @@ enum Followed {
     /// in Rust what the function of the patch does.
     InsertedCall { at: usize },
     /// Bytes that a known patch writes around the address of its own function: `head`, 4
-    /// bytes of address, `tail`. The port calls that function.
-    CallOfPatch { at: usize, head: &'static [u8], tail: &'static [u8] },
+    /// bytes of address, `tail`. The port calls that function. The function must lie in the
+    /// module of the patch (`callee`): a patch of the same shape with another target is not
+    /// known.
+    CallOfPatch { at: usize, head: &'static [u8], tail: &'static [u8], callee: Callee },
+}
+
+/// The name that [`follows`] gets for an address in this plugin's own DLL (its file name changes
+/// with the build).
+pub const THIS_PLUGIN: &str = "this plugin";
+
+/// The 4 bytes of a [`Followed::CallOfPatch`] and the modules where the function that they name
+/// may lie. A module is a file name, compared without the case.
+enum Callee {
+    /// The address of the function.
+    Address(&'static [&'static str]),
+    /// The distance from the end of the 4 bytes to the function: a `call rel32`.
+    Distance(&'static [&'static str]),
+}
+
+impl Callee {
+    /// True when the 4 bytes at `at` name a function in one of the modules. `module_of` gives
+    /// the module of an address.
+    fn accepts(&self, at: usize, read: &impl Fn(usize) -> u8, module_of: &impl Fn(usize) -> String) -> bool {
+        let value = u32::from_le_bytes([read(at), read(at + 1), read(at + 2), read(at + 3)]) as usize;
+        let (target, modules) = match *self {
+            Callee::Address(modules) => (value, modules),
+            Callee::Distance(modules) => ((at + 4).wrapping_add(value), modules),
+        };
+        let module = module_of(target);
+        modules.iter().any(|name| name.eq_ignore_ascii_case(&module))
+    }
 }
 
 static FOLLOWED: &[Followed] = &[
@@ -293,8 +322,15 @@ static FOLLOWED: &[Followed] = &[
     Followed::Operand { at: 0x6A9BC4, len: 4 },
     // `NiDX8SourceTextureData_static::Create`: the two calls and the three stack offsets of
     // MGE XE (`patchLoadTexture2D`). `texture_link::create` calls the two functions.
-    Followed::CallOfPatch { at: 0x6BFC4B, head: &[0x52, 0x55, 0x56, 0x53, 0xB8], tail: &[0xFF, 0xD0, 0xEB, 0x0E] },
-    Followed::CallOfPatch { at: 0x6BFD3B, head: &[0x8B, 0x54, 0x24, 0x10, 0x52, 0x55, 0x56, 0xB8], tail: &[0xFF, 0xD0, 0xEB, 0x08] },
+    // The two functions are in MGE XE's d3d8.dll, or in this plugin when it writes the same patch
+    // itself (`texture_link`).
+    Followed::CallOfPatch { at: 0x6BFC4B, head: &[0x52, 0x55, 0x56, 0x53, 0xB8], tail: &[0xFF, 0xD0, 0xEB, 0x0E], callee: Callee::Address(&["d3d8.dll", THIS_PLUGIN]) },
+    Followed::CallOfPatch {
+        at: 0x6BFD3B,
+        head: &[0x8B, 0x54, 0x24, 0x10, 0x52, 0x55, 0x56, 0xB8],
+        tail: &[0xFF, 0xD0, 0xEB, 0x08],
+        callee: Callee::Address(&["d3d8.dll", THIS_PLUGIN]),
+    },
     Followed::Patch { at: 0x6BFCC7, bytes: &[0x18] },
     Followed::Patch { at: 0x6BFCD7, bytes: &[0x18] },
     Followed::Patch { at: 0x6BFCE3, bytes: &[0x24] },
@@ -329,8 +365,8 @@ static FOLLOWED: &[Followed] = &[
     // `NiDX8MaterialManager::dtor`: the patch of MWSE for a default material that is null (the
     // engine's exit handlers released it). A `call` and 25 `nop` in place of 30 bytes of code,
     // and 3 `nop` in place of the write `mov [eax+18h], ebp`. `base::clear_default_material_entry`
-    // does the same: it skips the write when the default material is null.
-    Followed::CallOfPatch { at: 0x6C2578, head: &[0xE8], tail: &[0x90; 25] },
+    // does the same: it skips the write when the default material is null. The function is in MWSE.dll.
+    Followed::CallOfPatch { at: 0x6C2578, head: &[0xE8], tail: &[0x90; 25], callee: Callee::Distance(&["MWSE.dll"]) },
     Followed::Patch { at: 0x6C259B, bytes: &[0x90, 0x90, 0x90] },
     // `NiDX8TextureData::FindMatchingPixelFormat`: four displacements that the Morrowind Code
     // Patch changes (MCP-039). `textures` reads them.
@@ -379,19 +415,22 @@ pub fn code_patch_feature(at: usize, len: usize) -> Option<u32> {
 }
 
 /// True when a port follows a change of the byte at `addr`. `read` gives the byte that is in
-/// memory at an address.
-pub fn follows(addr: usize, read: impl Fn(usize) -> u8) -> bool {
+/// memory at an address, and `module_of` the file name of the module that holds an address
+/// ([`THIS_PLUGIN`] for this plugin, "?" for none). A call of a known patch must name a function in
+/// the module of that patch.
+pub fn follows(addr: usize, read: impl Fn(usize) -> u8, module_of: impl Fn(usize) -> String) -> bool {
     FOLLOWED.iter().any(|followed| match *followed {
         Followed::Operand { at, len } => (at..at + len).contains(&addr),
         Followed::Patch { at, bytes } => {
             (at..at + bytes.len()).contains(&addr) && bytes.iter().enumerate().all(|(i, &b)| read(at + i) == b)
         }
         Followed::InsertedCall { at } => (at..at + 6).contains(&addr) && read(at) == 0xE8 && read(at + 5) == 0x90,
-        Followed::CallOfPatch { at, head, tail } => {
+        Followed::CallOfPatch { at, head, tail, ref callee } => {
             let tail_at = at + head.len() + 4;
             (at..tail_at + tail.len()).contains(&addr)
                 && head.iter().enumerate().all(|(i, &b)| read(at + i) == b)
                 && tail.iter().enumerate().all(|(i, &b)| read(tail_at + i) == b)
+                && callee.accepts(at + head.len(), &read, &module_of)
         }
     })
 }
@@ -419,19 +458,73 @@ mod tests {
     #[test]
     fn a_port_follows_known_patches_only() {
         let database = |_addr: usize| 0u8;
+        let no_module = |_addr: usize| "?".to_string();
         // An operand: any value.
-        assert!(follows(0x6A9AED, database));
-        assert!(follows(0x6A9AF5, database));
-        assert!(!follows(0x6A9AF1, database), "the opcode between two operands is not an operand");
+        assert!(follows(0x6A9AED, database, no_module));
+        assert!(follows(0x6A9AF5, database, no_module));
+        assert!(!follows(0x6A9AF1, database, no_module), "the opcode between two operands is not an operand");
         // The skinning check: only the bytes of MWSE.
         let mwse = [0x90u8, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75];
-        assert!(follows(0x6ACF20, |addr| mwse[addr - 0x6ACF1F]));
-        assert!(!follows(0x6ACF20, |addr| if addr == 0x6ACF20 { 0x67 } else { mwse[addr - 0x6ACF1F] }));
+        assert!(follows(0x6ACF20, |addr| mwse[addr - 0x6ACF1F], no_module));
+        assert!(!follows(0x6ACF20, |addr| if addr == 0x6ACF20 { 0x67 } else { mwse[addr - 0x6ACF1F] }, no_module));
         // The inserted call: a call and a nop.
         let call = [0xE8u8, 1, 2, 3, 4, 0x90];
-        assert!(follows(0x6B42AD, |addr| call[addr - 0x6B42AC]));
-        assert!(!follows(0x6B42AD, database));
-        assert!(!follows(0x400000, database));
+        assert!(follows(0x6B42AD, |addr| call[addr - 0x6B42AC], no_module));
+        assert!(!follows(0x6B42AD, database, no_module));
+        assert!(!follows(0x400000, database, no_module));
+    }
+
+    /// The memory of a `CallOfPatch`: `head`, the 4 bytes, `tail`, at `at`.
+    fn patch_bytes(at: usize, head: &[u8], four: u32, tail: &[u8]) -> impl Fn(usize) -> u8 {
+        let mut bytes = head.to_vec();
+        bytes.extend_from_slice(&four.to_le_bytes());
+        bytes.extend_from_slice(tail);
+        move |addr| bytes[addr - at]
+    }
+
+    /// Modules at fixed places: MGE XE's d3d8.dll above 0x1000_0000, MWSE.dll above 0x2000_0000, this plugin above 0x3000_0000, the
+    /// game below.
+    fn module_at(addr: usize) -> String {
+        match addr {
+            0x3000_0000.. => THIS_PLUGIN.to_string(),
+            0x2000_0000.. => "MWSE.dll".to_string(),
+            0x1000_0000.. => "D3D8.DLL".to_string(),
+            0x40_0000..=0x80_0000 => "Morrowind.exe".to_string(),
+            _ => "?".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_call_of_a_known_patch_must_name_a_function_of_the_module_of_the_patch() {
+        // The two calls of MGE XE: the address in the 4 bytes.
+        let (head, tail) = (&[0x52, 0x55, 0x56, 0x53, 0xB8][..], &[0xFF, 0xD0, 0xEB, 0x0E][..]);
+        let at = 0x6BFC4B;
+        for (target, wanted, what) in [
+            (0x1000_1000u32, true, "a function of d3d8.dll (the case does not matter)"),
+            (0x3000_1000, true, "a function of this plugin (it writes the same patch)"),
+            (0x2000_1000, false, "a function of MWSE.dll is not the patch of MGE XE"),
+            (0x0040_1000, false, "the right opcode and a target in the game itself"),
+            (0, false, "a null target"),
+            (0x0010_0000, false, "a target in no module"),
+        ] {
+            assert_eq!(follows(at + 5, patch_bytes(at, head, target, tail), module_at), wanted, "{what}");
+        }
+        // The second call has its own head.
+        let (head, tail) = (&[0x8B, 0x54, 0x24, 0x10, 0x52, 0x55, 0x56, 0xB8][..], &[0xFF, 0xD0, 0xEB, 0x08][..]);
+        assert!(follows(0x6BFD3B + 8, patch_bytes(0x6BFD3B, head, 0x1000_2000, tail), module_at));
+        assert!(!follows(0x6BFD3B + 8, patch_bytes(0x6BFD3B, head, 0x0040_2000, tail), module_at), "the second call with a target in the game");
+        // The patch of MWSE: a `call rel32` in place of 30 bytes; the distance is counted from the end of the 4 bytes.
+        let at = 0x6C2578;
+        let distance_to = |target: u32| target.wrapping_sub(at as u32 + 5);
+        let mwse = |target: u32| patch_bytes(at, &[0xE8], distance_to(target), &[0x90; 25]);
+        assert!(follows(at, mwse(0x2000_1000), module_at), "a function of MWSE.dll");
+        assert!(follows(at + 4, mwse(0x2000_1000), module_at), "any byte of the run");
+        assert!(!follows(at, mwse(0x1000_1000), module_at), "a call into d3d8.dll is not the patch of MWSE");
+        assert!(!follows(at, mwse(0x0040_1000), module_at), "the right opcode and a target in the game");
+        assert!(!follows(at, mwse(0), module_at), "a call to address 0");
+        // The bytes around the 4 still count.
+        let bad_tail = |addr: usize| if addr == at + 17 { 0x91 } else { mwse(0x2000_1000)(addr) };
+        assert!(!follows(at, bad_tail, module_at), "a changed nop");
     }
 
     #[test]
