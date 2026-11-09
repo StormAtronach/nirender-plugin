@@ -21,7 +21,8 @@ The checks of each list:
   no copy of a constant of `src/stream_format.rs`.
 - `check_clip_products.py` (the MGE XE list): the helper's WGSL has no new product of a matrix
   with a world position (`matrix * vec4f(world, 1.0)`); the known products are on an allow-list.
-  Use `clip_with` (W49).
+  Use `clip_with` (W49). Also: each vertex stage ends in `clip_of` or `clip_with`, and none reads
+  `u.view_projection`.
 - `build_module_map.py` (docs): every module of ours has a `//!` header.
 - `check_names.py` (docs): no skill names a switch or a Lua call the code lost.
 
