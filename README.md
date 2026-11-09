@@ -208,9 +208,6 @@ The helper's diagnostic and test switches (`host/src/switches.rs`, read once; no
 setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own
 switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 
-- `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode `dual`
-  (and the engine's walk), the engine's own draws of the same capture: the reference of a
-  debug toggle.
 - `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting. The
   baseline gate replays with both.
 - `MGE_XE_LIGHTS=world`: a lit draw of the world takes the point lights of the world that

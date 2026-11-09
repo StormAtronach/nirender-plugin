@@ -240,14 +240,7 @@ impl Player {
                 self.stream.shape_fog = None;
                 self.stream.shape_bones = None;
             }
-            tag::SHAPE if data.len() >= 144 => {
-                // Flag 0x200: the twin of the instance draw before it.
-                if self.retained_on && word(data, 8) & 0x200 != 0 {
-                    self.renderer.counts.shape_twins += 1;
-                } else {
-                    self.shape(data);
-                }
-            }
+            tag::SHAPE if data.len() >= 144 => self.shape(data),
             tag::INSTANCE if data.len() >= 176 => self.instance(data, move_check),
             tag::INSTANCE_MOVE => self.instance_move(data),
             tag::INSTANCE_LIGHTS => {
@@ -267,29 +260,19 @@ impl Player {
                 self.fog_off_color = scene.fog_off_color.unwrap_or(0);
                 self.retained_sun = scene.sun;
             }
-            tag::INSTANCE_DRAW if data.len() >= 12 => {
-                if self.retained_on {
-                    self.instance_draw(data);
-                }
-            }
+            tag::INSTANCE_DRAW if data.len() >= 12 => self.instance_draw(data),
             tag::INSTANCE_PARTICLES if data.len() >= 36 => {
-                if self.retained_on {
-                    let count = word(data, 4) as usize;
-                    let particles = &data[36..(36 + count * 20).min(data.len())];
-                    let floats3 = |at: usize| -> [f32; 3] { core::array::from_fn(|i| f32::from_bits(word(data, at + i * 4))) };
-                    self.renderer.particles(word(data, 0), f32::from_bits(word(data, 8)), floats3(12), floats3(24), particles);
-                    self.renderer.counts.instance_particles += 1;
-                }
+                let count = word(data, 4) as usize;
+                let particles = &data[36..(36 + count * 20).min(data.len())];
+                let floats3 = |at: usize| -> [f32; 3] { core::array::from_fn(|i| f32::from_bits(word(data, at + i * 4))) };
+                self.renderer.particles(word(data, 0), f32::from_bits(word(data, 8)), floats3(12), floats3(24), particles);
+                self.renderer.counts.instance_particles += 1;
             }
-            tag::INSTANCE_QUEUED if data.len() >= 4 => {
-                if self.retained_on {
-                    self.instance_queued(word(data, 0));
-                }
-            }
+            tag::INSTANCE_QUEUED if data.len() >= 4 => self.instance_queued(word(data, 0)),
             tag::INSTANCE_WALK if data.len() >= 4 => {
-                if self.retained_on && self.views.open().is_some() {
+                if self.views.open().is_some() {
                     self.view_place(word(data, 0));
-                } else if self.retained_on {
+                } else {
                     self.walk_place(word(data, 0));
                 }
             }
