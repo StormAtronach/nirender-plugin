@@ -12,8 +12,13 @@ The keep list has one line for each kept path, its three fields split by tabs: t
 the date the line was written (YYYY-MM-DD). The reason starts with `open: <id>` (the evidence of an open item),
 `tool: <name>` (a tool reads it) or `owner` (the owner's word). A run stays whole when its folder is a path of
 the list or lies in one; a set of mgebuilds stays too. Other paths (a file, a folder of E:\\nirender-keep) are no
-problem: the tools do not remove them. A line without a full path, a reason or a date is a problem, and no
-removal runs. A line that starts with `#` is a note.
+problem: the tools do not remove them. These lines are problems, and no removal runs while one is there:
+- a line without a full path, a reason or a date;
+- a path too wide to keep (a drive, a place of runs, dumps, sets or checkouts, or a folder above one): such a line
+  would stop the cleaning of a whole place;
+- a path that is a link or goes through one: the tools never follow a link, so the line would keep nothing.
+A line that starts with `#` is a note. A run on the list in a side worktree stays with its tree:
+clean_merged_worktrees.py does not remove that tree, as a copy of the run would not be on the list.
 """
 import bisect
 import ctypes
@@ -51,6 +56,8 @@ DUMPS_FILE = "dumps.txt"
 KEEP_LIST = os.path.join(KEEP_ROOT, "keep-runs.txt")
 KEEP_REASON = re.compile(r"^(?:(?:open|tool):\s*\S.*|owner\b.*)$")
 KEEP_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# The places of runs, dumps, sets and checkouts. A keep-list line on one of them, or above one, is a problem.
+WIDE_PLACES = (KEEP_ROOT, "E:\\nirender-results", SETS, KEPT_DUMPS, "C:\\tmp\\mwdumps", REPOS_ROOT)
 GAME_PROGRAMS = {"morrowind.exe", "numidium.exe", "nirender-host.exe"}
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
@@ -436,17 +443,53 @@ def keep_key(path):
     return os.path.normcase(os.path.normpath(path))
 
 
+def too_wide_to_keep(path):
+    """Why a path of the keep list would keep the runs of a whole place, or None. Such a line would stop the cleaning of
+    that place without a word: a drive, a place of runs, dumps or sets or a folder above one, a `results` folder, a
+    `runs-*` or `full-dumps-*` copy, or a folder that holds a `results` folder (a checkout)."""
+    path = os.path.normpath(path)
+    name = os.path.basename(path).lower()
+    if os.path.dirname(path) == path:
+        return "a drive"
+    for place in WIDE_PLACES:
+        if same_or_under(place, path):
+            return "the place %s or a folder above it" % place
+    if name == "results" or name.startswith(("runs-", "full-dumps-")):
+        return "a folder of runs"
+    if os.path.isdir(os.path.join(path, "results")):
+        return "a folder that holds a results folder"
+    return None
+
+
+def through_link(path):
+    """The first link (a junction or a symbolic link) on a path, from its drive down, or None. The tools never go
+    through a link, so a line that names one or a path inside one keeps nothing."""
+    path = os.path.normpath(path)
+    parts = []
+    while os.path.dirname(path) != path:
+        parts.append(path)
+        path = os.path.dirname(path)
+    for part in reversed(parts):
+        try:
+            if is_link(part):
+                return part
+        except OSError:
+            return None
+    return None
+
+
 def read_keep_list(path=KEEP_LIST):
-    """The paths on the keep list, in `keep_key` spelling, and its problems: a line without an absolute path, a
-    reason or a date, or a file that cannot be read. No file is an empty list."""
+    """The paths on the keep list, in `keep_key` spelling, each with its line ("line N: text"), and the list's problems:
+    a line without a full path, a reason or a date, a path too wide to keep or through a link, or a file that cannot
+    be read. No file is an empty list. A byte order mark is read as none."""
     try:
-        with open(long_path(path), encoding="utf-8", errors="replace") as file:
+        with open(long_path(path), encoding="utf-8-sig", errors="replace") as file:
             lines = file.read().splitlines()
     except FileNotFoundError:
-        return set(), []
+        return {}, []
     except OSError as error:
-        return set(), ["the keep list cannot be read: %s (%s)" % (path, error)]
-    kept, problems = set(), []
+        return {}, ["the keep list cannot be read: %s (%s)" % (path, error)]
+    kept, problems = {}, []
     for number, line in enumerate(lines, 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -454,16 +497,21 @@ def read_keep_list(path=KEEP_LIST):
         kept_path = fields[0]
         reason = fields[1] if len(fields) > 1 else ""
         date = fields[2] if len(fields) > 2 else ""
+        where = "the keep list, line %d" % number
         if len(fields) > 3:
-            problems.append("the keep list, line %d: more than three fields (path, reason, date): %s" % (number, line))
+            problems.append("%s: more than three fields (path, reason, date): %s" % (where, line))
         elif not os.path.isabs(kept_path) or not os.path.splitdrive(kept_path)[0]:
-            problems.append("the keep list, line %d: no full path first: %s" % (number, line))
+            problems.append("%s: no full path first: %s" % (where, line))
         elif not KEEP_REASON.match(reason):
-            problems.append("the keep list, line %d: no reason (open: <id> | tool: <name> | owner) second: %s" % (number, line))
+            problems.append("%s: no reason (open: <id> | tool: <name> | owner) second: %s" % (where, line))
         elif not KEEP_DATE.match(date):
-            problems.append("the keep list, line %d: no date (YYYY-MM-DD) third: %s" % (number, line))
+            problems.append("%s: no date (YYYY-MM-DD) third: %s" % (where, line))
+        elif too_wide_to_keep(kept_path):
+            problems.append("%s: the path is too wide to keep (%s): %s" % (where, too_wide_to_keep(kept_path), line))
+        elif through_link(kept_path):
+            problems.append("%s: the path goes through a link, %s, which the tools never follow; name the real path, %s: %s" % (where, through_link(kept_path), os.path.realpath(kept_path), line))
         else:
-            kept.add(keep_key(kept_path))
+            kept[keep_key(kept_path)] = "line %d: %s" % (number, line.replace("\t", " | "))
     return kept, problems
 
 
@@ -475,7 +523,9 @@ class Evidence:
         # Why the text may lack a citation, or the keep list a run. A removal must not run on it: every run
         # would read as uncited, or a kept run as not kept.
         self.problems = list(problems)
-        self.kept = {keep_key(path) for path in kept}
+        # The kept paths, each with its line of the list; a plain set of paths (the tests) gets the path as its line.
+        lines = kept if isinstance(kept, dict) else {path: path for path in kept}
+        self.kept = {keep_key(path): line for path, line in lines.items()}
         self.stamps = set(STAMP.findall(text))
         self.shorts = set(SHORT_CITATION.findall(text))
         self.dump_numbers = set(DUMP_NUMBER.findall(text))
@@ -517,7 +567,11 @@ class Evidence:
 
     def keeps(self, path):
         """True for a path that the keep list names, or that lies in a folder that it names."""
-        return any(same_or_under(path, kept) for kept in self.kept)
+        return self.kept_line(path) is not None
+
+    def kept_line(self, path):
+        """The line of the keep list that keeps a path, or None."""
+        return next((line for kept, line in self.kept.items() if same_or_under(path, kept)), None)
 
     def cites_run(self, name):
         """A full citation counts by its date and time, as a record can shorten the label. A short
@@ -647,7 +701,7 @@ def self_test_common():
         no_list = os.path.join(temp, "no-keep-runs.txt")
         good = Evidence.load([docs], [], [repo], least=100, keep_list=no_list)
         assert good.problems == [] and good.cites_run("20261103-010838-h14-w2") and good.cites_run("20261103-020202-x"), good.problems
-        assert good.kept == set() and not good.keeps("C:\\r\\20261103-010838-h14-w2")
+        assert good.kept == {} and not good.keeps("C:\\r\\20261103-010838-h14-w2")
         assert "cannot be read" in " ".join(Evidence.load([os.path.join(temp, "no-docs")], [], [repo], least=1, keep_list=no_list).problems)
         assert "no commit messages" in " ".join(Evidence.load([docs], [], [os.path.join(temp, "no-repo")], least=1, keep_list=no_list).problems)
         no_commits = os.path.join(temp, "empty-repo")
@@ -665,16 +719,41 @@ def self_test_common():
         # date is a problem, and the problem reaches the evidence, so that no removal runs.
         keep_list = os.path.join(temp, "keep-runs.txt")
         good_line = "C:/r/results/20261101-010101-open\topen: risk 76; open: D150 C (the design)\t2026-11-09"
-        with open(keep_list, "w", encoding="ascii") as file:
-            file.write("# runs that stay whole\n#   open: <id>\tthe evidence\n\n" + good_line + "\n"
-                       "E:/keep/runs-x\ttool: proj76.py\t2026-11-09\n"
+        # A byte order mark is no part of the first line (A1).
+        with open(keep_list, "w", encoding="utf-8-sig") as file:
+            file.write(good_line + "\n"
+                       "E:/keep/named-folder\ttool: proj76.py\t2026-11-09\n"
                        "E:/keep/mgebuilds/f199\towner\t2026-11-09\n"
-                       "E:/bench/walk.nircap\ttool: bench_replay.py (the walk)\t2026-11-09\n")
+                       "E:/bench/walk.nircap\ttool: bench_replay.py (the walk)\t2026-11-09\n"
+                       "# runs that stay whole\n#   open: <id>\tthe evidence\n\n")
         kept, problems = read_keep_list(keep_list)
         assert problems == [] and len(kept) == 4, (kept, problems)
         listed = Evidence.load([docs], [], [repo], least=1, keep_list=keep_list)
-        assert listed.problems == [] and listed.keeps("c:\\R\\results\\20261101-010101-open") and listed.keeps("E:\\keep\\runs-x\\20261001-000000-y")
+        assert listed.problems == [] and listed.keeps("c:\\R\\results\\20261101-010101-open") and listed.keeps("E:\\keep\\named-folder\\20261001-000000-y")
         assert listed.keeps("E:/keep/mgebuilds/f199") and not listed.keeps("E:/keep/mgebuilds/f19") and not listed.keeps("C:/r/results/20261101-010101-opener")
+        assert listed.kept_line("C:/r/results/20261101-010101-open/a.png") == "line 1: " + good_line.replace("\t", " | ") and listed.kept_line("C:/r/x") is None
+        # A path too wide to keep (A2), and a path through a link (A8), are problems.
+        checkout = os.path.join(temp, "checkout")
+        os.makedirs(os.path.join(checkout, "results"))
+        subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(temp, "link-to-docs"), docs], capture_output=True, check=True)
+        wide = ["E:/", "C:\\", "E:/nirender-keep", "e:/NIRENDER-RESULTS/", "E:/nirender-keep/mgebuilds", "E:/nirender-keep/dumps", "C:/tmp/mwdumps",
+                "C:/r/results", "E:/nirender-keep/runs-20261109", "E:/x/full-dumps-1", os.path.dirname(REPOS_ROOT), REPOS_ROOT, checkout]
+        for path in wide:
+            assert too_wide_to_keep(path), path
+        for path in ("C:/r/results/20261101-010101-open", "E:/nirender-keep/mgebuilds/f199", "E:/nirender-keep/skin-regress-2026-11-09", "E:/nirender-results/bench/a.nircap", os.path.join(checkout, "results", "20261101-010101-x")):
+            assert too_wide_to_keep(path) is None, path
+        assert through_link(os.path.join(temp, "link-to-docs")) == os.path.join(temp, "link-to-docs")
+        assert through_link(os.path.join(temp, "link-to-docs", "20261101-010101-x")) == os.path.join(temp, "link-to-docs")
+        assert through_link(os.path.join(docs, "20261101-010101-x")) is None and through_link("Q:/none/20261101-010101-x") is None
+        links = [os.path.join(temp, "link-to-docs"), os.path.join(temp, "link-to-docs", "20261101-010101-x")]
+        for path, words in [(path, "too wide") for path in wide] + [(path, "through a link") for path in links]:
+            with open(keep_list, "w", encoding="ascii") as file:
+                file.write(good_line + "\n" + path + "\towner\t2026-11-09\n")
+            kept, problems = read_keep_list(keep_list)
+            assert len(kept) == 1 and len(problems) == 1 and words in problems[0] and "line 2" in problems[0], (path, problems)
+            assert words in " ".join(Evidence.load([docs], [], [repo], least=1, keep_list=keep_list).problems), path
+            if words == "through a link":
+                assert "name the real path, " + os.path.realpath(path) in problems[0], problems[0]
         for bad, words in (("C:/r/20261101-040404-x\t\t2026-11-09", "no reason"), ("C:/r/20261101-040404-x\tbecause it is cited\t2026-11-09", "no reason"),
                            ("C:/r/20261101-040404-x\topen:\t2026-11-09", "no reason"), ("C:/r/20261101-040404-x", "no reason"),
                            ("C:/r/20261101-040404-x\towner", "no date"), ("C:/r/20261101-040404-x\topen: risk 77\t9 Nov", "no date"),
@@ -683,7 +762,7 @@ def self_test_common():
             with open(keep_list, "w", encoding="ascii") as file:
                 file.write(good_line + "\n" + bad + "\n")
             kept, problems = read_keep_list(keep_list)
-            assert kept == {keep_key("C:/r/results/20261101-010101-open")} and len(problems) == 1 and words in problems[0] and "line 2" in problems[0], (bad, problems)
+            assert set(kept) == {keep_key("C:/r/results/20261101-010101-open")} and len(problems) == 1 and words in problems[0] and "line 2" in problems[0], (bad, problems)
             assert words in " ".join(Evidence.load([docs], [], [repo], least=1, keep_list=keep_list).problems), bad
         # A keep list that cannot be read is a problem too: a folder of that name.
         assert "cannot be read" in read_keep_list(docs)[1][0]
