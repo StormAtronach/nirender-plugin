@@ -37,7 +37,7 @@
 //! site after its jump are filled with `nop`. All sites are checked before the first is
 //! written: one byte that differs refuses all of them.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// One site: the address of its bytes, their number, the function, and what it counts.
 struct Site {
@@ -96,6 +96,15 @@ const READ_LEN: usize = 16;
 const STUB_LEN: usize = 32;
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// The stub of each site that the install wrote, by its index in [`SITES`]; 0 for a site not
+/// written. The bytes that the install wrote are `site_code` of the site and its stub.
+static STUBS: [AtomicUsize; SITES.len()] = [const { AtomicUsize::new(0) }; SITES.len()];
+
+/// The sites, as bits by their index, whose foreign bytes the log named.
+static TOLD: AtomicU64 = AtomicU64::new(0);
+// TOLD has one bit for each site.
+const _: () = assert!(SITES.len() <= 64);
 
 /// The registers that an `inc dword [r+4]` of a site uses (the modrm byte, mod 01, disp8).
 const INC_MODRMS: [u8; 5] = [0x40, 0x41, 0x45, 0x46, 0x47];
@@ -244,7 +253,7 @@ pub unsafe fn install() {
         live.push(bytes);
     }
     let mut locked = 0;
-    for (site, bytes) in SITES.iter().zip(&live) {
+    for ((site, bytes), written) in SITES.iter().zip(&live).zip(&STUBS) {
         let Some(stub) = crate::hook::arena_alloc(&[0xCC; STUB_LEN]) else {
             crate::log!("atomic count: no memory for a stub after {locked} sites");
             break;
@@ -255,6 +264,7 @@ pub unsafe fn install() {
             crate::log!("atomic count: 0x{:x} could not be written after {locked} sites", site.at);
             break;
         }
+        written.store(stub, Ordering::Relaxed);
         locked += 1;
     }
     INSTALLED.store(locked > 0, Ordering::Relaxed);
@@ -264,10 +274,59 @@ pub unsafe fn install() {
     );
 }
 
-/// True when the run of `len` bytes at `ea` is inside one of the sites, once they are written:
-/// the census does not count these as a change of another mod.
+/// True when the run of `len` bytes at `ea` is inside one site that the install wrote, and the
+/// site holds the bytes that the install wrote there: the census does not count the run as a
+/// change of another mod. A written site with other bytes (a mod wrote over the plugin's jump)
+/// is not covered, and the log names it once.
 pub fn covers(ea: usize, len: usize) -> bool {
-    INSTALLED.load(Ordering::Relaxed) && SITES.iter().any(|s| ea >= s.at && ea + len <= s.at + s.len)
+    let stubs: [usize; SITES.len()] = core::array::from_fn(|i| STUBS[i].load(Ordering::Relaxed));
+    // SAFETY: a site with a stub is in the code of the game, which stays mapped and readable for
+    // the life of the process.
+    let read = |address: usize| unsafe { *(address as *const u8) };
+    match covering_site(&stubs, ea, len, read) {
+        Covering::Own => true,
+        Covering::Outside => false,
+        Covering::Foreign(index) => {
+            if TOLD.fetch_or(1u64 << index, Ordering::Relaxed) & (1u64 << index) == 0 {
+                let site = &SITES[index];
+                let live: Vec<u8> = (site.at..site.at + site.len).map(read).collect();
+                crate::log!(
+                    "atomic count: the site at 0x{:x} ({}, {}) holds {:02x?}, not the plugin's jump: another mod wrote it; the census counts its function as changed",
+                    site.at,
+                    site.function,
+                    site.slot,
+                    live
+                );
+            }
+            false
+        }
+    }
+}
+
+/// What a run of changed bytes is to the sites.
+#[derive(Debug, PartialEq, Eq)]
+enum Covering {
+    /// Wholly inside a written site that holds the plugin's bytes.
+    Own,
+    /// Wholly inside a written site, whose bytes are not the plugin's: the index of the site.
+    Foreign(usize),
+    /// Not wholly inside any written site.
+    Outside,
+}
+
+/// The rule of [`covers`], with the stubs of the sites (0 for a site not written) and the read of
+/// a byte given.
+fn covering_site(stubs: &[usize; SITES.len()], ea: usize, len: usize, read: impl Fn(usize) -> u8) -> Covering {
+    let inside = SITES.iter().zip(stubs).enumerate().find(|(_, (site, &stub))| stub != 0 && ea >= site.at && ea + len <= site.at + site.len);
+    let Some((index, (site, &stub))) = inside else {
+        return Covering::Outside;
+    };
+    let own = site_code(site.at, site.len, stub);
+    if own.iter().enumerate().all(|(i, &byte)| read(site.at + i) == byte) {
+        Covering::Own
+    } else {
+        Covering::Foreign(index)
+    }
 }
 
 #[cfg(test)]
@@ -437,5 +496,31 @@ mod tests {
         let mut sites: Vec<(usize, usize)> = SITES.iter().map(|s| (s.at, s.len)).collect();
         sites.sort_unstable();
         assert!(sites.windows(2).all(|w| w[1].0 >= w[0].0 + w[0].1));
+    }
+
+    /// A census after the lock (W127): a run inside a written site that holds the plugin's jump
+    /// is covered; the same run after one byte of the site changed is not, and names the site; a
+    /// run that crosses the end of a site, or lies in a site not written, is not.
+    #[test]
+    fn a_site_is_covered_only_with_the_plugins_own_bytes() {
+        let index = SITES.iter().position(|s| s.len == 7).unwrap();
+        let site = &SITES[index];
+        let stub = 0x1000_0000;
+        let mut stubs = [0usize; SITES.len()];
+        stubs[index] = stub;
+        // The memory of the site, from its address; 0xCC past it.
+        fn reader(memory: &[u8], at: usize) -> impl Fn(usize) -> u8 + '_ {
+            move |address| memory.get(address.wrapping_sub(at)).copied().unwrap_or(0xCC)
+        }
+        let mut memory = site_code(site.at, site.len, stub);
+
+        assert_eq!(covering_site(&stubs, site.at, site.len, reader(&memory, site.at)), Covering::Own);
+        assert_eq!(covering_site(&stubs, site.at + 5, 2, reader(&memory, site.at)), Covering::Own);
+        assert_eq!(covering_site(&stubs, site.at + 5, 3, reader(&memory, site.at)), Covering::Outside);
+        assert_eq!(covering_site(&[0; SITES.len()], site.at, site.len, reader(&memory, site.at)), Covering::Outside);
+
+        memory[6] = 0x42;
+        assert_eq!(covering_site(&stubs, site.at + 6, 1, reader(&memory, site.at)), Covering::Foreign(index));
+        assert_eq!(covering_site(&stubs, site.at, 1, reader(&memory, site.at)), Covering::Foreign(index));
     }
 }
