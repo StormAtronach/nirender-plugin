@@ -14,7 +14,10 @@ Stages (capture, baseline and only by default, in this order):
            without a geometry or a material and no light without a record, and the plugin
            no draw without a record; the capture replayed must give a picture and no GPU
            error.
-  baseline replays each capture of the baseline folder (--baseline, results/baseline-records by
+  baseline first the stream rule on every kept capture (`stream_rule.py`: the player's views of a
+           frame have the projection of the world scene; no capture with a scene of kind 5 is
+           NOT RUN and fails the stage). Then it
+           replays each capture of the baseline folder (--baseline, results/baseline-records by
            default: `<name>.nircap` files, frame 1) as a player has them and compares the
            picture
            with `accepted/<name>.png` there. --accept
@@ -59,6 +62,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from common import BUILD_PARTS, build_missing, plugin_lines  # noqa: E402
 from validate_tour import NOT_RUN, refusal_of  # noqa: E402
+import stream_rule  # noqa: E402
 PY = sys.executable
 PLACES = {
     "seyda": ["--exterior", "Seyda Neen", "--position=-12288,-69632,74", "--yaw", "0"],
@@ -368,6 +372,34 @@ def self_test():
     assert "--accept" in now_problem(base, True, other)
     assert "in the baseline folder" in now_problem(base, False, base)
     assert "in the baseline folder" in now_problem(base, False, os.path.join(base, "accepted"))
+    # The stream rule on the kept captures: its own, the tour's and the instance A/B's.
+    world, shadow = (0.9774, 1.7376), (1.3032, 2.3168)
+    right = [[(1,) + world, (5,) + world, (7,) + shadow]]
+    wrong = [[(1,) + world, (5,) + shadow, (7,) + shadow]]
+    none = [[(1,) + world, (7,) + shadow]]
+
+    def stream_rule_of(files):
+        """The verdict (ok, printed) of the rule on a baseline folder made of `files`: a dict from a
+        relative path to the frames of its planted capture."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, frames in files.items():
+                path = os.path.join(folder, *name.split("/"))
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as file:
+                    file.write(stream_rule.plant(frames))
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                ok = check_stream_rule(folder)
+        return ok, printed.getvalue()
+
+    ok, printed = stream_rule_of({"a.nircap": right, "b.nircap": none})
+    assert ok and "1 captures pass, 1 have no scene of kind 5" in printed, printed
+    ok, printed = stream_rule_of({"a.nircap": right, "tour/t.nircap": wrong})
+    assert not ok and "FAIL stream rule" in printed and "t.nircap" in printed, printed
+    ok, printed = stream_rule_of({"a.nircap": right, "instance/grass/g.nircap": wrong})
+    assert not ok and "g.nircap" in printed, printed
+    ok, printed = stream_rule_of({"a.nircap": none, "tour/t.nircap": none})
+    assert not ok and "FAIL %s: stream rule: no capture" % NOT_RUN in printed, printed
+    assert not stream_rule_of({})[0]
     print("validate_retained self-test: ok")
 
 
@@ -399,6 +431,43 @@ def now_problem(baseline, accept, now):
     return None
 
 
+def kept_captures(baseline):
+    """The paths of all the captures that the baseline folder keeps: its own, the tour's and the
+    instance A/B's (`instance/<name>/`). The stream rule reads them all."""
+    paths = []
+    for folder in (baseline, os.path.join(baseline, "tour")):
+        if os.path.isdir(folder):
+            paths += [os.path.join(folder, f) for f in sorted(os.listdir(folder)) if f.endswith(".nircap")]
+    instance = os.path.join(baseline, "instance")
+    if os.path.isdir(instance):
+        for name in sorted(os.listdir(instance)):
+            inner = os.path.join(instance, name)
+            if os.path.isdir(inner):
+                paths += [os.path.join(inner, f) for f in sorted(os.listdir(inner)) if f.endswith(".nircap")]
+    return paths
+
+
+def check_stream_rule(baseline):
+    """The stream rule (`stream_rule.py`) on each kept capture: the scenes of the player's views
+    must have the projection of the world scene of their frame. The replays compare mode gpu with
+    mode off, and both read the projection from the stream, so a wrong projection in the stream
+    passes them. A capture with a fault fails the stage. A capture with no scene of kind 5 is not
+    run; the stage fails when no capture was run at all, as it saw none of the shadow camera's draws."""
+    results = [(path,) + stream_rule.check_capture(path) for path in kept_captures(baseline)]
+    for path, status, report in results:
+        if status != stream_rule.PASS:
+            for line in stream_rule.describe(path, status, report):
+                print("       " + line, flush=True)
+    failed = [os.path.basename(path) for path, status, _ in results if status == stream_rule.FAIL]
+    passed = [path for path, status, _ in results if status == stream_rule.PASS]
+    not_run = len(results) - len(passed) - len(failed)
+    if failed:
+        return check(False, "stream rule: the scenes of the player's views differ in projection from the world scene in %s" % ", ".join(failed))
+    if not passed:
+        return check(False, "%s: stream rule: no capture of the baseline folder holds a scene of kind 5 (%d captures read)" % (NOT_RUN, len(results)))
+    return check(True, "stream rule: %d captures pass, %d have no scene of kind 5 (not run)" % (len(passed), not_run))
+
+
 def stage_baseline(baseline, accept, mge_build, now=None):
     """The captures of the baseline folder against their accepted pictures, in the order of
     the draws of the game, as a player has them."""
@@ -409,6 +478,8 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "no capture in the baseline folder")
+    if not check_stream_rule(baseline):
+        return False
     env = {}
     accepted = os.path.join(baseline, "accepted")
     out, tour_out = picture_folders(baseline, accept, now)
