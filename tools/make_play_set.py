@@ -101,6 +101,9 @@ OUTLANDER_PROFILE = "Outlander"
 SMOKE_SAVE = "D:/Modlists/Morrowind75testing/profiles/Default/saves/playsmoke.ess"
 WAIT_SECONDS = 60
 SLOT_MINUTES = 45
+# The `what` of the label of the set's game hold. Each take of the game during the smoke has this label: slot.py
+# refuses a take of the holder's session with another label.
+SMOKE_GAME = "the smoke of the next set"
 # f185 had a largest mean of 0.001 at the tour's 103 stops. A change of the picture between two modes that
 # is larger than this is no noise. [I] The value is a judgement, with room for small differences. The gate
 # is the exact test: this is a second net.
@@ -339,41 +342,38 @@ def take_game(slots, what, no_wait):
         sys.exit(3)
 
 
-def game_again(slots, what, no_wait):
+def take_set_game(slots, no_wait):
+    """The set's game hold, for the whole smoke: each later take of the game in the smoke (`game_again`) has its
+    label."""
+    take_game(slots, SMOKE_GAME, no_wait)
+
+
+def game_again(slots, stage, no_wait):
     """Takes the game slot again before a game stage that follows a replay stage. A replay stage runs no game, and
     its wait in the queue of the build side can be long: a hold of the game lapses after IDLE_MINUTES with no game
-    seen (slot.py `lapse_idle_holds`). A take by the holder renews the hold; after a lapse it waits in the queue."""
-    stop = ask_slot(slots, "game", what, no_wait)
+    seen (slot.py `lapse_idle_holds`). The take has the label of the set's hold (SMOKE_GAME), as slot.py refuses a
+    take of the holder's session with another label (f221). So it renews the hold, or after a lapse it waits in
+    the queue."""
+    stop = ask_slot(slots, "game", SMOKE_GAME, no_wait)
     if stop:
-        raise SmokeNotRun("the game slot for %s: %s" % (what, stop))
-
-
-def own_build_places(slots, label):
-    """The places of the build side that the owner of a take with `label` holds now: this session's, or with no
-    session, those of a take with that label."""
-    owner = slots.owner_of(slots.session_id(), label)
-    return [unit for unit in slots.BUILD_UNITS
-            for holder in [slots.read_record(slots.holder_path(unit), slots.Holder)] if holder is not None and holder.session == owner]
+        raise SmokeNotRun("the game slot for %s: %s" % (stage, stop))
 
 
 @contextlib.contextmanager
 def whole_build_side(slots, what, no_wait):
     """Holds the whole build side for the replays of a stage: a replay needs both places (the owner's D139), and the
     game slot does not give them. It waits in the queue of the build side with the game slot held (f220: a place
-    taken between the live run and the tour's replays refused all of them). A refusal raises SmokeNotRun. The hold
-    ends with the stage, unless this session held a place before it: then the hold stays, as its work goes on."""
+    taken between the live run and the tour's replays refused all of them). A refusal raises SmokeNotRun: also when
+    this session holds a place with another label, as slot.py refuses that take (a second run). The hold ends with
+    the stage."""
     label = "make_play_set: %s" % what
-    held_before = own_build_places(slots, label)
     stop = ask_slot(slots, "build", what, no_wait, whole=True)
     if stop:
         raise SmokeNotRun("the whole build side for %s: %s" % (what, stop))
     try:
         yield
     finally:
-        if held_before:
-            say("build: this session held %s before %s, and keeps the whole side: release it yourself" % (", ".join(held_before), what))
-        else:
-            say(slots.release("build", label).text.splitlines()[0])
+        say(slots.release("build", label).text.splitlines()[0])
 
 
 def hold_run_lock(path):
@@ -737,22 +737,33 @@ def current_set_commits(owner_local_bat):
 def smoke_wiring_test(fake_slots):
     """The wiring of the smoke (the f220 fault was there), with a fake runner, fake tools and fake slots: each
     replay stage holds the whole build side and releases it, each game stage after it takes the game again, and
-    a failure wins over a NOT RUN, in the gate and in the tour."""
+    a failure wins over a NOT RUN, in the gate and in the tour. The fake slots keep slot.py's rule of labels: a
+    take of the holder's session with another label is refused (f221), and a release with a label frees only a
+    hold of that label."""
     import io
 
     events = []
 
     class Slots(fake_slots):
-        holders = {}
+        # This session's holds: the slot and its label.
+        held = {}
 
         @classmethod
         def take(cls, slot, who, **kind):
             events.append("take %s%s" % (slot, " whole" if kind.get("whole") else ""))
+            if cls.held.get(slot, who) != who:
+                events.append("refused %s" % slot)
+                return types.SimpleNamespace(code=cls.REFUSED, text="%s: refused: your session already holds the %s slot as \"%s\"; a take with another label is a second run" % (
+                    slot, slot, cls.held[slot]))
+            cls.held[slot] = who
             return types.SimpleNamespace(code=cls.DONE, text="taken")
 
         @classmethod
         def release(cls, slot, who=None):
             events.append("release %s" % slot)
+            if who is not None and cls.held.get(slot) != who:
+                return types.SimpleNamespace(code=cls.REFUSED, text="%s: refused: no place is held as \"%s\"" % (slot, who))
+            cls.held.pop(slot, None)
             return types.SimpleNamespace(code=cls.DONE, text="released")
 
     refused = "Refused by the slot check: replay.py: the build slot is held by rob (place 1); a replay needs the whole build side."
@@ -805,24 +816,35 @@ def smoke_wiring_test(fake_slots):
         globals().update(fakes)
         subprocess.run = tool_run
 
-        def smoke(gate, tour):
-            """The result of run_smoke, or the class of its stop."""
+        def smoke(gate, tour, build_held_as=None):
+            """The result of run_smoke, or the class of its stop. First the set's game hold, as main() takes it; with
+            `build_held_as`, the session holds the build side with that label."""
             events.clear()
+            Slots.held = {"build": build_held_as} if build_held_as else {}
             outcome.update({"validate_retained.py": gate, "validate_tour.py": tour})
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
+                    take_set_game(Slots, False)
                     return run_smoke(tree, "f999", "plugin.dll", "local.bat", [], Slots, False)
             except (SmokeFailed, SmokeNotRun) as stop:
                 return type(stop)
 
         try:
             result = smoke("passed", "passed")
-            assert result.startswith("passed") and events == [
-                "game playset-live",
+            assert isinstance(result, str) and result.startswith("passed") and events == [
+                "take game", "game playset-live",
                 "take build whole", "validate_retained.py", "release build",
                 "take game", "game playset-tour",
                 "take build whole", "validate_tour.py", "release build",
                 "take game", "bats"], events
+            # Each take of the game was a renewal of the set's hold (f221: another label was refused), and the build
+            # side is free after the smoke.
+            assert Slots.held == {"game": "make_play_set: " + SMOKE_GAME}, Slots.held
+            # A place of this session with another label: slot.py refuses the take (a second run), so the gate is NOT
+            # RUN, and that hold is not released.
+            other = "make_play_set: other work"
+            assert smoke("passed", "passed", build_held_as=other) is SmokeNotRun and "release build" not in events, events
+            assert Slots.held["build"] == other, Slots.held
             assert smoke("not run", "passed") is SmokeNotRun and events[-1] == "release build", "the gate refused: NOT RUN, and the side is free"
             assert smoke("failed", "passed") is SmokeFailed, "the gate failed, and a NOT RUN beside it does not hide it"
             assert smoke("mixed", "passed") is SmokeFailed, "a NOT RUN FAIL line does not hide a FAIL line of another kind"
@@ -891,26 +913,12 @@ def self_test():
     # The replays of a stage hold the whole build side (f220: a place taken between the live run and the tour's
     # replays refused all of them). They wait in its queue and release the side after. A refusal is NOT RUN.
     class Side(Slots):
-        BUILD_UNITS = ("build", "build-2")
-        Holder = object
-        holders, asked, released = {}, [], []
+        asked, released = [], []
 
         @classmethod
         def take(cls, slot, who, **kind):
             cls.asked.append((slot, kind.get("whole", False)))
             return types.SimpleNamespace(code=cls.replies.pop(0), text="a reply\nmore")
-
-        @staticmethod
-        def owner_of(session, who):
-            return session or "terminal: " + who
-
-        @staticmethod
-        def holder_path(unit):
-            return unit
-
-        @classmethod
-        def read_record(cls, path, _kind):
-            return cls.holders.get(path)
 
         @classmethod
         def release(cls, slot, who=None):
@@ -947,13 +955,6 @@ def self_test():
         except SmokeFailed:
             pass
         assert Side.released == [("build", "make_play_set: x")], Side.released
-        # A place of this session from before stays held: its work goes on after the stage.
-        Side.holders = {"build-2": types.SimpleNamespace(session="s")}
-        Side.replies = [Slots.DONE]
-        assert stage() is True and Side.released == [], Side.released
-        Side.holders = {"build-2": types.SimpleNamespace(session="another")}
-        Side.replies = [Slots.DONE]
-        assert stage() is True and len(Side.released) == 1, "another session's place is not this session's"
         # The game again after a replay stage: a renewal, a wait after a lapse, or NOT RUN.
         Side.asked, Side.replies = [], [Slots.DONE]
         with contextlib.redirect_stdout(io.StringIO()):
@@ -1217,7 +1218,7 @@ def main():
         return 0
 
     # The slot first: a stop in the queue leaves no set folder behind.
-    take_game(slots, "the smoke of the next set", args.no_wait)
+    take_set_game(slots, args.no_wait)
     name = None
     notes = []
     passed = False
