@@ -470,13 +470,18 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
     };
     let mut pass: Vec<Stage> = Vec::new();
     let mut pass_slot = 2u32;
-    let has = |i: usize| m.maps[i].present && m.maps[i].texture != 0;
+    let textured = |i: usize| m.maps[i].present && m.maps[i].texture != 0;
+    // A geometry with no texture set gets no stage from the dark, detail, glow, gloss and decal
+    // maps: `setCTPipelineState` 0x6B41B0 reads them only under `if (textureSetCount)`, and the
+    // count of its decal loop starts at 0 [V IDA 0x6B41B0]. The bump map, the environment map and
+    // the fog map are not behind that test.
+    let has = |i: usize| textured(i) && (sets != 0 || i == BASE || i == BUMP);
     // [I] The engine takes the short path when the shape has no texture effect and no map
     // after the base (`NiTexturingProperty::IsMultiTexture` 0x6E1D40 counts a map without a
     // texture too). This test takes it also for the maps that give no stage here (a map
     // without a texture; a gloss or bump map without an environment map), taken to give the
     // same stages; the long path is not read for them.
-    let multi = has(DARK) || has(DETAIL) || has(GLOW) || m.decals != 0 || (m.environment.present && (has(GLOSS) || has(BUMP)));
+    let multi = textured(DARK) || textured(DETAIL) || textured(GLOW) || m.decals != 0 || (m.environment.present && (textured(GLOSS) || textured(BUMP)));
     let effects = m.environment.present || m.fog_map.present;
     if !multi && !effects {
         // The short path: the base stage, or the stage with no texture.
@@ -912,6 +917,39 @@ mod pass_slot_tests {
     fn the_glow_joins_a_pass_after_the_first_that_starts_with_slot_0() {
         let [base, gloss, glow] = [BASE as u32, GLOSS as u32, GLOW as u32];
         assert_eq!(passes(&material(&[GLOSS, GLOW], true)), [vec![base], vec![ENVIRONMENT, gloss, glow]]);
+    }
+
+    /// The sources of the stages of each pass for a geometry of `sets` texture sets.
+    fn passes_of_sets(m: &Material, sets: u32) -> Vec<Vec<u32>> {
+        derive(m, sets, false).passes.iter().map(|pass| pass.iter().map(|stage| stage.source).collect()).collect()
+    }
+
+    #[test]
+    fn a_geometry_without_texture_sets_gets_no_stage_of_the_dark_detail_glow_gloss_and_decal_maps() {
+        let [base, dark, detail, gloss, glow, decal] = [BASE, DARK, DETAIL, GLOSS, GLOW, DECAL0].map(|map| map as u32);
+        let every_map = material(&[DARK, DETAIL, GLOSS, GLOW, DECAL0], false);
+        // The control: with a set, the engine's stages exist.
+        let with_a_set: Vec<u32> = passes_of_sets(&every_map, 1).into_iter().flatten().collect();
+        for source in [base, dark, detail, glow, decal] {
+            assert!(with_a_set.contains(&source), "source {source} in {with_a_set:?}");
+        }
+        // Without a set only the base stage is made, and no pass of a decal.
+        assert_eq!(passes_of_sets(&every_map, 0), [vec![base]]);
+        // With the environment map the gloss stage is not made either.
+        let with_environment = material(&[GLOSS], true);
+        assert_eq!(passes_of_sets(&with_environment, 0), [vec![base, ENVIRONMENT]]);
+        assert!(passes_of_sets(&with_environment, 1).iter().flatten().any(|&s| s == gloss));
+    }
+
+    #[test]
+    fn a_geometry_without_texture_sets_keeps_the_bump_map_of_the_environment_map() {
+        let [base, bump] = [BASE as u32, BUMP as u32];
+        // [V IDA 0x6B41B0] The bump map is read after the gate on the environment effect, not
+        // under the test of the set count; its coordinate set is the last one, 0.
+        let d = derive(&material(&[BUMP], true), 0, false);
+        let sources: Vec<u32> = d.passes.iter().flatten().map(|s| s.source).collect();
+        assert!(sources.contains(&bump) && sources.contains(&base), "{sources:?}");
+        assert!(d.passes.iter().flatten().filter(|s| s.source == bump).all(|s| s.set == 0));
     }
 }
 
