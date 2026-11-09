@@ -407,14 +407,15 @@ def self_test():
     build_missing = lambda _build: []  # noqa: E731
     run_code = lambda command, _env: calls.append(command) or (1, "a planted failure of the replay")  # noqa: E731
     try:
-        for name, frames in (("wrong", wrong), ("right", right)):
+        # Also when the stage accepts: an accept of pictures drawn from a wrong stream would keep the fault.
+        for name, frames, accept in (("wrong", wrong, False), ("wrong", wrong, True), ("right", right, False), ("right", right, True)):
             with tempfile.TemporaryDirectory() as folder:
                 with open(os.path.join(folder, "a.nircap"), "wb") as file:
                     file.write(stream_rule.plant(frames))
                 calls.clear()
                 with contextlib.redirect_stdout(io.StringIO()):
-                    assert not stage_baseline(folder, False, "no build", os.path.join(folder, "now"))
-            assert len(calls) == (0 if name == "wrong" else 1), (name, calls)
+                    assert not stage_baseline(folder, accept, "no build", os.path.join(folder, "now"))
+            assert len(calls) == (0 if name == "wrong" else 1), (name, accept, calls)
         assert "replay.py" in calls[0][1]
     finally:
         build_missing, run_code = real_build_missing, real_run_code
