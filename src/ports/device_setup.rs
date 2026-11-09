@@ -39,8 +39,12 @@ use crate::shadow::Regions;
 // The macros of `site` call `target` for the address of the callee.
 use crate::site::{call_target as target, site_thiscall};
 
+/// `NiDX8Renderer::deleting_dtor`.
+const DELETING_DTOR: usize = 0x6A9D80;
+
 /// The call of `NiDX8Renderer::dtor` (0x6A9E10) in `NiDX8Renderer::deleting_dtor`. MWSE
-/// e2b957c25d sends it to `NI::DX8Renderer::destruct`.
+/// e2b957c25d sends it to `NI::DX8Renderer::destruct`. It is inside the bytes that the detour
+/// steals: the port reads the target from the trampoline.
 const DTOR_SITE: usize = 0x6A9D83;
 
 /// The call sites whose target the ports of this module read from memory.
@@ -1753,7 +1757,11 @@ pub unsafe fn dtor(this: usize) {
 pub unsafe fn deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&deleting_dtor_port::STATE);
     // The game's `dtor`, which is the port `dtor_port`, or the function of a mod that calls it.
-    site_thiscall!(DTOR_SITE, this);
+    // The call lies in the bytes that the detour steals, so the jump of the detour is at
+    // DTOR_SITE now. The copy of the call in the trampoline has the target that was in memory at
+    // the install (`hook::install_raw` sets it again).
+    let trampoline = deleting_dtor_port::STATE.orig.load(core::sync::atomic::Ordering::Relaxed);
+    site_thiscall!(trampoline + (DTOR_SITE - DELETING_DTOR), this);
     if flags & 1 != 0 {
         operator_delete(this);
     }
@@ -1977,9 +1985,13 @@ mod tests {
 
     #[test]
     fn the_dtor_site_is_the_call_of_dtor_in_deleting_dtor() {
-        let func = crate::hook::find(0x6A9D80).unwrap();
+        let func = crate::hook::find(DELETING_DTOR).unwrap();
         let code = crate::census::expected(func);
         let at = DTOR_SITE - func.ea;
+        // In the stolen bytes, with its target relocated in the trampoline: the port reads the
+        // target there, not at DTOR_SITE, where the jump of the detour is.
+        assert!(at + 5 <= func.steal);
+        assert!(func.relocs.contains(&((at + 1) as u8)));
         assert_eq!(code[at], 0xE8);
         let rel = i32::from_le_bytes(code[at + 1..at + 5].try_into().unwrap());
         assert_eq!((DTOR_SITE + 5).wrapping_add(rel as usize), 0x6A9E10);
