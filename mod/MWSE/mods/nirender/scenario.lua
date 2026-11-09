@@ -71,9 +71,18 @@ return function(nirender, spec, name)
         end
         if #stops == 0 then return scenario.after(seconds, done) end
         scenario.say("tour of %d objects in '%s'", #stops, tes3.player.cell.editorName)
+        -- The tour moves the player with movement collision off, and sets the value it found
+        -- again at its end.
+        local collision = tes3.mobilePlayer.movementCollision
+        tes3.mobilePlayer.movementCollision = false
+        scenario.say("tour: movement collision %s, off for the tour", tostring(collision))
         local function stop(index)
             local ref = stops[index]
-            if not ref then return done() end
+            if not ref then
+                tes3.mobilePlayer.movementCollision = collision
+                scenario.say("tour: movement collision %s again", tostring(tes3.mobilePlayer.movementCollision))
+                return done()
+            end
             -- South of the object, with the view to the north, at it.
             local at = ref.position
             tes3.player.position = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
