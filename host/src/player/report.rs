@@ -210,7 +210,10 @@ impl Player {
             None => println!("particle quads made on the GPU: none (no system yet)"),
         }
         println!("shapes held for the extension {}, {} of them lost waiting for a place in the sorted queue, {} that blend drawn at the end of the world scene", c.held, c.held_sorted_lost, c.held_sorted_fallback);
-        println!("blended draws of the engine's path lost waiting for the sorted queue's flush (not drawn): {}", c.draws_sorted_lost);
+        println!(
+            "lost waiting for the sorted queue's flush (not drawn): {} blended draws of the engine's path, {} places of the table's blends",
+            c.draws_sorted_lost, c.places_sorted_lost
+        );
         println!("classes of the extension: {} calls at a draw of the class, {} calls in frames without a draw of the class", c.class_calls, c.class_calls_without_draw);
         println!(
             "lights: {} records, {} destroyed, {} known now, {} lights of a shape without a record",
