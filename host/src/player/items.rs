@@ -339,14 +339,7 @@ impl Player {
                 self.items.push(Item::WorldEnd(Box::new(facts)));
             }
             plan::Step::MissingClasses => self.replace_missing_classes(),
-            // The post-processing reads and writes the back buffer: a scene that draws into a
-            // texture (or nowhere) is not the interface of the picture, as on Direct3D 9
-            // (`rendertargetNormal`). The frame's end calls `post_item` itself.
-            plan::Step::Post => {
-                if self.stream.back_buffer && self.target.is_none() {
-                    self.post_item();
-                }
-            }
+            plan::Step::Post => self.post_item(),
             plan::Step::FirstPersonEnd => {
                 if self.first_person_drawn && self.parameters.as_ref().is_some_and(|p| p.post) {
                     self.items.push(Item::FirstPersonDepth(self.stream.projection));
