@@ -22,12 +22,12 @@
 
 use core::ffi::c_void;
 use std::ffi::OsStr;
-use std::io::Write;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
+use crate::log_pipe::ExitLines;
 use crate::stream_format::EXIT_PANIC;
 
 /// EXCEPTION_RECORD.
@@ -195,8 +195,7 @@ pub fn hold_next_dump() {
 fn hold_if_asked() {
     if HOLD_DUMP.load(Ordering::Acquire) {
         crate::watchdog::disarm();
-        println!("crash: the dump is held (a test: hold_next_dump); the plugin ends this program");
-        let _ = std::io::stdout().flush();
+        crate::log_pipe::write_direct(b"crash: the dump is held (a test: hold_next_dump); the plugin ends this program\n");
         loop {
             // SAFETY: a plain sleep.
             unsafe { Sleep(u32::MAX) };
@@ -251,18 +250,18 @@ pub(crate) fn install(dump: PathBuf) {
     std::panic::set_hook(Box::new(|info| {
         // First the exit for the plugin: a dump that hangs is then ended with this code.
         crate::live::announce_exit(EXIT_PANIC);
-        println!("panic: {info}");
+        let mut lines = ExitLines::new();
+        lines.line(&format!("panic: {info}"));
         for line in backtrace() {
-            println!("  {line}");
+            lines.line(&format!("  {line}"));
         }
         hold_if_asked();
         let dump = match DUMP.get() {
             Some(path) => write_dump_here(path).map(|()| path.as_path()),
             None => Err("no path for it: the crash data was not installed".to_string()),
         };
-        report(dump);
-        let _ = std::io::stdout().flush();
-        crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
+        report(dump, &mut lines);
+        lines.end();
     }));
     // SAFETY: the filter is a plain function of this program; it stays for the program's life.
     unsafe { SetUnhandledExceptionFilter(Some(filter)) };
@@ -303,24 +302,24 @@ unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
     if let Some(code) = exit_of_exception(record) {
         crate::live::announce_exit(code);
     }
+    let mut lines = ExitLines::new();
     if record.is_null() {
-        println!("crash: an exception without a record");
+        lines.line("crash: an exception without a record");
     } else {
-        println!("crash: exception {:#x} at {}", (*record).code, place((*record).address as usize));
+        lines.line(&format!("crash: exception {:#x} at {}", (*record).code, place((*record).address as usize)));
     }
     for line in backtrace() {
-        println!("  {line}");
+        lines.line(&format!("  {line}"));
     }
     hold_if_asked();
     let dump = match DUMP.get() {
         Some(path) => write_dump_at(path, GetCurrentThreadId(), pointers).map(|()| path.as_path()),
         None => Err("no path for it: the crash data was not installed".to_string()),
     };
-    report(dump);
-    let _ = std::io::stdout().flush();
+    report(dump, &mut lines);
     // The process ends after the filter: the log pipe's writer puts the crash lines into the
     // file first.
-    crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
+    lines.end();
     EXCEPTION_EXECUTE_HANDLER
 }
 
@@ -629,10 +628,10 @@ fn lower(unit: u16) -> u16 {
     if (u16::from(b'A')..=u16::from(b'Z')).contains(&unit) { unit + 32 } else { unit }
 }
 
-fn report(dump: Result<&Path, String>) {
+fn report(dump: Result<&Path, String>, lines: &mut ExitLines) {
     match dump {
-        Ok(path) => println!("minidump: {}", path.display()),
-        Err(problem) => println!("no minidump: {problem}"),
+        Ok(path) => lines.line(&format!("minidump: {}", path.display())),
+        Err(problem) => lines.line(&format!("no minidump: {problem}")),
     }
 }
 
@@ -801,6 +800,42 @@ pub(crate) mod tests {
     /// [`in_child`] for the ignored test `name` of the test module `module` (its
     /// `module_path!()`).
     pub(crate) fn in_child_of(module: &str, name: &str) {
+        let (test, log, child) = start_child(module, name);
+        let status = end_of_child(child, CHILD_SECONDS).unwrap_or_else(|| {
+            panic!(
+                "{test} did not end in {CHILD_SECONDS} s in its child process: it hangs (its output: {})",
+                log.display()
+            )
+        });
+        let output = std::fs::read_to_string(&log).unwrap_or_default();
+        std::fs::remove_file(&log).ok();
+        assert!(status.success(), "{test} failed in its child process:\n{output}");
+        assert!(output.contains("test result: ok. 1 passed"), "{test} did not run in its child process:\n{output}");
+    }
+
+    /// Runs the ignored test `name` of the test module `module` alone in a child process, for a
+    /// test that ends its process itself. The child must end with the exit code `code` within
+    /// `seconds`; else it is ended, and the test fails. Gives the process id of the child.
+    pub(crate) fn in_child_ending_with(module: &str, name: &str, code: u32, seconds: u64) -> u32 {
+        let (test, log, child) = start_child(module, name);
+        let id = child.id();
+        let status = end_of_child(child, seconds);
+        let output = std::fs::read_to_string(&log).unwrap_or_default();
+        std::fs::remove_file(&log).ok();
+        let status = status.unwrap_or_else(|| {
+            panic!("{test} did not end in {seconds} s in its child process: it waits (its output:\n{output})")
+        });
+        assert_eq!(
+            status.code().map(|exit| exit as u32),
+            Some(code),
+            "{test}: the exit code of its child process (its output:\n{output})"
+        );
+        id
+    }
+
+    /// Starts this test program for the ignored test `name` of the test module `module` alone.
+    /// Gives the full name of the test, the file of the child's output and the child.
+    fn start_child(module: &str, name: &str) -> (String, PathBuf, std::process::Child) {
         let module = module.split_once("::").map_or(module, |(_, rest)| rest);
         let test = format!("{module}::{name}");
         // The child's output goes to a file, not a pipe: a pipe that nobody reads while this
@@ -808,28 +843,30 @@ pub(crate) mod tests {
         let log = std::env::temp_dir().join(format!("nirender-host-{name}-{}.txt", std::process::id()));
         let file = std::fs::File::create(&log).unwrap();
         let program = std::env::current_exe().unwrap();
-        let mut child = std::process::Command::new(program)
+        let child = std::process::Command::new(program)
             .args([test.as_str(), "--exact", "--ignored", "--test-threads=1", "--nocapture"])
             .stdout(file.try_clone().unwrap())
             .stderr(file)
             .spawn()
             .unwrap();
+        (test, log, child)
+    }
+
+    /// The exit status of `child` when it ends within `seconds`; else the child is ended, and
+    /// the result is none.
+    fn end_of_child(mut child: std::process::Child, seconds: u64) -> Option<std::process::ExitStatus> {
         let started = std::time::Instant::now();
-        let status = loop {
+        loop {
             if let Some(status) = child.try_wait().unwrap() {
-                break status;
+                return Some(status);
             }
-            if started.elapsed().as_secs() >= CHILD_SECONDS {
+            if started.elapsed().as_secs() >= seconds {
                 child.kill().ok();
                 child.wait().ok();
-                panic!("{test} did not end in {CHILD_SECONDS} s in its child process: it hangs (its output: {})", log.display());
+                return None;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
-        };
-        let output = std::fs::read_to_string(&log).unwrap_or_default();
-        std::fs::remove_file(&log).ok();
-        assert!(status.success(), "{test} failed in its child process:\n{output}");
-        assert!(output.contains("test result: ok. 1 passed"), "{test} did not run in its child process:\n{output}");
+        }
     }
 
     #[test]

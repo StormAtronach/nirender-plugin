@@ -9,6 +9,7 @@
 //! pipe, so each end of the program drains the pipe first ([`drain`], with a limit). A thread
 //! that must write a line while another thread can hold the lock of stdout (the watchdog,
 //! after a stall) writes with [`write_direct`], which takes no lock of the standard library.
+//! The ends after a panic or a crash write their lines with [`ExitLines`] for the same reason.
 //!
 //! The pipe is a named pipe whose read end is opened for overlapped I/O. Windows lets only one
 //! call at a time into a handle opened for synchronous I/O: a look into the pipe
@@ -200,6 +201,20 @@ impl LogPipe {
         write_all(self.write, bytes);
         true
     }
+
+    /// [`LogPipe::write_direct`], but a line without room waits for room until `deadline`.
+    fn write_direct_by(&self, bytes: &[u8], deadline: Instant) -> bool {
+        loop {
+            if self.write_direct(bytes) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            // SAFETY: a plain sleep.
+            unsafe { Sleep(DRAIN_LOOK_MS) };
+        }
+    }
 }
 
 /// The writer thread: it copies the pipe into the file until the pipe breaks.
@@ -296,6 +311,50 @@ pub(crate) fn write_direct(text: &[u8]) -> bool {
             write_all(unsafe { GetStdHandle(STD_OUTPUT) }, text);
             true
         }
+    }
+}
+
+/// The longest time that the lines of one end of the program wait for room in the pipe, all
+/// of them together. The drain after them has its own limit, [`DRAIN_LIMIT`].
+pub(crate) const EXIT_LINES_WAIT: Duration = Duration::from_secs(1);
+
+/// The lines of an end of the program after a panic or a crash. A print of the standard
+/// library takes the lock of stdout, and another thread can hold that lock while it waits in
+/// a full pipe for the disk: the end would wait as long as the disk. These lines take no lock
+/// ([`write_direct`]). A line waits for room in the pipe until one deadline for all the lines
+/// of the end ([`EXIT_LINES_WAIT`]); after it, a line is dropped and counted. The minidump
+/// keeps what the dropped lines had.
+pub(crate) struct ExitLines {
+    deadline: Instant,
+    dropped: u32,
+}
+
+impl ExitLines {
+    pub(crate) fn new() -> ExitLines {
+        ExitLines { deadline: Instant::now() + EXIT_LINES_WAIT, dropped: 0 }
+    }
+
+    /// Writes `text` and a newline as one write, so that the line stays whole between the
+    /// lines of other threads.
+    pub(crate) fn line(&mut self, text: &str) {
+        let mut bytes = Vec::with_capacity(text.len() + 1);
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.push(b'\n');
+        let written = match PIPE.get() {
+            Some(pipe) => pipe.write_direct_by(&bytes, self.deadline),
+            None => write_direct(&bytes),
+        };
+        if !written {
+            self.dropped += 1;
+        }
+    }
+
+    /// The count of the dropped lines last, when the pipe has room for it, then the drain.
+    pub(crate) fn end(self) {
+        if self.dropped > 0 {
+            write_direct(format!("log: {} lines of this end were dropped: the pipe had no room\n", self.dropped).as_bytes());
+        }
+        drain(DRAIN_LIMIT);
     }
 }
 
@@ -465,6 +524,117 @@ mod tests {
         assert!(began.elapsed() < Duration::from_millis(100));
         assert_eq!(pipe.waiting(), before);
         assert!(sink.read_all(1, Duration::from_millis(100)).is_empty(), "nothing goes into the file");
+    }
+
+    /// The longest time of an end of the program in the tests below: the lines wait at most
+    /// [`EXIT_LINES_WAIT`] and the drain at most [`DRAIN_LIMIT`]; the rest is room for the
+    /// minidump and a busy test machine.
+    const EXIT_SECONDS: u64 = 20;
+
+    /// The exit code with which the panic test ends its child after the panic hook returned.
+    const HOOK_RETURNED: u32 = 42;
+
+    /// Puts the pipe of the program between stdout and a held sink (a disk that holds the
+    /// writes), then lets a thread print until it waits inside a print into the full pipe:
+    /// that thread holds the lock of stdout from then on. For a test in a child process: the
+    /// stdout of the process stays held.
+    fn hold_stdout_in_a_full_pipe() {
+        let sink = HeldSink::new(4096);
+        start(sink.write);
+        // The sink stays open for the life of the process: its end would let the writes go.
+        std::mem::forget(sink);
+        std::thread::spawn(|| loop {
+            println!("{}", "x".repeat(100));
+        });
+        let pipe = PIPE.get().expect("the pipe of the program");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pipe.waiting() + DIRECT_MARGIN <= u64::from(PIPE_BYTES) {
+            assert!(Instant::now() < deadline, "the pipe did not fill");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The thread is inside the print that does not fit.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn TerminateProcess(process: isize, code: u32) -> i32;
+        fn RaiseException(code: u32, flags: u32, count: u32, arguments: *const usize);
+    }
+
+    /// `exit_now` ends the program while another thread holds the lock of stdout in a full
+    /// pipe: it takes no lock of stdout, and the drain keeps to its limit.
+    #[test]
+    fn the_end_of_a_refusal_does_not_wait_for_stdout() {
+        crate::crash::tests::in_child_ending_with(
+            module_path!(),
+            "the_end_of_a_refusal_does_not_wait_for_stdout_in_this_process",
+            7,
+            EXIT_SECONDS,
+        );
+    }
+
+    #[test]
+    #[ignore = "holds stdout for good: run alone by the_end_of_a_refusal_does_not_wait_for_stdout"]
+    fn the_end_of_a_refusal_does_not_wait_for_stdout_in_this_process() {
+        hold_stdout_in_a_full_pipe();
+        crate::gpu::exit_now(7);
+    }
+
+    /// The panic hook writes its lines, the minidump and its report while another thread holds
+    /// the lock of stdout in a full pipe, and returns: the lines wait for room until their
+    /// deadline, then they are dropped.
+    #[test]
+    fn the_panic_hook_does_not_wait_for_stdout() {
+        let child = crate::crash::tests::in_child_ending_with(
+            module_path!(),
+            "the_panic_hook_does_not_wait_for_stdout_in_this_process",
+            HOOK_RETURNED,
+            EXIT_SECONDS,
+        );
+        std::fs::remove_file(exit_dump(child)).ok();
+    }
+
+    #[test]
+    #[ignore = "holds stdout for good: run alone by the_panic_hook_does_not_wait_for_stdout"]
+    fn the_panic_hook_does_not_wait_for_stdout_in_this_process() {
+        crate::crash::install(exit_dump(std::process::id()));
+        hold_stdout_in_a_full_pipe();
+        let _ = std::panic::catch_unwind(|| panic!("a test of the end after a panic"));
+        // SAFETY: the handle of the own process; nothing runs after the call.
+        unsafe { TerminateProcess(GetCurrentProcess(), HOOK_RETURNED) };
+    }
+
+    /// The exception filter writes its lines, the minidump and its report while another thread
+    /// holds the lock of stdout in a full pipe, and the process ends with the code of the
+    /// exception. The test raises an access violation with `RaiseException`: the filter gets
+    /// the same record as for a fault of the processor.
+    #[test]
+    fn the_crash_filter_does_not_wait_for_stdout() {
+        let child = crate::crash::tests::in_child_ending_with(
+            module_path!(),
+            "the_crash_filter_does_not_wait_for_stdout_in_this_process",
+            ACCESS_VIOLATION,
+            EXIT_SECONDS,
+        );
+        std::fs::remove_file(exit_dump(child)).ok();
+    }
+
+    /// EXCEPTION_ACCESS_VIOLATION.
+    const ACCESS_VIOLATION: u32 = 0xC000_0005;
+
+    #[test]
+    #[ignore = "holds stdout for good and crashes: run alone by the_crash_filter_does_not_wait_for_stdout"]
+    fn the_crash_filter_does_not_wait_for_stdout_in_this_process() {
+        crate::crash::install(exit_dump(std::process::id()));
+        hold_stdout_in_a_full_pipe();
+        // SAFETY: an exception that nobody handles: the filter of crash::install ends the process.
+        unsafe { RaiseException(ACCESS_VIOLATION, 1, 0, core::ptr::null()) };
+    }
+
+    /// The minidump of an end test in the child process `child`.
+    fn exit_dump(child: u32) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("nirender-host-exit-test-{child}.dmp"))
     }
 
     /// The direct write of the program takes no lock of the standard library: it returns while

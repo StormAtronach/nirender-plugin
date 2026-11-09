@@ -342,17 +342,17 @@ fn close_window(_window: isize) {}
 
 /// Ends this program at once with `code`, for a refusal: TerminateProcess, not the orderly
 /// exit, so that no thread of the program (the loader, the device) can hold the end. The
-/// plugin reads the code. TerminateProcess drops what stdout still buffers and what the log
-/// pipe still holds (the module `log_pipe`), so the log is flushed and drained first: the box
-/// lines and the refusal lines must be in the file.
+/// plugin reads the code. TerminateProcess drops what the log pipe still holds (the module
+/// `log_pipe`), so the pipe is drained first: the box lines and the refusal lines must be in
+/// the file. There is no flush of stdout: each print of the program ends with a newline, so
+/// stdout buffers nothing, and a flush would wait for the lock of stdout, which a thread in a
+/// full pipe can hold for as long as the disk holds the writes.
 #[cfg(windows)]
 pub fn exit_now(code: u32) -> ! {
-    use std::io::Write;
     extern "system" {
         fn GetCurrentProcess() -> isize;
         fn TerminateProcess(process: isize, code: u32) -> i32;
     }
-    let _ = std::io::stdout().flush();
     // The live log goes through a pipe: its writer must put the last lines into the file first.
     crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
     // SAFETY: the handle of the own process is always valid; nothing runs after the call.
