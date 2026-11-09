@@ -17,10 +17,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ports"))
-from common import REPO  # noqa: E402
+from common import sibling  # noqa: E402
 from gen import LAYOUT_RE, OUT, flatten  # noqa: E402
 
-MWSE = os.path.join(os.path.dirname(REPO), "MWSE", "MWSE")
+# Beside this tree, else beside its main checkout (a group of worktrees in C:/tmp has no MWSE beside it).
+MWSE = sibling("MWSE", "MWSE")
 # Differences that were looked at in IDA and do not change an offset either side reads, with
 # the reason. A struct here is still compared; its differences are listed as known.
 KNOWN = {

@@ -34,7 +34,7 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
 - The retained instances: `src/instance_stream.rs` keeps a table of the shapes the helper
   holds. The plugin skips their display and sends a record only when a shape changes (the
   records 23 to 28). The helper draws them from its own table (`host/src/retained.rs`).
-- The modes: `NIRENDER_RETAINED=off|dual|gpu`, default `gpu`. `off` is the reference: the
+- The modes: `NIRENDER_RETAINED=off|gpu`, default `gpu`. `off` is the reference: the
   engine's own path. `nirender.retained(mode)` changes the mode in a live game.
 - The threads: a port runs its Rust code on the main thread only. The cell worker's calls
   run the engine function and reach the plugin as events (`src/worker_events.rs`). A table
@@ -208,9 +208,6 @@ The helper's diagnostic and test switches (`host/src/switches.rs`, read once; no
 setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own
 switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 
-- `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode `dual`
-  (and the engine's walk), the engine's own draws of the same capture: the reference of a
-  debug toggle.
 - `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting. The
   baseline gate replays with both.
 - `MGE_XE_LIGHTS=world`: a lit draw of the world takes the point lights of the world that

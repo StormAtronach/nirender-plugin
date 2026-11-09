@@ -89,7 +89,7 @@ pub struct SceneView<'a> {
     /// The game's own fog property is on, as the plugin's scene record says. A mod can turn it
     /// off; `fog_color` then stays the colour of the property, as a mix with the distant land's
     /// fog needs it, and the distances are 0. Before the first record, true: the menus before
-    /// the first world, and the modes off and dual without MWSE's override.
+    /// the first world, and the mode off without MWSE's override.
     pub fog_on: bool,
     /// The fog of the game: its colour, and the distances of its start and its end.
     pub fog_color: [f32; 4],

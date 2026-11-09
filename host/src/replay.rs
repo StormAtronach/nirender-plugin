@@ -99,7 +99,6 @@ pub(crate) struct Replayer<'a> {
     /// the frame that their draws join.
     pub(crate) retained: &'a mut RetainedSet,
     pub(crate) args: &'a mut Vec<IndirectArgs>,
-    pub(crate) retained_on: bool,
 }
 
 /// A plane in the space of the world of the game, in the space of a draw whose world is

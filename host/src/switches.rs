@@ -37,10 +37,6 @@ pub(crate) struct Switches {
     /// `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules
     /// the indirect runs out when a picture is wrong, and goes around a driver's fault in them.
     pub(crate) indirect: bool,
-    /// `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode
-    /// `dual` (and the engine's walk), the engine's own draws of the same capture: the
-    /// reference of a debug toggle.
-    pub(crate) retained: bool,
     /// `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a
     /// full room; below 256 the adapter goes to texture tier C, or is refused with
     /// `MGE_XE_TEXTURE_TIER=a`, for the test of the probe and of the live start with a GPU the
@@ -115,7 +111,6 @@ impl Switches {
             gpu_time: read.on("MGE_XE_GPU_TIME") == Some(true),
             runs_dump: read.on("MGE_XE_RUNS_DUMP") == Some(true),
             indirect: read.on("MGE_XE_INDIRECT") != Some(false),
-            retained: read.on("MGE_XE_RETAINED") != Some(false),
             array_cap: read.number::<u32>("MGE_XE_ARRAY_CAP"),
             record_limit: read.number::<usize>("MGE_XE_RECORD_LIMIT").map(|n| n.max(1024)),
             samples: read.number::<u32>("MGE_XE_SAMPLES").map(|n| n.clamp(1, 8)),
