@@ -8,7 +8,9 @@ trial merge: the tool refuses another tree state. It takes the build slot for th
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
 When a stage needs the game slot (the replay gate, the instance A/B: GAME_STAGES), it also takes the game slot (a lease of 4
-hours) for the whole check (the owner's D161, D183). A check with no such stage leaves the game slot free. It asks for it at
+hours) for the whole check (the owner's D161, D183). A check with no such stage leaves the game slot free, so a game can run
+beside it: none of its stages may then name a path on E: (a base build, a copy to E:\\nirender-keep), and the tool refuses
+such a stage list (only its own log and closes.tsv, small appends, go to E: then). It asks for it at
 each wait for the build slot, so that the check keeps its place in the game queue (it holds the game slot when that is free
 first). The label is the build label plus " (game slot)". Both
 slots are released on every exit path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes
@@ -62,8 +64,11 @@ each stage and the closing "N of N stages passed" line are in
 E:\\nirender-keep\\merge-step\\merge-step-<commit>.log, where the data rule on build output does not reach. A rerun for the same
 commit writes merge-step-<commit>-2.log, then -3, and so on: it never overwrites the log of an earlier round. It pushes nothing.
 
-A pass of the merge (every stage passed, against the accepted folder) closes the item that the merge subject names (D180):
-a subject that ends with "(W<n>)" or "(W<n> <part>)", e.g. "(W96)" or "(W234 a)". It appends one line to
+A pass of the merge (every stage passed, against the accepted folder) closes the items that the merge subjects name (D180):
+a subject that ends with "(W<n>)" or "(W<n> <part>)", e.g. "(W96)" or "(W234 a)". The subjects are those of each merge
+commit on the first-parent path from <tip> to <commit> and of <commit> itself, so one check of a batch of merges closes
+each of them (D183). A path with no merge commit with such a subject, to a <commit> that is no merge, gets a WARNING line
+before the round: a fast-forward closes only the item of <commit>. Each item appends one line to
 E:\\nirender-keep\\merge-step\\closes.tsv, which the Archivist reads in its batch. The columns are time (ISO, with the offset),
 item, repo, commit, stages ("6 of 6"), log and subject; the file starts with a header line. A failed stage writes nothing, nor
 does any other subject. A rerun of the same commit adds no line for an item that the file has for it. A reader that holds the
@@ -420,9 +425,26 @@ def first_parent_path(repo, base, commit):
     return [tuple(line.split("\t", 2)) for line in out.splitlines() if line.count("\t") >= 2]
 
 
+def fast_forward_warning(entries, tip):
+    """A warning line when the first-parent path holds no merge commit with an item and the checked commit is no merge, or
+    None. A fast-forward of a batch leaves no merge commit, and then only the tip's item closes (the Coordinator merges
+    with --no-ff, D183)."""
+    def is_merge(parents):
+        return len(parents.split()) > 1
+
+    if any(is_merge(parents) and items_of(subject) for _, parents, subject in entries):
+        return None
+    if any(commit == tip and is_merge(parents) for commit, parents, _ in entries):
+        return None
+    return ("WARNING: base..%s holds no merge commit with a (W<n>) subject, and %s is no merge: a fast-forward closes only "
+            "the item of the checked commit (merge with --no-ff)" % (tip[:10], tip[:10]))
+
+
 def closing_merges(repo, base, commit):
-    """The (commit, subject) of a check of base..commit that can close an item, oldest first."""
-    return closing_commits(first_parent_path(repo, base, commit), commit)
+    """The (commit, subject) of a check of base..commit that can close an item, oldest first, and the fast-forward warning
+    of that path (or None)."""
+    entries = first_parent_path(repo, base, commit)
+    return closing_commits(entries, commit), fast_forward_warning(entries, commit)
 
 
 def close_lines(existing, when, repo_name, merges, stages, log_path):
@@ -508,6 +530,26 @@ GAME_STAGES = ("replay gate", INSTANCE_STAGE)
 
 def needs_game(stages):
     return any(name in GAME_STAGES for name, _, _ in stages)
+
+
+# A path on the evidence disk E:, as a whole argument or after "=" (--out=E:/x): E: with any rest (E:x is relative to the
+# folder of E:), or /e/ of Git Bash.
+EVIDENCE_PATH = re.compile(r"(?i)(?:^|=)(?:e:|/e/)")
+
+
+def evidence_problem(stages):
+    """Why these stages may not run as one round, as a text, or None. A round with no stage of GAME_STAGES leaves the game
+    slot free, so a game can run beside it, and none of its stages may then write to E: (the Coordinator's D183): a base
+    build or a copy to E:\\nirender-keep belongs in a round that holds the game slot. A stage counts as a writer when its
+    folder or an argument of its command is a path on E:. The log and the closes file of this tool are small appends,
+    and they stay allowed."""
+    if needs_game(stages):
+        return None
+    for name, folder, command in stages:
+        on_e = [text for text in (folder, *command) if EVIDENCE_PATH.search(str(text))]
+        if on_e:
+            return "the stage %r names %s on E:, and no stage of the round holds the game slot (%s)" % (name, on_e[0], ", ".join(GAME_STAGES))
+    return None
 
 
 class NoGame:
@@ -743,6 +785,9 @@ def run_round(slots, stages, what, log_path, no_wait):
     released on every exit path: a failing stage, an exception and Ctrl-C. (results, summary), or None when a take did not
     give a slot. A run that needs the game asks for it at each wait for the build side (see `GamePlace`), so that it keeps
     its place in the game queue."""
+    problem = evidence_problem(stages)
+    if problem:
+        raise ValueError("merge_step refuses the round: %s" % problem)
     game_needed = needs_game(stages)
     if not game_needed:
         say("the stages need no game slot: the game stays free for the game runs (D183)")
@@ -1689,9 +1734,52 @@ def self_test():
         in_history("switch", "-q", "main")
         in_history("merge", "-q", "--no-ff", "-m", "Merge: two (W97 a)", "two")
         history_tip = in_history("rev-parse", "HEAD")
-        path = closing_merges(history, history_base, history_tip)
+        path, warning = closing_merges(history, history_base, history_tip)
         assert [subject for _, subject in path] == ["Merge: one (W96)", "Merge: two (W97 a)"], path
         assert path[-1][0] == history_tip and [items_of(subject) for _, subject in path] == [["W96"], ["W97"]]
+        assert warning is None, warning
+        # A fast-forward of a branch with two commits: only the tip closes, and the check warns.
+        in_history("switch", "-q", "-c", "three")
+        in_history("commit", "-q", "--allow-empty", "-m", "First fix (W16)")
+        in_history("commit", "-q", "--allow-empty", "-m", "Second fix (W17)")
+        in_history("switch", "-q", "main")
+        in_history("merge", "-q", "--ff-only", "three")
+        fast_tip = in_history("rev-parse", "HEAD")
+        path, warning = closing_merges(history, history_tip, fast_tip)
+        assert path == [(fast_tip, "Second fix (W17)")], path
+        assert warning and "--no-ff" in warning and fast_tip[:10] in warning, warning
+
+        # The warning on fixed paths: none when a merge with an item is on the path, or when the checked commit is a merge.
+        plain = ("p1p1p1p1p1pp", "0000", "A fix (W20)")
+        merge_with_item = ("m5m5m5m5m5mm", "p1p1 e1e1", "Merge: five (W21)")
+        merge_no_item = ("m6m6m6m6m6mm", "m5m5 f1f1", "Merge: no item")
+        assert fast_forward_warning([plain, merge_with_item], "m5m5m5m5m5mm") is None
+        assert fast_forward_warning([merge_with_item, plain], "p1p1p1p1p1pp") is None, "a merge with an item before a plain tip"
+        assert fast_forward_warning([plain, merge_no_item], "m6m6m6m6m6mm") is None, "the tip is a merge"
+        assert fast_forward_warning([merge_no_item, plain], "p1p1p1p1p1pp"), "no merge with an item, and a plain tip"
+        assert fast_forward_warning([plain], "p1p1p1p1p1pp"), "a fast-forward of one commit"
+
+        # D183: no stage writes to E: in a round with no game stage. The stage lists of the tool pass the rule.
+        for kind, repo, paths in (("plugin", plugin, ["tools/x.py"]), ("plugin", plugin, ["mod/MWSE/mods/nirender/main.lua"]),
+                                  ("plugin", plugin, ["contract/x"]), ("mge", mge, ["xtask/src/main.rs"]), ("mge", mge, ["d3d8/x.rs"])):
+            assert evidence_problem(stages_for(kind, repo, paths)) is None, (kind, paths)
+        with_base = stages_for("plugin", plugin, ["host/src/retained.rs"], tips={"plugin": "a", "mge": "b"}, base_folder="E:\\nirender-keep\\merge-step\\base-x")
+        assert BASE_STAGE in [name for name, _, _ in with_base] and evidence_problem(with_base) is None, "the base build holds the game"
+        for writer in (["robocopy", "x", "E:\\nirender-keep\\x"], ["tool", "--out=E:/nirender-keep/x"], ["cp", "x", "/e/nirender-keep/x"],
+                       ["cp", "x", "e:/nirender-keep"], ["cp", "x", "E:"], ["cp", "x", "E:\\"], ["cp", "x", "E:x.txt"]):
+            assert evidence_problem([("checks", root, good), ("a copy", root, writer)]), writer
+            assert evidence_problem([("a copy", root, writer), (INSTANCE_STAGE, root, good)]) is None, writer
+        assert evidence_problem([("a copy", "E:\\nirender-keep", ["cp", "x", "y"])]), "a stage in a folder on E:"
+        for harmless in (["cp", "x", "D:/e/x"], ["cp", "-e", "x"], ["cp", "notes/e/x", "C:/x/e:"], ["cp", "x", "--e:x"]):
+            assert evidence_problem([("a copy", root, harmless)]) is None, harmless
+        # The round refuses such a list before any take, and holds nothing.
+        try:
+            run_round(slots, [("a copy", root, ["cp", "x", "E:\\nirender-keep\\x"])], "merge_step: x 4444444444", round_log, True)
+        except ValueError as error:
+            assert "on E:" in str(error), error
+        else:
+            raise AssertionError("a round with no game stage ran a stage that writes to E:")
+        assert holders() == [], holders()
     print("merge_step self-test: ok")
 
 
@@ -1748,11 +1836,19 @@ def main():
     if problem:
         say("FAIL the baseline: %s" % problem)
         return 1
+    problem = evidence_problem(stages)
+    if problem:
+        say("FAIL the stages: %s" % problem)
+        return 1
     sibling_hash = git(sibling, "rev-parse", "--short=10", "HEAD") if has_sibling else "none"
     sibling_base_note = ""
     if args.sibling_base:
         sibling_base_note = " (base build at %s)" % tips["mge" if kind == "plugin" else "plugin"][:10] if tips else " (--sibling-base unused: no base build in these stages)"
     say("%s %s, sibling %s%s, baseline %s: %d changed paths from %s; stages: %s" % (os.path.basename(repo), commit[:10], sibling_hash, sibling_base_note, baseline, len(paths), base[:10], ", ".join(name for name, _, _ in stages)))
+    # The merges that a pass closes (D183), read before the round so that the warning of a fast-forward comes first.
+    merges, warning = closing_merges(repo, base, commit)
+    if warning:
+        say(warning)
     if args.dry_run:
         return 0
 
@@ -1766,8 +1862,7 @@ def main():
     say(summary)
     # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
     # of merges with one check closes the item of each merge on the first-parent path (D183).
-    merges = closing_merges(repo, base, commit)
-    when =datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     written = close_after(results, baseline, merges,
                           lambda merges, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), merges, stages, log_path))
     if written:
