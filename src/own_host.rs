@@ -64,9 +64,20 @@ struct Object {
     owner: *mut Object,
     level: u32,
     /// The memory of a buffer or of a surface. A texture has one block for each level, made at
-    /// the first lock of the level.
+    /// the lock of the level and freed at its unlock, once its bytes are in the stream
+    /// ([`unlock_level`]).
     memory: Vec<u8>,
     level_memory: Vec<Vec<u8>>,
+    /// The levels whose block an unlock freed (bit `level`), until the next lock of the level.
+    freed_levels: u32,
+    /// The game locked a level of this texture again after its block was freed: a texture that
+    /// changes (a new revision of its pixel data). Its unlocks keep their blocks from then on,
+    /// so that each change reuses them.
+    dynamic: bool,
+    /// A texture of the link (`texture_create`): a source texture of the engine, which a capture
+    /// file reads from its own pixel data (`capture::name_texture`). False for a texture of a
+    /// device call.
+    from_link: bool,
 }
 
 /// The bytes of a level with this width and height, and the bytes of one of its rows.
@@ -113,13 +124,21 @@ pub unsafe fn snapshot() {
     let mut sorted = live;
     sorted.sort_by_key(|&o| order(&(*(o as *const Object)).kind));
     let mut count = [0u32; 4];
+    // The textures that an unlock freed a level of (risk 42): from the link, and from a device
+    // call. The file reads a texture of the link at its first naming (`capture::name_texture`);
+    // one of a device call has no other way into the file.
+    let mut freed = [0u32; 2];
     for object in sorted {
         let o = &*(object as *const Object);
         let handle = object as u32;
         let address = &handle as *const u32 as u32;
-        let in_file = |t: &Object| is_rendered(t) || t.level_memory.iter().any(|m| !m.is_empty());
+        let in_file = |t: &Object| in_snapshot(t);
         match o.kind {
-            Kind::Texture if !in_file(o) => {}
+            Kind::Texture if !in_file(o) => {
+                if o.freed_levels != 0 && !is_rendered(o) {
+                    freed[usize::from(!o.from_link)] += 1;
+                }
+            }
             Kind::LevelSurface if o.owner.is_null() || !in_file(&*o.owner) => {}
             Kind::Texture => {
                 crate::capture::call(CALL_CREATE_TEXTURE, &[o.width, o.height, o.levels, o.usage, o.format, o.pool, address], 0);
@@ -149,6 +168,20 @@ pub unsafe fn snapshot() {
         }
     }
     crate::log!("own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces", count[0], count[1], count[2], count[3]);
+    crate::log!(
+        "own host: {} textures of the link with freed levels come into the file at their naming; {} of a device call with freed levels are not in it",
+        freed[0],
+        freed[1]
+    );
+}
+
+/// Whether the snapshot of a capture file writes a texture: a rendered one always (its picture
+/// comes from the helper), another one when it holds the bytes of a level and no unlock freed a
+/// level of it. A texture with a freed level comes into the file whole by its naming
+/// (`capture::name_texture`), not in part from here: a create record here would mark it as in
+/// the file, and the naming would not read it.
+fn in_snapshot(texture: &Object) -> bool {
+    is_rendered(texture) || (texture.freed_levels == 0 && texture.level_memory.iter().any(|memory| !memory.is_empty()))
 }
 
 /// D3DUSAGE_RENDERTARGET: the game draws into the texture.
@@ -242,6 +275,23 @@ pub fn level_copies() -> LevelCopies {
     copies
 }
 
+/// The textures that keep their level copies because they change (the field `dynamic` of an
+/// object), and the bytes of those copies. For the log line at a mark.
+pub fn dynamic_copies() -> (u32, u64) {
+    let lock = crate::sync::device_lock();
+    let mut sums = (0u32, 0u64);
+    for &object in LIVE.get(&lock).iter() {
+        // SAFETY: an object in LIVE is alive until its release takes it out, which needs the
+        // device lock that this function holds.
+        let o = unsafe { &*(object as *const Object) };
+        if o.dynamic {
+            sums.0 += 1;
+            sums.1 += o.level_memory.iter().map(|memory| memory.len() as u64).sum::<u64>();
+        }
+    }
+    sums
+}
+
 /// The sums of [`level_copies`].
 #[derive(Debug, Default, PartialEq)]
 pub struct LevelCopies {
@@ -313,6 +363,9 @@ unsafe fn new_object(lock: &DeviceLock, kind: Kind, table: &'static Table) -> *m
         level: 0,
         memory: Vec::new(),
         level_memory: Vec::new(),
+        freed_levels: 0,
+        dynamic: false,
+        from_link: false,
     }));
     LIVE.get(&lock).push(object as usize);
     object
@@ -535,6 +588,18 @@ unsafe fn lock_level(texture: *mut Object, level: u32, locked: *mut u32) -> u32 
     if object.level_memory.len() < object.levels as usize {
         object.level_memory.resize(object.levels as usize, Vec::new());
     }
+    // A lock of a freed level gives zeros: the engine's locker writes the whole level
+    // (`NiDX8SourceTextureData::CopyDataToSurface` 0x6BFF40). The texture changes, so it keeps
+    // its blocks from now on (`Object::dynamic`).
+    let bit = level_bit(level);
+    if object.freed_levels & bit != 0 {
+        object.freed_levels &= !bit;
+        LEVEL_FREES.locks_after_free.fetch_add(1, Ordering::Relaxed);
+        if !object.dynamic {
+            object.dynamic = true;
+            LEVEL_FREES.made_dynamic.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     let (size, row) = level_size(object.format, object.width >> level, object.height >> level);
     let memory = &mut object.level_memory[level as usize];
     if memory.len() != size {
@@ -545,16 +610,65 @@ unsafe fn lock_level(texture: *mut Object, level: u32, locked: *mut u32) -> u32 
     OK
 }
 
-/// The game wrote a level of a texture: its bytes go into the stream.
+/// The bit of `level` in [`Object::freed_levels`]; a level past 31 has none (a texture of
+/// Direct3D 8 has at most 13 levels).
+fn level_bit(level: u32) -> u32 {
+    1u32.checked_shl(level).unwrap_or(0)
+}
+
+/// The game wrote a level of a texture: its bytes go into the stream, and then its block is
+/// freed (risk 42). A texture that the game locked again after a free keeps its blocks
+/// ([`Object::dynamic`]): a texture that changes reuses them, with no new block for each
+/// change. While a capture file is open no block is freed: a file that holds writes its
+/// changed textures later from these blocks (`capture::tee_frames`).
 unsafe fn unlock_level(texture: *mut Object, level: u32) -> u32 {
-    let object = &*texture;
-    if let Some(memory) = object.level_memory.get(level as usize) {
-        if !memory.is_empty() {
-            crate::capture::texture_update(texture as usize, level, (object.width >> level).max(1), (object.height >> level).max(1), object.format, memory);
-        }
+    unlock_level_into(texture, level, crate::capture::file_open(), |width, height, format, bytes| {
+        crate::capture::texture_update(texture as usize, level, width, height, format, bytes)
+    })
+}
+
+/// [`unlock_level`] with the open file and the stream as arguments, for a test: `send` gets the
+/// level's width, height, format and bytes.
+unsafe fn unlock_level_into(texture: *mut Object, level: u32, file_open: bool, send: impl FnOnce(u32, u32, u32, &[u8])) -> u32 {
+    let object = &mut *texture;
+    let (width, height, format) = ((object.width >> level).max(1), (object.height >> level).max(1), object.format);
+    let keep = file_open || object.dynamic;
+    let Some(memory) = object.level_memory.get_mut(level as usize) else { return OK };
+    if memory.is_empty() {
+        return OK;
+    }
+    send(width, height, format, memory);
+    if !keep {
+        LEVEL_FREES.levels.fetch_add(1, Ordering::Relaxed);
+        LEVEL_FREES.bytes.fetch_add(memory.len() as u64, Ordering::Relaxed);
+        *memory = Vec::new();
+        object.freed_levels |= level_bit(level);
     }
     OK
 }
+
+/// The counts of the frees at unlock since the start (risk 42), for the mark line.
+pub struct LevelFrees {
+    pub levels: AtomicU64,
+    pub bytes: AtomicU64,
+    /// Locks of a level whose block was freed: the locker gets zeros.
+    pub locks_after_free: AtomicU64,
+    /// The textures that such a lock made dynamic.
+    pub made_dynamic: AtomicU64,
+    /// Copies out of a level surface between two surfaces of this host, and the ones of them
+    /// out of a freed level.
+    pub copies_from_level: AtomicU64,
+    pub copies_from_freed: AtomicU64,
+}
+
+pub static LEVEL_FREES: LevelFrees = LevelFrees {
+    levels: AtomicU64::new(0),
+    bytes: AtomicU64::new(0),
+    locks_after_free: AtomicU64::new(0),
+    made_dynamic: AtomicU64::new(0),
+    copies_from_level: AtomicU64::new(0),
+    copies_from_freed: AtomicU64::new(0),
+};
 
 unsafe extern "system" fn texture_lock(this: *mut Object, level: u32, locked: *mut u32, _rectangle: usize, _flags: u32) -> u32 {
     let _lock = crate::sync::device_lock();
@@ -708,7 +822,14 @@ unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
         // Out of a target: the pixels come from the host program.
         read_target(&lock, target, destination);
     } else if target_of(destination).is_none() && (source.width, source.height, source.format) == (destination.width, destination.height, destination.format) {
-        // Between two surfaces with memory here.
+        // Between two surfaces with memory here. Out of a level surface, the count shows a
+        // reader of a level after its unlock (risk 42): no engine caller is known \[I\].
+        if source.kind == Kind::LevelSurface {
+            LEVEL_FREES.copies_from_level.fetch_add(1, Ordering::Relaxed);
+            if (*source.owner).freed_levels & level_bit(source.level) != 0 {
+                LEVEL_FREES.copies_from_freed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         if let (Some(from), Some(to)) = (pixel_memory(source), pixel_memory(destination)) {
             to.copy_from_slice(from);
         }
@@ -929,6 +1050,7 @@ unsafe extern "C" fn texture_create(texture: *const TextureV1) -> u32 {
     (*object).height = texture.height;
     (*object).levels = texture.levels.max(1);
     (*object).format = texture.d3d_format;
+    (*object).from_link = true;
     object as u32
 }
 
@@ -1224,7 +1346,10 @@ pub unsafe fn report() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_pixels, lock_offset, new_object, nothing_to_do, read_within, release, surface_lock, Kind, LevelCopies, Object, BACK_BUFFER, CUTSCENE_SHADER_CALLS, OK, REMOVE_LIGHT_CALL, SURFACE_TABLE};
+    use super::{
+        copy_pixels, in_snapshot, level_bit, lock_level, lock_offset, new_object, nothing_to_do, read_within, release, surface_lock, unlock_level_into, Kind, LevelCopies, Object,
+        BACK_BUFFER, CUTSCENE_SHADER_CALLS, LEVEL_FREES, OK, REMOVE_LIGHT_CALL, SURFACE_TABLE, TEXTURE_TABLE,
+    };
     use crate::d3d::{DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
     use crate::instance_stream::{test_list_one, test_shown_state};
     use core::sync::atomic::Ordering;
@@ -1335,6 +1460,151 @@ mod tests {
         assert_eq!(lock_offset(0, 1080, 1920, 1080, 7680, 4), None);
         // A block format locks whole.
         assert_eq!(lock_offset(100, 200, 64, 64, 256, 0), Some(0));
+    }
+
+    /// A texture of this host of 8 x 8 pixels of 4 bytes with two levels, from the link.
+    unsafe fn test_texture() -> *mut Object {
+        let lock = crate::sync::device_lock();
+        let texture = new_object(&lock, Kind::Texture, &TEXTURE_TABLE);
+        (*texture).width = 8;
+        (*texture).height = 8;
+        (*texture).levels = 2;
+        (*texture).format = 21;
+        (*texture).from_link = true;
+        texture
+    }
+
+    /// Locks a level of `texture`, fills it with `value`, and gives the bytes the lock gave
+    /// before the fill.
+    unsafe fn lock_and_fill(texture: *mut Object, level: u32, value: u8) -> Vec<u8> {
+        let mut locked = [0u32; 2];
+        assert_eq!(lock_level(texture, level, locked.as_mut_ptr()), OK);
+        let block = (&mut (*texture).level_memory)[level as usize].as_mut_slice();
+        assert_eq!(block.as_ptr() as u32, locked[1]);
+        let before = block.to_vec();
+        block.fill(value);
+        before
+    }
+
+    /// Unlocks a level of `texture`, with a capture file open or not, and gives the bytes that
+    /// went into the stream.
+    unsafe fn unlock(texture: *mut Object, level: u32, file_open: bool) -> Vec<u8> {
+        let mut sent = Vec::new();
+        assert_eq!(unlock_level_into(texture, level, file_open, |_, _, _, bytes| sent = bytes.to_vec()), OK);
+        sent
+    }
+
+    /// Risk 42: an unlock frees the level's block once its bytes are in the stream; the next
+    /// lock gives a block of zeros of the level's size, and is counted.
+    #[test]
+    fn an_unlock_frees_the_level_and_a_lock_after_it_gives_zeros() {
+        unsafe {
+            let texture = test_texture();
+            lock_and_fill(texture, 0, 7);
+            lock_and_fill(texture, 1, 9);
+            let frees = LEVEL_FREES.levels.load(Ordering::Relaxed);
+            assert_eq!(unlock(texture, 0, false), vec![7u8; 8 * 8 * 4], "the stream gets the bytes before the free");
+            assert!((&(*texture).level_memory)[0].is_empty() && (&(*texture).level_memory)[0].capacity() == 0);
+            assert_eq!((*texture).freed_levels, level_bit(0));
+            // The other level is still locked: it keeps its bytes.
+            assert_eq!((&(*texture).level_memory)[1], vec![9u8; 4 * 4 * 4]);
+            assert!(LEVEL_FREES.levels.load(Ordering::Relaxed) > frees);
+            assert_eq!(LevelCopies::of([(*texture).level_memory.as_slice()].into_iter()), LevelCopies { levels: 1, textures: 1, bytes: 64 });
+
+            let locks = LEVEL_FREES.locks_after_free.load(Ordering::Relaxed);
+            assert_eq!(lock_and_fill(texture, 0, 3), vec![0u8; 8 * 8 * 4]);
+            assert_eq!((*texture).freed_levels, 0);
+            assert!(LEVEL_FREES.locks_after_free.load(Ordering::Relaxed) > locks);
+            release(texture);
+        }
+    }
+
+    /// A texture that the game locks again after a free changes: from then on its unlocks keep
+    /// the blocks, and each later lock gets the same block with its bytes, with no new one.
+    #[test]
+    fn a_texture_locked_again_keeps_its_blocks() {
+        unsafe {
+            let texture = test_texture();
+            lock_and_fill(texture, 0, 1);
+            unlock(texture, 0, false);
+            assert!((&(*texture).level_memory)[0].is_empty() && !(*texture).dynamic, "the first unlock frees");
+            lock_and_fill(texture, 0, 2);
+            assert!((*texture).dynamic, "the lock of a freed level makes the texture dynamic");
+            unlock(texture, 0, false);
+            assert_eq!((&(*texture).level_memory)[0], vec![2u8; 8 * 8 * 4], "the second unlock keeps");
+            let block = (&(*texture).level_memory)[0].as_ptr();
+            assert_eq!(lock_and_fill(texture, 0, 3), vec![2u8; 8 * 8 * 4]);
+            assert_eq!((&(*texture).level_memory)[0].as_ptr(), block, "the third lock reuses the block");
+            unlock(texture, 0, false);
+            // Another level of a dynamic texture keeps its block at its first unlock too.
+            lock_and_fill(texture, 1, 4);
+            unlock(texture, 1, false);
+            assert_eq!((&(*texture).level_memory)[1], vec![4u8; 4 * 4 * 4]);
+            release(texture);
+        }
+    }
+
+    /// While a file is open a re-lock finds no freed level, so the texture stays not dynamic.
+    /// After the file closes, its next unlock frees the level, and the lock after that makes the
+    /// texture dynamic.
+    #[test]
+    fn a_texture_becomes_dynamic_only_after_a_free_outside_a_file() {
+        unsafe {
+            let texture = test_texture();
+            lock_and_fill(texture, 0, 1);
+            unlock(texture, 0, true);
+            lock_and_fill(texture, 0, 2);
+            unlock(texture, 0, true);
+            assert!(!(*texture).dynamic && !(&(*texture).level_memory)[0].is_empty(), "a file is open: kept, not dynamic");
+            lock_and_fill(texture, 0, 3);
+            unlock(texture, 0, false);
+            assert!(!(*texture).dynamic && (&(*texture).level_memory)[0].is_empty(), "the file closed: the unlock frees");
+            lock_and_fill(texture, 0, 4);
+            assert!((*texture).dynamic, "the lock after the free makes it dynamic");
+            release(texture);
+        }
+    }
+
+    /// While a capture file is open, an unlock keeps the block: the file writes its changed
+    /// textures from it later.
+    #[test]
+    fn an_unlock_keeps_the_level_while_a_file_is_open() {
+        unsafe {
+            let texture = test_texture();
+            lock_and_fill(texture, 0, 5);
+            assert_eq!(unlock(texture, 0, true), vec![5u8; 8 * 8 * 4]);
+            assert_eq!((&(*texture).level_memory)[0], vec![5u8; 8 * 8 * 4]);
+            assert_eq!((*texture).freed_levels, 0);
+            // A lock again gives the kept bytes.
+            assert_eq!(lock_and_fill(texture, 0, 6), vec![5u8; 8 * 8 * 4]);
+            release(texture);
+        }
+    }
+
+    /// The snapshot of a file writes a texture with kept bytes, and leaves a texture with a
+    /// freed level to its naming, also when another level still holds bytes.
+    #[test]
+    fn the_snapshot_leaves_a_texture_with_a_freed_level_to_its_naming() {
+        unsafe {
+            let texture = test_texture();
+            assert!(!in_snapshot(&*texture), "a texture never locked");
+            lock_and_fill(texture, 0, 1);
+            unlock(texture, 0, true);
+            assert!(in_snapshot(&*texture), "a texture with kept bytes");
+            lock_and_fill(texture, 1, 2);
+            unlock(texture, 1, false);
+            assert!(!in_snapshot(&*texture), "level 0 still holds bytes, level 1 was freed");
+            // A rendered texture is in the snapshot always: its picture comes from the helper.
+            (*texture).usage = 1;
+            assert!(in_snapshot(&*texture));
+            release(texture);
+        }
+    }
+
+    /// The bit of a level past the 32 bits is none, not a panic.
+    #[test]
+    fn a_level_has_its_bit() {
+        assert_eq!((level_bit(0), level_bit(12), level_bit(31), level_bit(32)), (1, 1 << 12, 1 << 31, 0));
     }
 
     #[test]

@@ -65,6 +65,17 @@ extern "system" {
     fn VirtualQuery(address: *const c_void, region: *mut Region, length: usize) -> usize;
 }
 
+/// The largest free block of the address space of the process now, for a log line (risk 41).
+/// A walk of the address space: for a mark, not for each frame.
+pub fn largest_free_now() -> u64 {
+    let mut status = MemoryStatus { length: core::mem::size_of::<MemoryStatus>() as u32, ..Default::default() };
+    // SAFETY: the calls write into the own structures; the walk reads no memory of the process.
+    unsafe {
+        GlobalMemoryStatusEx(&mut status);
+        largest_free(status.total_virtual)
+    }
+}
+
 /// The largest free block of the address space of the process.
 unsafe fn largest_free(total: u64) -> u64 {
     let mut largest = 0usize;
