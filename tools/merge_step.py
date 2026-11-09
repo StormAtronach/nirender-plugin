@@ -7,7 +7,8 @@
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
-It also takes the game slot, after the build slot and for the whole check (the owner's D161): the stages write their logs to
+It also takes the game slot (a lease of 4 hours) for the whole check (the owner's D161). It asks for it at each wait for
+the build slot, so that the check keeps its place in the game queue (it holds the game slot when that is free first). The stages write their logs to
 E:, and a game that starts meanwhile stalls on its own log writes. The label is the build label plus " (game slot)". Both
 slots are released on every exit path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes
 the game slot's work each minute, as no game runs and the slot lapses after 15 idle minutes. --dry-run and --self-test take
@@ -24,10 +25,11 @@ After a later commit, <branch>@{1} moves past a merge that failed or had no run.
 the last commit that passed all stages, and the tool also refuses a <tip> newer than it. A branch with no such ref has only
 the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch.
 
-The stages of nirender-plugin: the plugin's tests, the host's tests, clippy_baseline.py --check, checks.py plugin. The
+The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
+GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin. The
 stages of render-link: the tests of the helper, mge-config and mge-probe; the helper's GPU tests (cargo test -p mgeHost64 --
---ignored: the tests marked #[ignore] that need a GPU, run through "merge_step.py --require-tests <command>", which fails when
-no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
+--ignored --test-threads=1: the tests marked #[ignore] that need a GPU, one at a time, run through "merge_step.py
+--require-tests <command>", which fails when no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
 
 - a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
 - the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
@@ -85,6 +87,9 @@ from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_sl
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
 SLOT_MINUTES = 60
+# The lease of the game slot: the stages of a round run for up to an hour on a slow day (the longest of 2026-11-09 ran 38
+# minutes), and the lease does not renew while they run.
+GAME_SLOT_MINUTES = 240
 # The label of this tool's hold of the game slot, from the label of its hold of the build slot.
 GAME_LABEL = "%s (game slot)"
 # How often a round notes the work of the game slot while its stages run (the slot's idle limit is 15 minutes).
@@ -96,6 +101,7 @@ BASE_STAGE = "base build"
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
 GPU_STAGE = "helper GPU tests"
+HOST_GPU_STAGE = "host GPU tests"
 REQUIRE_TESTS = "--require-tests"
 # What a change must touch for the gate, as paths from the root of each repo: a file, or a folder with its slash.
 GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
@@ -125,6 +131,16 @@ def sibling_of(kind, repo):
     return os.path.join(os.path.dirname(repo), MGE_NAME if kind == "plugin" else PLUGIN_NAME)
 
 
+def gpu_command(plugin, package_args, skipped=()):
+    """The command of a stage of ignored tests that need a GPU: cargo test --ignored, through the wrapper that fails when no
+    test ran. One test thread: each module's GPU tests hold a lock of their own, so side by side they ran at the same
+    time on one device and a timing test failed once under load. `skipped` names tests that stay out, by a part of their
+    path (the tests of the host that dump or crash this process run alone in a child; their names end in _in_this_process)."""
+    skip = [argument for name in skipped for argument in ("--skip", name)]
+    return [sys.executable, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", *package_args,
+            "--", "--ignored", *skip, "--test-threads=1"]
+
+
 def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None):
     """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `tips` are the
     commits of the base build, {"plugin": sha, "mge": sha}, and `base_folder` holds it: with both, the gate is followed by
@@ -136,12 +152,13 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     if kind == "plugin":
         stages = [("plugin tests", plugin, ["cargo", "test", "--quiet"]),
                   ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
+                  (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["_in_this_process"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
                   ("checks", plugin, tool("checks.py", "plugin")),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
     else:
         stages = [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config", "-p", "mge-probe"]),
-                  (GPU_STAGE, mge, [python, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored"]),
+                  (GPU_STAGE, mge, gpu_command(plugin, ["-p", "mgeHost64"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
                   ("checks", plugin, tool("checks.py", "mge", "--mge", mge)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
@@ -373,17 +390,20 @@ def take_options(slots, stages):
 OWN_HOLD = ("this session holds it as", "your session already holds the build slot as")
 
 
-def take_slot(slots, slot, what, no_wait, options=None):
+def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES, ask=None, while_waiting=None):
     """Takes a slot ("build" or "game"), and asks again in its queue, so that the place stays. A hold of another run of
     this session (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN"
     line, with --no-wait when it must wait, on the end of the wait after a `leave` of its place, and on any other
-    refusal, as waiting cannot pass that. A Ctrl-C in the wait leaves the queue."""
+    refusal, as waiting cannot pass that. A Ctrl-C in the wait leaves the queue. `ask` is an asker of the caller (see
+    `slot_asker`), which keeps its place across takes. `while_waiting()` runs at each wait of a take that waits."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     waiting_for_own = False
-    with slot_asker(slots, slot) as ask:
+    with contextlib.ExitStack() as stack:
+        if ask is None:
+            ask = stack.enter_context(slot_asker(slots, slot))
         while True:
             try:
-                reply = ask(what, minutes=SLOT_MINUTES, **(options or {}))
+                reply = ask(what, minutes=minutes, **(options or {}))
             except slots.StateBusy as error:
                 say("the state of the slots is busy, and I ask again: %s" % error)
                 time.sleep(WAIT_SECONDS)
@@ -413,17 +433,65 @@ def take_slot(slots, slot, what, no_wait, options=None):
             elif not own:
                 say(first)
             waiting_for_own = own
+            if while_waiting:
+                while_waiting()
             time.sleep(WAIT_SECONDS)
 
 
-def take_build(slots, what, no_wait, options=None):
-    return take_slot(slots, "build", what, no_wait, options)
+def take_build(slots, what, no_wait, options=None, while_waiting=None):
+    return take_slot(slots, "build", what, no_wait, options, while_waiting=while_waiting)
+
+
+class GamePlace:
+    """The game slot of one round, asked for from the start of the round. A check that waits for the build side keeps its
+    place in the game queue meanwhile: with no ask, another session's game take comes first, and this check then waits
+    for that game as well (2026-11-09, a merge check behind a timing take of 50 minutes). When the game is free for the
+    check before the build side is, it holds the game and notes its work, as no game runs and the slot lapses after 15 idle
+    minutes. The label is this run's own, so that its release names it."""
+
+    def __init__(self, slots, label, ask):
+        self.slots = slots
+        self.label = label
+        self.ask = ask
+        self.held = False
+        self.closed = False
+
+    def ask_in_queue(self):
+        """One ask while the build take waits: a place in the queue, or the hold, and then the note of its work."""
+        if self.held:
+            self.slots.note_active("game", time.time())
+            return
+        try:
+            reply = self.ask(self.label, minutes=GAME_SLOT_MINUTES)
+        except self.slots.StateBusy:
+            return
+        if reply.code == self.slots.DONE:
+            self.held = True
+            say("game held for the merge check, waiting for the build side since %s: %s" % (time.strftime("%H:%M"), reply.text.splitlines()[0]))
+
+    def take(self, no_wait):
+        """Takes the game slot for the whole check (the owner's D161): the stages write logs to E:, and a game that starts in
+        that time stalls on its own log writes."""
+        if self.held:
+            return True
+        self.held = take_slot(self.slots, "game", self.label, no_wait, minutes=GAME_SLOT_MINUTES, ask=self.ask)
+        return self.held
+
+    def release(self):
+        """Releases the hold, or leaves the queue when the run holds nothing. Prints every line of the reply."""
+        if self.closed:
+            return
+        self.closed = True
+        if self.held:
+            self.held = False
+            say(self.slots.release("game", self.label).text)
+        else:
+            self.slots.leave("game", self.label)
 
 
 def take_game(slots, label, no_wait):
-    """Takes the game slot for the whole check (the owner's D161): the stages write logs to E:, and a game that starts in
-    that time stalls on its own log writes. The label is this run's own, so that its release names it."""
-    return take_slot(slots, "game", label, no_wait)
+    """Takes the game slot at once, for a caller with no wait before it (the self-test)."""
+    return take_slot(slots, "game", label, no_wait, minutes=GAME_SLOT_MINUTES)
 
 
 def release_build(slots):
@@ -461,23 +529,26 @@ def game_hold_noted(slots, seconds=GAME_NOTE_SECONDS):
 
 def run_round(slots, stages, what, log_path, no_wait):
     """The stages of one round with the build slot and the game slot held, both released on every exit path: a failing
-    stage, an exception and Ctrl-C. (results, summary), or None when a take did not give a slot."""
-    game_label = GAME_LABEL % what
-    if not take_build(slots, what, no_wait, take_options(slots, stages)):
-        return None
-    try:
-        if not take_game(slots, game_label, no_wait):
-            return None
+    stage, an exception and Ctrl-C. (results, summary), or None when a take did not give a slot. The run asks for the game
+    slot at each wait for the build side (see `GamePlace`), so that it keeps its place in the game queue."""
+    with slot_asker(slots, "game") as game_ask:
+        game = GamePlace(slots, GAME_LABEL % what, game_ask)
         try:
-            with game_hold_noted(slots), open(log_path, "w", encoding="utf-8", errors="replace") as log:
-                results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
-                # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
-                summary = summary_line(results, log_path)
-                log.write("\n== %s\n" % summary)
+            if not take_build(slots, what, no_wait, take_options(slots, stages), while_waiting=game.ask_in_queue):
+                return None
+            try:
+                if not game.take(no_wait):
+                    return None
+                with game_hold_noted(slots), open(log_path, "w", encoding="utf-8", errors="replace") as log:
+                    results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
+                    # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
+                    summary = summary_line(results, log_path)
+                    log.write("\n== %s\n" % summary)
+            finally:
+                game.release()
+                release_build(slots)
         finally:
-            release_game(slots, game_label)
-    finally:
-        release_build(slots)
+            game.release()
     return results, summary
 
 
@@ -538,7 +609,7 @@ def self_test():
         def names(kind, repo, *paths):
             return [name for name, _, _ in stages_for(kind, repo, paths)]
 
-        base = ["plugin tests", "host tests", "clippy baseline", "checks", "docs"]
+        base = ["plugin tests", "host tests", HOST_GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("plugin", plugin, "tools/x.py", "src/lib.rs") == base
         assert names("plugin", plugin, "host/src/shader.wgsl") == base + ["build for the gate", "replay gate"]
         assert names("plugin", plugin, "host/src/material.rs") == base + ["build for the gate", "replay gate"]
@@ -560,9 +631,15 @@ def self_test():
         # The GPU tests run the ignored tests of the helper in its tree, through the wrapper that fails on 0 tests, and the
         # plugin's tests do not run them.
         gpu_folder, gpu_command = stages_for("mge", mge, [])[1][1:]
-        assert gpu_folder == mge and gpu_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored"]
+        assert gpu_folder == mge and gpu_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored", "--test-threads=1"]
         assert gpu_command[:2] == [sys.executable, "-I"] and gpu_command[2] == os.path.join(plugin, "tools", "merge_step.py")
         assert all(name != GPU_STAGE for name, _, _ in stages_for("plugin", plugin, []))
+        # The host's GPU tests run in the host's folder, with the child-only tests (which dump this process; their names end in _in_this_process) left out, and the
+        # helper's stage is not in the plugin's list or the other way round.
+        host_folder, host_command = stages_for("plugin", plugin, [])[2][1:]
+        assert stages_for("plugin", plugin, [])[2][0] == HOST_GPU_STAGE and host_folder == os.path.join(plugin, "host")
+        assert host_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "--", "--ignored", "--skip", "_in_this_process", "--test-threads=1"], host_command
+        assert all(name != HOST_GPU_STAGE for name, _, _ in stages_for("mge", mge, []))
         assert stages_for("mge", mge, [])[2][2][-2:] == ["--mge", mge]
         assert names("mge", mge, "mge-config/src/lib.rs") == mge_base + ["d3d8 build", "contract"]
         assert names("mge", mge, "mgeHost64/src/renderer/water.rs") == mge_base + ["build for the gate", "replay gate"]
@@ -828,6 +905,10 @@ def self_test():
         asked = []
         Slots.take = classmethod(lambda cls, *args, **options: asked.append(options) or types.SimpleNamespace(code=cls.DONE, text="a reply"))
         assert take_build(Slots, "x", False, {"whole": True}) is True and asked == [{"minutes": SLOT_MINUTES, "whole": True}], asked
+        # The game slot's lease is longer than the build slot's.
+        asked.clear()
+        assert take_game(Slots, "x (game slot)", False) is True and asked == [{"minutes": GAME_SLOT_MINUTES}], asked
+        assert GAME_SLOT_MINUTES > SLOT_MINUTES
 
         # With slot.py's LoopWaiter, a leave of the place ends the wait: the next ask returns WAIT_ENDED, and the run is
         # NOT RUN with no take (2026-11-09 07:51: a loop of plain takes took the whole side after its leave). The plain
@@ -936,6 +1017,115 @@ def self_test():
             os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
         assert "merge_step: x aaaaaaaaaa (game slot)" in shown.getvalue(), shown.getvalue()
         assert "NOT RUN: --no-wait, and the game slot is not free" in shown.getvalue(), shown.getvalue()
+
+        # A check that waits for the build side keeps its place in the game queue (2026-11-09: the check waited for the build
+        # side with no ask for the game, and a timing take got the game slot first). Two other sessions hold both build places
+        # and free them from inside the wait, at the wait that each case names. A case has a bound: a fault that keeps the
+        # build side held ends the case with an assert and not with a wait with no end.
+        own_session = os.environ["CLAUDE_CODE_SESSION_ID"]
+        builders = ("builder-1", "builder-2")
+        real_ask_in_queue = GamePlace.ask_in_queue
+        real_note_active = slots.note_active
+        real_wait_seconds = globals()["WAIT_SECONDS"]
+        DEADLINE_SECONDS = 30
+
+        def as_session(name):
+            os.environ["CLAUDE_CODE_SESSION_ID"] = name
+
+        def free_build_side():
+            for other in builders:
+                as_session("merge-step-self-test-" + other)
+                assert slots.release("build", "other: " + other).code == slots.DONE
+            as_session(own_session)
+
+        def round_that_waits(what, on_wait):
+            """The output and the game notes of a round that waits for the build side. `on_wait(count, place)` runs at
+            each wait of the build take, after the round's own ask for the game. An exception of `on_wait` ends the round
+            and reaches the caller."""
+            for other in builders:
+                as_session("merge-step-self-test-" + other)
+                assert slots.take("build", "other: " + other, minutes=5).code == slots.DONE
+            as_session(own_session)
+            waits = []
+            game_notes = []
+
+            def asked(place):
+                real_ask_in_queue(place)
+                waits.append(place)
+                on_wait(len(waits), place, game_notes)
+
+            def noted(slot, now):
+                if slot == "game":
+                    game_notes.append(now)
+                return real_note_active(slot, now)
+
+            outcome = {}
+
+            def run():
+                try:
+                    outcome["round"] = run_round(slots, [("both held", root, both_held)], what, round_log, False)
+                except BaseException as error:  # a KeyboardInterrupt of `on_wait` too
+                    outcome["error"] = error
+
+            # The round runs in a thread that the case gives a deadline: a fault that keeps the build side held (the ask for
+            # the game removed, so that nothing frees it) ends the case with an assert and not with a wait with no end.
+            GamePlace.ask_in_queue = asked
+            slots.note_active = noted
+            globals()["WAIT_SECONDS"] = 0.05
+            output = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(output):
+                    thread = threading.Thread(target=run, daemon=True)
+                    thread.start()
+                    thread.join(DEADLINE_SECONDS)
+            finally:
+                GamePlace.ask_in_queue = real_ask_in_queue
+                slots.note_active = real_note_active
+                globals()["WAIT_SECONDS"] = real_wait_seconds
+                as_session(own_session)
+            assert not thread.is_alive(), "the round still waits for the build side after %d s (%d waits): nothing freed it" % (DEADLINE_SECONDS, len(waits))
+            if "error" in outcome:
+                raise outcome["error"]
+            return outcome["round"], output.getvalue()
+
+        # Case 1: the check holds the free game slot at its first wait, notes its work at the next wait, and another session
+        # that asks for the game meanwhile gets no place before it.
+        seen = {}
+
+        def let_others_act(count, place, game_notes):
+            if count == 1:
+                seen["held at the first wait"] = place.held
+                as_session("merge-step-self-test-gamer")
+                seen["game take of another session"] = slots.take("game", "other: a game", minutes=5).code
+                # A take that got the slot (the fault under test) is released, so that the round ends and the asserts below fail.
+                slots.release("game", "other: a game")
+                slots.leave("game", "other: a game")
+                as_session(own_session)
+            elif count == 2:
+                seen["game notes at the second wait"] = len(game_notes)
+                free_build_side()
+
+        waiting_round, waiting_output = round_that_waits("merge_step: x ffffffffff", let_others_act)
+        assert seen.get("held at the first wait") is True, "the check does not hold the free game slot while it waits for the build side: %s" % seen
+        assert seen.get("game take of another session") != slots.DONE, "another session got the game slot before the check: %s" % seen
+        assert seen.get("game notes at the second wait", 0) >= 1, "the check does not note the work of the game slot it holds while it waits: %s" % seen
+        assert "game held for the merge check, waiting for the build side since " in waiting_output, waiting_output
+        assert waiting_round is not None and waiting_round[0] == [True], waiting_round
+        assert holders() == [], holders()
+
+        # Case 2: a Ctrl-C in the wait, after the early hold, releases the game slot (else it stays held for its whole lease).
+        def interrupt_at_the_second_wait(count, place, game_notes):
+            if count == 2:
+                raise KeyboardInterrupt
+
+        try:
+            round_that_waits("merge_step: x gggggggggg", interrupt_at_the_second_wait)
+            raise AssertionError("the interrupt did not reach the caller")
+        except KeyboardInterrupt:
+            pass
+        assert "game.holder" not in holders(), "a Ctrl-C in the wait leaves the game slot held: %s" % holders()
+        free_build_side()
+        assert holders() == [], holders()
 
         # The notes of the game slot's work: one at once, then one each period, and none after the round.
         noted = []
