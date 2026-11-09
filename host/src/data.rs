@@ -490,8 +490,8 @@ pub(crate) struct Counts {
     /// The shape records with a palette of bones, and the records of particle systems.
     pub(crate) shape_skinned: u32,
     pub(crate) shape_particles: u32,
-    /// The instance records, the draws from them, the draws of an instance the helper does
-    /// not have, and the shape records skipped as twins of an instance draw.
+    /// The instance records, the draws from them, and the draws of an instance the helper
+    /// does not have.
     pub(crate) instance_records: u32,
     /// The `INSTANCE_MOVE` records, and those an `INSTANCE` record of the same instance
     /// followed (the plugin's check mode), with other values than the move gave.
@@ -505,7 +505,6 @@ pub(crate) struct Counts {
     /// The `INSTANCE_CENSUS` records, and the instances they showed the plugin does not list.
     pub(crate) instance_censuses: u32,
     pub(crate) instance_orphans: u32,
-    pub(crate) shape_twins: u32,
     /// The blended draws of the engine's path merged into the sorted list of the table.
     pub(crate) merged_blends: u64,
     /// The places of the table's blends in the engine's queue ([`tag::INSTANCE_QUEUED`]):

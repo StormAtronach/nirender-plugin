@@ -2420,7 +2420,7 @@ impl Player {
     /// writes depth and does not blend ([`Extension::shade`]), one time for the frame.
     /// Engine-rules R10, R20 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_main(&mut self, facts: &WorldFacts) {
-        if self.retained.by_id.is_empty() || !self.retained_on {
+        if self.retained.by_id.is_empty() {
             return;
         }
         let mut scene = self.retained_scene_main(facts);
@@ -2495,7 +2495,7 @@ impl Player {
         let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.1 == generation);
         self.frame_sorted = later;
         let view = if generation == 0 { self.retained.sorted_view.take() } else { self.retained.sorted_view };
-        let all_kept = if generation == 0 && self.retained_on && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
+        let all_kept = if generation == 0 && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
         // Risk 34: the engine's queue takes every blend the engine displays and the plugin
         // writes its place, so a kept blend without one was not displayed by the engine in
         // this frame: the main view does not draw it. The other views (the water's mirror, the
@@ -2741,7 +2741,7 @@ impl Player {
     /// its own scene slot. The engine displayed each one: no cull. The main view's kept blends
     /// stay for their item.
     pub(super) fn draw_view_run(&mut self, group: usize, ids: &[u32]) {
-        if ids.is_empty() || !self.retained_on {
+        if ids.is_empty() {
             return;
         }
         let mut entries = Vec::new();
@@ -3408,7 +3408,7 @@ impl Retained {
 impl Replayer<'_> {
     /// The retained instances in a view the extension replays, after the kept draws.
     pub(super) fn replay_retained(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
-        if self.retained.by_id.is_empty() || view.translucent_only || !self.retained_on {
+        if self.retained.by_id.is_empty() || view.translucent_only {
             return;
         }
         let slot = self.renderer.scene_slots_used;

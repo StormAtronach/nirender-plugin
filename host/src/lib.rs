@@ -797,10 +797,6 @@ struct Player {
     /// (`drop_gone_materials`). True when a record came since the last scan.
     gone_materials: Vec<u32>,
     gone_materials_new: bool,
-    /// The draws of the instances are drawn, and a shape record that is the twin of one is
-    /// not. `MGE_XE_RETAINED=0` turns it round: for a capture of the dual mode of the plugin,
-    /// the picture from the shape records.
-    retained_on: bool,
     /// The instances the helper draws from its table (`retained.rs`), and the ambient
     /// light and the fog of the frame for their draws (`RETAINED_SCENE`).
     retained: RetainedSet,

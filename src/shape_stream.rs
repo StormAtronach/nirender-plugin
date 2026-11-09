@@ -13,7 +13,7 @@ use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 
 /// The flags of a record. [`RELATIVE`]: the world matrix is relative to the camera. Do not use
-/// the flag 2 again: old capture files have it.
+/// the flags 2 and 0x200 again: old capture files have them.
 pub const RELATIVE: u32 = 1;
 /// The shape is skinned: the record has the palette of its bones after the lights.
 pub const SKINNED: u32 = 4;
@@ -38,9 +38,6 @@ pub const LINES: u32 = 64;
 /// Patch has its draw function there: with the blend on it draws the shape in a way of its
 /// own. See `code_patch_picture`.
 pub const CODE_PATCH_PICTURE: u32 = 128;
-/// The record is the twin of the `INSTANCE_DRAW` record before it (the dual mode of
-/// `instance_stream`): the helper draws one of the two.
-pub const RETAINED_TWIN: u32 = 0x200;
 /// The record ends with the world bound of the shape (the centre and the radius, 16 bytes,
 /// after everything else): the helper sorts a blended draw by it among the blends of its
 /// table. Every record of a draw has it.
@@ -510,14 +507,13 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
     let lights = crate::light_stream::note(t, renderer);
     let count = lights.len() as u32;
     let effects = effect_words(renderer);
-    let mut flags = (relative as u32)
+    let flags = (relative as u32)
         | kind
         | if effects.is_none() { 0 } else { EFFECTS }
         | if fog.is_some() { FOG } else { 0 }
         | if code_patch_picture() { CODE_PATCH_PICTURE } else { 0 }
         | if crate::ports::base::in_main_flush(t) { QUEUED } else { 0 };
-    // A draw of a retained shape: its instance records in the place of this one (mode gpu:
-    // the first draw of the instance), or before it (mode dual).
+    // A draw of a retained shape: its instance records in the place of this one.
     let pending = crate::instance_stream::take_pending(t);
     if pending.is_none() && kind == PARTICLES {
         (*POINTS_PENDING.get(t)) = false;
@@ -538,14 +534,11 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
                 crate::capture::instance_particles(geometry, float(1), [float(2), float(3), float(4)], [float(5), float(6), float(7)], bytes);
             }
             if crate::instance_stream::draw(t, shape, id, &world, relative, &material_values, effects.as_ref().map(|w| &w[..]), fog, ambient, &lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count, flags & QUEUED != 0) {
-                if crate::instance_stream::mode(t) == crate::instance_stream::Mode::Gpu {
-                    return records_only();
-                }
-                flags |= RETAINED_TWIN;
+                return records_only();
             }
         }
     }
-    if kind == PARTICLES && flags & RETAINED_TWIN == 0 {
+    if kind == PARTICLES {
         count_engine_particles(t);
     }
     // The tail of the record: the effects, the fog, then `tail`. On the stack: a draw does not
