@@ -8,5 +8,6 @@
   "distant_land": "D:/path/to/testing-instance/overwrite/distantland",
   "game_dir": "D:/path/to/Morrowind",
   "mcpatch_root": "D:/path/to/testing-instance/mods/Morrowind Code Patch/Root",
-  "vanilla_exe": "D:/path/to/testing-instance/overwrite/Root/Morrowind.Original.exe"
+  "vanilla_exe": "D:/path/to/testing-instance/overwrite/Root/Morrowind.Original.exe",
+  "mwse_deploys": {"Morrowind75testing": "D:/path/to/testing-instance/mods/MWSE/Root/MWSE.dll"}
 }

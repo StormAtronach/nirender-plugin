@@ -89,7 +89,6 @@ The gate needs what a diff cannot give:
 import argparse
 import contextlib
 import datetime
-import glob
 import importlib.util
 import inspect
 import io
@@ -106,7 +105,7 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import git_env  # noqa: E402
+from common import git_env, local  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
@@ -151,8 +150,14 @@ DIST_PATHS = {"plugin": ("mod/MWSE/mods/nirender/",), "mge": ("xtask/",)}
 # What a plugin change must touch for the check of MWSE's patch sites against the ports (check_mwse_sites.py, Brief 22):
 # a new port, hook or follow rule can meet an MWSE patch that is already deployed.
 MWSE_SITES_PATHS = ("src/ports/", "src/hook.rs", "src/install.rs", "src/gen/", "src/site.rs", "tools/mwse_sites.baseline")
-# The test installs whose deployed MWSE.dll the stage checks: the MWSE.dll of a mod's Root folder (Root Builder).
-TEST_INSTANCES = ("D:/Modlists/Morrowind75testing", "D:/Modlists/Outlander-test")
+# The MWSE.dll that each test install has deployed (the line build), by install: the stage checks these. Never a
+# `Harness - *` mod: a live run puts its own MWSE.dll there for its game hold, and the stage takes no game slot.
+# The key "mwse_deploys" of local.json changes the places.
+MWSE_DEPLOYS = local("mwse_deploys", {
+    "Morrowind75testing": "D:/Modlists/Morrowind75testing/mods/MWSE/Root/MWSE.dll",
+    "Outlander-test": "D:/Modlists/Outlander-test/mods/MWSE-Update for Nightly Builds/Root/MWSE.dll",
+})
+HARNESS_MOD = re.compile(r"[/\\]mods[/\\]Harness - [^/\\]*[/\\]", re.IGNORECASE)
 # These move a build out of its tree. Cargo then returns 0, and the gate replays the old file of the build folder.
 BUILD_MOVERS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "NIRENDER_PLUGIN_DIR")
 
@@ -182,14 +187,14 @@ def gpu_command(plugin, package_args, skipped=()):
             "--", "--ignored", *skip, "--test-threads=1"]
 
 
-def deployed_mwse_dlls(instances=TEST_INSTANCES):
-    """The MWSE.dll of each test install, as (instance name, path): the first `mods/*/Root/MWSE.dll` of each."""
-    found = []
-    for instance in instances:
-        dlls = sorted(glob.glob(os.path.join(instance, "mods", "*", "Root", "MWSE.dll")))
-        if dlls:
-            found.append((os.path.basename(instance.rstrip("/\\")), dlls[0]))
-    return found
+def deployed_mwse_dlls(deploys=None):
+    """The deployed MWSE.dll of each test install, as (install name, path), from `MWSE_DEPLOYS`. A missing file stays in
+    the list, so that its stage fails and names it. A path in a `Harness - *` mod is refused: that is a run's DLL."""
+    deploys = MWSE_DEPLOYS if deploys is None else deploys
+    for name, path in deploys.items():
+        if HARNESS_MOD.search(path):
+            raise ValueError("mwse sites %s: %s is in a Harness mod, the DLL of a live run, not the deployed one" % (name, path))
+    return list(deploys.items())
 
 
 def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None):
@@ -920,13 +925,19 @@ def self_test():
             assert stages[-1][2][-2:] == [os.path.join("tools", "check_mwse_sites.py"), "D:/o/MWSE.dll"] and stages[-1][1] == plugin
         assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], mwse_dlls=dlls)] == base
         assert [name for name, _, _ in stages_for("mge", mge, ["src/hook.rs"], mwse_dlls=dlls)] == ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
-        with tempfile.TemporaryDirectory() as installs:
-            for name in ("A", "B"):
-                os.makedirs(os.path.join(installs, name, "mods", "MWSE " + name, "Root"))
-                open(os.path.join(installs, name, "mods", "MWSE " + name, "Root", "MWSE.dll"), "wb").close()
-            os.makedirs(os.path.join(installs, "C", "mods"))
-            found = deployed_mwse_dlls([os.path.join(installs, name) for name in ("A", "B", "C")])
-            assert [name for name, _ in found] == ["A", "B"] and found[1][1].endswith(os.path.join("MWSE B", "Root", "MWSE.dll")), found
+        # The deployed DLL, never the copy of a live run in a Harness mod (2026-11-10: the stage read Ryker's Brief 6 DLL,
+        # which sorts before mods/MWSE).
+        assert not any(HARNESS_MOD.search(path) for path in MWSE_DEPLOYS.values()), MWSE_DEPLOYS
+        assert [name for name, _ in deployed_mwse_dlls()] == list(MWSE_DEPLOYS)
+        deploys = {"A": "D:/m/A/mods/MWSE/Root/MWSE.dll", "B": "D:/m/B/mods/missing/Root/MWSE.dll"}
+        assert deployed_mwse_dlls(deploys) == list(deploys.items()), "a missing deploy left the list: its stage did not run"
+        for harness in ("D:/m/A/mods/Harness - nirender/Root/MWSE.dll", "D:\\m\\A\\mods\\harness - other\\Root\\MWSE.dll"):
+            try:
+                deployed_mwse_dlls({"A": harness})
+            except ValueError as error:
+                assert "Harness mod" in str(error), error
+            else:
+                raise AssertionError("a Harness copy was read: " + harness)
         # The mod's Lua: xtask dist checks it against its list of shipped files (7b7b72d broke the dist that way).
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + ["build of the dist"]
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == base + ["build for the gate", "replay gate"]
