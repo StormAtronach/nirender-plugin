@@ -33,9 +33,11 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
   The traversal of the nodes is the engine's own code.
 - The retained instances: `src/instance_stream.rs` keeps a table of the shapes the helper
   holds. The plugin skips their display and sends a record only when a shape changes (the
-  records 23 to 28). The helper draws them from its own table (`host/src/retained.rs`).
-- The modes: `NIRENDER_RETAINED=off|dual|gpu`, default `gpu`. `off` is the reference: the
-  engine's own path. `nirender.retained(mode)` changes the mode in a live game.
+  records 23 to 26 and 28). It also sends the list of the instances that the engine displayed in
+  the main view (INSTANCE_SHOWN, 49; form D). The helper draws them from its own table (`host/src/retained.rs`).
+- The modes: `NIRENDER_RETAINED=off|gpu`, default `gpu`. `off` is the reference: the
+  engine's own path. `nirender.retained(mode)` changes the mode in a live game; another mode
+  changes nothing and writes a line to the log.
 - The threads: a port runs its Rust code on the main thread only. The cell worker's calls
   run the engine function and reach the plugin as events (`src/worker_events.rs`). A table
   of the main thread opens only for a proof that the caller is on it
@@ -71,6 +73,11 @@ the current helper build with its `d3d8.dll` and `Data Files`. The stages:
 1. `capture`: a run at Seyda Neen and at Narsis with a capture, the counts, a replay.
 2. `baseline`: the kept captures of `results/baseline-records` against the accepted pictures.
 3. `only`: a run with the frame rate, the port times and the busy time of the helper.
+4. `clusters`: two replays of the capture, with the light clusters and with the lights of the
+   draws, compared; then the frame rate and the GPU time of each.
+5. `weathers`: the frame rate in each of the 10 weathers, two passes.
+6. `tour`: the test level in one session; at each stop two frames in mode gpu and two in mode
+   off, which `tools/validate_tour.py` replays and compares.
 
 `results/` is not in git. The accepted pictures live only on disk.
 
@@ -208,9 +215,6 @@ The helper's diagnostic and test switches (`host/src/switches.rs`, read once; no
 setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own
 switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 
-- `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode `dual`
-  (and the engine's walk), the engine's own draws of the same capture: the reference of a
-  debug toggle.
 - `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting. The
   baseline gate replays with both.
 - `MGE_XE_LIGHTS=world`: a lit draw of the world takes the point lights of the world that
@@ -218,7 +222,9 @@ switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 - `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),
-  over the setting of the extension.
+  over the setting of the extension. A count the device cannot use is lowered: without
+  TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES only 1 and 4 stand (`host/src/request.rs`,
+  `choose_samples`). The log says `samples: asked N, using M`.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting
   of the extension: for an A/B of the mouse's lag.
 - `MGE_XE_WAIT_YIELDS=<n>`: the looks with a yield before the helper blocks on the ring's event
@@ -239,6 +245,8 @@ switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 - `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
   guard of the device's limit.
 - `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
+- `MGE_XE_GRASS_HASH=1`: the helper prints one line for each grass call with the hash of its records (MGE XE's
+  RENDERER.md has the form). `tools/instance_ab.py` sets it for its replays.
 - `MGE_XE_RUNS_DUMP=1`: the runs of the table of each frame.
 - `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of each draw of that geometry.
 - `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the

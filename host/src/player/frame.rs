@@ -11,7 +11,6 @@ impl Player {
             instance_made: FxHashMap::default(),
             by_geometry: FxHashMap::default(),
             move_check: None,
-            retained_on: switches().retained,
             retained: RetainedSet::new(),
             retained_values: None,
             fog_off_color: 0,

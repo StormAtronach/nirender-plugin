@@ -380,8 +380,8 @@ impl Player {
 
     /// The facts of the world scene as the stream has them now. With `first`, the sun and
     /// the ambient light come from the frame's `RETAINED_SCENE` record; before the first such
-    /// record (the menus before the first world, and the modes off and dual without MWSE's
-    /// override), from the shape record in progress (the first draw of the world), or from the
+    /// record (the menus before the first world, and the mode off without MWSE's override),
+    /// from the shape record in progress (the first draw of the world), or from the
     /// last one for a world scene without a draw. Without `first`, they are those of the world's
     /// start.
     pub(crate) fn world_facts(&mut self, first: bool) -> WorldFacts {
@@ -487,7 +487,7 @@ impl Player {
         let clear_depth = match self.pass.as_mut() {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
-                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
                 let clock = ticks::Clock::now();
                 pass.push_debug_group("extension: before the world");
                 let clear_depth = extension.before_world(&scene, pass, &mut replayer);
@@ -539,7 +539,7 @@ impl Player {
         let clear_depth = match self.pass.as_mut() {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
-                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
                 let clock = ticks::Clock::now();
                 pass.push_debug_group("extension: before the world of a view of its own");
                 let clear_depth = extension.view_before_world(&scene, parts, pass, &mut replayer);
@@ -578,7 +578,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: after the world of a view of its own");
             extension.view_after_world(&scene, parts, pass, &mut replayer);
@@ -731,7 +731,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: after the world");
             extension.after_world(&scene, pass, &mut replayer);
@@ -813,7 +813,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: held draws");
             extension.draw_held(&scene, pass, &self.taken, &mut replayer);
@@ -846,7 +846,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a held draw in its place");
             extension.draw_held_in_place(&scene, pass, held, &mut replayer);
@@ -1075,7 +1075,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a class of draws");
             extension.draw_class(class, &scene, pass, &mut replayer);
@@ -1096,7 +1096,7 @@ impl Player {
         let Some(pass) = self.pass.as_mut() else { return };
         let world = std::mem::take(&mut self.world_draws);
         let samples = self.pass_samples;
-        let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world[range], instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args, retained_on: self.retained_on };
+        let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world[range], instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
         replayer.replay(
             pass,
             &ReplayView {
@@ -1120,8 +1120,8 @@ impl Player {
 /// Whether the fog of the world is on, and its words: the colour, the start, the end, the range
 /// flag. The scene record has the game's own fog property, which the plugin reads each frame: a
 /// record without fog means that the property is off, with its colour kept and no distances.
-/// Only before the first record (the menus before the first world, and the modes off and dual
-/// without MWSE's override), the fog of the last draw with fog.
+/// Only before the first record (the menus before the first world, and the mode off without
+/// MWSE's override), the fog of the last draw with fog.
 fn world_fog(record: Option<(u32, Option<[u32; 4]>)>, off_color: u32, last_draw: [u32; 4]) -> (bool, [u32; 4]) {
     match record {
         Some((_, Some(fog))) => (true, fog),

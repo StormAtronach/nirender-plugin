@@ -505,14 +505,26 @@ unsafe extern "C" fn world_lights(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.retained(mode)` sets the mode of the retained instances ("off", "dual" or
-/// "gpu") and returns the mode before. Without an argument it returns the mode.
+/// `nirender.retained(mode)` sets the mode of the retained instances ("off" or "gpu")
+/// and returns the mode before. Without an argument it returns the mode. Another mode
+/// changes nothing and writes a log line ([`crate::switches::bad_mode_line`]).
 unsafe extern "C" fn retained(l: LuaState) -> i32 {
+    use crate::instance_stream::Mode as Retained;
+
     let t = &MainThread::claim();
     let before = crate::instance_stream::mode(t);
-    if let Some(mode) = arg_str(l, 1).and_then(|m| crate::instance_stream::Mode::parse(&m)) {
-        crate::instance_stream::set_mode(t, mode);
-        crate::log!("retained: {} (was {})", mode.name(), before.name());
+    if let Some(text) = arg_str(l, 1) {
+        match Retained::parse(&text) {
+            Some(mode) => {
+                crate::instance_stream::set_mode(t, mode);
+                crate::log!("retained: {} (was {})", mode.name(), before.name());
+            }
+            None => {
+                let instead = format!("the mode stays {}", before.name());
+                let line = crate::switches::bad_mode_line("retained", &text, Retained::EXPECTED, &instead);
+                crate::log!("{}", line);
+            }
+        }
     }
     push_str(l, before.name());
     1
@@ -568,18 +580,26 @@ unsafe extern "C" fn dump_frame(l: LuaState) -> i32 {
 
 /// `nirender.setMode(pattern, mode)` returns the number of ports set. `pattern` is "*" or a
 /// part of the engine name. `mode` is "off" or "live", and "shadow" with the feature `rig`.
+/// Another mode, or no mode, sets no port and writes a log line
+/// ([`crate::switches::bad_mode_line`]).
 unsafe extern "C" fn set_mode(l: LuaState) -> i32 {
     let pattern = arg_str(l, 1).unwrap_or_default();
-    let mode = arg_str(l, 2).and_then(|m| Mode::parse(&m));
+    let text = arg_str(l, 2).unwrap_or_default();
     let mut count = 0;
-    if let Some(mode) = mode {
-        for port in ports::all() {
-            if port.installed() && (pattern == "*" || port.name.contains(pattern.as_str())) {
-                port.set_mode(mode);
-                count += 1;
+    match Mode::parse(&text) {
+        Some(mode) => {
+            for port in ports::all() {
+                if port.installed() && (pattern == "*" || port.name.contains(pattern.as_str())) {
+                    port.set_mode(mode);
+                    count += 1;
+                }
             }
+            crate::log!("mode {:?} for '{}': {} ports", mode, pattern, count);
         }
-        crate::log!("mode {:?} for '{}': {} ports", mode, pattern, count);
+        None => {
+            let line = crate::switches::bad_mode_line("setMode", &text, Mode::EXPECTED, "no port changed");
+            crate::log!("{}", line);
+        }
     }
     lua_pushnumber(l, count as f64);
     1

@@ -122,7 +122,7 @@ def sequence(path, wanted):
             print("OBJECT kind %d class %d flags %#x %r" % (kind, cls, flags, object_name(body)[:40]))
         elif tag == TAG_SHAPE:
             g, m, flags, lights = words(body, 0, 4)
-            print("  SHAPE geometry %#x material %#x flags %#x lights %d%s" % (g, m, flags, lights, " twin" if flags & 0x200 else ""))
+            print("  SHAPE geometry %#x material %#x flags %#x lights %d" % (g, m, flags, lights))
         elif tag == TAG_INSTANCE:
             i, cls, flags, g, m = words(body, 0, 5)
             name = body[176:]

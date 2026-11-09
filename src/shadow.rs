@@ -21,6 +21,12 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// The modes that `parse` takes, for a log line about a mode it does not take.
+    #[cfg(feature = "rig")]
+    pub const EXPECTED: &str = "off, shadow or live";
+    #[cfg(not(feature = "rig"))]
+    pub const EXPECTED: &str = "off or live";
+
     pub fn parse(text: &str) -> Option<Mode> {
         match text {
             "off" => Some(Mode::Off),
