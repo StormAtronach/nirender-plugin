@@ -31,6 +31,8 @@ pub(crate) struct Stream {
     pub(crate) origin: Option<[f64; 3]>,
     /// The player is in an interior cell, from the scene packet.
     pub(crate) interior: bool,
+    /// The player's cell is like an exterior, from the scene packet ([`SCENE_LIKE_EXTERIOR`]).
+    pub(crate) like_exterior: bool,
     /// The game hides the sky (the sky root is culled), from the scene packet: the world
     /// scene has no sky draw.
     pub(crate) sky_hidden: bool,

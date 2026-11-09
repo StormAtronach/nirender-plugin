@@ -64,6 +64,10 @@ pub const SCENE_BACK_BUFFER: u32 = 0x8;
 /// The game draws the world in wireframe: the shared wireframe property of `TES3Game`, which
 /// the console command ToggleWireframe turns on (`link_client::game_wireframe`).
 pub const SCENE_WIREFRAME: u32 = 0x10;
+/// The scene's cell is like an exterior: an exterior, or an interior cell with the game's
+/// flag "behaves like an exterior" (`Cell::cellFlags` 0x80; `link_client::cell_of_scene`).
+/// With no cell (the main menu) the scene is like an exterior too.
+pub const SCENE_LIKE_EXTERIOR: u32 = 0x20;
 
 /// The engine's sorted queue stays open after the scene: a later scene of the same camera
 /// flushes it (`ports::base::main_queue_open`).

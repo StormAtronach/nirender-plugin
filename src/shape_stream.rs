@@ -38,10 +38,8 @@ pub const LINES: u32 = 64;
 /// Patch has its draw function there: with the blend on it draws the shape in a way of its
 /// own. See `code_patch_picture`.
 pub const CODE_PATCH_PICTURE: u32 = 128;
-/// The record ends with the world bound of the shape (the centre and the radius, 16 bytes,
-/// after everything else): the helper sorts a blended draw by it among the blends of its
-/// table. Every record of a draw has it.
-pub const BOUND: u32 = 0x400;
+// The flag 0x400 (the world bound at the end of the record) is retired (stream format 9): no
+// other flag takes its number.
 /// The draw is a draw of the flush of the engine's main sorted queue (`ports::base::
 /// in_main_flush`): the engine sorted it among its blends. A blend without the flag draws
 /// in place. The head of the stream says that the records carry the flag
@@ -572,11 +570,7 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
     // The colours of the material: ambient, diffuse, specular, emissive, shininess, alpha.
     words[21..35].copy_from_slice(&material_values);
     words[35] = bone_count;
-    // The world bound the renderer holds for this draw (the ports copy it before the record
-    // goes out: `RenderShape`, `RenderPoints` and `RenderLines` each set it first).
-    let bound: [u32; 4] = rd(renderer, crate::gen::layouts::NiDX8Renderer::worldBound);
-    words[2] |= BOUND;
-    capture::shape(&words, &lights, tail, bytes, &bound);
+    capture::shape(&words, &lights, tail, bytes);
     *RECORDS.get(t) += 1;
     records_only()
 }

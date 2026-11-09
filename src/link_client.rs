@@ -23,7 +23,7 @@ use crate::gen::layouts::{
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiMaterialProperty as MP, NiPropertyState as PS,
 };
 use crate::gen::layouts::{
-    DataHandler, InterfaceNiLight, Moon, NVSkyRenderToTexture, ShadowManager, TES3Game, TES3WaterNVLake, WaterController,
+    Cell, DataHandler, InterfaceNiLight, Moon, NVSkyRenderToTexture, ShadowManager, TES3Game, TES3WaterNVLake, WaterController,
     WeatherController, WorldController,
 };
 use crate::d3d::{D3DTS_TEXTURE0, D3DTS_WORLDMATRIX0};
@@ -352,10 +352,21 @@ fn skip(fact: u32, in_packet: bool) -> bool {
 /// The interior cell that the player is in, or 0.
 const CURRENT_INTERIOR_CELL: usize = DataHandler::currentInteriorCell;
 
-/// True when the player is in an interior cell.
-unsafe fn in_interior() -> bool {
+/// The flag of `Cell::cellFlags` for an interior that behaves like an exterior: the bit that
+/// `Cell::isExteriorInterior` (0x4E2320) returns.
+const CELL_LIKE_EXTERIOR: u8 = 0x80;
+
+/// The scene flags of the player's cell, read once for the scene. [`SCENE_INTERIOR`]: the data
+/// handler has an interior cell. [`SCENE_LIKE_EXTERIOR`]: it has none (an exterior, or no cell
+/// yet), or that cell has the flag [`CELL_LIKE_EXTERIOR`].
+unsafe fn cell_of_scene() -> u32 {
     let data_handler: usize = rd(DATA_HANDLER, 0);
-    data_handler != 0 && rd::<usize>(data_handler, CURRENT_INTERIOR_CELL) != 0
+    let cell: usize = if data_handler != 0 { rd(data_handler, CURRENT_INTERIOR_CELL) } else { 0 };
+    if cell == 0 {
+        return SCENE_LIKE_EXTERIOR;
+    }
+    let like_exterior = rd::<u8>(cell, Cell::cellFlags) & CELL_LIKE_EXTERIOR != 0;
+    SCENE_INTERIOR | if like_exterior { SCENE_LIKE_EXTERIOR } else { 0 }
 }
 
 /// `*(TES3Game**)`; `TES3Game::wireframeProperty` (+0xB0), the one wireframe property of the
@@ -1205,7 +1216,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         scene_root: scene_root as u32,
         render_target: roots.render_target,
         flags: if origin.is_some() { SCENE_HAS_CAMERA_ORIGIN } else { 0 }
-            | if in_interior() { SCENE_INTERIOR } else { 0 }
+            | cell_of_scene()
             | if sky_hidden(roots.sky_root) { SCENE_SKY_HIDDEN } else { 0 }
             | if back_buffer { SCENE_BACK_BUFFER } else { 0 }
             | if game_wireframe() { SCENE_WIREFRAME } else { 0 },

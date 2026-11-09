@@ -7,6 +7,12 @@ use crate::stream_format::{
     HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
+/// The cell of a scene from the flags of its record: (interior, like an exterior). The flag
+/// [`SCENE_LIKE_EXTERIOR`] is the one source of "like an exterior".
+fn cell_of_scene(flags: u32) -> (bool, bool) {
+    (flags & 2 != 0, flags & SCENE_LIKE_EXTERIOR != 0)
+}
+
 /// The generation of the reply memory that a `READ_PIXELS` record names.
 pub(crate) fn reply_generation(data: &[u8]) -> u32 {
     word(data, 8)
@@ -169,7 +175,7 @@ impl Player {
             }
             tag::SCENE_BEGIN => {
                 self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
-                self.stream.interior = word(data, 20) & 2 != 0;
+                (self.stream.interior, self.stream.like_exterior) = cell_of_scene(word(data, 20));
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
                 self.stream.wireframe = word(data, 20) & SCENE_WIREFRAME != 0;
                 self.scene_target(word(data, 20) & SCENE_BACK_BUFFER != 0);
@@ -1228,7 +1234,18 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use super::{instance_lights, orphans_of, scene_record};
+    use super::{cell_of_scene, instance_lights, orphans_of, scene_record};
+    use crate::SCENE_LIKE_EXTERIOR;
+
+    #[test]
+    fn the_scene_flags_give_the_interior_and_like_an_exterior() {
+        // An exterior or no cell, a plain interior, an interior that behaves like an exterior.
+        assert_eq!(cell_of_scene(SCENE_LIKE_EXTERIOR), (false, true));
+        assert_eq!(cell_of_scene(2), (true, false));
+        assert_eq!(cell_of_scene(2 | SCENE_LIKE_EXTERIOR), (true, true));
+        // The other flags do not change it.
+        assert_eq!(cell_of_scene(0x1 | 0x4 | 0x8 | 0x10), (false, false));
+    }
 
     /// The bytes of a record of words.
     fn words(values: &[u32]) -> Vec<u8> {
