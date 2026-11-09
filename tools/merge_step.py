@@ -7,9 +7,10 @@
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
-It also takes the game slot (a lease of 4 hours) for the whole check (the owner's D161). It asks for it at each wait for
-the build slot, so that the check keeps its place in the game queue (it holds the game slot when that is free first). The stages write their logs to
-E:, and a game that starts meanwhile stalls on its own log writes. The label is the build label plus " (game slot)". Both
+When a stage needs the game slot (the replay gate, the instance A/B: GAME_STAGES), it also takes the game slot (a lease of 4
+hours) for the whole check (the owner's D161, D183). A check with no such stage leaves the game slot free. It asks for it at
+each wait for the build slot, so that the check keeps its place in the game queue (it holds the game slot when that is free
+first). The label is the build label plus " (game slot)". Both
 slots are released on every exit path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes
 the game slot's work each minute, as no game runs and the slot lapses after 15 idle minutes. --dry-run and --self-test take
 no slot (the self-test uses slot.py on a scratch state folder). A hold of the game slot by another session, or by an earlier
@@ -405,20 +406,45 @@ def items_of(subject):
     return [match.group(1)] if match else []
 
 
-def close_lines(existing, when, repo_name, commit, stages, log_path, subject):
-    """The closing lines of a pass: one for each item of `subject` that the lines `existing` of the closes file do not
-    have for this commit. A rerun of a commit adds nothing; a later commit of the same item (its part b) adds a line."""
-    commit = commit[:10]
+def closing_commits(entries, tip):
+    """The commits of a check that can close an item, oldest first: each merge on the first-parent path, and the checked
+    commit itself. `entries` are (commit, parents, subject) of that path, oldest first, as `first_parent_path` gives them.
+    A batch of merges with one check (the owner's D183) closes each merge's item, not only the tip's. A commit that is no
+    merge closes nothing unless it is the checked commit, and a commit of a merged branch is not on the path."""
+    return [(commit, subject) for commit, parents, subject in entries if len(parents.split()) > 1 or commit == tip]
+
+
+def first_parent_path(repo, base, commit):
+    """(commit, parents, subject) of each commit on the first-parent path from `base` (left out) to `commit`, oldest first."""
+    out = git(repo, "log", "--first-parent", "--reverse", "--format=%H%x09%P%x09%s", "%s..%s" % (base, commit))
+    return [tuple(line.split("\t", 2)) for line in out.splitlines() if line.count("\t") >= 2]
+
+
+def closing_merges(repo, base, commit):
+    """The (commit, subject) of a check of base..commit that can close an item, oldest first."""
+    return closing_commits(first_parent_path(repo, base, commit), commit)
+
+
+def close_lines(existing, when, repo_name, merges, stages, log_path):
+    """The closing lines of a pass: one for each (commit, subject) of `merges` whose subject names an item that the lines
+    `existing` of the closes file do not have for that commit. A rerun of a commit adds nothing; a later commit of the same
+    item (its part b) adds a line."""
     have = set()
     for line in existing:
         columns = line.rstrip("\r\n").split("\t")
         if len(columns) >= 4:
             have.add((columns[1], columns[3]))
-    subject = subject.replace("\t", " ")
-    return ["\t".join((when, item, repo_name, commit, stages, log_path, subject)) for item in items_of(subject) if (item, commit) not in have]
+    lines = []
+    for commit, subject in merges:
+        commit, subject = commit[:10], subject.replace("\t", " ")
+        for item in items_of(subject):
+            if (item, commit) not in have:
+                have.add((item, commit))
+                lines.append("\t".join((when, item, repo_name, commit, stages, log_path, subject)))
+    return lines
 
 
-def write_closes(path, when, repo_name, commit, stages, log_path, subject, tries=CLOSE_TRIES, wait=CLOSE_WAIT_SECONDS):
+def write_closes(path, when, repo_name, merges, stages, log_path, tries=CLOSE_TRIES, wait=CLOSE_WAIT_SECONDS):
     """Appends the closing lines of a pass to `path` (CRLF, ASCII), with the header first when the file is new. The open
     is a plain append, which leaves the file to its readers. A reader that holds the file makes a PermissionError: the
     append is tried again, then given up with a line, as a missing close must not fail the check. The lines written, or
@@ -429,7 +455,7 @@ def write_closes(path, when, repo_name, commit, stages, log_path, subject, tries
             if os.path.exists(path):
                 with open(path, encoding="ascii", errors="replace") as closes:
                     existing = closes.readlines()
-            lines = close_lines(existing, when, repo_name, commit, stages, log_path, subject)
+            lines = close_lines(existing, when, repo_name, merges, stages, log_path)
             if lines:
                 with open(path, "a", encoding="ascii", errors="replace", newline="\r\n") as closes:
                     if not existing:
@@ -443,12 +469,12 @@ def write_closes(path, when, repo_name, commit, stages, log_path, subject, tries
             time.sleep(wait)
 
 
-def close_after(results, baseline, subject, write):
-    """The closing lines of a round, through `write(subject, stages)`: only when every stage passed and the pass is
+def close_after(results, baseline, merges, write):
+    """The closing lines of a round, through `write(merges, stages)`: only when every stage passed and the pass is
     against the accepted folder, as only that is a pass of the merge. None when the round writes no close."""
     if not results or not all(results) or not moves_the_ref(baseline):
         return None
-    return write(subject, "%d of %d" % (sum(results), len(results)))
+    return write(merges, "%d of %d" % (sum(results), len(results)))
 
 
 def resolve(repo, name):
@@ -468,10 +494,39 @@ def is_ancestor(repo, older, newer):
 def take_options(slots, stages):
     """The options of the take: the whole build side (both places) when a stage replays, as a replay needs it (the
     owner's D139). A slot.py from before D139 has one place, and its take has no such option."""
-    replays = any(name in ("replay gate", INSTANCE_STAGE) for name, _, _ in stages)
+    replays = any(name in GAME_STAGES for name, _, _ in stages)
     if replays and "whole" in inspect.signature(slots.take).parameters:
         return {"whole": True}
     return {}
+
+
+# The stages that need the game slot (the owner's D183): the replay gate replays on the GPU, and the instance A/B replays
+# a capture of the game with three builds. A new stage that starts the game or times the GPU belongs here. A check with
+# none of them leaves the game slot to the game runs; before D183 every check held it (D161), and the workers waited.
+GAME_STAGES = ("replay gate", INSTANCE_STAGE)
+
+
+def needs_game(stages):
+    return any(name in GAME_STAGES for name, _, _ in stages)
+
+
+class NoGame:
+    """The game place of a round whose stages need no game slot (D183): it asks for nothing, holds nothing and releases
+    nothing, so that the holds of the build side work as with a `GamePlace`."""
+    held = False
+    retakes = 0
+
+    def ask_in_queue(self):
+        pass
+
+    def take(self, no_wait):
+        return True
+
+    def keep(self, no_wait, log):
+        return True
+
+    def release(self):
+        pass
 
 
 # The refusal of slot.py when this session already holds the build slot under another label: another run of this
@@ -561,8 +616,8 @@ class GamePlace:
             say("game held for the merge check, waiting for the build side since %s: %s" % (time.strftime("%H:%M"), reply.text.splitlines()[0]))
 
     def take(self, no_wait):
-        """Takes the game slot for the whole check (the owner's D161): the stages write logs to E:, and a game that starts in
-        that time stalls on its own log writes."""
+        """Takes the game slot for the whole check, when a stage needs it (the owner's D161, D183): such a stage replays on
+        the GPU, and a game that starts in that time competes with it."""
         if self.held:
             return True
         self.held = take_slot(self.slots, "game", self.label, no_wait, minutes=GAME_SLOT_MINUTES, ask=self.ask)
@@ -684,11 +739,15 @@ def keep_holds(slots, what, game, options, no_wait, log):
 
 
 def run_round(slots, stages, what, log_path, no_wait):
-    """The stages of one round with the build slot and the game slot held, both released on every exit path: a failing
-    stage, an exception and Ctrl-C. (results, summary), or None when a take did not give a slot. The run asks for the game
-    slot at each wait for the build side (see `GamePlace`), so that it keeps its place in the game queue."""
-    with slot_asker(slots, "game") as game_ask:
-        game = GamePlace(slots, GAME_LABEL % what, game_ask)
+    """The stages of one round with the build slot held, and the game slot when a stage needs it (`needs_game`), both
+    released on every exit path: a failing stage, an exception and Ctrl-C. (results, summary), or None when a take did not
+    give a slot. A run that needs the game asks for it at each wait for the build side (see `GamePlace`), so that it keeps
+    its place in the game queue."""
+    game_needed = needs_game(stages)
+    if not game_needed:
+        say("the stages need no game slot: the game stays free for the game runs (D183)")
+    with slot_asker(slots, "game") if game_needed else contextlib.nullcontext() as game_ask:
+        game = GamePlace(slots, GAME_LABEL % what, game_ask) if game_needed else NoGame()
         try:
             options = take_options(slots, stages)
             if not take_build(slots, what, no_wait, options, while_waiting=game.ask_in_queue):
@@ -696,7 +755,7 @@ def run_round(slots, stages, what, log_path, no_wait):
             try:
                 if not game.take(no_wait):
                     return None
-                with game_hold_noted(slots), open(log_path, "w", encoding="utf-8", errors="replace") as log:
+                with game_hold_noted(slots) if game_needed else contextlib.nullcontext(), open(log_path, "w", encoding="utf-8", errors="replace") as log:
                     results = run_stages(stages, log, lambda: keep_holds(slots, what, game, options, no_wait, log))
                     # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
                     summary = summary_line(results, log_path)
@@ -1171,6 +1230,10 @@ def self_test():
         slots = scratch_slots(os.path.join(root, "slot-state"))
         state = slots.STATE_DIR
         assert state.startswith(root)
+        # The rounds of this part test the holds of a check that needs the game slot; their stages have test names, which
+        # GAME_STAGES does not hold. The part of D183 below uses the real rule.
+        real_needs_game = globals()["needs_game"]
+        globals()["needs_game"] = lambda stages: True
 
         def holders():
             return sorted(name for name in os.listdir(state) if name.endswith(".holder"))
@@ -1464,6 +1527,43 @@ def self_test():
             game.release()
             slots.release("build", what)
         assert holders() == [], holders()
+        globals()["needs_game"] = real_needs_game
+
+        # D183: the game slot only for a stage that needs it. The stage lists of the tool first.
+        assert not needs_game(stages_for("plugin", plugin, ["tools/x.py", "src/lib.rs"])), "the checks of a tools change took the game"
+        assert needs_game(stages_for("plugin", plugin, ["host/src/retained.rs"])), "the replay gate did not take the game"
+        assert not needs_game(stages_for("mge", mge, ["xtask/src/main.rs"]))
+        assert needs_game([(INSTANCE_STAGE, root, good)]) and not needs_game([("checks", root, good)])
+        # The stage passes only when the round holds the build side, and has no hold and no waiter of the game slot.
+        build_only = [sys.executable, "-c", "import os, sys; sys.exit(0 if os.path.exists(%r) and not os.path.exists(%r) and not "
+                      "any(name.startswith('game.waiter.') for name in os.listdir(%r)) else 7)"
+                      % (slots.holder_path("build"), slots.holder_path("game"), slots.STATE_DIR)]
+        real_note_active = slots.note_active
+        noted_slots = []
+        slots.note_active = lambda slot, now: (noted_slots.append(slot), real_note_active(slot, now))[1]
+        with contextlib.redirect_stdout(io.StringIO()) as quiet:
+            # A round with no game stage holds the build side only, notes no work of the game, and says so.
+            try:
+                assert run_round(slots, [("checks", root, build_only)], "merge_step: x ffffffffff", round_log, True)[0] == [True], "the round held the game"
+            finally:
+                slots.note_active = real_note_active
+            assert "game" not in noted_slots, "a round with no game stage noted the work of the game: %s" % noted_slots
+            assert holders() == [], holders()
+            assert "need no game slot" in quiet.getvalue(), quiet.getvalue()
+            # Another session's game does not stop it, and keeps its hold.
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test-other"
+            assert slots.take("game", "other: a game", minutes=5).code == slots.DONE
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
+            assert run_round(slots, [("checks", root, good)], "merge_step: x 1111111111", round_log, True)[0] == [True], "a game stopped a check with no game stage"
+            assert holders() == ["game.holder"], holders()
+            # A round with a stage that needs the game still waits for it: with --no-wait it stops.
+            assert run_round(slots, [(INSTANCE_STAGE, root, good)], "merge_step: x 2222222222", round_log, True) is None, "a game stage ran beside a game"
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test-other"
+            assert slots.release("game", "other: a game").code == slots.DONE
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
+            # With the game free, it holds both while the stage runs, and releases both.
+            assert run_round(slots, [(INSTANCE_STAGE, root, both_held)], "merge_step: x 3333333333", round_log, True)[0] == [True]
+            assert holders() == [], holders()
 
         # The notes of the game slot's work: one at once, then one each period, and none after the round.
         noted = []
@@ -1507,9 +1607,11 @@ def self_test():
         when = "2026-11-09T20:15:00+04:00"
         round_log = "E:\\nirender-keep\\merge-step\\merge-step-862873b012.log"
 
+        def close_batch(results, merges, baseline=BASELINE):
+            return close_after(results, baseline, merges, lambda merges, stages: write_closes(closes, when, PLUGIN_NAME, merges, stages, round_log, wait=0))
+
         def close(results, subject, commit="862873b0123456789", baseline=BASELINE):
-            return close_after(results, baseline, subject,
-                               lambda subject, stages: write_closes(closes, when, PLUGIN_NAME, commit, stages, round_log, subject, wait=0))
+            return close_batch(results, [(commit, subject)], baseline)
 
         def closes_bytes():
             with open(closes, "rb") as written:
@@ -1543,11 +1645,53 @@ def self_test():
 
         globals()["open"] = held
         try:
-            given_up = write_closes(closes, when, PLUGIN_NAME, "2222222222", "6 of 6", round_log, "Merge: x (W300)", tries=3, wait=0)
+            given_up = write_closes(closes, when, PLUGIN_NAME, [("2222222222", "Merge: x (W300)")], "6 of 6", round_log, tries=3, wait=0)
         finally:
             del globals()["open"]
         assert given_up is None and len(tries) == 3, tries
         assert closes_bytes() == data, "a given-up append changed the file"
+
+        # D183: a batch of merges with one check closes the item of each merge on the first-parent path, and the checked
+        # commit's own; a commit of a merged branch closes nothing.
+        entries = [("a1a1a1a1a1aa", "0000", "Fix a thing on the branch (W90)"), ("m1m1m1m1m1mm", "a0a0 b1b1", "Merge: one (W96)"),
+                   ("m2m2m2m2m2mm", "m1m1 c1c1", "Merge: two (W97 a)"), ("m3m3m3m3m3mm", "m2m2 d1d1", "Merge: no item")]
+        assert closing_commits(entries, "m3m3m3m3m3mm") == [(sha, subject) for sha, _, subject in entries[1:]], "the merges of the path"
+        assert closing_commits([("t1t1t1t1t1tt", "0000", "Merge: a fast-forward (W98)")], "t1t1t1t1t1tt") == [("t1t1t1t1t1tt", "Merge: a fast-forward (W98)")]
+        batch = closing_commits(entries, "m3m3m3m3m3mm")
+        assert close_batch([True, False], batch) is None, "a failed batch wrote a close"
+        assert [line.split("\t")[1:4] for line in close_batch([True] * 6, batch)] == [["W96", PLUGIN_NAME, "m1m1m1m1m1"], ["W97", PLUGIN_NAME, "m2m2m2m2m2"]], "a batch"
+        assert close_batch([True] * 6, batch) == [], "a rerun of the batch wrote again"
+        assert close_batch([True] * 6, [("m4m4m4m4m4mm", "Merge: three (W99)"), ("m4m4m4m4m4mm", "Merge: three (W99)")]) != [], "one line, not two"
+        assert closes_bytes().count(b"\tW99\t") == 1, "one commit and item twice in a batch wrote two lines"
+
+        # The first-parent path of a real history: two merges of two branches, each branch with an item in its own subject,
+        # a commit on main between them, and a merge of main into the second branch (that merge is not on the path).
+        history = os.path.join(root, "history")
+        os.makedirs(history)
+
+        def in_history(*args):
+            return subprocess.run(["git", "-C", history, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+                                  capture_output=True, text=True, check=True, env=git_env()).stdout.strip()
+
+        in_history("init", "-q", "-b", "main")
+        in_history("commit", "-q", "--allow-empty", "-m", "the base")
+        history_base = in_history("rev-parse", "HEAD")
+        in_history("switch", "-q", "-c", "one")
+        in_history("commit", "-q", "--allow-empty", "-m", "Fix on the branch (W12)")
+        in_history("switch", "-q", "main")
+        in_history("merge", "-q", "--no-ff", "-m", "Merge: one (W96)", "one")
+        in_history("switch", "-q", "-c", "two")
+        in_history("commit", "-q", "--allow-empty", "-m", "Fix on the branch (W13)")
+        in_history("switch", "-q", "main")
+        in_history("commit", "-q", "--allow-empty", "-m", "A fix on main (W14)")
+        in_history("switch", "-q", "two")
+        in_history("merge", "-q", "--no-ff", "-m", "Merge: main into two (W15)", "main")
+        in_history("switch", "-q", "main")
+        in_history("merge", "-q", "--no-ff", "-m", "Merge: two (W97 a)", "two")
+        history_tip = in_history("rev-parse", "HEAD")
+        path = closing_merges(history, history_base, history_tip)
+        assert [subject for _, subject in path] == ["Merge: one (W96)", "Merge: two (W97 a)"], path
+        assert path[-1][0] == history_tip and [items_of(subject) for _, subject in path] == [["W96"], ["W97"]]
     print("merge_step self-test: ok")
 
 
@@ -1620,15 +1764,16 @@ def main():
         return 3
     results, summary = done
     say(summary)
-    # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none.
-    subject = git(repo, "log", "-1", "--format=%s", commit)
-    when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-    written = close_after(results, baseline, subject,
-                          lambda subject, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), commit, stages, log_path, subject))
+    # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
+    # of merges with one check closes the item of each merge on the first-parent path (D183).
+    merges = closing_merges(repo, base, commit)
+    when =datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    written = close_after(results, baseline, merges,
+                          lambda merges, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), merges, stages, log_path))
     if written:
         say("closes: %s in %s" % (", ".join(line.split("\t")[1] for line in written), CLOSES_FILE))
     elif written == []:
-        say("closes: nothing to write (no new item in the subject %r)" % subject)
+        say("closes: nothing to write (no new item in the subjects of %d merge(s): %s)" % (len(merges), "; ".join(subject for _, subject in merges)))
     if not all(results):
         return 1
     if moves_the_ref(baseline):
