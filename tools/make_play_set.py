@@ -62,7 +62,7 @@ import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import SIBLINGS, local  # noqa: E402
+from common import SIBLINGS, find_sibling, local, main_checkout  # noqa: E402
 
 REPOS = local("repos", SIBLINGS)
 PLUGIN_REPO = os.path.join(REPOS, "nirender-plugin")
@@ -81,9 +81,10 @@ PDBS = (
     (os.path.join("Data Files", "mwse", "lib", "akulakhan.dll"), "plugin", os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.pdb")),
 )
 KEPT_RUNS = "E:/nirender-keep/runs-%s"
-HARNESS = os.path.join(REPOS, "moreFPS", "docs", "scripts", "test-harness-2026-10-03")
-BATCH = os.path.join(REPOS, "moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua")
-LIVECODING = os.path.join(REPOS, "moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua")
+# The moreFPS repo is beside the repos folder, else beside the main checkout (a worktree group in C:/tmp has no moreFPS).
+HARNESS = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
+BATCH = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua"))
+LIVECODING = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua"))
 BASELINE = os.path.join(PLUGIN_REPO, "results", "baseline-records")
 PLUGIN_TARGET = os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
 TOUR_CELLS = "@nifTest_1;@nifTest_2;@nifTest_3"
