@@ -14,7 +14,11 @@ MGE_EXTENSION_FORMAT in
 test of mgeHost64 compares them too; this check needs no compile). And a record's version in
 renderer.rs (`const VERSION` of an `impl Name` block) that differs from the one at HEAD of the
 tree needs another EXTENSION_FORMAT than at HEAD: W68 changed the environment's version and
-layout and kept format 1 (2026-11-09). `checks.py` runs both.
+layout and kept format 1 (2026-11-09). Limits: the check sees a change only in the commit that
+makes it (the tree against its HEAD), and it does not see a layout change with no change of a
+VERSION. The seven ids of `version_1_only` (renderer.rs, `extension_needed`) keep their version as
+the literal `word(0) != 1`, not as a `const VERSION`: a change of that literal is not seen.
+`checks.py` runs both.
 The design: handshake-design.md of the Numidium notes (2026-10-27).
 """
 import argparse
