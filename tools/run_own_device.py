@@ -1139,9 +1139,16 @@ def self_test_refusal():
             run = session.Run("refusal-test")
             run.started = time.time() - 10
             assert run.refusal() is None
+            # The game writes the log as it goes: the cause lines, then the refusal line in two parts.
+            text = "MGE-XE\n" + "".join("nirender: %s\n" % line for line in old)
+            cut = text.index("install: the renderer") + 10
             with open(log, "w", encoding="utf-8") as file:
-                file.write("MGE-XE\n" + "".join("nirender: %s\n" % line for line in old))
+                file.write(text[:cut])
+            assert run.refusal() is None, "a line without its end stopped the run"
+            with open(log, "a", encoding="utf-8") as file:
+                file.write(text[cut:])
             assert run.refusal() == reason, run.refusal()
+            assert run.refusal() == reason, "a second call lost the lines read before"
         finally:
             session.MGE_LOGS, session.RESULTS = saved
 
