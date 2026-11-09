@@ -639,6 +639,79 @@ unsafe fn direction(pipeline: usize, matrix: usize, translation: usize, stage: u
     last
 }
 
+/// Whether a texture effect gives a stage in the engine's pass build
+/// ([`configure_stage_from_texture_prop`]), and why not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EffectStage {
+    /// The effect gives a stage.
+    Given,
+    /// The pass holds 8 stages before the effect.
+    Full,
+    /// The effect is off, or it has no texture.
+    Off,
+    /// `GetFormatFromTexture` gives 14: the texture has no device texture, and none can be made.
+    NoDeviceTexture,
+}
+
+/// The checks of [`configure_stage_from_texture_prop`], in its order, without the stage it
+/// makes. `stages_before` is the stage count of the pass (`field_6E0`) when the engine reaches
+/// the effect ([`effect_stages_before`]). `GetFormatFromTexture` can make the device texture,
+/// as it does in the engine's pass build.
+///
+/// # Safety
+///
+/// The main thread only. `renderer` points at the live `NiDX8Renderer` with its texture
+/// manager; `effect` is 0 or a live `NiTextureEffect`.
+pub unsafe fn effect_gives_stage(renderer: usize, effect: usize, stages_before: u32) -> EffectStage {
+    if effect == 0 {
+        return EffectStage::Off;
+    }
+    if stages_before >= 8 {
+        return EffectStage::Full;
+    }
+    if rd::<u8>(effect, EFFECT_ENABLED) == 0 {
+        return EffectStage::Off;
+    }
+    let texture: usize = rd(effect, EFFECT_TEXTURE);
+    if texture == 0 {
+        return EffectStage::Off;
+    }
+    if texture_manager_get_format(rd(renderer, REN::textureManager), texture) == 14 {
+        return EffectStage::NoDeviceTexture;
+    }
+    EffectStage::Given
+}
+
+/// The stage counts of the pass when [`set_texture_pipeline`] reaches the environment map and
+/// the fog map of an effect state, in its order of appends: the projected lights, the projected
+/// shadows, the environment map, the fog map. A projected effect with a plane adds two stages:
+/// one in [`configure_stage_from_texture_prop`] and one in [`projected_texture_matrix`].
+///
+/// # Safety
+///
+/// As [`effect_gives_stage`]; `effect_state` points at a live `NiDynamicEffectState`.
+pub unsafe fn effect_stages_before(renderer: usize, effect_state: usize) -> [u32; 2] {
+    let mut stages = 0u32;
+    for head in [rd::<usize>(effect_state, DES::projLights), rd(effect_state, DES::projShadows)] {
+        let mut node = head;
+        // A list longer than this has filled the pass long before its end.
+        let mut nodes = 0;
+        while node != 0 && stages < 8 && nodes < 64 {
+            let effect: usize = rd(node, LIST::effect);
+            node = rd(node, LIST::next);
+            nodes += 1;
+            if effect_gives_stage(renderer, effect, stages) == EffectStage::Given {
+                stages += if rd::<u8>(effect, EFFECT_HAS_PLANE) != 0 { 2 } else { 1 };
+            }
+        }
+    }
+    let environment_before = stages;
+    if effect_gives_stage(renderer, rd(effect_state, DES::environmentMap), stages) == EffectStage::Given {
+        stages += 1;
+    }
+    [environment_before, stages]
+}
+
 /// The number of words of `effect_stage_words`: the coordinate index, the transform flags
 /// and the 16 values of the texture matrix.
 pub const EFFECT_STAGE_WORDS: usize = 18;
@@ -648,16 +721,16 @@ pub const EFFECT_STAGE_WORDS: usize = 18;
 /// the transform flags, then the texture matrix. Not an engine function. The callback writes
 /// into a stage of zeros, as a stage is after its constructor. It uses the pipeline of the
 /// renderer and its camera of the frame. Thus the values are those that the pass of the
-/// device sets for the draw. Returns zeros when the effect gives no stage (off, or without a
-/// texture).
+/// device sets for the draw. Returns zeros when the effect gives no stage
+/// ([`effect_gives_stage`] with `stages_before`).
 ///
 /// # Safety
 ///
-/// `renderer` points at the live `NiDX8Renderer` with its pipeline and the camera of the frame;
-/// `effect` is 0 or a live `NiTextureEffect`.
-pub unsafe fn effect_stage_words(renderer: usize, effect: usize) -> [u32; EFFECT_STAGE_WORDS] {
+/// The main thread only. `renderer` points at the live `NiDX8Renderer` with its pipeline, its
+/// texture manager and the camera of the frame; `effect` is 0 or a live `NiTextureEffect`.
+pub unsafe fn effect_stage_words(renderer: usize, effect: usize, stages_before: u32) -> [u32; EFFECT_STAGE_WORDS] {
     let mut words = [0u32; EFFECT_STAGE_WORDS];
-    if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 || rd::<usize>(effect, EFFECT_TEXTURE) == 0 {
+    if effect_gives_stage(renderer, effect, stages_before) != EffectStage::Given {
         return words;
     }
     let mut stage = [0u8; ST::SIZE];
@@ -2212,6 +2285,97 @@ mod tests {
             wr::<usize>(p, CTP::field_B04, 0x5555);
             set_texture_pipeline(this, 0x5555);
             assert_eq!(rd::<usize>(this, TP::field_2BD0), 0);
+        }
+    }
+
+    /// The texture that the fake texture manager gives format 14: no device texture.
+    const NO_DEVICE_TEXTURE: u32 = 0xDEAD;
+
+    /// `GetFormatFromTexture` of the fake texture manager (slot 0x10).
+    unsafe extern "thiscall" fn fake_format(_manager: usize, texture: u32) -> u32 {
+        if texture == NO_DEVICE_TEXTURE { 14 } else { 3 }
+    }
+
+    /// A renderer whose texture manager is the fake, and the blocks that hold it.
+    struct FakeRenderer {
+        renderer: Vec<u8>,
+        _manager: Vec<usize>,
+        _table: Vec<usize>,
+    }
+
+    fn fake_renderer() -> FakeRenderer {
+        let table = vec![0, 0, 0, 0, fake_format as usize];
+        let manager = vec![table.as_ptr() as usize];
+        let mut renderer = vec![0u8; REN::SIZE];
+        unsafe { wr(renderer.as_mut_ptr() as usize, REN::textureManager, manager.as_ptr() as usize) };
+        FakeRenderer { renderer, _manager: manager, _table: table }
+    }
+
+    /// An enabled texture effect with `texture`, with or without a plane.
+    fn fake_effect(texture: usize, plane: bool) -> Vec<u8> {
+        let mut effect = vec![0u8; 0x140];
+        let e = effect.as_mut_ptr() as usize;
+        unsafe {
+            wr::<u8>(e, EFFECT_ENABLED, 1);
+            wr(e, EFFECT_TEXTURE, texture);
+            wr::<u8>(e, EFFECT_HAS_PLANE, u8::from(plane));
+        }
+        effect
+    }
+
+    #[test]
+    fn an_effect_gives_a_stage_by_the_checks_of_the_engines_pass_build() {
+        let mut fake = fake_renderer();
+        let renderer = fake.renderer.as_mut_ptr() as usize;
+        let mut effect = fake_effect(0x1234, false);
+        let e = effect.as_mut_ptr() as usize;
+        unsafe {
+            assert_eq!(effect_gives_stage(renderer, 0, 0), EffectStage::Off);
+            assert_eq!(effect_gives_stage(renderer, e, 7), EffectStage::Given);
+            assert_eq!(effect_gives_stage(renderer, e, 8), EffectStage::Full);
+            wr::<u8>(e, EFFECT_ENABLED, 0);
+            assert_eq!(effect_gives_stage(renderer, e, 0), EffectStage::Off);
+            wr::<u8>(e, EFFECT_ENABLED, 1);
+            wr(e, EFFECT_TEXTURE, NO_DEVICE_TEXTURE as usize);
+            assert_eq!(effect_gives_stage(renderer, e, 0), EffectStage::NoDeviceTexture);
+            // The stage words are zeros for an effect that gives no stage.
+            assert_eq!(effect_stage_words(renderer, e, 0), [0; EFFECT_STAGE_WORDS]);
+            wr(e, EFFECT_TEXTURE, 0x1234usize);
+            assert_eq!(effect_stage_words(renderer, e, 8), [0; EFFECT_STAGE_WORDS]);
+        }
+    }
+
+    /// Four projected lights with a plane take two stages each: the environment map meets a
+    /// full pass, and so does the fog map. One light less leaves the environment map 6 stages
+    /// and the fog map 7; an environment map without a device texture leaves the fog map 6.
+    #[test]
+    fn the_stages_before_the_maps_follow_the_order_of_set_texture_pipeline() {
+        let mut fake = fake_renderer();
+        let renderer = fake.renderer.as_mut_ptr() as usize;
+        let mut lights: Vec<Vec<u8>> = (0..4).map(|_| fake_effect(0x1234, true)).collect();
+        let mut nodes = vec![[0usize; 2]; 4];
+        let mut environment = fake_effect(0x5678, false);
+        let mut state = vec![0u8; DES::SIZE];
+        let s = state.as_mut_ptr() as usize;
+        let addresses: Vec<usize> = nodes.iter_mut().map(|node| node.as_mut_ptr() as usize).collect();
+        unsafe {
+            for (i, (&node, light)) in addresses.iter().zip(lights.iter_mut()).enumerate() {
+                wr(node, LIST::effect, light.as_mut_ptr() as usize);
+                wr(node, LIST::next, addresses.get(i + 1).copied().unwrap_or(0));
+            }
+            wr(s, DES::projLights, addresses[0]);
+            wr(s, DES::environmentMap, environment.as_mut_ptr() as usize);
+            assert_eq!(effect_stages_before(renderer, s), [8, 8]);
+            assert_eq!(effect_gives_stage(renderer, rd(s, DES::environmentMap), 8), EffectStage::Full);
+
+            // The list as projected shadows, one node shorter.
+            wr(addresses[2], LIST::next, 0usize);
+            wr(s, DES::projLights, 0usize);
+            wr(s, DES::projShadows, addresses[0]);
+            assert_eq!(effect_stages_before(renderer, s), [6, 7]);
+
+            wr(environment.as_mut_ptr() as usize, EFFECT_TEXTURE, NO_DEVICE_TEXTURE as usize);
+            assert_eq!(effect_stages_before(renderer, s), [6, 6]);
         }
     }
 }

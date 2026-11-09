@@ -256,7 +256,9 @@ pub unsafe fn send_checks(t: &MainThread, camera: usize) {
             words.extend_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
             words.extend_from_slice(&rd::<[u32; 3]>(effect, TE::worldProjTrans));
             words.extend_from_slice(&rd::<[u32; 3]>(camera, AV::worldTransform_translation));
-            words.extend_from_slice(&crate::ports::texture_pass_b::effect_stage_words(crate::engine::renderer(), effect)[2..]);
+            // The check compares the turned projection only: no effect state, so no stage count
+            // of a pass. The words are zeros when the effect has no device texture.
+            words.extend_from_slice(&crate::ports::texture_pass_b::effect_stage_words(crate::engine::renderer(), effect, 0)[2..]);
             crate::capture::effect_turn_check(&words);
         }
     }
