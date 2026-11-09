@@ -9,7 +9,7 @@ origin (0.004 to 0.008 units at 74,000 units, about 0.03 at 368,000). The grass 
 The cure is the eye-relative form of `renderer/view.rs`: `clip_with(matrix, world)` or `clip_of(world)`, with a matrix made in f64
 (`view::relative`, `view::relative_of_product`).
 
-This check finds every product of a name or a parenthesised expression with a `vec4f(..., 1.0)` (or `vec4<f32>`), in either order, in
+This check finds every product of a name or a parenthesised expression with a `vec4f(..., 1.0)` (also `vec4<f32>` and `vec4`, with the w written 1, 1., 1.0 or 1f), in either order, in
 `mgeHost64/src` (the `.rs` files that hold the WGSL, and the `.wgsl` files). A product with a direction, `vec4f(..., 0.0)`, is no
 position and not found. The product must be on the ALLOWED list below: a place of a known meaning that is not a clip product of an
 absolute position. A new product fails the check; the fix is to use `clip_with`, or, when the product is not a clip product, to
@@ -33,9 +33,10 @@ ALLOWED = {
     ("renderer.rs", "draw.view * vec4f(in.world_position, 1.0)"): (3, "world to view for the depth of a draw, with the view of that draw (view_z, view_position)"),
 }
 
-OPEN = r"vec4(?:f|<f32>)\("
-# The second operand of a product: vec4f(<anything without a semicolon>, 1.0).
-POSITION = OPEN + r"[^;]*?,\s*1\.0\s*\)"
+# The spellings of WGSL: vec4f, vec4<f32>, vec4 (the type is inferred).
+OPEN = r"vec4(?:f|<f32>)?\("
+# The second operand of a product: vec4f(<anything without a semicolon>, 1.0), with the w written 1, 1., 1.0 or 1f (as 1.0f too).
+POSITION = OPEN + r"[^;]*?,\s*1(?:\.0*)?f?\s*\)"
 FIRST = r"(?:[A-Za-z_][\w.]*(?:\[[^\]]*\])?|\([^()]*\))"
 PRODUCTS = (
     re.compile(r"(?P<text>(?P<matrix>%s)\s*\*\s*(?P<vector>%s))" % (FIRST, POSITION)),
@@ -91,6 +92,19 @@ def self_test():
     assert products_in("let c = vec4<f32>(p, 1.0) * m;") == [(1, "vec4<f32>(p, 1.0) * m")]
     assert products_in("let c = (u.view * u.proj) * vec4f(p, 1.0);") == [(1, "(u.view * u.proj) * vec4f(p, 1.0)")]
     assert products_in("let c = m[2] * vec4f(a.xyz, 1.0);") == [(1, "m[2] * vec4f(a.xyz, 1.0)")]
+    # The other spellings of the same product: the w as 1, 1., 1f or 1.0f, and the type left to WGSL.
+    assert products_in("out.position = s.clip * vec4f(out.world, 1);") == [(1, "s.clip * vec4f(out.world, 1)")]
+    assert products_in("out.position = s.clip * vec4f(out.world, 1.);") == [(1, "s.clip * vec4f(out.world, 1.)")]
+    assert products_in("out.position = s.clip * vec4f(out.world, 1f);") == [(1, "s.clip * vec4f(out.world, 1f)")]
+    assert products_in("out.position = s.clip * vec4f(out.world, 1.0f);") == [(1, "s.clip * vec4f(out.world, 1.0f)")]
+    assert products_in("out.position = s.clip * vec4(out.world, 1.0);") == [(1, "s.clip * vec4(out.world, 1.0)")]
+    assert products_in("out.position = vec4(out.world, 1) * s.clip;") == [(1, "vec4(out.world, 1) * s.clip")]
+    # A direction is no position, in any spelling of the zero; a w that only starts with 1 is no position either.
+    for zero in ("0.0", "0", "0.", "0f", "0.0f"):
+        assert products_in("let d = u.relative * vec4f(direction, %s);" % zero) == [], zero
+    assert products_in("let d = u.relative * vec4(direction, 0);") == []
+    for other in ("10", "1.5", "1.0e3", "10.0"):
+        assert products_in("let d = m * vec4f(p, %s);" % other) == [], other
     # A direction is no position, the relative form is a call and not a product, and a line number counts from 1.
     assert products_in("let d = u.relative * vec4f(direction, 0.0);") == []
     assert products_in("out.position = clip_with(s.clip, out.world);") == []
