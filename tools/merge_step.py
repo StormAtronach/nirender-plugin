@@ -864,6 +864,9 @@ def scratch_slots(state):
     spec = importlib.util.spec_from_file_location("slot_of_the_self_test", os.path.join(HARNESS, "slot.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # The names match no process, so the test's process list is empty. The real list can fail: tasklist has 5 s, a busy
+    # machine can pass that, and with no list an idle hold does not lapse (case 6 failed so once).
+    module.running_images = lambda: []
     return module
 
 
