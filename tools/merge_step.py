@@ -44,7 +44,8 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
   pair whose other half is already merged, the HEAD of the sibling holds code that the base of the tree lacks (a render-link
   that calls a function of a newer nirender fails the base build): --sibling-base <commit> builds the base at that commit of
   the sibling, which must be an ancestor of the sibling's HEAD. The tool prints it in the first line, and the key file of the
-  base build names it, as it names both commits;
+  base build names it, as it names both commits. With --sibling-base the A/B shows the change of both halves of the pair, since
+  the base holds the older commit of the sibling;
 - the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
   of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these.
 
@@ -57,7 +58,8 @@ build slot, so that a stale picture cannot compare.
 
 All stages run, also after a failure. Exit code 1 on any failure. The output of each stage, the PASS, FAIL or NOT RUN line of
 each stage and the closing "N of N stages passed" line are in
-E:\\nirender-keep\\merge-step\\merge-step-<commit>.log, where the data rule on build output does not reach. It pushes nothing.
+E:\\nirender-keep\\merge-step\\merge-step-<commit>.log, where the data rule on build output does not reach. A rerun for the same
+commit writes merge-step-<commit>-2.log, then -3, and so on: it never overwrites the log of an earlier round. It pushes nothing.
 
 The gate needs what a diff cannot give:
 
@@ -73,6 +75,7 @@ import contextlib
 import importlib.util
 import inspect
 import io
+import itertools
 import os
 import re
 import subprocess
@@ -321,9 +324,17 @@ def run_stage(name, folder, command, log):
 
 
 def log_path_of(commit, folder=LOG_FOLDER):
-    """The file of the output of a round, in a folder that exists."""
+    """The file of the output of a round, in a folder that exists. A round never writes into the log of an earlier one: the
+    first round of a commit has `merge-step-<commit>.log`, the next ones `merge-step-<commit>-2.log` and so on (2026-11-09:
+    a rerun overwrote the log of a refused round). The file is made here, empty, so that two rounds cannot take one name."""
     os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, "merge-step-%s.log" % commit[:10])
+    for number in itertools.count(1):
+        path = os.path.join(folder, "merge-step-%s%s.log" % (commit[:10], "" if number == 1 else "-%d" % number))
+        try:
+            with open(path, "x", encoding="utf-8"):
+                return path
+        except FileExistsError:
+            continue
 
 
 def clear_pictures(folder):
@@ -338,7 +349,8 @@ def clear_pictures(folder):
 def run_stages(stages, log, note_stage=lambda: None):
     """All stages, also after a failure, but the gate has no build to replay after a failure of its build.
     `note_stage` runs before each stage that runs: the hold of the build slot lapses after 15 minutes with
-    no compile seen, and a round can pass that with a stage that does not compile."""
+    no compile seen, and a round can pass that with a stage that does not compile. It returns False when the holds could
+    not be taken again: the stage is then NOT RUN, and counts as not passed."""
     results = {}
     for name, folder, command in stages:
         if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
@@ -351,7 +363,10 @@ def run_stages(stages, log, note_stage=lambda: None):
             continue
         if name == "replay gate":
             clear_pictures(command[command.index("--now") + 1])
-        note_stage()
+        if note_stage() is False:
+            verdict(log, "NOT RUN %s: the slot hold of this run ended and was not taken again" % name)
+            results[name] = False
+            continue
         results[name] = run_stage(name, folder, command, log)
     return list(results.values())
 
@@ -366,13 +381,13 @@ def moves_the_ref(baseline):
 
 
 def resolve(repo, name):
-    """The commit of a name, or None."""
-    return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", name], capture_output=True, text=True, env=git_env()).stdout.strip() or None
+    """The commit of a name, or None. A name of a tree or a blob is no commit; a tag gives the commit it points to."""
+    return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", name + "^{commit}"], capture_output=True, text=True, env=git_env()).stdout.strip() or None
 
 
 def branch_of(repo):
     """The branch of the tree, or None."""
-    return subprocess.run(["git", "-C", repo, "symbolic-ref", "-q", "--short", "HEAD"], capture_output=True, text=True).stdout.strip() or None
+    return subprocess.run(["git", "-C", repo, "symbolic-ref", "-q", "--short", "HEAD"], capture_output=True, text=True, env=git_env()).stdout.strip() or None
 
 
 def is_ancestor(repo, older, newer):
@@ -459,6 +474,7 @@ class GamePlace:
         self.ask = ask
         self.held = False
         self.closed = False
+        self.retakes = 0
 
     def ask_in_queue(self):
         """One ask while the build take waits: a place in the queue, or the hold, and then the note of its work."""
@@ -480,6 +496,21 @@ class GamePlace:
             return True
         self.held = take_slot(self.slots, "game", self.label, no_wait, minutes=GAME_SLOT_MINUTES, ask=self.ask)
         return self.held
+
+    def keep(self, no_wait, log):
+        """True when the run still holds the game slot, or took it again: the hold lapses after 15 minutes with no game seen,
+        and the notes of its work (`ask_in_queue`, `game_hold_noted`) can stop for as long as a take of the build side waits.
+        A run that held the game slot holds it for the whole check, so a lapsed hold is taken again, in the queue. A hold
+        that the state cannot show now counts as kept."""
+        if not self.held or places_held(self.slots, "game", self.label) != 0:
+            return True
+        self.held = False
+        verdict(log, "the game slot hold of this run ended (it lapsed); taking it again")
+        if not self.take(no_wait):
+            return False
+        self.retakes += 1
+        verdict(log, "re-took the game slot at %s" % time.strftime("%H:%M"))
+        return True
 
     def release(self):
         """Releases the hold, or leaves the queue when the run holds nothing. Prints every line of the reply."""
@@ -531,6 +562,56 @@ def game_hold_noted(slots, seconds=GAME_NOTE_SECONDS):
         thread.join()
 
 
+def places_held(slots, slot, who):
+    """How many places of a slot the run `who` holds, or None when the state cannot be read now (a hold is then taken as
+    kept: the next stage asks again). The build side has two places; the game slot has one."""
+    read_record = getattr(slots, "read_record", None)
+    if read_record is None:
+        return None
+    owner = slots.owner_of(slots.session_id(), who)
+    count = 0
+    for unit in slots.units_of(slot):
+        try:
+            holder = read_record(slots.holder_path(unit), slots.Holder)
+        except slots.StateError:
+            return None
+        count += holder is not None and holder.session == owner and holder.who == who
+    return count
+
+
+# How often `keep_holds` looks at both slots again after a take that waited: a wait for one can lapse the other.
+KEEP_ROUNDS = 5
+
+
+def keep_holds(slots, what, game, options, no_wait, log):
+    """Before a stage: the run still holds the build side and the game slot, and takes again one that lapsed. A wait does
+    not stop the idle lapse of the hold that the waiting run already has (slot.py): a take of the game that waited 34
+    minutes lost the build side after 15 (2026-11-09, the W206 render-link check), and the replay gate and the instance
+    A/B were then refused by the slot check. The take again waits in the queue like the first take, keeps the run's place
+    in the game queue meanwhile, and logs one line for each take. False when a take again did not give the slot."""
+    needed = len(slots.units_of("build")) if options.get("whole") else 1
+    owner = slots.owner_of(slots.session_id(), what)
+    for _ in range(KEEP_ROUNDS):
+        # The build work of the places of this run, as the hook and the tool checks of slot.py note it: a hold of another run
+        # gets no note.
+        slots.note_holder_build(owner, time.time())
+        lost = False
+        held = places_held(slots, "build", what)
+        if held is not None and held < needed:
+            lost = True
+            verdict(log, "the build hold of this run ended (it lapsed; %d of %d place(s) held); taking it again" % (held, needed))
+            if not take_build(slots, what, no_wait, options, while_waiting=game.ask_in_queue):
+                return False
+            verdict(log, "re-took the build side at %s" % time.strftime("%H:%M"))
+        game_takes = game.retakes
+        if not game.keep(no_wait, log):
+            return False
+        # A take that waited can have lapsed the other hold: look at both again.
+        if not lost and game.retakes == game_takes:
+            break
+    return True
+
+
 def run_round(slots, stages, what, log_path, no_wait):
     """The stages of one round with the build slot and the game slot held, both released on every exit path: a failing
     stage, an exception and Ctrl-C. (results, summary), or None when a take did not give a slot. The run asks for the game
@@ -538,13 +619,14 @@ def run_round(slots, stages, what, log_path, no_wait):
     with slot_asker(slots, "game") as game_ask:
         game = GamePlace(slots, GAME_LABEL % what, game_ask)
         try:
-            if not take_build(slots, what, no_wait, take_options(slots, stages), while_waiting=game.ask_in_queue):
+            options = take_options(slots, stages)
+            if not take_build(slots, what, no_wait, options, while_waiting=game.ask_in_queue):
                 return None
             try:
                 if not game.take(no_wait):
                     return None
                 with game_hold_noted(slots), open(log_path, "w", encoding="utf-8", errors="replace") as log:
-                    results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
+                    results = run_stages(stages, log, lambda: keep_holds(slots, what, game, options, no_wait, log))
                     # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
                     summary = summary_line(results, log_path)
                     log.write("\n== %s\n" % summary)
@@ -557,7 +639,7 @@ def run_round(slots, stages, what, log_path, no_wait):
 
 
 def git(repo, *args):
-    done = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    done = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, env=git_env())
     if done.returncode != 0:
         raise SystemExit("git %s in %s: %s" % (" ".join(args), repo, done.stderr.strip()))
     return done.stdout.strip()
@@ -811,6 +893,26 @@ def self_test():
         subprocess.run(["git", "-C", sibling_tree, "checkout", "-q", "--detach", first], check=True, env=git_env())
         assert tips_for("plugin", plugin_of_pair, "base", second)[1].endswith("(%s)" % first[:10]) and "not an ancestor" in tips_for("plugin", plugin_of_pair, "base", second)[1], "a commit ahead of HEAD"
         assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", "no-such-name")[1], "an unknown name"
+        # resolve gives a commit: a tree is none, and an annotated tag gives the commit it points to.
+        tree_of_head = subprocess.run(["git", "-C", sibling_tree, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True, env=git_env()).stdout.strip()
+        assert len(tree_of_head) == 40 and resolve(sibling_tree, tree_of_head) is None, "the name of a tree is no commit"
+        assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", tree_of_head)[1], "--sibling-base with a tree"
+        subprocess.run(["git", "-C", sibling_tree, *author, "tag", "-a", "-m", "a tag", "a-tag", first], check=True, env=git_env())
+        assert resolve(sibling_tree, "a-tag") == first, "an annotated tag gives its commit, not the tag object"
+        assert tips_for("plugin", plugin_of_pair, "base", "a-tag") == ({"plugin": "base", "mge": first}, None)
+        # git() and branch_of answer for the folder they get, also with the GIT_ names of a hook in the environment.
+        alpha, beta = os.path.join(root, "alpha"), os.path.join(root, "beta")
+        for folder, branch in ((alpha, "alpha-branch"), (beta, "beta-branch")):
+            os.makedirs(folder)
+            for command in (["init", "-q", "-b", branch], author + ["commit", "-q", "--allow-empty", "-m", branch]):
+                subprocess.run(["git", "-C", folder, *command], check=True, env=git_env())
+        beta_head = resolve(beta, "HEAD")
+        os.environ["GIT_DIR"] = os.path.join(alpha, ".git")
+        try:
+            assert branch_of(beta) == "beta-branch", "branch_of answers for the hook's repository: %s" % branch_of(beta)
+            assert git(beta, "rev-parse", "HEAD") == beta_head, "git() answers for the hook's repository"
+        finally:
+            del os.environ["GIT_DIR"]
         assert tips_for("mge", sibling_tree, "base", first)[1].startswith("no sibling"), "no sibling tree"
         # Both A/B stages replay, so they take the whole build side.
         two = types.SimpleNamespace(take=two_places_take_for_ab)
@@ -1106,12 +1208,19 @@ def self_test():
                     thread = threading.Thread(target=run, daemon=True)
                     thread.start()
                     thread.join(DEADLINE_SECONDS)
+                    stuck = thread.is_alive()
+                    if stuck:
+                        # Free the build side, so that the round ends: a thread that waits on holds a file of the temporary folder,
+                        # and the cleanup of the folder fails with a PermissionError that hides the assert below.
+                        free_build_side()
+                        thread.join(DEADLINE_SECONDS)
             finally:
                 GamePlace.ask_in_queue = real_ask_in_queue
                 slots.note_active = real_note_active
                 globals()["WAIT_SECONDS"] = real_wait_seconds
                 as_session(own_session)
-            assert not thread.is_alive(), "the round still waits for the build side after %d s (%d waits): nothing freed it" % (DEADLINE_SECONDS, len(waits))
+            assert not stuck, "the round still waited for the build side after %d s (%d waits): nothing freed it" % (DEADLINE_SECONDS, len(waits))
+            assert not thread.is_alive(), "the round did not end after the build side was freed"
             if "error" in outcome:
                 raise outcome["error"]
             return outcome["round"], output.getvalue()
@@ -1155,6 +1264,136 @@ def self_test():
         free_build_side()
         assert holders() == [], holders()
 
+        # The holds of the run lapse while it waits (2026-11-09, the W206 render-link check: a take of the game that waited 34
+        # minutes lost the build side after 15 minutes, and the replay gate and the instance A/B were refused by the slot check).
+        # Before each stage the run looks at its holds, and takes a lapsed one again.
+        def lapse_now():
+            slots.lapse_idle_holds(time.time() + 20 * 60)
+
+        # Case 3: both holds lapse before the second stage. The stage checks that it holds both, and passes.
+        build_notes = []
+
+        def note_then_lapse_before_the_second_stage(slot, now):
+            real_note_active(slot, now)
+            if slot == "build":
+                build_notes.append(now)
+                if len(build_notes) == 2:
+                    lapse_now()
+
+        slots.note_active = note_then_lapse_before_the_second_stage
+        shown = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(shown):
+                lapsed_round = run_round(slots, [("first", root, both_held), ("second", root, both_held), ("third", root, both_held)],
+                                         "merge_step: x iiiiiiiiii", round_log, True)
+        finally:
+            slots.note_active = real_note_active
+        assert lapsed_round is not None and lapsed_round[0] == [True, True, True], (lapsed_round, shown.getvalue())
+        assert "re-took the build side" in shown.getvalue() and "re-took the game slot" in shown.getvalue(), shown.getvalue()
+        with open(round_log, encoding="utf-8") as log:
+            kept = log.read()
+        assert "== re-took the build side at " in kept and "== re-took the game slot at " in kept, "the kept log names each take again: " + kept
+        assert holders() == [], holders()
+
+        # Case 4: the whole side lapsed, and another session took a place meanwhile (the case of the incident): the run waits
+        # in the queue for it, with its ask for the game, and then holds both places.
+        what = "merge_step: x jjjjjjjjjj"
+        assert slots.take("build", what, minutes=5, whole=True).code == slots.DONE
+        lapse_now()
+        assert holders() == [], holders()
+        as_session("merge-step-self-test-" + builders[0])
+        assert slots.take("build", "other: " + builders[0], minutes=5).code == slots.DONE
+        as_session(own_session)
+        log = io.StringIO()
+        waits_for_the_place = []
+        sleeps_of_the_take = []
+
+        def bounded_sleep(seconds):
+            # A fault that does not ask for the game at the wait leaves nothing to free the place: the case ends with an assert.
+            sleeps_of_the_take.append(seconds)
+            assert len(sleeps_of_the_take) < 40, "the run waits for a place that nothing frees"
+
+        real_sleep, time.sleep = time.sleep, bounded_sleep
+        try:
+            with slot_asker(slots, "game") as game_ask, contextlib.redirect_stdout(io.StringIO()):
+                game = GamePlace(slots, GAME_LABEL % what, game_ask)
+
+                def free_the_place():
+                    waits_for_the_place.append(1)
+                    if len(waits_for_the_place) == 2:
+                        as_session("merge-step-self-test-" + builders[0])
+                        assert slots.release("build", "other: " + builders[0]).code == slots.DONE
+                        as_session(own_session)
+
+                game.ask_in_queue = free_the_place
+                assert keep_holds(slots, what, game, {"whole": True}, False, log) is True
+        finally:
+            time.sleep = real_sleep
+            as_session(own_session)
+        assert places_held(slots, "build", what) == 2, "the run holds both places again"
+        assert places_held(slots, "build", "merge_step: x some-other-run") == 0, "a hold of another label is no hold of the run"
+        assert len(waits_for_the_place) >= 2 and "== the build hold of this run ended" in log.getvalue() and "== re-took the build side at " in log.getvalue(), log.getvalue()
+        assert slots.release("build", what).code == slots.DONE
+        assert holders() == [], holders()
+
+        # Case 5: with --no-wait a lapsed hold is not waited for: the stage is NOT RUN. A hold that is intact is left alone.
+        assert slots.take("build", what, minutes=5).code == slots.DONE
+        intact = io.StringIO()
+        with slot_asker(slots, "game") as game_ask, contextlib.redirect_stdout(io.StringIO()):
+            game = GamePlace(slots, GAME_LABEL % what, game_ask)
+            assert keep_holds(slots, what, game, {}, True, intact) is True and intact.getvalue() == "", intact.getvalue()
+            slots.release("build", what)
+            as_session("merge-step-self-test-" + builders[0])
+            assert slots.take("build", "other: " + builders[0], minutes=5, whole=True).code == slots.DONE
+            as_session(own_session)
+            refused = io.StringIO()
+            seen_before = [slots.last_active(unit) for unit in slots.units_of("build")]
+            assert keep_holds(slots, what, game, {}, True, refused) is False, "no wait: nothing is taken again"
+            assert [slots.last_active(unit) for unit in slots.units_of("build")] == seen_before, "the run notes build work for a hold of another session"
+        assert "taking it again" in refused.getvalue()
+        as_session("merge-step-self-test-" + builders[0])
+        assert slots.release("build", "other: " + builders[0]).code == slots.DONE
+        as_session(own_session)
+        assert holders() == [], holders()
+        with open(os.path.join(root, "stopped.log"), "w+", encoding="utf-8") as stopped:
+            assert run_stages([("a", root, good), ("b", root, good)], stopped, lambda: False) == [False, False]
+            stopped.seek(0)
+            assert "== NOT RUN a: the slot hold of this run ended and was not taken again" in stopped.read()
+
+        # Case 6: both holds lapse, the game is taken by another session, and the build side lapses again while the run waits for
+        # the game. The run takes the game, then looks again, and takes the build side a second time.
+        what = "merge_step: x kkkkkkkkkk"
+        with slot_asker(slots, "game") as game_ask, contextlib.redirect_stdout(io.StringIO()):
+            game = GamePlace(slots, GAME_LABEL % what, game_ask)
+            assert slots.take("build", what, minutes=5).code == slots.DONE and game.take(False)
+            lapse_now()
+            assert holders() == [], holders()
+            as_session("merge-step-self-test-gamer")
+            assert slots.take("game", "other: a game", minutes=5).code == slots.DONE
+            as_session(own_session)
+            lapsed_while_waiting = []
+            sleeps_for_the_game = []
+
+            def lapse_while_waiting(seconds):
+                # The first wait for the game: the build side of the run lapses, and so does the hold of the other session.
+                sleeps_for_the_game.append(seconds)
+                assert len(sleeps_for_the_game) < 40, "the run waits for a game that nothing frees"
+                if not lapsed_while_waiting:
+                    lapsed_while_waiting.append(1)
+                    lapse_now()
+
+            twice = io.StringIO()
+            real_sleep, time.sleep = time.sleep, lapse_while_waiting
+            try:
+                assert keep_holds(slots, what, game, {}, False, twice) is True
+            finally:
+                time.sleep = real_sleep
+            assert places_held(slots, "build", what) == 1 and places_held(slots, "game", game.label) == 1, "both holds are the run's after the second look: " + twice.getvalue()
+            assert twice.getvalue().count("re-took the build side") == 2 and game.retakes == 1, twice.getvalue()
+            game.release()
+            slots.release("build", what)
+        assert holders() == [], holders()
+
         # The notes of the game slot's work: one at once, then one each period, and none after the round.
         noted = []
         counting = types.SimpleNamespace(note_active=lambda slot, now: noted.append(slot))
@@ -1166,7 +1405,19 @@ def self_test():
 
         # The log keeps its name, and its folder is made.
         logs = os.path.join(root, "new", "logs")
-        assert log_path_of("0123456789abcdef", logs) == os.path.join(logs, "merge-step-0123456789.log") and os.path.isdir(logs)
+        first_log = log_path_of("0123456789abcdef", logs)
+        assert first_log == os.path.join(logs, "merge-step-0123456789.log") and os.path.isdir(logs)
+        # A rerun for the same commit never writes into the log of an earlier round.
+        with open(first_log, "w", encoding="utf-8") as log:
+            log.write("the refused round\n")
+        second_log = log_path_of("0123456789abcdef", logs)
+        third_log = log_path_of("0123456789abcdef", logs)
+        assert (second_log, third_log) == (os.path.join(logs, "merge-step-0123456789-2.log"), os.path.join(logs, "merge-step-0123456789-3.log"))
+        with open(second_log, "w", encoding="utf-8") as log:
+            log.write("the rerun\n")
+        with open(first_log, encoding="utf-8") as log:
+            assert log.read() == "the refused round\n", "the rerun wrote into the log of the first round"
+        assert log_path_of("fedcba9876543210", logs) == os.path.join(logs, "merge-step-fedcba9876.log"), "another commit starts at the plain name"
         assert "target" not in LOG_FOLDER.lower()
     print("merge_step self-test: ok")
 
