@@ -1380,7 +1380,7 @@ pub unsafe fn report() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_pixels, in_snapshot, level_bit, lock_level, lock_offset, new_object, note_lock, nothing_to_do, read_within, release, surface_lock, unlock_level_into, Kind, LevelCopies, Object,
+        copy_pixels, in_snapshot, level_bit, lock_level, lock_offset, new_object, note_lock, nothing_to_do, read_within, release, surface_lock, texture_lock, texture_surface_level, unlock_level_into, Kind, LevelCopies, Object,
         BACK_BUFFER, CUTSCENE_SHADER_CALLS, LEVEL_FREES, OK, REMOVE_LIGHT_CALL, SURFACE_TABLE, TEXTURE_TABLE,
     };
     use crate::d3d::{D3DLOCK_READONLY, DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
@@ -1657,6 +1657,35 @@ mod tests {
             let (r, p) = (read_only(), part());
             note_lock(texture, 0, rectangle, 0);
             assert!(read_only() == r && part() > p, "a lock with a rectangle of a freed level");
+            release(texture);
+        }
+    }
+
+    /// The two lock paths of the game count a risky lock of a freed level before the lock clears
+    /// the freed bit: a read-only lock through the texture, a lock with a rectangle through a
+    /// level surface.
+    #[test]
+    fn the_lock_paths_count_a_risky_lock_of_a_freed_level() {
+        unsafe {
+            let texture = test_texture();
+            lock_and_fill(texture, 0, 1);
+            lock_and_fill(texture, 1, 2);
+            unlock(texture, 0, false);
+            unlock(texture, 1, false);
+            assert_eq!((*texture).freed_levels, level_bit(0) | level_bit(1));
+
+            let mut locked = [0u32; 2];
+            let read_only = LEVEL_FREES.read_only_locks_of_freed.load(Ordering::Relaxed);
+            assert_eq!(texture_lock(texture, 0, locked.as_mut_ptr(), 0, D3DLOCK_READONLY), OK);
+            assert!(LEVEL_FREES.read_only_locks_of_freed.load(Ordering::Relaxed) > read_only, "texture_lock");
+
+            let mut surface = 0usize;
+            assert_eq!(texture_surface_level(texture, 1, &mut surface), OK);
+            let rectangle = [0u32, 0, 2, 2];
+            let part = LEVEL_FREES.part_locks_of_freed.load(Ordering::Relaxed);
+            assert_eq!(surface_lock(surface as *mut Object, locked.as_mut_ptr(), rectangle.as_ptr() as usize, 0), OK);
+            assert!(LEVEL_FREES.part_locks_of_freed.load(Ordering::Relaxed) > part, "surface_lock of a level surface");
+            release(surface as *mut Object);
             release(texture);
         }
     }
