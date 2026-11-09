@@ -440,6 +440,7 @@ impl Player {
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
+            like_exterior: self.stream.like_exterior,
             // The fill mode: the scene record's flag, from the game's own wireframe property.
             wireframe: self.stream.wireframe,
             fog_on,

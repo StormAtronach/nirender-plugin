@@ -27,6 +27,7 @@ impl Player {
                 back_buffer: true,
                 origin: None,
                 interior: false,
+                like_exterior: true,
                 sky_hidden: false,
                 fog_range: None,
                 object_class: 0,

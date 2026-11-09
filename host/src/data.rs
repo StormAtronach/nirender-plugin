@@ -81,6 +81,9 @@ pub(crate) const SCENE_BACK_BUFFER: u32 = 0x8;
 /// A flag of the scene record: the game draws the world in wireframe (its shared wireframe
 /// property, the console command ToggleWireframe).
 pub(crate) const SCENE_WIREFRAME: u32 = 0x10;
+/// A flag of the scene record: the scene's cell is like an exterior (an exterior, an interior
+/// cell with the game's flag "behaves like an exterior", or no cell).
+pub(crate) const SCENE_LIKE_EXTERIOR: u32 = 0x20;
 
 /// The value of a state that the game did not set.
 pub(crate) const UNKNOWN: u32 = 0x7FFF_FFFF;

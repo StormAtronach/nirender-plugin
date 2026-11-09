@@ -82,6 +82,10 @@ pub struct SceneView<'a> {
     pub eye: [f64; 3],
     /// The player is in an interior cell.
     pub interior: bool,
+    /// The player's cell is like an exterior: an exterior, an interior cell with the game's
+    /// flag "behaves like an exterior", or no cell (the main menu). From the plugin's scene
+    /// record, the one source of this fact.
+    pub like_exterior: bool,
     /// The game draws the world in wireframe: its shared wireframe property is on (the console
     /// command ToggleWireframe), as the plugin's scene record says. An extension then draws
     /// lines too, as MGE XE on Direct3D 9 does.
