@@ -887,7 +887,7 @@ impl Player {
         if parts.intersect(Additions::TIER_BEFORE).is_empty() || open.tier_begun {
             return;
         }
-        let key = ViewKey::of_view(open.view_slot(), open.kind, open.place);
+        let key = ViewKey::of_view(open.view_slot(), open.kind, open.place, open.repeat);
         if let Some(open) = self.views.group_mut(group) {
             open.tier_begun = true;
         }
@@ -913,7 +913,7 @@ impl Player {
         }
         let parts = view_kind::tier_parts(open.kind, open.additions);
         let due = engine::views::end_calls_due(parts, (open.tier_ended, open.tier_posted), point);
-        let key = ViewKey::of_view(open.view_slot(), open.kind, open.place);
+        let key = ViewKey::of_view(open.view_slot(), open.kind, open.place, open.repeat);
         if let Some(open) = self.views.group_mut(group) {
             open.tier_ended |= due.grass;
             open.tier_posted |= due.post;
