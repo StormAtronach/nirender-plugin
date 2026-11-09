@@ -385,6 +385,8 @@ pub unsafe fn report(t: &MainThread) -> String {
         let table = handles(t);
         (table.values().filter(|h| h.sent).count(), table.len())
     };
+    // One open of the table: a second open in the same expression is a nested open.
+    let [after_eight_stages, without_device_texture] = *NO_STAGE.get(t);
     format!(
         "material: {} records, {} distinct sent now, {} handles in the session, {} gone with their textures ({} of their handles swept), {} steps past the handle of another content (collisions of the first hash, at each note); environment and fog maps with no stage: {} after 8 stages, {} without a device texture",
         *RECORDS.get(t),
@@ -393,8 +395,8 @@ pub unsafe fn report(t: &MainThread) -> String {
         *GONE.get(t),
         *SWEPT.get(t),
         *COLLISIONS.get(t),
-        (*NO_STAGE.get(t))[0],
-        (*NO_STAGE.get(t))[1]
+        after_eight_stages,
+        without_device_texture
     )
 }
 
@@ -765,5 +767,15 @@ mod tests {
         let bits = differing_groups(&group_hashes(&words), &group_hashes(&other));
         assert_eq!(bits, 1 << 2);
         assert_eq!(differing_groups(&group_hashes(&words), &group_hashes(&words)), 0);
+    }
+
+    /// The report opens each table once: two opens of one table in one expression panic at the
+    /// end of a run (W95, the walk of 2026-11-10).
+    #[test]
+    fn the_report_opens_each_table_once() {
+        let t = crate::main_thread::MainThread::for_test();
+        // SAFETY: `report` reads no engine memory, and `t` is the test's main thread.
+        let line = unsafe { report(&t) };
+        assert!(line.contains("0 after 8 stages, 0 without a device texture"), "{line}");
     }
 }
