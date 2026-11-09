@@ -33,6 +33,8 @@ return function(seconds)
     tes3.worldController.simulationTimeScalar = 1
     tes3.force1stPerson()
     mobile.vanityDisabled = true
+    -- The flight sets the values of before it again at its end.
+    local collision_before, flying_before = mobile.movementCollision, mobile.isFlying
     mobile.movementCollision = false
     mobile.isFlying = true
 
@@ -44,8 +46,8 @@ return function(seconds)
         if t >= seconds or (t > 2 and (centre - at):length() > 6000) then
             event.unregister(tes3.event.enterFrame, step)
             mobile.velocity = tes3vector3.new(0, 0, 0)
-            mobile.isFlying = false
-            mobile.movementCollision = true
+            mobile.isFlying = flying_before
+            mobile.movementCollision = collision_before
             mwse.log("[effect turn walk] done after %.1f s at %.0f %.0f %.0f", t, at.x, at.y, at.z)
             return
         end
