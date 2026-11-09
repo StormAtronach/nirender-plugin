@@ -63,8 +63,8 @@ Then, in this order, and any failure leaves the worktree as it is, apart from wh
 
 1. What a real `results` folder holds is copied to E:\\nirender-keep\\runs-<date>, unless a runs-*
    folder holds the same; the number and the size of the files must agree. By the expiry of
-   `clean_results.py`: a run that is cited or younger than 7 days whole, one of 7 to 30 days with no
-   pictures, an older one not at all. A folder that is no run and a loose file are copied whole.
+   `clean_results.py`: a run on the keep list or younger than 7 days whole; a cited run of 7 days or
+   more and an uncited one of 7 to 30 days with no pictures; an older uncited one not at all. A folder that is no run and a loose file are copied whole.
 2. A new walk finds each reparse point in the tree, and each is removed as a link, which leaves its
    target. `git worktree remove` goes through a junction: on 2026-10-29 one deleted
    E:\\nirender-results that way. A folder that the walk cannot read, or a link that is still there
@@ -97,7 +97,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # `python -I` leaves the folder of the script off the path.
 sys.path.insert(0, HERE)
 import clean_common as common  # noqa: E402
-from clean_common import DOCS, FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, current_folder, current_set, files_in, games_in, git, gigabytes, is_heavy, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
+from clean_common import DOCS, FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, current_folder, current_set, files_in, games_in, git, gigabytes, is_heavy, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, read_keep_list, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
 
 # The shared checkouts and the test train's pair stay, whatever their branch has. Git's own main
 # worktree is one too.
@@ -138,6 +138,10 @@ def decide(tree):
         return False, "git holds it locked"
     if tree["marker"]:
         return False, "it has " + KEEP_MARKER
+    if tree.get("kept_runs"):
+        # A copy of a kept run would not be on the keep list, and clean_results.py would remove the copy (D152).
+        name, line = tree["kept_runs"][0]
+        return False, "%d runs on the keep list, the first %s (%s)" % (len(tree["kept_runs"]), name, line)
     if tree["used_by"]:
         return False, "in use: " + ", ".join(tree["used_by"][:3])
     if tree["depended_by"]:
@@ -474,10 +478,22 @@ def real_results(tree_path):
     return path
 
 
+def kept_runs(results, names, keep):
+    """The entries of a results folder that the keep list keeps, as (name, the list's line)."""
+    if not results or keep is None:
+        return []
+    found = ((name, keep.kept_line(os.path.join(results, name))) for name in sorted(names))
+    return [(name, line) for name, line in found if line is not None]
+
+
 def copy_results(results, keep_root, date, evidence, now):
     """Copies what the expiry leaves of each entry of a real results folder, when it is not kept yet,
-    to runs-<date>. Returns what it copied. Raises OSError when a copy does not agree: the caller
-    then leaves the tree. A link in the folder is not followed and not copied."""
+    to runs-<date>. Returns what it copied. Raises OSError when a copy does not agree, and before any
+    copy when the keep list keeps an entry: the caller then leaves the tree. A link in the folder is not
+    followed and not copied."""
+    held = kept_runs(results, os.listdir(results), evidence)
+    if held:
+        raise OSError("the tree holds runs on the keep list, and a copy would not be on it: %s" % "; ".join("%s (%s)" % entry for entry in held))
     copied = []
     for name in sorted(os.listdir(results)):
         source = os.path.join(results, name)
@@ -492,7 +508,7 @@ def copy_results(results, keep_root, date, evidence, now):
             copied.append(target)
             continue
         age = run_age_days(name, now)
-        treatment = None if age is None else run_treatment(age, evidence.cites_run_with(name, files_in(source)))
+        treatment = None if age is None else run_treatment(age, evidence.cites_run_with(name, files_in(source)), evidence.keeps(source))
         if treatment == "expired":
             continue
         pictures = treatment != "trim"
@@ -553,9 +569,10 @@ def dependents_of(path, old_set, dependents):
     return sorted(found)
 
 
-def facts_of(tree, target, repository, running, dependents, named, idle_limit, now, kept_sets=frozenset(), records=None):
+def facts_of(tree, target, repository, running, dependents, named, idle_limit, now, kept_sets=frozenset(), records=None, keep=None):
     """All facts of a worktree for `decide` and `risk_reasons`. `records` is the Evidence of the
-    records files, or None when the citations are not checked."""
+    records files, or None when the citations are not checked. `keep` is an Evidence with the keep list,
+    or None."""
     path = tree["path"]
     old_set = old_play_set(path, kept_sets)
     size, files, newest, links, unread = walk(path)
@@ -581,6 +598,7 @@ def facts_of(tree, target, repository, running, dependents, named, idle_limit, n
         "local_json_differs": local_json == "differs",
         "cites_path": records is not None and cites_path(records, path),
         "cited_runs": [name for name in runs if records is not None and records.cites_run(name)],
+        "kept_runs": kept_runs(results, runs, keep),
         "merged": merged,
         "named": any(same_path(path, name) for name in named),
         "old_set": old_set,
@@ -686,8 +704,12 @@ def main():
     kept_sets = kept_set_numbers(current, os.listdir(SETS) if os.path.isdir(SETS) else [])
     print("local.bat names the set %s; the play sets kept by number: %s" % (current, sorted(kept_sets)))
     records = load_records()
+    kept_paths, keep_problems = read_keep_list()
+    keep = Evidence("", keep_problems, kept_paths)
+    for problem in keep_problems:
+        print("THE KEEP LIST: " + problem)
     with ThreadPoolExecutor(8) as pool:
-        rows = list(pool.map(lambda job: facts_of(job[0], job[1], job[2], running, dependents, named, args.idle_hours, now, kept_sets, records), jobs))
+        rows = list(pool.map(lambda job: facts_of(job[0], job[1], job[2], running, dependents, named, args.idle_hours, now, kept_sets, records, keep), jobs))
     go, stay = [], []
     for row, job in zip(rows, jobs):
         ok, reason = decide(row)
@@ -729,12 +751,12 @@ def main():
         print("  %9s  %s" % (gigabytes(size), path))
     evidence = Evidence.load()
     for problem in evidence.problems:
-        print("THE EVIDENCE MAY LACK A CITATION: " + problem)
+        print("THE EVIDENCE IS NOT WHOLE: " + problem)
     if not args.apply:
         print("\nA dry run: nothing changed. --apply acts.")
         return 0
     if evidence.problems:
-        print("NOTHING DONE: a removal copies only the runs that are cited or young, and an uncited run may be evidence.")
+        print("NOTHING DONE: a removal copies a run by its citations and the keep list, and either may be incomplete.")
         return 1
     left = []
     failed = 0
@@ -938,20 +960,32 @@ def self_test():
                 open(os.path.join(results2, name, file), "w").write("x" * 10)
             return name
 
-        young, trimmed, expired, cited = run_folder(2), run_folder(10), run_folder(40), run_folder(50)
+        young, trimmed, expired, cited, kept = run_folder(2), run_folder(10), run_folder(40), run_folder(50), run_folder(60)
         make_junction(os.path.join(results2, trimmed, "link"), outside)
         make_junction(os.path.join(results2, "run-link"), outside)
         keep2 = os.path.join(temp, "keep2")
         os.makedirs(keep2)
-        copied = copy_results(results2, keep2, "today", Evidence("a record cites " + cited), now)
+        # A run on the keep list stops the copy before it starts (D152, the Reviewer's A7): its copy would not be on
+        # the list, and clean_results.py would remove the copy. The error names the run and its line.
+        listed = Evidence("a record cites " + cited, kept={os.path.join(results2, kept): "line 3: the kept run | owner | 2026-11-09"})
+        try:
+            copy_results(results2, keep2, "today", listed, now)
+            raise AssertionError("no refusal")
+        except OSError as error:
+            assert "keep list" in str(error) and kept in str(error) and "line 3" in str(error), str(error)
+        assert os.listdir(keep2) == [], "nothing copied"
+        # The null: without the line, the same folder copies. A cited old run copies as text only, and the old
+        # uncited run (the one that was kept) not at all.
+        evidence2 = Evidence("a record cites " + cited)
+        copied = copy_results(results2, keep2, "today", evidence2, now)
         assert sorted(os.path.basename(c) for c in copied) == sorted([young, trimmed, cited]), copied
         target = os.path.join(keep2, "runs-today")
         assert sorted(os.listdir(os.path.join(target, young))) == ["a.png", "b.log", "c.dmp"]
-        assert sorted(os.listdir(os.path.join(target, cited))) == ["a.png", "b.log", "c.dmp"]
+        assert sorted(os.listdir(os.path.join(target, cited))) == ["b.log", "c.dmp"]
         assert sorted(os.listdir(os.path.join(target, trimmed))) == ["b.log", "c.dmp"]
         assert not os.path.exists(os.path.join(target, expired)) and not os.path.lexists(os.path.join(target, "run-link"))
         # A second removal finds the same files kept, with or without the pictures.
-        assert copy_results(results2, keep2, "later", Evidence("a record cites " + cited), now) == []
+        assert copy_results(results2, keep2, "later", evidence2, now) == []
 
         # The output folders of a tree: its target with a link in it, a member's, a target with no build's marks, a link.
         built = os.path.join(temp, "built")
@@ -1024,9 +1058,9 @@ def self_test():
                 assert git(path, "checkout", "-q", "--detach").returncode == 0
             return path
 
-        def facts(path, branch, records=None):
+        def facts(path, branch, records=None, keep=None):
             tree = {"path": path, "main": False, "branch": branch, "head": git(path, "rev-parse", "HEAD").stdout.strip(), "locked": False, "lock_reason": "", "prunable": False}
-            return facts_of(tree, "master", repository, [], {}, [], 0.0, time.time(), frozenset(), records)
+            return facts_of(tree, "master", repository, [], {}, [], 0.0, time.time(), frozenset(), records, keep)
 
         # A junction that came after the facts: the removal finds it, and its target stays.
         late = worktree("late")
@@ -1104,6 +1138,18 @@ def self_test():
         assert any("the records cite its path" in reason for reason in risk_reasons(row)) and any("1 run folders that the records cite" in reason for reason in risk_reasons(row))
         assert not any("run folders" in reason for reason in risk_reasons({**row, "goes": True})) and any("run folders" in reason for reason in risk_reasons({**row, "goes": False}))
         assert facts(dirty, "dirty", Evidence("nothing"))["cited_runs"] == []
+        # A merged tree with a run on the keep list stays, and the list names the run and its line (A7). The null:
+        # without the line, the reason is the next one, the untracked results folder (this repository ignores no
+        # results; a real one does, and the tree goes).
+        held = worktree("held")
+        os.makedirs(os.path.join(held, "results", "20261104-020202-k"))
+        open(os.path.join(held, "results", "20261104-020202-k", "a.png"), "w").write("p")
+        keep = Evidence("", kept={os.path.join(held, "results", "20261104-020202-k").upper(): "line 7: the held results | open: risk 76 | 2026-11-09"})
+        row = facts(held, "held", None, keep)
+        assert row["kept_runs"] == [("20261104-020202-k", "line 7: the held results | open: risk 76 | 2026-11-09")], row["kept_runs"]
+        assert not decide(row)[0] and "1 runs on the keep list, the first 20261104-020202-k (line 7" in decide(row)[1], decide(row)
+        assert facts(held, "held", None, Evidence(""))["kept_runs"] == [] and decide(facts(held, "held", None, Evidence(""))) == (False, "1 changed or untracked files")
+        assert facts(held, "held")["kept_runs"] == []
         # The records files: read as one text, and a missing file is a problem, not a silence.
         records_folder = os.path.join(temp, "records")
         os.makedirs(records_folder)
