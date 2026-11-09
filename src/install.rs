@@ -84,6 +84,7 @@ pub unsafe fn census(hooked: bool) -> usize {
             Some(port) => {
                 let ran = !port.locked() && port.mode() != Mode::Off;
                 port.lock();
+                note_cause(format!("{} is changed in memory: {}", port.name, census::describe(change)));
                 let feature = ports::code_patch_feature(change.func.ea + change.offset, change.len);
                 if let Some(feature) = feature {
                     let mut options = LOCKED_BY_OPTIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -116,6 +117,29 @@ static REFUSED: AtomicBool = AtomicBool::new(false);
 /// The features of the Morrowind Code Patch whose records hold a change that locked a port.
 static LOCKED_BY_OPTIONS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
+/// Why each port cannot run as Rust, in the order found: a change in memory that the port does
+/// not follow, or a detour that failed.
+static CAUSES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The cause of the refusal, set once when the renderer is refused.
+static REFUSAL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn note_cause(cause: String) {
+    CAUSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(cause);
+}
+
+/// Refuses the renderer for the session with `cause`, and returns the message of the refusal.
+fn refuse(cause: String) -> String {
+    *REFUSAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = cause;
+    REFUSED.store(true, Ordering::Relaxed);
+    refused_message()
+}
+
+/// The cause of the refusal, when the renderer is refused: for `nirender.refusalCause()`.
+pub fn refusal_cause() -> Option<String> {
+    refused().then(|| REFUSAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone())
+}
+
 /// The features of the Code Patch that locked a port: the cause of a refusal that the player
 /// can change.
 pub fn locked_by_options() -> Vec<u32> {
@@ -127,17 +151,19 @@ pub fn refused() -> bool {
     REFUSED.load(Ordering::Relaxed)
 }
 
-const REFUSED_MESSAGE: &str = "the renderer is refused for this session (see the census above); the game keeps MGE XE on Direct3D 9";
+/// The message of a later call of `install` after a refusal: the first message has the cause.
+const REFUSED_AGAIN: &str = "the renderer is refused for this session (the cause is in the first install line); the game keeps MGE XE on Direct3D 9";
 
-/// The message of a refusal, with the options of the Code Patch that caused it.
+/// The message of a refusal: its cause, and the options of the Code Patch that caused it.
 fn refused_message() -> String {
+    let cause = REFUSAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
     let options: Vec<String> =
         locked_by_options().iter().map(|&feature| format!("\"{}\" (feature {feature})", ports::code_patch_option(feature))).collect();
-    if options.is_empty() {
-        REFUSED_MESSAGE.to_string()
-    } else {
-        format!("{REFUSED_MESSAGE}; the cause is the Morrowind Code Patch option {}", options.join(", "))
+    let mut message = format!("the renderer is refused for this session: {cause}; the game keeps MGE XE on Direct3D 9");
+    if !options.is_empty() {
+        message += &format!("; the cause is the Morrowind Code Patch option {}", options.join(", "));
     }
+    message
 }
 
 /// Refuses the renderer for the session when the game asks for its Direct3D 8 before a port
@@ -151,8 +177,8 @@ pub fn refuse_without_ports() -> bool {
     if ports::all().any(|p| p.installed()) {
         return false;
     }
-    REFUSED.store(true, Ordering::Relaxed);
-    crate::log!("no port is installed when the game asks for its Direct3D 8: the Lua side of the plugin did not run (see MWSE.log); the game keeps MGE XE on Direct3D 9");
+    let message = refuse("no port is installed when the game asks for its Direct3D 8: the Lua side of the plugin did not run (see MWSE.log)".to_string());
+    crate::log!("{message}");
     true
 }
 
@@ -160,7 +186,7 @@ pub fn refuse_without_ports() -> bool {
 /// starts in mode off. A second call only puts the recorder on the device.
 pub unsafe fn install() -> Result<String, String> {
     if refused() {
-        return Err(refused_message());
+        return Err(REFUSED_AGAIN.to_string());
     }
     if ports::all().any(|p| p.installed()) {
         return Ok(attach_device()?.unwrap_or_else(|| "the game has no renderer yet".to_string()));
@@ -168,11 +194,9 @@ pub unsafe fn install() -> Result<String, String> {
     // The renderer takes engine events and overrides from MWSE's native ABI (`mwse_native`).
     // Without it the link to the host is not made and the game draws nothing: the renderer is
     // refused before any port goes on, and the game keeps MGE XE on Direct3D 9.
+    // The caller (`nirender.install`) writes the message of a refusal to the log.
     if crate::link_client::own_d3d8() && crate::mwse_native::api().is_none() {
-        REFUSED.store(true, Ordering::Relaxed);
-        let message = format!("{}; the renderer is refused for this session; the game keeps MGE XE on Direct3D 9", crate::mwse_native::NO_TABLE);
-        crate::log!("{message}");
-        return Err(message);
+        return Err(refuse(crate::mwse_native::NO_TABLE.to_string()));
     }
     crate::log!("{}", crate::BUILD_ID);
     crate::switches::log_set();
@@ -219,6 +243,7 @@ pub unsafe fn install() -> Result<String, String> {
             Err(error) => {
                 failed += 1;
                 crate::log!("no detour on {}: {}", port.name, error);
+                note_cause(format!("{} has no detour: {}", port.name, error));
             }
         }
     }
@@ -229,9 +254,8 @@ pub unsafe fn install() -> Result<String, String> {
     if crate::link_client::own_d3d8() {
         let cannot: Vec<&str> = ports::all().filter(|p| (p.locked() || !p.installed()) && skipped.as_deref() != Some(p.name)).map(|p| p.name).collect();
         if !cannot.is_empty() {
-            REFUSED.store(true, Ordering::Relaxed);
-            crate::log!("{} of {} ports cannot run as Rust: {}", cannot.len(), ports::all().count(), cannot.join(", "));
-            return Err(refused_message());
+            let causes = CAUSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).join("; ");
+            return Err(refuse(format!("{} of {} ports cannot run as Rust ({}): {causes}", cannot.len(), ports::all().count(), cannot.join(", "))));
         }
     }
     let attached = match attach_device()? {

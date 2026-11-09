@@ -119,6 +119,16 @@ unsafe extern "C" fn skin_source(l: LuaState) -> i32 {
     1
 }
 
+/// `nirender.refusalCause()` returns why the renderer is refused for this session, or nil when
+/// it is not refused.
+unsafe extern "C" fn refusal_cause(l: LuaState) -> i32 {
+    match install::refusal_cause() {
+        Some(cause) => push_str(l, &cause),
+        None => lua_pushnil(l),
+    }
+    1
+}
+
 /// `nirender.refusalOptions()` returns a list of `{ id = <feature>, name = <option> }`: the
 /// options of the Morrowind Code Patch whose changes locked a port. A refusal with an empty
 /// list has another cause.
@@ -800,6 +810,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     lua_createtable(l, 0, 20);
     set_fn(l, "install", install);
     set_fn(l, "refusalOptions", refusal_options);
+    set_fn(l, "refusalCause", refusal_cause);
     set_fn(l, "skinSource", skin_source);
     set_fn(l, "setMode", set_mode);
     set_fn(l, "report", report_lua);
