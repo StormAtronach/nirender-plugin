@@ -487,7 +487,7 @@ impl Player {
         let clear_depth = match self.pass.as_mut() {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
-                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
+                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
                 let clock = ticks::Clock::now();
                 pass.push_debug_group("extension: before the world");
                 let clear_depth = extension.before_world(&scene, pass, &mut replayer);
@@ -539,7 +539,7 @@ impl Player {
         let clear_depth = match self.pass.as_mut() {
             Some(pass) => {
                 let world = std::mem::take(&mut self.world_draws);
-                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
+                let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
                 let clock = ticks::Clock::now();
                 pass.push_debug_group("extension: before the world of a view of its own");
                 let clear_depth = extension.view_before_world(&scene, parts, pass, &mut replayer);
@@ -578,7 +578,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: after the world of a view of its own");
             extension.view_after_world(&scene, parts, pass, &mut replayer);
@@ -731,7 +731,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: after the world");
             extension.after_world(&scene, pass, &mut replayer);
@@ -813,7 +813,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: held draws");
             extension.draw_held(&scene, pass, &self.taken, &mut replayer);
@@ -846,7 +846,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a held draw in its place");
             extension.draw_held_in_place(&scene, pass, held, &mut replayer);
@@ -1075,7 +1075,7 @@ impl Player {
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
-            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
+            let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world, instances: &self.frame_instances };
             let clock = ticks::Clock::now();
             pass.push_debug_group("extension: a class of draws");
             extension.draw_class(class, &scene, pass, &mut replayer);
@@ -1096,7 +1096,7 @@ impl Player {
         let Some(pass) = self.pass.as_mut() else { return };
         let world = std::mem::take(&mut self.world_draws);
         let samples = self.pass_samples;
-        let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world[range], instances: &self.frame_instances, retained: &mut self.retained, args: &mut self.frame_args };
+        let mut replayer = Replayer { renderer: &mut self.renderer, kept: &world[range], instances: &self.frame_instances };
         replayer.replay(
             pass,
             &ReplayView {

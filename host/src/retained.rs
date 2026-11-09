@@ -10,10 +10,10 @@
 //! displayed in the main view (its list, `INSTANCE_SHOWN`) with one indirect call for each
 //! bucket (the instances with one pipeline, one stencil reference, one pair of pool buffers,
 //! and, without the arrays of the frame, one set of textures). The engine culled them, so the
-//! main view tests no planes. A view that the extension replays tests the bound of each
-//! instance against its planes on the CPU first. The one such view is the water's mirror of
-//! MGE XE, and it draws only the sky classes, which no instance of the table has: the mirror
-//! draws nothing of the table.
+//! main view tests no planes. The replays of the game's draws (the water's mirror of MGE XE,
+//! and the second half of the water-plane split, `Player::replay_blended`) do not draw the
+//! table: the mirror asks for the sky, and a sky instance draws at its place and never enters
+//! the table; the split replays only the blended draws of the engine's path.
 //! The values of the view (its matrices, the fog, the ambient light, the pixel step, the
 //! clip plane) are in a `Scene` uniform with a dynamic offset: the record of a retained
 //! instance has the flag 4 in `light_range.w`, and the shader takes those values from the
@@ -25,7 +25,7 @@ use super::*;
 /// The size of a `Scene` uniform, the step of the dynamic offset (a multiple of the
 /// alignment of a uniform offset, 256).
 pub const SCENE_SIZE: usize = 512;
-/// The scenes a frame can have: the world, and the views the extension replays.
+/// The scenes a frame can have: the world, and the views of their own.
 pub const SCENE_SLOTS: usize = 32;
 /// The room of the segments at first.
 pub const RETAINED_AT_FIRST: usize = 2048;
@@ -86,8 +86,7 @@ pub struct SceneData {
     /// lights record) is scaled as the scene's is.
     pub ambient_scale: [f32; 4],
     /// x: 1 when the view takes the point lights of the world from the clusters (the main
-    /// view, `MGE_XE_LIGHTS=world`); a view that the extension replays keeps the lights of the
-    /// draw.
+    /// view, `MGE_XE_LIGHTS=world`); a view of its own keeps the lights of the draw.
     pub world_lights: [u32; 4],
     pub padding: [u32; 48],
 }
@@ -163,8 +162,7 @@ struct Slot {
     base_vertex: i32,
     /// The draw blends and the engine would sort it. The main view draws it at its place in
     /// the engine's sorted queue ([`tag::INSTANCE_QUEUED`]), where the engine flushes the
-    /// queue; a view that the extension replays draws it back to front with the other sorted
-    /// blends.
+    /// queue.
     sorted: bool,
     /// The shape's own alpha property blends and the engine does not sort it: the engine
     /// draws it at its display, in the order of its walk ([`engine::walk`]).
@@ -501,9 +499,6 @@ pub struct RetainedSet {
     /// 32-bit translations stay small. Without one the origin is 0: the space of the world.
     origin: [f64; 3],
     relative: bool,
-    /// The view of the game for the world of the frame, in the space of the world: the
-    /// planes of the cull come from it.
-    pub main_view: [f32; 16],
     /// The bones of the skinned instances, as their records give them (the matrix of the
     /// rotation and the scale, the exact translation): `bones_of` has the range of each
     /// instance, `bone_free` the free ranges. The GPU's palette is made from them for the
@@ -568,7 +563,6 @@ impl RetainedSet {
             walk_view: None,
             origin: [0.0; 3],
             relative: false,
-            main_view: [0.0; 16],
             bones: Vec::new(),
             bones_of: HashMap::new(),
             bone_free: Vec::new(),
@@ -964,44 +958,6 @@ impl RetainedSet {
         out
     }
 
-    /// The view of a replayed scene for the instances. `base` is the view of the main scene
-    /// (the space of the set); `given` is the view of the replay in the space of the world,
-    /// when it has one; `world` is a change in the space of the world (a reflection), when
-    /// there is one.
-    pub fn replay_view(&self, base: &[f32; 16], given: Option<[f32; 16]>, world: Option<[f64; 16]>) -> [f32; 16] {
-        let o = self.origin;
-        let mut v: [f64; 16] = match given {
-            Some(m) => {
-                let mut m = m.map(f64::from);
-                for c in 0..3 {
-                    m[12 + c] += o[0] * m[c] + o[1] * m[4 + c] + o[2] * m[8 + c];
-                }
-                m
-            }
-            None => base.map(f64::from),
-        };
-        if let Some(w) = world {
-            let mut to = [0.0f64; 16];
-            let mut from = [0.0f64; 16];
-            for i in 0..4 {
-                to[i * 5] = 1.0;
-                from[i * 5] = 1.0;
-            }
-            for axis in 0..3 {
-                to[12 + axis] = o[axis];
-                from[12 + axis] = -o[axis];
-            }
-            v = multiply64(&multiply64(&multiply64(&to, &w), &from), &v);
-        }
-        v.map(|x| x as f32)
-    }
-
-    /// A plane of the space of the world in the space of the set.
-    pub fn plane_of(&self, plane: [f64; 4]) -> [f32; 4] {
-        let o = self.origin;
-        [plane[0] as f32, plane[1] as f32, plane[2] as f32, (plane[3] + plane[0] * o[0] + plane[1] * o[1] + plane[2] * o[2]) as f32]
-    }
-
     /// The lights of each slot of a geometry as the table resolves them: the run of the
     /// slot and the shaded values behind the indexes (`MGE_XE_DRAW_DUMP`).
     pub fn dump_lights(&self, geometry: u32, lights: &[LightData]) {
@@ -1291,8 +1247,6 @@ pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
 /// What a view does with the sorted blends of the table.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Sorted {
-    /// Draws them after the rest, back to front: a view that the extension replays.
-    Together,
     /// Draws the rest and keeps them for `Only`: the main view at the start of the world.
     Keep,
     /// Draws the kept blends: at the point where the engine flushes its sorted queue.
@@ -1722,7 +1676,7 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
     let mut frame_bound = false;
     let order = match view.sorted {
         Sorted::Only => core::mem::take(&mut set.kept_sorted),
-        Sorted::Together | Sorted::Keep => {
+        Sorted::Keep => {
             set.collect_order(view);
             core::mem::take(&mut set.order)
         }
@@ -1921,8 +1875,7 @@ impl RetainedSet {
     /// 4. The blends the engine would sort, into `sorted_order`: back to front by the depth
     ///    of the bound centre along the view, ties by the order of the slots. This is not
     ///    the engine's order: the engine sorts screen-space boxes (`$2::Sort` 0x6FE830,
-    ///    engine-rules R21). A view draws them after the rest
-    ///    ([`Sorted::Together`]) or keeps them for the flush of the engine's queue
+    ///    engine-rules R21). The main view keeps them for the flush of the engine's queue
     ///    ([`Sorted::Keep`], then `Only`). There a kept blend with a place in the engine's
     ///    queue ([`tag::INSTANCE_QUEUED`]) draws at its place, in the engine's order; this
     ///    order is only for the blends without one (`draw_retained_sorted`).
@@ -1989,7 +1942,6 @@ impl RetainedSet {
             self.walk_view = Some(*view);
         }
         match view.sorted {
-            Sorted::Together => self.order.append(&mut self.sorted_order),
             Sorted::Keep => {
                 self.kept_sorted.clear();
                 self.kept_sorted.append(&mut self.sorted_order);
@@ -2171,8 +2123,8 @@ impl Player {
                 fill: derived.fill,
                 color_write: p.color_write & 7,
                 stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
-                // A draw of the table goes into the pass of the game; a replay into another
-                // pass sets the samples of that pass (`draw_retained` with a `ReplayView`).
+                // A draw of the table goes into the pass of the game; a view in another pass
+                // sets the samples of that pass (`RetainedView::samples`).
                 samples: self.renderer.samples,
             };
             let mut dummy = Vec::new();
@@ -2454,7 +2406,6 @@ impl Player {
             println!("scene dump: fog_color {:?} fog {:?} ambient {:?} counts {:?} extension5 {:?} extension7 {:?}", scene.fog_color, scene.fog, scene.scene_ambient, scene.counts, scene.extension5, scene.extension7);
         }
         // The cull is in the space of the world: the bounds of the slots are the engine's.
-        self.retained.main_view = facts.view;
         let planes = view_planes(&facts.view, &facts.projection);
         let held = self.retained_hold(facts, &planes);
         self.begin_pass();
@@ -2503,8 +2454,7 @@ impl Player {
         let all_kept = if generation == 0 && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
         // Risk 34: the engine's queue takes every blend the engine displays and the plugin
         // writes its place, so a kept blend without one was not displayed by the engine in
-        // this frame: the main view does not draw it. A view that the extension replays culls
-        // with its own planes. The count of them stays for the report.
+        // this frame: the main view does not draw it. The count of them stays for the report.
         let placed: std::collections::HashSet<u32> = deferred.iter().filter_map(|e| if let crate::Waiting::Table(id) = e.0 { Some(id) } else { None }).collect();
         let without_place = all_kept
             .iter()
@@ -2953,10 +2903,6 @@ mod list_tests {
         set.set_shown([8, 7]);
         // The engine displayed both: no plane test in the main view, and the list's order.
         assert_eq!(drawn(&set, &main_view()), [1, 0]);
-        // Another camera's view of the main view's instances (the extension's reflection)
-        // keeps its planes.
-        let reflection = RetainedView { sorted: Sorted::Together, ..main_view() };
-        assert_eq!(drawn(&set, &reflection), [0]);
     }
 
     #[test]
@@ -3407,38 +3353,6 @@ impl Retained {
         }
         world[15] = 1.0;
         world
-    }
-}
-
-impl Replayer<'_> {
-    /// The retained instances in a view the extension replays, after the kept draws.
-    pub(super) fn replay_retained(&mut self, pass: &mut wgpu::RenderPass<'static>, view: &ReplayView) {
-        if self.retained.by_id.is_empty() || view.translucent_only {
-            return;
-        }
-        let slot = self.renderer.scene_slots_used;
-        if slot as usize >= SCENE_SLOTS {
-            return;
-        }
-        self.renderer.scene_slots_used += 1;
-        let mut scene = self.renderer.scene_main;
-        // The view of the replay in the space of the world, for the cull; the same view in
-        // the space of the set, for the draws.
-        let mut absolute = view.view.unwrap_or(self.retained.main_view);
-        if let Some(world) = view.world {
-            let old: [f64; 16] = absolute.map(|v| v as f64);
-            absolute = multiply64(&world, &old).map(|v| v as f32);
-        }
-        scene.view = self.retained.replay_view(&scene.view, view.view, view.world);
-        if let Some(projection) = view.projection {
-            scene.projection = crate::depth::gpu_projection(&projection);
-        }
-        scene.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
-        scene.clip_plane = view.clip_plane.map_or([0.0; 4], |p| self.retained.plane_of(p));
-        self.renderer.write_scene(slot, &scene);
-        let planes = view_planes(&absolute, &scene.projection);
-        let retained_view = RetainedView { scene_slot: slot, classes: view.classes, planes, flip_cull: view.flip_cull, force_depth_test: view.force_depth_test, target: None, sorted: Sorted::Together, samples: view.samples };
-        draw_retained(pass, self.renderer, self.retained, self.args, &retained_view);
     }
 }
 

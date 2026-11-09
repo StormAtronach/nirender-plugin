@@ -15,8 +15,7 @@
 //! ([`capture::tag::INSTANCE_QUEUED`]), and the helper does not draw one without a place in
 //! this frame. A blend that the engine does not sort draws at its place in the engine's walk
 //! ([`capture::tag::INSTANCE_WALK`]) when it has one, else in the engine's order of display.
-//! A view that the extension replays draws the sorted blends of the table back to front. The
-//! class of a shape is decided once and kept until the shape is deleted.
+//! The class of a shape is decided once and kept until the shape is deleted.
 //!
 //! The modes ([`Mode`]):
 //! - `off`: no instance.

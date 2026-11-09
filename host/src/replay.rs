@@ -95,10 +95,6 @@ pub(crate) struct Replayer<'a> {
     pub(crate) kept: &'a [Rc<Draw>],
     /// The instances of the frame: the world matrices of the kept draws' instances.
     pub(crate) instances: &'a [Instance],
-    /// The retained instances, drawn after the kept draws, and the indirect arguments of
-    /// the frame that their draws join.
-    pub(crate) retained: &'a mut RetainedSet,
-    pub(crate) args: &'a mut Vec<IndirectArgs>,
 }
 
 /// A plane in the space of the world of the game, in the space of a draw whose world is
@@ -213,6 +209,5 @@ impl Replay for Replayer<'_> {
             pass.draw_indexed(first..first + count, kept.base_vertex, instances);
             self.renderer.counts.replayed += 1;
         }
-        self.replay_retained(pass, view);
     }
 }
