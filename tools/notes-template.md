@@ -15,6 +15,7 @@ Test build of MGE XE G7 with the wgpu renderer. Read `MGE XE Renderer Readme.md`
 
 ## Known issues
 
+- **Use the MWSE.dll of this archive, not the build of the MWSE updater.** The renderer needs our MWSE fork: the public MWSE does not have the parts it uses.
 - One list, kept in the readme too; name each issue once.
 
 ## Please check by hand

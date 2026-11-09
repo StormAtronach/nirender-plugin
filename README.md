@@ -21,6 +21,16 @@ A 64-bit helper, `numidium.exe` of MGE XE G7, reads the ring and draws the frame
 The helper is in the sibling repo `MGE-XE-G7-render-link`. A change of `host/` changes the
 helper build. Build the plugin before `cargo xtask build` of that repo.
 
+## Known items
+
+- **The renderer needs our MWSE fork.** Use the test line of our MWSE fork (today the branch
+  test/abi-fixes-15 of the MWSE repo). Stock MWSE does not have the native ABI that the plugin
+  and MGE XE use. It also does not have the fixes of the MWSE risks that the project closed in
+  the fork (risks 25, 31 and 36; the owner's D158).
+- **The list of the fork-only changes** is `Numidium Project/notes/mwse-changes.md` in the docs
+  repo. It is checked each week against MWSE upstream (the owner's D157).
+- **The project may keep the MWSE fork for a while** (the owner's D159).
+
 ## How the plugin works
 
 - The ports: Rust functions that replace the renderer functions of the game, one for one.
