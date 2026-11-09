@@ -532,16 +532,8 @@ fn vs(in: VertexIn) -> VertexOut {
                     let a = light.attenuation;
                     strength = 1.0 / max(a.x + a.y * distance + a.z * distance * distance, 0.0001);
                 }
-                if light.position.w == 2.0 {
-                    // The cone of a spot light: all of the light inside the inner angle, none
-                    // outside the outer angle, and a curve between them.
-                    let rho = dot(normalize(light.direction.xyz), -direction);
-                    if rho <= light.cone.y {
-                        strength = 0.0;
-                    } else if rho < light.cone.x {
-                        strength *= pow((rho - light.cone.y) / max(light.cone.x - light.cone.y, 0.0001), light.attenuation.w);
-                    }
-                }
+                // The cone of a spot light (`spot_cone` of spot.rs).
+                strength *= spot_cone(light, direction);
             }
             sum += strength * (ambient * light.ambient.rgb + diffuse.rgb * light.diffuse.rgb * max(dot(normal, direction), 0.0));
         }
