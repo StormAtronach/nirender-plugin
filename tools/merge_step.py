@@ -7,6 +7,13 @@
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
+It also takes the game slot, after the build slot and for the whole check (the owner's D161): the stages write their logs to
+E:, and a game that starts meanwhile stalls on its own log writes. The label is the build label plus " (game slot)". Both
+slots are released on every exit path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes
+the game slot's work each minute, as no game runs and the slot lapses after 15 idle minutes. --dry-run and --self-test take
+no slot (the self-test uses slot.py on a scratch state folder). A hold of the game slot by another session, or by an earlier
+run of this session, makes this run wait in the queue; with --no-wait it stops with exit code 3 and releases the build slot.
+
 <tip> is the tip of the shared branch before the merge. It is required: the parents of <commit> do not tell the change, as
 the first parent misses a fast-forward and a branch that merged the shared branch. The tool refuses a <tip> that is newer
 than <branch>@{1}, the tip before the last move of the branch, as such a diff skips a part of the merge. An older <tip> only
@@ -18,8 +25,9 @@ the last commit that passed all stages, and the tool also refuses a <tip> newer 
 the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch.
 
 The stages of nirender-plugin: the plugin's tests, the host's tests, clippy_baseline.py --check, checks.py plugin. The
-stages of render-link: the tests of the helper, mge-config and mge-probe, clippy_baseline.py --check --mge <repo>, checks.py
-mge --mge <repo>. The diff from <tip> to <commit> adds these:
+stages of render-link: the tests of the helper, mge-config and mge-probe; the helper's GPU tests (cargo test -p mgeHost64 --
+--ignored: the tests marked #[ignore] that need a GPU, run through "merge_step.py --require-tests <command>", which fails when
+no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
 
 - a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
 - the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
@@ -56,12 +64,15 @@ The gate needs what a diff cannot give:
 """
 import argparse
 import contextlib
+import importlib.util
 import inspect
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 
@@ -69,15 +80,23 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
 from common import git_env  # noqa: E402
-from make_play_set import BASELINE, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
+from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
 SLOT_MINUTES = 60
+# The label of this tool's hold of the game slot, from the label of its hold of the build slot.
+GAME_LABEL = "%s (game slot)"
+# How often a round notes the work of the game slot while its stages run (the slot's idle limit is 15 minutes).
+GAME_NOTE_SECONDS = 60
 LOG_FOLDER = "E:\\nirender-keep\\merge-step"
 # The stages that replay the build of the gate or the kept base build.
 INSTANCE_STAGE = "instance A/B grass"
 BASE_STAGE = "base build"
+# The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
+# command and fails when no test ran.
+GPU_STAGE = "helper GPU tests"
+REQUIRE_TESTS = "--require-tests"
 # What a change must touch for the gate, as paths from the root of each repo: a file, or a folder with its slash.
 GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
                          "host/.cargo/config.toml"),
@@ -122,6 +141,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
     else:
         stages = [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config", "-p", "mge-probe"]),
+                  (GPU_STAGE, mge, [python, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored"]),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
                   ("checks", plugin, tool("checks.py", "mge", "--mge", mge)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
@@ -138,6 +158,32 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     elif touches(paths, DIST_PATHS[kind]):
         stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
+
+
+# The summary line of one test binary in the output of cargo test, quiet or not.
+TEST_RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed;", re.MULTILINE)
+
+
+def tests_ran(output):
+    """How many tests the output of `cargo test` says ran: passed and failed, over every test binary."""
+    return sum(int(passed) + int(failed) for passed, failed in TEST_RESULT.findall(output))
+
+
+def require_tests(command):
+    """Runs one command (cargo test) and echoes its output. Exit code of the command, or 1 when it passed and no test ran:
+    a filter or a lost #[ignore] leaves such a stage with nothing to judge, and 0 tests are no pass."""
+    done = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    output = done.stdout.decode("utf-8", "replace")
+    # What the console or the log file cannot encode becomes a "?", as the write would fail on it.
+    encoding = sys.stdout.encoding or "utf-8"
+    sys.stdout.write(output.encode(encoding, "replace").decode(encoding))
+    sys.stdout.flush()
+    ran = tests_ran(output)
+    say("%d tests ran" % ran)
+    if done.returncode == 0 and ran == 0:
+        say("FAIL: no test ran, so the stage judged nothing")
+        return 1
+    return done.returncode
 
 
 def needs_clean_sibling(stages):
@@ -327,14 +373,14 @@ def take_options(slots, stages):
 OWN_HOLD = ("this session holds it as", "your session already holds the build slot as")
 
 
-def take_build(slots, what, no_wait, options=None):
-    """Takes the build slot, and asks again in its queue, so that the place stays. A hold of another run of this session
-    (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN" line, with
-    --no-wait when it must wait, on the end of the wait after a `leave` of its place, and on any other refusal, as
-    waiting cannot pass that."""
+def take_slot(slots, slot, what, no_wait, options=None):
+    """Takes a slot ("build" or "game"), and asks again in its queue, so that the place stays. A hold of another run of
+    this session (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN"
+    line, with --no-wait when it must wait, on the end of the wait after a `leave` of its place, and on any other
+    refusal, as waiting cannot pass that. A Ctrl-C in the wait leaves the queue."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     waiting_for_own = False
-    with slot_asker(slots, "build") as ask:
+    with slot_asker(slots, slot) as ask:
         while True:
             try:
                 reply = ask(what, minutes=SLOT_MINUTES, **(options or {}))
@@ -342,35 +388,97 @@ def take_build(slots, what, no_wait, options=None):
                 say("the state of the slots is busy, and I ask again: %s" % error)
                 time.sleep(WAIT_SECONDS)
                 continue
+            except KeyboardInterrupt:
+                slots.leave(slot, what)
+                raise
             if reply.code == slots.DONE:
                 # All lines: a take of the build slot names the free space on C, and warns when the cleaning is due.
                 say(reply.text)
                 return True
             first = reply.text.splitlines()[0]
             if reply.code == getattr(slots, "WAIT_ENDED", None):
-                say("NOT RUN: this run left the queue of the build slot: %s" % first)
+                say("NOT RUN: this run left the queue of the %s slot: %s" % (slot, first))
                 return False
             own = reply.code == slots.REFUSED and any(phrase in first for phrase in OWN_HOLD)
             if reply.code == slots.REFUSED and not own:
-                say("NOT RUN: the take of the build slot was refused: %s" % first)
+                say("NOT RUN: the take of the %s slot was refused: %s" % (slot, first))
                 return False
             if no_wait:
                 if not own:
-                    slots.leave("build", what)
-                say("NOT RUN: --no-wait, and the build slot is not free: %s" % first)
+                    slots.leave(slot, what)
+                say("NOT RUN: --no-wait, and the %s slot is not free: %s" % (slot, first))
                 return False
             if own and not waiting_for_own:
-                say("waiting: another run of this session holds the build slot, and this run starts after its release: %s" % first)
+                say("waiting: another run of this session holds the %s slot, and this run starts after its release: %s" % (slot, first))
             elif not own:
                 say(first)
             waiting_for_own = own
             time.sleep(WAIT_SECONDS)
 
 
+def take_build(slots, what, no_wait, options=None):
+    return take_slot(slots, "build", what, no_wait, options)
+
+
+def take_game(slots, label, no_wait):
+    """Takes the game slot for the whole check (the owner's D161): the stages write logs to E:, and a game that starts in
+    that time stalls on its own log writes. The label is this run's own, so that its release names it."""
+    return take_slot(slots, "game", label, no_wait)
+
+
 def release_build(slots):
     """Releases the build slot and prints all lines of the reply: after a build, slot.py names the free space on C and
     warns when the cleaning is due (the owner's D138 and D141)."""
     say(slots.release("build").text)
+
+
+def release_game(slots, label):
+    """Releases the game hold of this run by its label: from a terminal with no session, slot.py owns a hold only by its
+    label. Prints every line of the reply."""
+    say(slots.release("game", label).text)
+
+
+@contextlib.contextmanager
+def game_hold_noted(slots, seconds=GAME_NOTE_SECONDS):
+    """Notes the work of the game slot every `seconds` while the stages run: its hold lapses after 15 minutes with no game
+    seen, and the stages start none. A run that dies stops the notes, and its hold lapses by itself."""
+    stop = threading.Event()
+
+    def note():
+        while True:
+            slots.note_active("game", time.time())
+            if stop.wait(seconds):
+                return
+
+    thread = threading.Thread(target=note, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+
+
+def run_round(slots, stages, what, log_path, no_wait):
+    """The stages of one round with the build slot and the game slot held, both released on every exit path: a failing
+    stage, an exception and Ctrl-C. (results, summary), or None when a take did not give a slot."""
+    game_label = GAME_LABEL % what
+    if not take_build(slots, what, no_wait, take_options(slots, stages)):
+        return None
+    try:
+        if not take_game(slots, game_label, no_wait):
+            return None
+        try:
+            with game_hold_noted(slots), open(log_path, "w", encoding="utf-8", errors="replace") as log:
+                results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
+                # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
+                summary = summary_line(results, log_path)
+                log.write("\n== %s\n" % summary)
+        finally:
+            release_game(slots, game_label)
+    finally:
+        release_build(slots)
+    return results, summary
 
 
 def git(repo, *args):
@@ -402,6 +510,21 @@ def two_places_take_for_ab(slot, who, *, minutes=None, timing=False, whole=False
     pass
 
 
+def scratch_slots(state):
+    """slot.py on a scratch state folder, as a module of its own: it reads SLOT_DIR and the process names when it loads. A
+    fake session holds the slots, and the names of the game and the compilers match no process, so that a real game or a
+    real compile cannot refuse a take of the test. The environment is the test's to keep."""
+    os.makedirs(state, exist_ok=True)
+    os.environ.update(SLOT_DIR=state, SLOT_GAME_IMAGE="no-such-program.exe", SLOT_COMPILERS="no-such-program.exe", SLOT_PROJECT_FOLDERS="",
+                      SLOT_FREE_MEMORY_GB="64", SLOT_REPLAY_IMAGE="no-such-program.exe", CLAUDE_CODE_SESSION_ID="merge-step-self-test")
+    os.environ.pop("SLOT_OVERRIDE", None)
+    sys.path.insert(0, HARNESS)
+    spec = importlib.util.spec_from_file_location("slot_of_the_self_test", os.path.join(HARNESS, "slot.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def self_test():
     with tempfile.TemporaryDirectory() as root:
         plugin = os.path.join(root, PLUGIN_NAME)
@@ -428,13 +551,19 @@ def self_test():
         assert needs_clean_sibling(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/noplugin.lua"]))
         for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
             assert names("plugin", plugin, path) == base + ["build for the gate", "replay gate"], path
-        mge_base = ["helper tests", "clippy baseline", "checks", "docs"]
+        mge_base = ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("mge", mge, "xtask/src/main.rs") == mge_base + ["build of the dist"]
         for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
             assert names("mge", mge, path) == mge_base + ["build for the gate", "replay gate"], path
         assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract", "build for the gate", "replay gate"]
         assert "mge-probe" in stages_for("mge", mge, [])[0][2]
-        assert stages_for("mge", mge, [])[1][2][-2:] == ["--mge", mge]
+        # The GPU tests run the ignored tests of the helper in its tree, through the wrapper that fails on 0 tests, and the
+        # plugin's tests do not run them.
+        gpu_folder, gpu_command = stages_for("mge", mge, [])[1][1:]
+        assert gpu_folder == mge and gpu_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored"]
+        assert gpu_command[:2] == [sys.executable, "-I"] and gpu_command[2] == os.path.join(plugin, "tools", "merge_step.py")
+        assert all(name != GPU_STAGE for name, _, _ in stages_for("plugin", plugin, []))
+        assert stages_for("mge", mge, [])[2][2][-2:] == ["--mge", mge]
         assert names("mge", mge, "mge-config/src/lib.rs") == mge_base + ["d3d8 build", "contract"]
         assert names("mge", mge, "mgeHost64/src/renderer/water.rs") == mge_base + ["build for the gate", "replay gate"]
         assert names("mge", mge, "mgeHost64/src/renderer.rs") == mge_base + ["build for the gate", "replay gate"]
@@ -732,6 +861,91 @@ def self_test():
         assert Waiting.asks == [("enter", "build"), ("ask", "x"), ("ask", "x"), ("exit",)], Waiting.asks
         assert shown.getvalue().splitlines()[-1] == "NOT RUN: this run left the queue of the build slot: build: this wait ended without the slot: the place was left or dropped", shown.getvalue()
 
+        # A stage of tests fails when no test ran: cargo passes a filter that matches nothing, and a lost #[ignore] leaves 0.
+        one = "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 340 filtered out; finished in 0.1s\n"
+        none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 341 filtered out; finished in 0.0s\n"
+        failed = "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.1s\n"
+        assert tests_ran(one) == 1 and tests_ran(none) == 0 and tests_ran(failed) == 3 and tests_ran(one + none + failed) == 4 and tests_ran("") == 0
+
+        def prints(text, code=0):
+            return [sys.executable, "-c", "import sys; sys.stdout.write(%r); sys.exit(%d)" % (text, code)]
+
+        for output, code, wanted in ((one, 0, 0), (none, 0, 1), ("", 0, 1), (failed, 101, 101), (none, 101, 101)):
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                assert require_tests(prints(output, code)) == wanted, (output, code)
+        assert "0 tests ran" in shown.getvalue()
+        # Through the stage: the same exit codes decide the line.
+        wrapper = [sys.executable, "-I", os.path.abspath(__file__), REQUIRE_TESTS]
+        with open(os.path.join(root, "log9.txt"), "w", encoding="utf-8") as log:
+            assert run_stage("with a test", root, wrapper + prints(one), log)
+            assert not run_stage("with none", root, wrapper + prints(none), log)
+        with open(os.path.join(root, "log9.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert "== PASS with a test (" in text and "== FAIL with none (" in text and "no test ran" in text, text
+
+        # The game slot (the owner's D161): a round holds the build slot and the game slot for all its stages, and releases
+        # both on every exit path. This uses the real slot.py on a scratch state folder, so that no slot of the day is touched.
+        slots = scratch_slots(os.path.join(root, "slot-state"))
+        state = slots.STATE_DIR
+        assert state.startswith(root)
+
+        def holders():
+            return sorted(name for name in os.listdir(state) if name.endswith(".holder"))
+
+        both_held = [sys.executable, "-c", "import os, sys; sys.exit(0 if os.path.exists(%r) and os.path.exists(%r) else 7)" % (slots.holder_path("game"), slots.holder_path("build"))]
+        round_log = os.path.join(root, "round.log")
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            # The take: both slots are held while the stage runs, and the stage checks it.
+            assert run_round(slots, [("both held", root, both_held)], "merge_step: x aaaaaaaaaa", round_log, True)[0] == [True]
+            assert holders() == [], "a pass releases both"
+            # A failing stage.
+            assert run_round(slots, [("bad", root, bad), ("both held", root, both_held)], "merge_step: x bbbbbbbbbb", round_log, True)[0] == [False, True]
+            assert holders() == [], "a failing stage releases both"
+            # An exception in a stage (no such folder), and a Ctrl-C.
+            try:
+                run_round(slots, [("lost", os.path.join(root, "no-such-folder"), good)], "merge_step: x cccccccccc", round_log, True)
+                raise AssertionError("the exception did not reach the caller")
+            except OSError:
+                pass
+            assert holders() == [], "an exception releases both"
+            real_run_stages = globals()["run_stages"]
+
+            def interrupted(*_, **__):
+                raise KeyboardInterrupt
+
+            globals()["run_stages"] = interrupted
+            try:
+                run_round(slots, [("a", root, good)], "merge_step: x dddddddddd", round_log, True)
+                raise AssertionError("the interrupt did not reach the caller")
+            except KeyboardInterrupt:
+                pass
+            finally:
+                globals()["run_stages"] = real_run_stages
+            assert holders() == [], "a Ctrl-C releases both"
+            # Another session holds the game slot, and the run does not wait (--no-wait): it takes nothing, and the build
+            # slot that it took stays no longer than the take of the game.
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test-other"
+            assert slots.take("game", "other: a game", minutes=5).code == slots.DONE
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
+            assert run_round(slots, [("a", root, good)], "merge_step: x eeeeeeeeee", round_log, True) is None
+            assert holders() == ["game.holder"], holders()
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test-other"
+            assert slots.release("game", "other: a game").code == slots.DONE
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
+        assert "merge_step: x aaaaaaaaaa (game slot)" in shown.getvalue(), shown.getvalue()
+        assert "NOT RUN: --no-wait, and the game slot is not free" in shown.getvalue(), shown.getvalue()
+
+        # The notes of the game slot's work: one at once, then one each period, and none after the round.
+        noted = []
+        counting = types.SimpleNamespace(note_active=lambda slot, now: noted.append(slot))
+        with game_hold_noted(counting, 0.01):
+            time.sleep(0.2)
+        after = len(noted)
+        time.sleep(0.1)
+        assert after >= 3 and set(noted) == {"game"} and len(noted) == after, noted
+
         # The log keeps its name, and its folder is made.
         logs = os.path.join(root, "new", "logs")
         assert log_path_of("0123456789abcdef", logs) == os.path.join(logs, "merge-step-0123456789.log") and os.path.isdir(logs)
@@ -740,6 +954,8 @@ def self_test():
 
 
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == REQUIRE_TESTS:
+        return require_tests(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("repo", nargs="?")
     parser.add_argument("commit", nargs="?")
@@ -795,17 +1011,10 @@ def main():
 
     slots = load_slots()
     what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
-    if not take_build(slots, what, args.no_wait, take_options(slots, stages)):
+    done = run_round(slots, stages, what, log_path_of(commit), args.no_wait)
+    if done is None:
         return 3
-    try:
-        log_path = log_path_of(commit)
-        with open(log_path, "w", encoding="utf-8", errors="replace") as log:
-            results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
-            # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
-            summary = summary_line(results, log_path)
-            log.write("\n== %s\n" % summary)
-    finally:
-        release_build(slots)
+    results, summary = done
     say(summary)
     if not all(results):
         return 1
