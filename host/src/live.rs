@@ -1141,12 +1141,11 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     let reader = format!("{} ({})", program_name(), reader_build(extension.as_deref()));
     match super::stream_format::accept_header(&data, &reader) {
         Ok(writer) => println!("stream format {}, the plugin {}", writer.format, writer.build_id),
-        Err(message) => {
-            for line in message.lines() {
-                println!("{line}");
-            }
-            super::gpu::refuse(super::stream_format::EXIT_STREAM_FORMAT, &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."));
-        }
+        Err(message) => super::gpu::refuse(
+            super::stream_format::EXIT_STREAM_FORMAT,
+            &message,
+            &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."),
+        ),
     }
     let size = (super::word(&data, HEADER_WIDTH_AT).max(64), super::word(&data, HEADER_HEIGHT_AT).max(64));
     let embed = args.iter().any(|a| a == "--embed");

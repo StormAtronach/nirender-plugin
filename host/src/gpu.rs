@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::log_pipe::ExitLines;
+
 static ERRORS: AtomicU64 = AtomicU64::new(0);
 /// The index of the newest submit, for [`last_submission`].
 static LAST_SUBMISSION: Mutex<Option<wgpu::SubmissionIndex>> = Mutex::new(None);
@@ -252,6 +254,20 @@ pub fn set_owner_window(window: isize) {
 /// only logged); without the switch it waits for the click.
 #[cfg(windows)]
 pub fn message_box(text: &str) {
+    let mut lines = ExitLines::new();
+    show_box(text, &mut lines);
+    lines.write_dropped_count();
+}
+
+/// A test shows no box: the box lines go into the log, and the box is left out.
+#[cfg(test)]
+pub(crate) static NO_BOX: AtomicBool = AtomicBool::new(false);
+
+/// [`message_box`] with its log lines in `lines`. A box comes before an end of the program,
+/// and another thread can then hold the lock of stdout in a full log pipe: the lines take no
+/// lock ([`ExitLines`]).
+#[cfg(windows)]
+fn show_box(text: &str, lines: &mut ExitLines) {
     #[link(name = "user32")]
     extern "system" {
         fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
@@ -265,7 +281,12 @@ pub fn message_box(text: &str) {
     const MB_SETFOREGROUND: u32 = 0x1_0000;
     const MB_TOPMOST: u32 = 0x4_0000;
     for line in text.lines() {
-        println!("box: {line}");
+        lines.line(&format!("box: {line}"));
+    }
+    #[cfg(test)]
+    if NO_BOX.load(Ordering::Relaxed) {
+        lines.line("box: not shown: a test");
+        return;
     }
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let text = wide(text);
@@ -283,7 +304,7 @@ pub fn message_box(text: &str) {
             let user32 = GetModuleHandleW(wide("user32.dll").as_ptr());
             let timed = GetProcAddress(user32, c"MessageBoxTimeoutW".as_ptr().cast());
             if timed.is_null() {
-                println!("box: not shown: this Windows has no MessageBoxTimeoutW");
+                lines.line("box: not shown: this Windows has no MessageBoxTimeoutW");
                 return;
             }
             let timed: MessageBoxTimeout = std::mem::transmute(timed);
@@ -293,52 +314,67 @@ pub fn message_box(text: &str) {
     // The elapsed time tells a timeout from a click: MessageBoxTimeoutW answers IDOK on the
     // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
     if seconds != 0 && started.elapsed() >= std::time::Duration::from_secs(u64::from(seconds)) {
-        println!("box: closed after {seconds} s, no click");
+        lines.line(&format!("box: closed after {seconds} s, no click"));
     } else {
-        println!("box: closed by a click");
+        lines.line("box: closed by a click");
     }
 }
 
 #[cfg(not(windows))]
 pub fn message_box(text: &str) {
+    let mut lines = ExitLines::new();
+    show_box(text, &mut lines);
+    lines.write_dropped_count();
+}
+
+#[cfg(not(windows))]
+fn show_box(text: &str, lines: &mut ExitLines) {
     for line in text.lines() {
-        println!("box: {line}");
+        lines.line(&format!("box: {line}"));
     }
 }
 
 /// Ends this program on a refusal with the exit `code` (10 to 29: the stream, the extension,
-/// the GPU) and the box `text`; the caller logged its reason lines. A refusal is an exit in
-/// progress, not a stall (the failure-path design, section 6.0), so in this order: the
-/// watchdog is disarmed, the exit is announced to the plugin (`stream_format::RING_ENDING`),
-/// the box waits for the player, the game's window gets WM_CLOSE (the close rule of
-/// section 5; without the game's window, a replay, only the box), and the program ends with
-/// the code. Public for the extension's own refusals.
-pub fn refuse(code: u32, text: &str) -> ! {
+/// the GPU), the log lines `reasons` (one line for each line of the text) and the box `text`.
+/// A refusal is an exit in progress, not a stall (the failure-path design, section 6.0), so
+/// in this order: the watchdog is disarmed, the exit is announced to the plugin
+/// (`stream_format::RING_ENDING`), the reason lines go into the log, the box waits for the
+/// player, the game's window gets WM_CLOSE (the close rule of section 5; without the game's
+/// window, a replay, only the box), and the program ends with the code. Public for the
+/// extension's own refusals.
+pub fn refuse(code: u32, reasons: &str, text: &str) -> ! {
     crate::watchdog::disarm();
     crate::live::announce_exit(code);
-    println!("refusal: the exit code {code} is announced; the box, then the end");
-    message_box(text);
+    // The lines of the refusal take no lock of stdout (`ExitLines`): the watchdog is disarmed
+    // now, and nothing else would end a wait there.
+    let mut lines = ExitLines::new();
+    for reason in reasons.lines() {
+        lines.line(reason);
+    }
+    lines.line(&format!("refusal: the exit code {code} is announced; the box, then the end"));
+    show_box(text, &mut lines);
     let owner = OWNER_WINDOW.load(Ordering::Relaxed);
     if owner != 0 {
-        close_window(owner);
+        close_window(owner, &mut lines);
     }
+    lines.write_dropped_count();
     exit_now(code)
 }
 
 #[cfg(windows)]
-fn close_window(window: isize) {
+fn close_window(window: isize, lines: &mut ExitLines) {
     #[link(name = "user32")]
     extern "system" {
         fn PostMessageW(window: isize, message: u32, wparam: usize, lparam: isize) -> i32;
     }
     const WM_CLOSE: u32 = 0x10;
-    println!("box: the game's window gets WM_CLOSE");
+    lines.line("box: the game's window gets WM_CLOSE");
     // SAFETY: PostMessageW takes any window handle; a window that is gone fails the call.
     unsafe { PostMessageW(window, WM_CLOSE, 0, 0) };
 }
 
 #[cfg(not(windows))]
-fn close_window(_window: isize) {}
+fn close_window(_window: isize, _lines: &mut ExitLines) {}
 
 /// Ends this program at once with `code`, for a refusal: TerminateProcess, not the orderly
 /// exit, so that no thread of the program (the loader, the device) can hold the end. The

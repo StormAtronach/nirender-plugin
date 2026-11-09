@@ -551,15 +551,13 @@ pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
 /// The box of the live start when no backend serves (the failure-path page, section 5, the
 /// code 20), and the log lines of the refusals; then the program ends with the code.
 pub(crate) fn refuse_live(refusals: &[Refusal]) -> ! {
-    for refusal in refusals {
-        println!("gpu: {refusal}");
-    }
+    let reasons: Vec<String> = refusals.iter().map(|refusal| format!("gpu: {refusal}")).collect();
     let why: Vec<String> = refusals.iter().map(|refusal| format!("{} ({}) {}.", refusal.adapter.as_deref().unwrap_or("No adapter"), backend_name(refusal.backend), refusal.reason)).collect();
     let text = format!(
         "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\nClose this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.",
         why.join("\n")
     );
-    gpu::refuse(crate::stream_format::EXIT_GPU, &text)
+    gpu::refuse(crate::stream_format::EXIT_GPU, &reasons.join("\n"), &text)
 }
 
 #[cfg(test)]
