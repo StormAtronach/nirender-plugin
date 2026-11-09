@@ -18,6 +18,16 @@
 //! made before the stream and that was not in view at its start. The module makes the
 //! renderer drop the buffers of such an object after the frame, so the next frame has them.
 //!
+//! A file from a stream that is running (`tee`) gets each source texture at the first record
+//! of the file that names it, read from the pixel data or the file of its source texture
+//! (`name_texture`). The plugin keeps no copy of the texture levels that the game locks: an
+//! unlock frees the level once its bytes are in the stream (risk 42, `own_host::unlock_level`).
+//! Only while a file is open does an unlock keep the level, because a file that holds writes its
+//! changed textures later from those copies. So the snapshot at a file's start writes a texture
+//! of the own host only when it still has all its locked levels; one with a freed level comes in
+//! at its naming, and the snapshot's log line counts those. The line of the file's textures at
+//! its end counts a named texture that the file lacks.
+//!
 //! The file: the 8 bytes `NIRCAP01`, then records. A record is a tag (u32), the length of its
 //! data in bytes (u32), and the data. All numbers are little endian. The tags are in `tag`.
 
@@ -1727,9 +1737,29 @@ pub unsafe fn mark(text: &str) {
             }
         }
     }
-    // Risk 42: what the plugin keeps of the locked texture levels in the game's address space.
+    // Risk 42: what the plugin keeps of the locked texture levels in the game's address space,
+    // and what the unlocks freed. Risk 41: the largest free block of that address space.
     let copies = crate::own_host::level_copies();
-    crate::log!("level copies at the mark '{text}': {} levels of {} textures, {:.1} MB", copies.levels, copies.textures, copies.bytes as f64 / 1e6);
+    let (dynamic_textures, dynamic_bytes) = crate::own_host::dynamic_copies();
+    let frees = &crate::own_host::LEVEL_FREES;
+    let largest_free = crate::overlay::largest_free_now();
+    crate::log!(
+        "level copies at the mark '{text}': {} levels of {} textures, {:.1} MB, of them {} dynamic textures, {:.1} MB; freed at unlock since the start: {} levels, {:.1} MB; locks of a freed level {} ({} textures made dynamic, {} read-only, {} with a rectangle); copies out of a level surface {} ({} of a freed one); largest free block {:.1} MB",
+        copies.levels,
+        copies.textures,
+        copies.bytes as f64 / 1e6,
+        dynamic_textures,
+        dynamic_bytes as f64 / 1e6,
+        frees.levels.load(Ordering::Relaxed),
+        frees.bytes.load(Ordering::Relaxed) as f64 / 1e6,
+        frees.locks_after_free.load(Ordering::Relaxed),
+        frees.made_dynamic.load(Ordering::Relaxed),
+        frees.read_only_locks_of_freed.load(Ordering::Relaxed),
+        frees.part_locks_of_freed.load(Ordering::Relaxed),
+        frees.copies_from_level.load(Ordering::Relaxed),
+        frees.copies_from_freed.load(Ordering::Relaxed),
+        largest_free as f64 / 1e6
+    );
 }
 
 /// One line about the capture, for the scenario: the phase, the records and the bytes,
@@ -2867,6 +2897,20 @@ mod tests {
         files.note_record(tag::CALL, &[&bytes(&[CALL_TEXTURE_LEVEL, 0, 9, 0])]);
         assert!(!files.wants(8, 1));
         assert!(!files.wants(9, 1));
+    }
+
+    /// Risk 42: a texture's levels are freed at their unlock, so a file that opens later gets
+    /// the texture by its naming. Each file starts with a set of its own (`tee` makes a new
+    /// `FileTextures`): a texture in an earlier file, or named before this file opened, is
+    /// read for this file at its first naming in it.
+    #[test]
+    fn each_file_reads_a_texture_at_its_first_naming_in_that_file() {
+        let mut first = FileTextures::default();
+        assert!(first.wants(7, 3));
+        first.have.insert(7, 3);
+        assert!(!first.wants(7, 3));
+        let mut second = FileTextures::default();
+        assert!(second.wants(7, 3));
     }
 
     #[test]
