@@ -598,6 +598,23 @@ mod tests {
         assert_eq!(world_scene(&mut main), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
     }
 
+    /// An interface scene drawn into a texture (the menu camera of a mod's own render) is not the
+    /// interface of the picture: it gives no post, also after the world began and before the
+    /// first-person scene. The interface scene of the back buffer still gives the one post.
+    /// Direct3D 9 posts only in the back buffer (`rendertargetNormal`).
+    #[test]
+    fn an_interface_scene_in_a_target_gives_no_post() {
+        let (mut main, mut target) = (Plan::default(), Plan::default());
+        world_scene(&mut main);
+        assert_eq!(target.scene_begin_view(SCENE_UI, ViewKind::Picture), vec![]);
+        target.scene_end(true, false, true, false, false);
+        main.scene_begin(SCENE_FIRST_PERSON);
+        main.scene_end(true, true, true, false, false);
+        assert_eq!(main.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
+        assert!(main.take_post(true, true));
+        assert!(!main.take_post(true, true));
+    }
+
     /// A mod's mirror drawn after the world, with the engine's queue still open: a clear of the
     /// mirror's depth goes to the target group's state, and the main plan's blends and classes
     /// still come at the first-person scene of the back buffer, not into the mirror.
