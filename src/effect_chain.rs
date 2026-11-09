@@ -103,15 +103,16 @@ unsafe fn local_words(node: usize, out: &mut Vec<u32>) {
     out.push(rd(node, AV::localTransform_localScale));
 }
 
-/// The nodes from the effect up to the root.
-unsafe fn nodes_up(effect: usize) -> Vec<usize> {
+/// The nodes from the effect up to the root, at most [`crate::parent_chain::GUARD`] of them. A
+/// longer chain is not a scene (a cycle, a freed node): the walk stops there and says so.
+unsafe fn nodes_up(effect: usize) -> Result<Vec<usize>, crate::parent_chain::ChainTooLong> {
     let mut nodes = Vec::new();
-    let mut node = effect;
-    while node != 0 {
+    let parent_of = |node| rd(node, AV::parentNode);
+    let walked = crate::parent_chain::first_answer(effect, crate::parent_chain::GUARD, parent_of, |node| {
         nodes.push(node);
-        node = rd(node, AV::parentNode);
-    }
-    nodes
+        None::<()>
+    });
+    walked.map(|_| nodes)
 }
 
 /// For each node of [`nodes_up`], the mode of its turn: a billboard that turns, when it and the
@@ -133,10 +134,14 @@ unsafe fn turns_down(nodes: &[usize]) -> Vec<Option<u32>> {
 }
 
 /// Reads the chain of `effect` into `chain`: its words stay empty for an effect with no turning
-/// billboard above it.
+/// billboard above it, and for an effect above which the walk met no root: that effect keeps
+/// the projection that the engine made.
 unsafe fn read_chain(t: &MainThread, effect: usize, chain: &mut Chain) -> Vec<u32> {
     chain.billboards.clear();
-    let nodes = nodes_up(effect);
+    let Ok(nodes) = nodes_up(effect) else {
+        crate::parent_chain::note_too_long("the chain of a texture effect (the effect keeps the engine's projection)");
+        return Vec::new();
+    };
     let turns = turns_down(&nodes);
     // Without a turn and with a controller, the chain is the effect under its parent's world.
     let controlled = nodes.iter().any(|&node| rd::<usize>(node, AV::controllers) != 0);
@@ -291,6 +296,36 @@ mod tests {
     fn a_hidden_node_and_a_child_not_selected_have_no_display() {
         assert!(!child_displayed(0x33, Some(0x1A), true));
         assert!(!child_displayed(0x32, Some(0x1A), false));
+    }
+
+    /// Nodes of the size of a `NiAVObject`, each with its parent at `parents[n]` (an index into
+    /// the list, or none for the root).
+    fn nodes_with_parents(parents: &[Option<usize>]) -> Vec<Vec<u8>> {
+        let mut nodes: Vec<Vec<u8>> = parents.iter().map(|_| vec![0u8; AV::SIZE]).collect();
+        let addresses: Vec<usize> = nodes.iter().map(|node| node.as_ptr() as usize).collect();
+        for (node, parent) in nodes.iter_mut().zip(parents) {
+            let parent = parent.map_or(0, |at| addresses[at]);
+            node[AV::parentNode..AV::parentNode + 4].copy_from_slice(&(parent as u32).to_le_bytes());
+        }
+        nodes
+    }
+
+    /// The walk up from an effect reads its nodes up to the root.
+    #[test]
+    fn the_walk_up_reads_the_nodes_to_the_root() {
+        let nodes = nodes_with_parents(&[Some(1), Some(2), None]);
+        let addresses: Vec<usize> = nodes.iter().map(|node| node.as_ptr() as usize).collect();
+        // SAFETY: each node is a block of the size of a NiAVObject whose parent is in the list.
+        assert_eq!(unsafe { nodes_up(addresses[0]) }, Ok(addresses));
+    }
+
+    /// A chain with a cycle has no root: the walk stops at the cap of the parent chain and says
+    /// that the chain is cut, with no list that grows without end.
+    #[test]
+    fn the_walk_up_stops_on_a_cycle() {
+        let nodes = nodes_with_parents(&[Some(1), Some(2), Some(1)]);
+        // SAFETY: as above; the cycle is the case under test.
+        assert_eq!(unsafe { nodes_up(nodes[0].as_ptr() as usize) }, Err(crate::parent_chain::ChainTooLong));
     }
 
     /// A switch displays its selected child with no geometry under it: `turns_down` gives it no
