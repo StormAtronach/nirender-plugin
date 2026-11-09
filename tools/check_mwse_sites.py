@@ -37,7 +37,7 @@ def self_test():
         "ok: 0x6a9aed, NiDX8Renderer::ctor+0x7d, push x3 (BODY)",
         "FAIL: MWSE.dll names 0x6a9d83, NiDX8Renderer::deleting_dtor+0x3, push x1, in the stolen bytes of NiDX8Renderer::deleting_dtor: the detour will refuse the renderer",
         "stale: the baseline has 0x6aff07 mov-r32 x1, and the DLL does not",
-        "reach: 18340791 of 19088896 bytes of .text (96.1 %), 1055138 blocks, 889 dropped as data, 8 overlaps",
+        "reach: 18337040 of 19088896 bytes of .text (96.1 %, 536 of them weak), 1055138 blocks, 889 dropped as data, 11 overlaps",
         "x.dll: 105 places in ported or census functions, 1 failed, 1 stale baseline lines",
         "test mwse_sites::tests::every_mwse_site_in_a_port_is_followed ... FAILED",
     ])

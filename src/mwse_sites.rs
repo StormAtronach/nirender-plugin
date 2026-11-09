@@ -12,9 +12,12 @@
 //! The code is decoded, not read as windows: a recursive descent ([`reached`]) from the entry
 //! point, the exports and the relocated pointers into `.text`, with the crate iced-x86. A value
 //! counts in a form only when it is the 32-bit immediate of a reached instruction of that form.
-//! A value inside another reached instruction (the target of a `call` and the next byte) is no
-//! operand. A value in bytes that the descent does not reach (a table, padding, code that no
-//! known address reaches) counts in the form `unreached`: the safe side.
+//! A value inside another instruction of a strong block (the target of a `call` and the next
+//! byte) is no operand. A block is strong when a root reaches it over branches, calls and the
+//! fall-throughs of calls that come back; else it is weak (the bytes after a call that never
+//! comes back can be data). A value in the bytes of a weak block, or in bytes that the descent
+//! does not reach (a table, padding, code that no known address reaches), counts in the form
+//! `unreached` when the bytes before it can make it an operand (68, B8 to BF, C7): the safe side.
 //!
 //! The rules, in this order; the first that applies decides:
 //! 1. The function has no port (census only): the place is listed, never failed.
@@ -35,7 +38,7 @@
 //! `unreached`.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use iced_x86::{Code, Decoder, DecoderOptions, FlowControl, Instruction, OpKind};
 
@@ -53,7 +56,8 @@ pub enum Form {
     MovMem,
     /// An aligned value in a section that is not code: a site list.
     Data,
-    /// 4 bytes of `.text` that no reached instruction holds.
+    /// 4 bytes of `.text` that no instruction of a strong block holds, where the bytes before them
+    /// can make them the immediate of one of the three forms.
     Unreached,
 }
 
@@ -183,13 +187,67 @@ impl<'a> Pe<'a> {
     }
 }
 
-/// How sure the descent is that a block start is code: a strong start is a seed, a branch
-/// target or a table entry; a weak one is the fall-through after a call, which can be data
-/// after a function that never returns.
+/// The form of the 4 bytes at `at` of the code `text` when the bytes before them can make them the
+/// immediate of one of the three instructions; else None. The filter of the bytes that no strong
+/// instruction holds: a value that no 68, B8 to BF or C7 can own is no operand there.
+fn code_form(text: &[u8], at: usize) -> Option<Form> {
+    let before = |back: usize| if at >= back { Some(text[at - back]) } else { None };
+    match before(1) {
+        Some(0x68) => return Some(Form::Push),
+        Some(0xB8..=0xBF) => return Some(Form::MovReg),
+        _ => {}
+    }
+    // `mov r/m32, imm32` (C7 /0): C7, a ModR/M byte, a SIB byte when the ModR/M asks for one, a
+    // displacement of 0, 1 or 4 bytes, then the value. So the C7 is 2 to 7 bytes before it.
+    if (2..=7).any(|back| at >= back && text[at - back] == 0xC7 && mov_imm_offset(&text[at - back..]) == Some(back)) {
+        return Some(Form::MovMem);
+    }
+    None
+}
+
+/// The offset of the 32-bit value in a `mov r/m32, imm32` at the start of `code` (C7, then the
+/// ModR/M byte with the register field 0), from the ModR/M and SIB bytes; None for another
+/// instruction.
+fn mov_imm_offset(code: &[u8]) -> Option<usize> {
+    let modrm = *code.get(1)?;
+    let (mode, reg, rm) = (modrm >> 6, (modrm >> 3) & 7, modrm & 7);
+    if code[0] != 0xC7 || reg != 0 {
+        return None;
+    }
+    if mode == 3 {
+        return Some(2);
+    }
+    let sib = rm == 4;
+    let base = if sib { *code.get(2)? & 7 } else { rm };
+    let displacement = match mode {
+        0 if base == 5 => 4,
+        0 => 0,
+        1 => 1,
+        _ => 4,
+    };
+    Some(2 + sib as usize + displacement)
+}
+
+/// How sure the decode is that a block is code. A strong block is reached from a root (a seed or
+/// a table entry) over branches, calls, code addresses and the fall-throughs of calls that come
+/// back. A weak block is reached only over the fall-through of a call that may never come back:
+/// the bytes after such a call can be data, and a branch in them can be garbage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Strength {
     Weak,
     Strong,
+}
+
+/// A way from a block to a block start.
+#[derive(Debug, Clone, Copy)]
+enum Edge {
+    /// A branch target, or the next instruction where another block starts: the flow goes on there.
+    Flow(u32),
+    /// A call target, or a relocated code address in an immediate (`push offset func`).
+    Address(u32),
+    /// The fall-through after a call; `callee` is the call target in the code, None for an
+    /// indirect call or a target outside the code.
+    After { start: u32, callee: Option<u32> },
 }
 
 /// A decoded instruction: its offset in `.text`, its length, the offsets in it of its 32-bit
@@ -203,11 +261,15 @@ struct Insn {
     form: Option<Form>,
 }
 
-/// The instructions of a block from one start; `data` when the relocation test dropped it.
+/// The instructions of a block from one start and its ways out; `data` when the relocation test
+/// dropped it; `leaves` when it ends in a return or an indirect jump (the flow can go back to a
+/// caller).
 struct Block {
     start: u32,
     insns: Vec<Insn>,
+    edges: Vec<Edge>,
     data: bool,
+    leaves: bool,
 }
 
 /// The near target of a branch, when it has one.
@@ -216,21 +278,20 @@ fn near_target(instruction: &Instruction) -> Option<u64> {
 }
 
 /// Decodes a block from `start` of the code `text` (at the address `va`): up to a return, a
-/// jump, an interrupt, a call, an invalid byte or the start of another block. Also the starts
-/// that it gives: its branch targets and code addresses (strong), the fall-through after a call
-/// (weak). A block in which a relocated dword lies in an instruction and is none of its constants
-/// is data: it gives nothing.
-fn decode_block(text: &[u8], va: u32, start: u32, starts: &HashMap<u32, Strength>, reloc: &[bool]) -> (Block, Vec<(u32, Strength)>) {
+/// jump, an interrupt, a call, an invalid byte or the start of another block. `reloc` has, for
+/// each byte of a relocated dword, 1 + the offset of the dword. A block in which a relocated
+/// dword lies in an instruction and is none of its constants is data: it has no edges.
+fn decode_block(text: &[u8], va: u32, start: u32, starts: &HashSet<u32>, reloc: &[u32]) -> Block {
     let offset_of = |address: u64| address.checked_sub(u64::from(va)).filter(|&offset| offset < text.len() as u64).map(|offset| offset as u32);
     let mut decoder = Decoder::with_ip(32, text, u64::from(va), DecoderOptions::NONE);
     decoder.set_position(start as usize).expect("a block start is in the code");
     decoder.set_ip(u64::from(va) + u64::from(start));
-    let mut block = Block { start, insns: Vec::new(), data: false };
-    let mut next = Vec::new();
+    let mut block = Block { start, insns: Vec::new(), edges: Vec::new(), data: false, leaves: false };
     let mut instruction = Instruction::default();
     while decoder.can_decode() {
         let at = decoder.position() as u32;
-        if at != start && starts.contains_key(&at) {
+        if at != start && starts.contains(&at) {
+            block.edges.push(Edge::Flow(at));
             break;
         }
         decoder.decode_out(&mut instruction);
@@ -246,15 +307,17 @@ fn decode_block(text: &[u8], va: u32, start: u32, starts: &HashMap<u32, Strength
         if offsets.has_displacement() && offsets.displacement_size() == 4 {
             constants[1] = offsets.displacement_offset() as u8;
         }
-        let constant_at = |byte: u32| constants.iter().any(|&offset| offset != 0 && at + u32::from(offset) == byte);
-        if (at..at + len).any(|byte| reloc[byte as usize] && !constant_at(byte)) {
+        let constant_at = |dword: u32| constants.iter().any(|&offset| offset != 0 && at + u32::from(offset) == dword);
+        if (at..at + len).any(|byte| reloc[byte as usize] != 0 && !constant_at(reloc[byte as usize] - 1)) {
             block.data = true;
-            return (block, Vec::new());
+            block.edges.clear();
+            return block;
         }
         // A relocated immediate that points into the code is a code address (`push offset func`).
-        if constants[0] != 0 && reloc[(at + u32::from(constants[0])) as usize] {
+        let immediate = at + u32::from(constants[0]);
+        if constants[0] != 0 && reloc[immediate as usize] == immediate + 1 {
             if let Some(target) = offset_of(u64::from(instruction.immediate32())) {
-                next.push((target, Strength::Strong));
+                block.edges.push(Edge::Address(target));
             }
         }
         let form = Form::of(instruction.code()).filter(|_| constants[0] != 0);
@@ -262,37 +325,26 @@ fn decode_block(text: &[u8], va: u32, start: u32, starts: &HashMap<u32, Strength
         let target = near_target(&instruction).and_then(offset_of);
         match instruction.flow_control() {
             FlowControl::Next | FlowControl::XbeginXabortXend => {}
-            FlowControl::ConditionalBranch => next.extend(target.map(|target| (target, Strength::Strong))),
+            FlowControl::ConditionalBranch => block.edges.extend(target.map(Edge::Flow)),
             FlowControl::UnconditionalBranch => {
-                next.extend(target.map(|target| (target, Strength::Strong)));
+                block.edges.extend(target.map(Edge::Flow));
                 break;
             }
             FlowControl::Call | FlowControl::IndirectCall => {
-                next.extend(target.map(|target| (target, Strength::Strong)));
+                block.edges.extend(target.map(Edge::Address));
                 if ((at + len) as usize) < text.len() {
-                    next.push((at + len, Strength::Weak));
+                    block.edges.push(Edge::After { start: at + len, callee: target });
                 }
                 break;
             }
-            FlowControl::Return | FlowControl::IndirectBranch | FlowControl::Interrupt | FlowControl::Exception => break,
+            FlowControl::Return | FlowControl::IndirectBranch => {
+                block.leaves = true;
+                break;
+            }
+            FlowControl::Interrupt | FlowControl::Exception => break,
         }
     }
-    (block, next)
-}
-
-/// Adds a block start; a known start gets the stronger of the two. True for a new start.
-fn add_start(starts: &mut HashMap<u32, Strength>, work: &mut Vec<u32>, at: u32, strength: Strength) -> bool {
-    match starts.get_mut(&at) {
-        Some(known) => {
-            *known = (*known).max(strength);
-            false
-        }
-        None => {
-            starts.insert(at, strength);
-            work.push(at);
-            true
-        }
-    }
+    block
 }
 
 /// What the descent reached in `.text`.
@@ -300,6 +352,8 @@ pub struct Decode {
     /// For each byte: 1 + the offset of the start of its instruction, or 0 when no kept
     /// instruction has it.
     owner: Vec<u32>,
+    /// For each byte: true when a kept instruction of a strong block has it.
+    strong: Vec<bool>,
     /// For each byte: true when a 32-bit constant of a kept instruction starts there.
     constant: Vec<bool>,
     /// For each byte: the form of the kept instruction whose 32-bit immediate starts there.
@@ -317,112 +371,219 @@ impl Decode {
     pub fn reached(&self) -> usize {
         self.owner.iter().filter(|&&owner| owner != 0).count()
     }
+
+    /// The bytes of `.text` that only a kept instruction of a weak block holds.
+    pub fn weak(&self) -> usize {
+        self.owner.iter().zip(&self.strong).filter(|&(&owner, &strong)| owner != 0 && !strong).count()
+    }
 }
 
-/// Keeps the blocks that are not data and do not clash: where two kept blocks decode the same
-/// bytes at other instruction starts, a strong block wins over a weak one, and two of the same
-/// strength both go out.
-fn resolve(blocks: &[Block], starts: &HashMap<u32, Strength>, length: usize) -> Decode {
-    let strength = |index: usize| starts[&blocks[index].start];
-    let mut order: Vec<usize> = (0..blocks.len()).filter(|&index| !blocks[index].data).collect();
-    order.sort_by_key(|&index| Reverse(strength(index)));
-    let mut kept = vec![false; blocks.len()];
-    for &index in &order {
-        kept[index] = true;
-    }
-    let mut overlaps = Vec::new();
-    let owner = loop {
-        let mut owner = vec![0u32; length];
-        let mut owner_block = vec![u32::MAX; length];
-        let mut clashes = Vec::new();
-        for &index in order.iter().filter(|&&index| kept[index]) {
-            let insns = &blocks[index].insns;
-            let clash = insns.iter().find_map(|insn| {
-                (insn.start..insn.start + u32::from(insn.len)).find(|&byte| owner[byte as usize] != 0 && owner[byte as usize] != insn.start + 1).map(|byte| (owner_block[byte as usize] as usize, byte))
-            });
-            if let Some((other, byte)) = clash {
-                clashes.push((other, index, byte));
-                continue;
+/// The blocks of a descent, with the block of each start and the roots (the seeds and the table
+/// entries).
+struct Graph {
+    blocks: Vec<Block>,
+    index: HashMap<u32, usize>,
+    roots: HashSet<u32>,
+}
+
+impl Graph {
+    /// For each block, the way back to a caller: true when a return or an indirect jump is
+    /// reachable from it over flow edges and over the fall-throughs of calls that come back
+    /// themselves (a call with no known callee comes back). Only the blocks that are `live`.
+    fn comes_back(&self, live: &[bool]) -> Vec<bool> {
+        let count = self.blocks.len();
+        // The blocks that lead into each block: by flow (None), or by the fall-through of a call of a known callee.
+        let mut before: Vec<Vec<(usize, Option<u32>)>> = vec![Vec::new(); count];
+        for (index, block) in self.blocks.iter().enumerate().filter(|&(index, _)| live[index]) {
+            for edge in &block.edges {
+                let (target, callee) = match *edge {
+                    Edge::Flow(target) => (target, None),
+                    Edge::After { start, callee } => (start, callee),
+                    Edge::Address(_) => continue,
+                };
+                if let Some(&next) = self.index.get(&target) {
+                    before[next].push((index, callee));
+                }
             }
-            for insn in insns {
-                for byte in insn.start..insn.start + u32::from(insn.len) {
-                    if owner[byte as usize] == 0 {
-                        owner[byte as usize] = insn.start + 1;
-                        owner_block[byte as usize] = index as u32;
+        }
+        let mut back = vec![false; count];
+        let mut work: Vec<usize> = (0..count).filter(|&index| live[index] && self.blocks[index].leaves).collect();
+        for &index in &work {
+            back[index] = true;
+        }
+        // The callers whose fall-through comes back, waiting for their callee.
+        let mut waiting: HashMap<u32, Vec<usize>> = HashMap::new();
+        while let Some(index) = work.pop() {
+            // The callers that waited for this block as their callee come back now.
+            let mut callers = waiting.remove(&self.blocks[index].start).unwrap_or_default();
+            for &(caller, callee) in &before[index] {
+                match callee {
+                    Some(callee) if !self.index.get(&callee).is_some_and(|&called| back[called]) => waiting.entry(callee).or_default().push(caller),
+                    _ => callers.push(caller),
+                }
+            }
+            for caller in callers {
+                if live[caller] && !back[caller] {
+                    back[caller] = true;
+                    work.push(caller);
+                }
+            }
+        }
+        back
+    }
+
+    /// The strength of each block that is `live` and that a root reaches over live blocks; None
+    /// for the others (a block whose every parent is out is out too).
+    fn strengths(&self, live: &[bool]) -> Vec<Option<Strength>> {
+        let back = self.comes_back(live);
+        let live_at = |start: u32| self.index.get(&start).copied().filter(|&index| live[index]);
+        let mut strength = vec![None; self.blocks.len()];
+        let mut work: Vec<usize> = self.roots.iter().filter_map(|&root| live_at(root)).collect();
+        for &index in &work {
+            strength[index] = Some(Strength::Strong);
+        }
+        // The strong blocks, then the weak blocks that the strong ones reach.
+        for pass in [Strength::Strong, Strength::Weak] {
+            if pass == Strength::Weak {
+                work = (0..self.blocks.len()).filter(|&index| strength[index].is_some()).collect();
+            }
+            while let Some(index) = work.pop() {
+                for edge in &self.blocks[index].edges {
+                    let (target, strong) = match *edge {
+                        Edge::Flow(target) | Edge::Address(target) => (target, true),
+                        Edge::After { start, callee } => (start, callee.is_none_or(|callee| live_at(callee).is_some_and(|called| back[called]))),
+                    };
+                    if let Some(next) = live_at(target).filter(|&next| strength[next].is_none() && (strong || pass == Strength::Weak)) {
+                        strength[next] = Some(pass);
+                        work.push(next);
                     }
                 }
             }
         }
-        if clashes.is_empty() {
-            break owner;
-        }
-        // The blocks go in order of strength, so the one that holds the bytes is as strong or stronger.
-        for (other, index, byte) in clashes {
-            kept[index] = false;
-            if strength(other) == strength(index) {
-                kept[other] = false;
-                overlaps.push(byte);
+        strength
+    }
+
+    /// Keeps the blocks that are not data, that a root reaches and that do not clash: where two
+    /// kept blocks decode the same bytes at other instruction starts, a strong block wins over a
+    /// weak one, and two of the same strength both go out. A block out takes out what only it
+    /// reaches, and the strengths are computed again, until no clash is left.
+    fn resolve(&self, length: usize) -> Decode {
+        let blocks = &self.blocks;
+        let mut live: Vec<bool> = blocks.iter().map(|block| !block.data).collect();
+        let mut overlaps = Vec::new();
+        let (owner, strong, strength) = loop {
+            let strength = self.strengths(&live);
+            let mut order: Vec<usize> = (0..blocks.len()).filter(|&index| strength[index].is_some()).collect();
+            order.sort_by_key(|&index| Reverse(strength[index]));
+            let mut owner = vec![0u32; length];
+            let mut strong = vec![false; length];
+            let mut owner_block = vec![u32::MAX; length];
+            let mut clashes = Vec::new();
+            for &index in &order {
+                let insns = &blocks[index].insns;
+                let clash = insns.iter().find_map(|insn| {
+                    (insn.start..insn.start + u32::from(insn.len)).find(|&byte| owner[byte as usize] != 0 && owner[byte as usize] != insn.start + 1).map(|byte| (owner_block[byte as usize] as usize, byte))
+                });
+                if let Some((other, byte)) = clash {
+                    clashes.push((other, index, byte));
+                    continue;
+                }
+                for insn in insns {
+                    for byte in insn.start..insn.start + u32::from(insn.len) {
+                        if owner[byte as usize] == 0 {
+                            owner[byte as usize] = insn.start + 1;
+                            strong[byte as usize] = strength[index] == Some(Strength::Strong);
+                            owner_block[byte as usize] = index as u32;
+                        }
+                    }
+                }
+            }
+            if clashes.is_empty() {
+                break (owner, strong, strength);
+            }
+            // The blocks go in order of strength, so the one that holds the bytes is as strong or stronger.
+            for (other, index, byte) in clashes {
+                live[index] = false;
+                if strength[other] == strength[index] {
+                    live[other] = false;
+                    overlaps.push(byte);
+                }
+            }
+        };
+        let mut constant = vec![false; length];
+        let mut immediate = vec![None; length];
+        for insn in (0..blocks.len()).filter(|&index| strength[index].is_some()).flat_map(|index| &blocks[index].insns) {
+            for offset in insn.constants.into_iter().filter(|&offset| offset != 0) {
+                constant[(insn.start + u32::from(offset)) as usize] = true;
+            }
+            if let Some(form) = insn.form {
+                immediate[(insn.start + u32::from(insn.constants[0])) as usize] = Some(form);
             }
         }
-    };
-    let mut constant = vec![false; length];
-    let mut immediate = vec![None; length];
-    for insn in (0..blocks.len()).filter(|&index| kept[index]).flat_map(|index| &blocks[index].insns) {
-        for offset in insn.constants.into_iter().filter(|&offset| offset != 0) {
-            constant[(insn.start + u32::from(offset)) as usize] = true;
-        }
-        if let Some(form) = insn.form {
-            immediate[(insn.start + u32::from(insn.constants[0])) as usize] = Some(form);
-        }
+        overlaps.sort_unstable();
+        overlaps.dedup();
+        Decode { owner, strong, constant, immediate, blocks: blocks.len(), dropped: blocks.iter().filter(|block| block.data).count(), overlaps }
     }
-    overlaps.sort_unstable();
-    overlaps.dedup();
-    Decode { owner, constant, immediate, blocks: blocks.len(), dropped: blocks.iter().filter(|block| block.data).count(), overlaps }
 }
 
 /// The recursive descent over `.text` (the brief's steps 1 to 8): from the entry point, the
 /// exports and the relocated pointers into the code from other sections; then the branch
 /// targets, the fall-throughs and the relocated code addresses; then, to a fixed point, the
 /// entries of the jump tables: each relocated dword of `.text` that no kept instruction has as
-/// a constant, and that points into the code.
+/// a constant, and that points into the code. The seeds and the table entries are the roots.
 pub fn reached(pe: &Pe) -> Option<Decode> {
     let text = pe.sections.iter().find(|section| section.name == ".text")?;
     let bytes = text.bytes;
     let va = pe.image_base.wrapping_add(text.rva);
     let in_text = |rva: u32| rva.checked_sub(text.rva).filter(|&offset| (offset as usize) < bytes.len());
     let code_offset = |value: u32| in_text(value.wrapping_sub(pe.image_base));
-    let mut reloc = vec![false; bytes.len()];
+    // Each byte of a relocated dword holds 1 + the offset of the dword.
+    let mut reloc = vec![0u32; bytes.len()];
     for offset in pe.relocs.iter().filter_map(|&rva| in_text(rva)) {
-        reloc[offset as usize] = true;
+        for byte in offset..(offset + 4).min(bytes.len() as u32) {
+            reloc[byte as usize] = offset + 1;
+        }
     }
-    let mut starts = HashMap::new();
+    let mut graph = Graph { blocks: Vec::new(), index: HashMap::new(), roots: HashSet::new() };
+    let mut starts = HashSet::new();
     let mut work = Vec::new();
+    let add_root = |graph: &mut Graph, starts: &mut HashSet<u32>, work: &mut Vec<u32>, offset: u32| {
+        graph.roots.insert(offset);
+        if starts.insert(offset) {
+            work.push(offset);
+        }
+    };
     for offset in [pe.entry].into_iter().chain(pe.exports.iter().copied()).filter_map(in_text) {
-        add_start(&mut starts, &mut work, offset, Strength::Strong);
+        add_root(&mut graph, &mut starts, &mut work, offset);
     }
     for &rva in pe.relocs.iter().filter(|&&rva| in_text(rva).is_none()) {
         if let Some(offset) = pe.dword_at(rva).and_then(code_offset) {
-            add_start(&mut starts, &mut work, offset, Strength::Strong);
+            add_root(&mut graph, &mut starts, &mut work, offset);
         }
     }
-    let mut blocks = Vec::new();
     loop {
         while let Some(start) = work.pop() {
-            let (block, next) = decode_block(bytes, va, start, &starts, &reloc);
-            for (target, strength) in next {
-                add_start(&mut starts, &mut work, target, strength);
+            let block = decode_block(bytes, va, start, &starts, &reloc);
+            for edge in &block.edges {
+                let target = match *edge {
+                    Edge::Flow(target) | Edge::Address(target) | Edge::After { start: target, .. } => target,
+                };
+                if starts.insert(target) {
+                    work.push(target);
+                }
             }
-            blocks.push(block);
+            graph.index.insert(start, graph.blocks.len());
+            graph.blocks.push(block);
         }
-        let decode = resolve(&blocks, &starts, bytes.len());
-        let mut grew = false;
-        for offset in (0..bytes.len()).filter(|&offset| reloc[offset] && !decode.constant[offset]) {
-            let value = bytes.get(offset..offset + 4).map(|word| u32::from_le_bytes(word.try_into().unwrap()));
+        let decode = graph.resolve(bytes.len());
+        let roots = graph.roots.len();
+        for offset in (0..bytes.len() as u32).filter(|&offset| reloc[offset as usize] == offset + 1 && !decode.constant[offset as usize]) {
+            let value = bytes.get(offset as usize..offset as usize + 4).map(|word| u32::from_le_bytes(word.try_into().unwrap()));
             if let Some(target) = value.and_then(code_offset) {
-                grew |= add_start(&mut starts, &mut work, target, Strength::Strong);
+                add_root(&mut graph, &mut starts, &mut work, target);
             }
         }
-        if !grew {
+        if graph.roots.len() == roots {
             return Some(decode);
         }
     }
@@ -448,11 +609,12 @@ pub fn operands(pe: &[u8], inside: impl Fn(u32) -> bool) -> (BTreeMap<(u32, Form
                 let form = match &decode {
                     _ if !code => Some(Form::Data),
                     Some(decode) if decode.immediate[at].is_some() => decode.immediate[at],
-                    Some(decode) if decode.owner[at] != 0 => {
+                    Some(decode) if decode.strong[at] => {
                         reach.removed += 1;
                         None
                     }
-                    _ => Some(Form::Unreached),
+                    // Bytes of a weak block, or that no block reaches: a value counts where the bytes before it can make it an operand.
+                    _ => code_form(bytes, at).map(|_| Form::Unreached),
                 };
                 if let Some(form) = form {
                     *found.entry((value, form)).or_insert(0) += 1;
@@ -466,6 +628,7 @@ pub fn operands(pe: &[u8], inside: impl Fn(u32) -> bool) -> (BTreeMap<(u32, Form
     }
     if let Some(decode) = &decode {
         reach.reached = decode.reached();
+        reach.weak = decode.weak();
         reach.blocks = decode.blocks;
         reach.dropped = decode.dropped;
         let va = image.sections.iter().find(|section| section.name == ".text").map_or(0, |text| image.image_base.wrapping_add(text.rva));
@@ -477,16 +640,18 @@ pub fn operands(pe: &[u8], inside: impl Fn(u32) -> bool) -> (BTreeMap<(u32, Form
 /// The reach of the decode, for the report: a fall from one build to the next shows at once.
 #[derive(Debug, Default)]
 pub struct Reach {
-    /// The bytes of `.text`, and those that a kept instruction holds.
+    /// The bytes of `.text`, those that a kept instruction holds, and those of them that only a
+    /// weak block holds.
     pub text: usize,
     pub reached: usize,
+    pub weak: usize,
     /// The blocks decoded, and those that the relocation test dropped.
     pub blocks: usize,
     pub dropped: usize,
     /// The addresses where two blocks of one strength disagree.
     pub overlaps: Vec<u32>,
-    /// The values in a table function that lie inside a reached instruction and are not its
-    /// immediate: no instruction holds them.
+    /// The values in a table function that lie inside an instruction of a strong block and are
+    /// not its immediate: no instruction holds them.
     pub removed: usize,
 }
 
@@ -495,9 +660,10 @@ impl Reach {
         let share = if self.text == 0 { 0.0 } else { 100.0 * self.reached as f64 / self.text as f64 };
         let overlaps: Vec<String> = self.overlaps.iter().take(8).map(|address| format!("{address:#x}")).collect();
         format!(
-            "reach: {} of {} bytes of .text ({share:.1} %), {} blocks, {} dropped as data, {} overlaps{}{}, {} values inside other instructions removed",
+            "reach: {} of {} bytes of .text ({share:.1} %, {} of them weak), {} blocks, {} dropped as data, {} overlaps{}{}, {} values inside other instructions removed",
             self.reached,
             self.text,
+            self.weak,
             self.blocks,
             self.dropped,
             self.overlaps.len(),
@@ -832,6 +998,53 @@ mod tests {
         let (found, reach) = operands(&made_up_pe(&text, &[], &[1, table, table + 4]), only(DTOR_SITE));
         assert_eq!(found.get(&(DTOR_SITE, Form::Push)), Some(&1), "{reach:?}");
         assert!(reach.dropped >= 1, "{reach:?}");
+    }
+
+    #[test]
+    fn a_site_behind_a_garbage_jump_after_a_call_that_never_returns_is_unreached() {
+        // The Reviewer's plant (verdict 39): call a function that never returns (int3 at 17);
+        // after it, bytes with no relocation that decode as jmp to 10; from 10 the bytes decode
+        // as mov eax, imm32 over the push of the real function at 11 that nothing reaches. The
+        // site lies inside that mov: it must count, never be removed.
+        let text = code(&[&[0xE8], &le(12), &[0xE9], &le(0), &[0xB8, 0x68], &le(DTOR_SITE), &[0xC3, 0xCC]]);
+        let (found, reach) = operands(&made_up_pe(&text, &[], &[]), only(DTOR_SITE));
+        assert_eq!(found.get(&(DTOR_SITE, Form::Unreached)), Some(&1), "{reach:?}");
+        assert_eq!(reach.removed, 0, "{reach:?}");
+        assert!(reach.weak > 0, "{reach:?}");
+    }
+
+    #[test]
+    fn a_block_that_only_a_block_out_reaches_is_out() {
+        // call 7, where the bytes from 7 are int3: the call never returns, so the mov from 5 is
+        // weak; the strong block at 7 takes its bytes, and the mov's block is out. Its jmp to
+        // 15 was the only way to the push there: that block is out too, and the site is unreached.
+        let text = code(&[&[0xE8], &le(2), &[0xB8, 0x90, 0xCC, 0x90, 0x90, 0xE9], &le(0), &[0x68], &le(DTOR_SITE), &[0xC3]]);
+        let (found, reach) = operands(&made_up_pe(&text, &[], &[]), only(DTOR_SITE));
+        assert_eq!(found.get(&(DTOR_SITE, Form::Unreached)), Some(&1), "{reach:?}");
+        assert!(reach.overlaps.is_empty(), "a strong and a weak block are no overlap: {reach:?}");
+    }
+
+    #[test]
+    fn a_fall_through_is_strong_only_after_a_call_that_comes_back() {
+        // call f; then call rel32 (00 68 F0 FE, a target outside the code), push 0, ret; f at 13.
+        // The window F0 FE 6A 00 after the 0x68 is inside the second call.
+        for (f, removed) in [(0xC3, 1), (0xCC, 0)] {
+            let text = code(&[&[0xE8], &le(8), &[0xE8, 0x00, 0x68, 0xF0, 0xFE, 0x6A, 0x00, 0xC3, f]]);
+            let (found, reach) = operands(&made_up_pe(&text, &[], &[]), only(0x6AFEF0));
+            assert_eq!(reach.removed, removed, "f {f:#x}: {reach:?}");
+            // After a call that never returns, the window counts by the byte before it.
+            let unreached = found.get(&(0x6AFEF0, Form::Unreached)).copied().unwrap_or(0);
+            assert_eq!(unreached, 1 - removed, "f {f:#x}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn padding_before_a_push_0_is_no_operand() {
+        // ret; int3 padding; push 0; ret: the window CC CC 6A 00 is preceded by CC, which no
+        // instruction of the three ends in. The line 0x6acccc of the old baseline.
+        let text = [0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0x6A, 0x00, 0xC3];
+        let (found, _) = operands(&made_up_pe(&text, &[], &[]), only(0x006A_CCCC));
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]
