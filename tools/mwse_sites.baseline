@@ -1,25 +1,15 @@
 # The places that an MWSE.dll names in the ported functions and that are no patch of a port
 # (src/mwse_sites.rs, tools/check_mwse_sites.py). One line each: the value, the form (push,
-# mov-r32, mov-m, data), the most occurrences of that form, and why. A new form or a higher
+# mov-r32, mov-m, data, unreached), the most occurrences of that form, and why. A new form or a higher
 # count fails until it is reviewed; a value is never added without a reason.
 0x6a9e10 mov-r32 2 NiDX8Renderer::dtor: SE_NI_DX8RENDERER_FNADDR_DTOR, the expected callee of the call at 0x6A9D83 and the callee of NI::DX8Renderer::destruct; a call of the engine function, so the detour of dtor_port runs
 0x6aa000 data 1 NiDX8Renderer::dtor+0x1f0: a round constant (a multiple of 0x1000) in data, not a site list
 0x6ab000 data 1 NiDX8Renderer::Recreate+0x180: a round constant (a multiple of 0x1000) in data, not a site list
 0x6ac000 data 1 NiDX8Renderer::SetUseWBuffer+0x10: a round constant (a multiple of 0x1000) in data, not a site list
+0x6acccc unreached 5 NiDX8Renderer::SetSkinnedModelTransforms+0xec: int3 padding (CC CC) before a function that starts with push 0 (6A 00); no instruction holds the value
 0x6ad000 data 1 NiDX8Renderer::RenderTriStrips+0x40: a round constant (a multiple of 0x1000) in data, not a site list
 0x6ae000 data 1 NiDX8Renderer::DrawSkinnedPrimitive+0x190: a round constant (a multiple of 0x1000) in data, not a site list
 0x6af000 data 1 NiDX8Renderer::DrawSkinnedPrimitive2+0x70: a round constant (a multiple of 0x1000) in data, not a site list
-0x6afef0 mov-r32 2 NiDX8Renderer::precacheGeometryData+0x160: a window across a call's target and the next instruction: no instruction
-0x6afef0 push 1 NiDX8Renderer::precacheGeometryData+0x160: a window across a call's target and the next instruction: no instruction
-0x6aff07 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x177: a window across a call's target and the next instruction: no instruction
-0x6aff0a mov-r32 1 NiDX8Renderer::precacheGeometryData+0x17a: a window across a call's target and the next instruction: no instruction
-0x6aff37 mov-r32 4 NiDX8Renderer::precacheGeometryData+0x1a7: a window across a call's target and the next instruction: no instruction
-0x6aff44 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x1b4: a window across a call's target and the next instruction: no instruction
-0x6aff77 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x1e7: a window across a call's target and the next instruction: no instruction
-0x6afffa mov-r32 3 NiDX8Renderer::precacheGeometryData+0x26a: a window across a call's target and the next instruction: no instruction
-0x6afffc mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26c: a window across a call's target and the next instruction: no instruction
-0x6afffd mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26d: a window across a call's target and the next instruction: no instruction
-0x6afffe mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26e: a window across a call's target and the next instruction: no instruction
 0x6b0000 data 1 NiDX8Renderer::precacheGeometryData+0x270: a round constant (a multiple of 0x1000) in data, not a site list
 0x6b0061 data 1 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x31: text in data (bytes "a.k."), not a site list
 0x6b0063 data 1 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x33: text in data (bytes "c.k."), not a site list
@@ -50,7 +40,6 @@
 0x6bb000 data 1 NiDX8LightManager::dtor+0x70: a round constant (a multiple of 0x1000) in data, not a site list
 0x6bd000 data 1 NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer+0x20: a round constant (a multiple of 0x1000) in data, not a site list
 0x6be000 data 1 NiDX8VertexBufferManager::PackUntransformedVB+0x1b0: a round constant (a multiple of 0x1000) in data, not a site list
-0x6be811 push 3 NiDX8VertexBufferManager::GetVBInfo+0x181: a window across a push's operand and the next call: no instruction
 0x6bf000 data 1 NiD3DShaderInterface::compileVertexShader+0x200: a round constant (a multiple of 0x1000) in data, not a site list
 0x6c0000 data 1 NiDX8SourceTextureData::CopyDataToSurface+0xc0: a round constant (a multiple of 0x1000) in data, not a site list
 0x6c002d data 21 NiDX8SourceTextureData::CopyDataToSurface+0xed: text in data (bytes "-.l."), not a site list
@@ -69,7 +58,6 @@
 0x6c0072 data 8 NiDX8SourceTextureData::Update+0x22: text in data (bytes "r.l."), not a site list
 0x6c0073 data 4 NiDX8SourceTextureData::Update+0x23: text in data (bytes "s.l."), not a site list
 0x6c0075 data 1 NiDX8SourceTextureData::Update+0x25: text in data (bytes "u.l."), not a site list
-0x6c00c7 mov-r32 1 NiDX8SourceTextureData::Update+0x77: a window across a displacement and the next instruction: no instruction
 0x6c2000 data 1 NiDX8TexturePass::setTextureFiltering+0x60: a round constant (a multiple of 0x1000) in data, not a site list
 0x6e5000 data 1 NiTriShape::Display+0x70: a round constant (a multiple of 0x1000) in data, not a site list
 0x6f5000 data 1 NiRenderer::dtor+0x80: a round constant (a multiple of 0x1000) in data, not a site list
