@@ -69,7 +69,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
 from common import git_env  # noqa: E402
-from make_play_set import BASELINE, WAIT_SECONDS, has_captures, load_slots, say  # noqa: E402
+from make_play_set import BASELINE, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
@@ -330,36 +330,41 @@ OWN_HOLD = ("this session holds it as", "your session already holds the build sl
 def take_build(slots, what, no_wait, options=None):
     """Takes the build slot, and asks again in its queue, so that the place stays. A hold of another run of this session
     (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN" line, with
-    --no-wait when it must wait, and on any other refusal, as waiting cannot pass that."""
+    --no-wait when it must wait, on the end of the wait after a `leave` of its place, and on any other refusal, as
+    waiting cannot pass that."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     waiting_for_own = False
-    while True:
-        try:
-            reply = slots.take("build", what, minutes=SLOT_MINUTES, **(options or {}))
-        except slots.StateBusy as error:
-            say("the state of the slots is busy, and I ask again: %s" % error)
+    with slot_asker(slots, "build") as ask:
+        while True:
+            try:
+                reply = ask(what, minutes=SLOT_MINUTES, **(options or {}))
+            except slots.StateBusy as error:
+                say("the state of the slots is busy, and I ask again: %s" % error)
+                time.sleep(WAIT_SECONDS)
+                continue
+            if reply.code == slots.DONE:
+                # All lines: a take of the build slot names the free space on C, and warns when the cleaning is due.
+                say(reply.text)
+                return True
+            first = reply.text.splitlines()[0]
+            if reply.code == getattr(slots, "WAIT_ENDED", None):
+                say("NOT RUN: this run left the queue of the build slot: %s" % first)
+                return False
+            own = reply.code == slots.REFUSED and any(phrase in first for phrase in OWN_HOLD)
+            if reply.code == slots.REFUSED and not own:
+                say("NOT RUN: the take of the build slot was refused: %s" % first)
+                return False
+            if no_wait:
+                if not own:
+                    slots.leave("build", what)
+                say("NOT RUN: --no-wait, and the build slot is not free: %s" % first)
+                return False
+            if own and not waiting_for_own:
+                say("waiting: another run of this session holds the build slot, and this run starts after its release: %s" % first)
+            elif not own:
+                say(first)
+            waiting_for_own = own
             time.sleep(WAIT_SECONDS)
-            continue
-        if reply.code == slots.DONE:
-            # All lines: a take of the build slot names the free space on C, and warns when the cleaning is due.
-            say(reply.text)
-            return True
-        first = reply.text.splitlines()[0]
-        own = reply.code == slots.REFUSED and any(phrase in first for phrase in OWN_HOLD)
-        if reply.code == slots.REFUSED and not own:
-            say("NOT RUN: the take of the build slot was refused: %s" % first)
-            return False
-        if no_wait:
-            if not own:
-                slots.leave("build", what)
-            say("NOT RUN: --no-wait, and the build slot is not free: %s" % first)
-            return False
-        if own and not waiting_for_own:
-            say("waiting: another run of this session holds the build slot, and this run starts after its release: %s" % first)
-        elif not own:
-            say(first)
-        waiting_for_own = own
-        time.sleep(WAIT_SECONDS)
 
 
 def release_build(slots):
@@ -694,6 +699,38 @@ def self_test():
         asked = []
         Slots.take = classmethod(lambda cls, *args, **options: asked.append(options) or types.SimpleNamespace(code=cls.DONE, text="a reply"))
         assert take_build(Slots, "x", False, {"whole": True}) is True and asked == [{"minutes": SLOT_MINUTES, "whole": True}], asked
+
+        # With slot.py's LoopWaiter, a leave of the place ends the wait: the next ask returns WAIT_ENDED, and the run is
+        # NOT RUN with no take (2026-11-09 07:51: a loop of plain takes took the whole side after its leave). The plain
+        # take of this fake gives the slot, so a loop that does not ask through the waiter takes it.
+        class Waiting(Slots):
+            WAIT_ENDED = 5
+            asks = []
+
+            class LoopWaiter:
+                def __init__(self, slot):
+                    Waiting.asks.append(("enter", slot))
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    Waiting.asks.append(("exit",))
+
+                def take(self, who, **_):
+                    Waiting.asks.append(("ask", who))
+                    return types.SimpleNamespace(code=Waiting.replies.pop(0), text="build: this wait ended without the slot: the place was left or dropped\nmore")
+
+        Waiting.replies = [Slots.QUEUED, Waiting.WAIT_ENDED]
+        real_sleep, time.sleep = time.sleep, sleeps.append
+        try:
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                assert take_build(Waiting, "x", False) is False and Waiting.replies == []
+        finally:
+            time.sleep = real_sleep
+        assert Waiting.asks == [("enter", "build"), ("ask", "x"), ("ask", "x"), ("exit",)], Waiting.asks
+        assert shown.getvalue().splitlines()[-1] == "NOT RUN: this run left the queue of the build slot: build: this wait ended without the slot: the place was left or dropped", shown.getvalue()
 
         # The log keeps its name, and its folder is made.
         logs = os.path.join(root, "new", "logs")
