@@ -593,12 +593,8 @@ def keep_holds(slots, what, game, options, no_wait, log):
     owner = slots.owner_of(slots.session_id(), what)
     for _ in range(KEEP_ROUNDS):
         # The build work of the places of this run, as the hook and the tool checks of slot.py note it: a hold of another run
-        # gets no note. A slot.py from before `note_holder_build` has the one note for the slot.
-        note_holder_build = getattr(slots, "note_holder_build", None)
-        if note_holder_build is not None:
-            note_holder_build(owner, time.time())
-        else:
-            slots.note_active("build", time.time())
+        # gets no note.
+        slots.note_holder_build(owner, time.time())
         lost = False
         held = places_held(slots, "build", what)
         if held is not None and held < needed:
