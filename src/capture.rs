@@ -2555,12 +2555,18 @@ const RELEASE_BACKGROUND_THREAD: usize = 0x48EB60;
 /// renderer's maps of geometry and skin partitions, and the worker changes them with no
 /// lock. The worker can need the device lock before its stall point, so a stall taken under
 /// the device lock makes a deadlock. Called by `link_client::after_present`.
+///
+/// The events of the worker are applied first, with the worker stalled, so the queue is
+/// complete: a texture that the worker freed since the last drain loses its unreadable mark,
+/// and new data at the same address keeps no stale mark that would keep it from the purge.
+/// The drain can send records that take the device lock, so it comes before that lock.
 pub unsafe fn run_pending_purge() {
     if !PURGE_PENDING.load(Ordering::Acquire) || !crate::shadow::on_main_thread() || crate::sync::device_lock_held_here() {
         return;
     }
     PURGE_PENDING.store(false, Ordering::Release);
     with_worker_stalled(|| {
+        crate::worker_events::drain();
         let lock = crate::sync::device_lock();
         // The purge makes the engine write records: the state is closed during it.
         let in_view = state(&lock).map(|s| s.geometry.len());
