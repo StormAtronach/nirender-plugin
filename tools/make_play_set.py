@@ -21,6 +21,12 @@ testing instance:
   sees a fault that both modes share. A planned new look stops the set until a baseline is accepted.
 - tour: the 3 test cells with --tour-dual, and tools/validate_tour.py: no picture may fail, no pair may lack
   its numbers, and no pair of mode gpu against mode off may differ by more than MEAN_LIMIT.
+
+A replay needs the whole build side (the owner's D139), and the game slot does not give it. So the gate and the
+tour's replays each take the whole side, wait in its queue with the game slot held, and release it after. The game
+stage after each takes the game slot again, as a hold of the game lapses with no game seen. A refusal there, or a
+replay that the slot check refused, is "NOT RUN: slot refused" with exit code 3: no picture was checked, so the
+set did not fail, and it does not become the play set.
 - the owner's start: both play-manual-check*.bat with the real tools/play.py and --stage-only, so that
   they stop just before the game. The bat must pass the slot check, with this session's variable in its
   terminal, and each instance's mod list must be as before.
@@ -45,6 +51,7 @@ game slot: with --no-wait each stops with exit code 3. It needs the slot tool, a
 enforcement is on: nobody waits for this job, and a game with no slot can spoil a timing run.
 """
 import argparse
+import contextlib
 import datetime
 import glob
 import hashlib
@@ -63,6 +70,7 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import SIBLINGS, find_sibling, local, main_checkout  # noqa: E402
+from validate_tour import NOT_RUN  # noqa: E402
 
 REPOS = local("repos", SIBLINGS)
 PLUGIN_REPO = os.path.join(REPOS, "nirender-plugin")
@@ -109,6 +117,11 @@ SMOKE_MWSE = set()
 
 class SmokeFailed(Exception):
     """The reason why a set does not become the play set."""
+
+
+class SmokeNotRun(Exception):
+    """A stage that did not run, as the slots refused it: no picture of it was checked, so the set did not
+    fail. It does not become the play set."""
 
 
 def say(text):
@@ -285,22 +298,69 @@ def wait_for_build(slots, no_wait):
         time.sleep(WAIT_SECONDS)
 
 
-def take_game(slots, what, no_wait):
-    """Takes the game slot, and waits in its queue. It asks again at each wait, so that it keeps its place."""
+def ask_slot(slots, slot, what, no_wait, whole=False):
+    """Takes a slot, and waits in its queue. It asks again at each wait, so that it keeps its place. `whole` asks
+    for both places of the build side. Returns "" when it holds the slot, else the first line of the reply that
+    ends the wait: a refusal, or a place in the queue with `no_wait`."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
+    kind = {"whole": True} if whole else {}
     while True:
         try:
-            reply = slots.take("game", "make_play_set: %s" % what, minutes=SLOT_MINUTES)
+            reply = slots.take(slot, "make_play_set: %s" % what, minutes=SLOT_MINUTES, **kind)
         except slots.StateBusy as error:
             say("the state of the slots is busy, and I ask again: %s" % error)
             time.sleep(WAIT_SECONDS)
             continue
-        say(reply.text.splitlines()[0])
+        first = reply.text.splitlines()[0]
+        say(first)
         if reply.code == slots.DONE:
-            return
+            return ""
         if no_wait or reply.code == slots.REFUSED:
-            sys.exit(3)
+            return first
         time.sleep(WAIT_SECONDS)
+
+
+def take_game(slots, what, no_wait):
+    """Takes the game slot, and waits in its queue. A refusal, or the queue with `no_wait`, ends with exit code 3."""
+    if ask_slot(slots, "game", what, no_wait):
+        sys.exit(3)
+
+
+def game_again(slots, what, no_wait):
+    """Takes the game slot again before a game stage that follows a replay stage. A replay stage runs no game, and
+    its wait in the queue of the build side can be long: a hold of the game lapses after IDLE_MINUTES with no game
+    seen (slot.py `lapse_idle_holds`). A take by the holder renews the hold; after a lapse it waits in the queue."""
+    stop = ask_slot(slots, "game", what, no_wait)
+    if stop:
+        raise SmokeNotRun("the game slot for %s: %s" % (what, stop))
+
+
+def own_build_places(slots, label):
+    """The places of the build side that the owner of a take with `label` holds now: this session's, or with no
+    session, those of a take with that label."""
+    owner = slots.owner_of(slots.session_id(), label)
+    return [unit for unit in slots.BUILD_UNITS
+            for holder in [slots.read_record(slots.holder_path(unit), slots.Holder)] if holder is not None and holder.session == owner]
+
+
+@contextlib.contextmanager
+def whole_build_side(slots, what, no_wait):
+    """Holds the whole build side for the replays of a stage: a replay needs both places (the owner's D139), and the
+    game slot does not give them. It waits in the queue of the build side with the game slot held (f220: a place
+    taken between the live run and the tour's replays refused all of them). A refusal raises SmokeNotRun. The hold
+    ends with the stage, unless this session held a place before it: then the hold stays, as its work goes on."""
+    label = "make_play_set: %s" % what
+    held_before = own_build_places(slots, label)
+    stop = ask_slot(slots, "build", what, no_wait, whole=True)
+    if stop:
+        raise SmokeNotRun("the whole build side for %s: %s" % (what, stop))
+    try:
+        yield
+    finally:
+        if held_before:
+            say("build: this session held %s before %s, and keeps the whole side: release it yourself" % (", ".join(held_before), what))
+        else:
+            say(slots.release("build", label).text.splitlines()[0])
 
 
 def hold_run_lock(path):
@@ -542,29 +602,37 @@ def gate_now(tree, folder, when):
     return os.path.join(tree, "results", time.strftime("%Y%m%d-%H%M%S", when) + "-gate-" + os.path.basename(folder))
 
 
-def smoke_gate(tree, folder):
-    """The replays against the accepted pictures, with no game. Its exit code is honest since 849c9b3."""
+def smoke_gate(tree, folder, slots, no_wait):
+    """The replays against the accepted pictures, with no game, under a hold of the whole build side. Its exit code
+    is honest since 849c9b3."""
     say("smoke: the gate")
-    now = gate_now(tree, folder, time.localtime())
-    done = subprocess.run([sys.executable, "-I", "tools/validate_retained.py", "baseline", "--mge-build", folder, "--baseline", BASELINE, "--now", now],
-                          cwd=tree, capture_output=True, text=True, errors="replace")
+    with whole_build_side(slots, "the gate of the next set", no_wait):
+        now = gate_now(tree, folder, time.localtime())
+        done = subprocess.run([sys.executable, "-I", "tools/validate_retained.py", "baseline", "--mge-build", folder, "--baseline", BASELINE, "--now", now],
+                              cwd=tree, capture_output=True, text=True, errors="replace")
     keep = os.path.join(KEPT_RUNS % datetime.date.today().isoformat(), "gate-%s.txt" % os.path.basename(folder))
     os.makedirs(os.path.dirname(keep), exist_ok=True)
     with open(keep, "w", encoding="utf-8") as file:
         file.write(done.stdout + done.stderr)
+    if NOT_RUN in done.stdout:
+        raise SmokeNotRun("the gate's replays, see %s" % keep)
     if done.returncode != 0:
         raise SmokeFailed("the gate gave exit code %d, see %s: %s" % (done.returncode, keep, (done.stdout + done.stderr).strip()[-200:]))
     return os.path.basename(keep)
 
 
-def smoke_tour(tree, folder, plugin_dll, notes):
+def smoke_tour(tree, folder, plugin_dll, notes, slots, no_wait):
+    """The tour in a game, then its replays under a hold of the whole build side."""
     run = run_runner(tree, "playset-tour", folder, plugin_dll, 900, "--steps", "tour", "--tour-cells", TOUR_CELLS, "--tour-dual")
     check_run_files(run, notes)
-    done = subprocess.run([sys.executable, "tools/validate_tour.py", run, "--mge-build", folder, "--jobs", "3"],
-                          cwd=tree, capture_output=True, text=True, errors="replace")
+    with whole_build_side(slots, "the tour's replays of the next set", no_wait):
+        done = subprocess.run([sys.executable, "tools/validate_tour.py", run, "--mge-build", folder, "--jobs", "3"],
+                              cwd=tree, capture_output=True, text=True, errors="replace")
     with open(os.path.join(run, "validate.txt"), "w", encoding="utf-8") as file:
         file.write(done.stdout + done.stderr)
     keep_run(run)
+    if NOT_RUN in done.stdout:
+        raise SmokeNotRun("the tour's replays, see %s" % os.path.join(run, "validate.txt"))
     faults = tour_faults(done.stdout, done.returncode)
     if faults:
         raise SmokeFailed("%s: %s" % (run, "; ".join(faults)))
@@ -615,11 +683,13 @@ def smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes):
     return tested
 
 
-def run_smoke(tree, folder, plugin_dll, owner_local_bat, notes):
+def run_smoke(tree, folder, plugin_dll, owner_local_bat, notes, slots, no_wait):
     """The quick part first: a fault costs less time."""
     live = smoke_live(tree, folder, plugin_dll, notes)
-    gate = smoke_gate(tree, folder)
-    tour = smoke_tour(tree, folder, plugin_dll, notes)
+    gate = smoke_gate(tree, folder, slots, no_wait)
+    game_again(slots, "the tour of the next set", no_wait)
+    tour = smoke_tour(tree, folder, plugin_dll, notes, slots, no_wait)
+    game_again(slots, "the owner's start of the next set", no_wait)
     tested = smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes)
     return "passed (%s, %s, %s, %d of %d bats)" % (os.path.basename(live), gate, os.path.basename(tour), tested, len(OWNER_BATS))
 
@@ -650,6 +720,9 @@ def current_set_commits(owner_local_bat):
 # --- the tests of the pure parts ------------------------------------------------------------
 
 def self_test():
+    global WAIT_SECONDS
+    import io
+
     # Two sets' gates at the same second write into two folders, outside the baseline folder.
     when = time.localtime()
     first, second = gate_now("tree", "E:/sets/f202", when), gate_now("tree", "E:/sets/f203", when)
@@ -695,6 +768,94 @@ def self_test():
     assert not ends_with_three(wait_for_build, Slots, False)
     Slots.refusals = [types.SimpleNamespace(text="held", final=False)]
     assert ends_with_three(wait_for_build, Slots, True), "--no-wait"
+
+    # The replays of a stage hold the whole build side (f220: a place taken between the live run and the tour's
+    # replays refused all of them). They wait in its queue and release the side after. A refusal is NOT RUN.
+    class Side(Slots):
+        BUILD_UNITS = ("build", "build-2")
+        Holder = object
+        holders, asked, released = {}, [], []
+
+        @classmethod
+        def take(cls, slot, who, **kind):
+            cls.asked.append((slot, kind.get("whole", False)))
+            return types.SimpleNamespace(code=cls.replies.pop(0), text="a reply\nmore")
+
+        @staticmethod
+        def owner_of(session, who):
+            return session or "terminal: " + who
+
+        @staticmethod
+        def holder_path(unit):
+            return unit
+
+        @classmethod
+        def read_record(cls, path, _kind):
+            return cls.holders.get(path)
+
+        @classmethod
+        def release(cls, slot, who=None):
+            cls.released.append((slot, who))
+            return types.SimpleNamespace(code=Slots.DONE, text="build: released")
+
+    def stage(no_wait=False, fault=None):
+        """Runs a stage under the hold. Returns whether its body ran, or the text of SmokeNotRun."""
+        Side.asked, Side.released = [], []
+        ran = []
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), whole_build_side(Side, "x", no_wait):
+                ran.append(True)
+                if fault:
+                    raise fault
+        except SmokeNotRun as stop:
+            return str(stop)
+        return bool(ran)
+
+    wait_seconds, WAIT_SECONDS = WAIT_SECONDS, 0
+    try:
+        Side.replies = [Slots.QUEUED, Slots.QUEUED, Slots.DONE]
+        assert stage() is True and Side.asked == [("build", True)] * 3, Side.asked
+        assert Side.released == [("build", "make_play_set: x")], Side.released
+        Side.replies = [Slots.REFUSED]
+        stop = stage()
+        assert isinstance(stop, str) and "the whole build side for x: a reply" in stop and Side.released == [], (stop, Side.released)
+        Side.replies = [Slots.QUEUED]
+        assert isinstance(stage(no_wait=True), str) and Side.asked == [("build", True)], "--no-wait: one ask, then NOT RUN"
+        # A fault of the stage releases the side too.
+        Side.replies = [Slots.DONE]
+        try:
+            stage(fault=SmokeFailed("a picture"))
+        except SmokeFailed:
+            pass
+        assert Side.released == [("build", "make_play_set: x")], Side.released
+        # A place of this session from before stays held: its work goes on after the stage.
+        Side.holders = {"build-2": types.SimpleNamespace(session="s")}
+        Side.replies = [Slots.DONE]
+        assert stage() is True and Side.released == [], Side.released
+        Side.holders = {"build-2": types.SimpleNamespace(session="another")}
+        Side.replies = [Slots.DONE]
+        assert stage() is True and len(Side.released) == 1, "another session's place is not this session's"
+        # The game again after a replay stage: a renewal, a wait after a lapse, or NOT RUN.
+        Side.asked, Side.replies = [], [Slots.DONE]
+        with contextlib.redirect_stdout(io.StringIO()):
+            game_again(Side, "x", False)
+            Side.replies = [Slots.QUEUED, Slots.DONE]
+            game_again(Side, "x", False)
+        assert Side.asked == [("game", False)] * 3, Side.asked
+        Side.replies = [Slots.REFUSED]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                game_again(Side, "x", False)
+        except SmokeNotRun as stop:
+            assert "the game slot for x" in str(stop)
+        else:
+            raise AssertionError("a refusal of the game slot went on")
+    finally:
+        WAIT_SECONDS = wait_seconds
+    # A replay that the slot check refused is NOT RUN in validate_tour.py's output, and no failed picture.
+    import validate_tour
+    with contextlib.redirect_stdout(io.StringIO()):
+        validate_tour.self_test()
 
     assert next_set_number(["f99", "f100", "f7", "other", "f12x"]) == 101
     assert next_set_number([]) == 1
@@ -971,13 +1132,18 @@ def main():
                 say("pdb: %s" % line)
         except OSError as error:
             say("pdb: no pdb kept for %s: %s" % (name, error))
-        result = run_smoke(plugin_tree, folder, plugin_dll, owner_local_bat, notes)
+        result = run_smoke(plugin_tree, folder, plugin_dll, owner_local_bat, notes, slots, args.no_wait)
         passed = True
     except SmokeFailed as failure:
         reason = "FAILED: %s" % failure
         write_note(reason)
         say("%s: %s. local.bat stays on the last good set." % (name, reason))
         return 1
+    except SmokeNotRun as stop:
+        reason = "%s: %s" % (NOT_RUN, stop)
+        write_note(reason)
+        say("%s: %s. No picture of it was checked; local.bat stays on the last good set." % (name, reason))
+        return 3
     except BaseException as failure:
         # A note must not stay on "pending" (a stop of a tool, an interrupt).
         if name:

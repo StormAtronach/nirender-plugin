@@ -58,6 +58,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from common import BUILD_PARTS, build_missing, plugin_lines  # noqa: E402
+from validate_tour import NOT_RUN, refusal_of  # noqa: E402
 PY = sys.executable
 PLACES = {
     "seyda": ["--exterior", "Seyda Neen", "--position=-12288,-69632,74", "--yaw", "0"],
@@ -170,12 +171,16 @@ def ran(result, tool, accepting=False):
     its last lines go to the console and the stage fails: a failed tool would only show later as
     pictures that are missing, or in accept mode as pictures accepted. An exception, a helper
     that died and a tour stop with no picture all end with another code. In accept mode the
-    pictures made before the stop are in the accepted folder already."""
+    pictures made before the stop are in the accepted folder already. A replay that the slot
+    check refused checked no picture: it is NOT RUN, not a failed picture."""
     code, output = result
     if code == 0:
         return True
     for line in output.strip().split("\n")[-6:]:
         print("       " + line[:200], flush=True)
+    refused = refusal_of(output)
+    if refused:
+        return check(False, "%s: %s: %s" % (NOT_RUN, tool, refused[refused.index("Refused"):]))
     return check(False, "%s ended with the code %d%s" % (tool, code, ": the accepted folder holds a mix now, accept again" if accepting else ""))
 
 
@@ -282,6 +287,10 @@ def self_test():
     with contextlib.redirect_stdout(io.StringIO()) as printed:
         assert not ran((-1073741819, "a line of the helper"), "tool", True)
     assert "a line of the helper" in printed.getvalue() and "accept again" in printed.getvalue()
+    # A replay that the slot check refused (a planted refusal) is NOT RUN, and no picture failed.
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        assert not ran((1, "Refused by the slot check: replay.py: the build slot is held by rob (place 1); a replay needs the whole build side.\nTo pass anyway: ..."), "replay.py")
+    assert "FAIL %s: replay.py: Refused by the slot check" % NOT_RUN in printed.getvalue() and "ended with the code" not in printed.getvalue(), printed.getvalue()
     # A build folder with the helper only (a cargo target folder) lacks the Data Files.
     with tempfile.TemporaryDirectory() as build:
         open(os.path.join(build, "numidium.exe"), "wb").close()
