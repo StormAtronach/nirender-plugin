@@ -23,6 +23,8 @@ compared none of the draws that risk 76 spoiled. The exit code is 0 for a pass, 
 5 for NOT RUN. The end of a scene ends its wait for a projection: a projection between scenes is
 no scene's.
 """
+import contextlib
+import io
 import mmap
 import os
 import struct
@@ -189,6 +191,13 @@ def self_test():
     zoomed = (1.9548, 3.4752)
     assert verdict([[(1,) + world, (5,) + world], [(1,) + zoomed, (5,) + zoomed]])[0] == PASS
     assert verdict([[(1,) + world, (5,) + world], [(1,) + zoomed, (5,) + world]])[0] == FAIL
+    # Kind 2 (the sorted alpha scene) follows the world scene like the others. No capture has one today.
+    assert verdict([[(1,) + world, (2,) + world, (5,) + world]])[0] == PASS
+    status, report = verdict([[(1,) + world, (2,) + shadow, (5,) + world]])
+    assert status == FAIL and {f[1] for f in report["faults"]} == {2}, report
+    # A frame with two world scenes: the first is the reference, not the last.
+    assert verdict([[(1,) + world, (5,) + world, (1,) + zoomed]])[0] == PASS
+    assert verdict([[(1,) + world, (5,) + zoomed, (1,) + zoomed]])[0] == FAIL
     # Only the first projection of a scene counts: a screen polygon's projection after it is not
     # the camera's.
     data = bytearray(plant([[(1,) + world, (5,) + world]]))
@@ -216,6 +225,17 @@ def self_test():
             pass
         else:
             raise AssertionError("a file that is not a capture must be refused")
+        # The exit codes of main, which a caller reads: 0 pass, 1 fail, 5 not run; a failure beats a not run, and a
+        # not run beats a pass, whatever the order of the files.
+        paths = {}
+        for name, frames in (("right", [[(1,) + world, (5,) + world]]), ("none", [[(1,) + world, (3,) + world]]), ("wrong", [[(1,) + world, (5,) + shadow]])):
+            paths[name] = os.path.join(folder, name + ".nircap")
+            with open(paths[name], "wb") as file:
+                file.write(plant(frames))
+        with contextlib.redirect_stdout(io.StringIO()):
+            for names, wanted in ((("right",), 0), (("none",), 5), (("wrong",), 1), (("right", "none"), 5), (("none", "right"), 5),
+                                  (("none", "wrong"), 1), (("wrong", "none"), 1), (("right", "wrong", "none"), 1)):
+                assert main([paths[name] for name in names]) == wanted, (names, wanted)
     print("stream_rule self-test: ok")
 
 

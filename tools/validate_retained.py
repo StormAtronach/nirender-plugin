@@ -270,7 +270,7 @@ def adapter_note(recorded, now):
 
 def self_test():
     """The tests of the pure parts: no game, no replay."""
-    global REPO, run_code
+    global REPO, run_code, build_missing
     output = "distant land: on\nadapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)\nframe 1\n"
     assert adapter_of(output) == "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_of("no such line\n") is None
@@ -400,6 +400,25 @@ def self_test():
     ok, printed = stream_rule_of({"a.nircap": none, "tour/t.nircap": none})
     assert not ok and "FAIL %s: stream rule: no capture" % NOT_RUN in printed, printed
     assert not stream_rule_of({})[0]
+    # The baseline stage runs the rule before any replay: a wrong projection in a kept capture ends it with no replay
+    # started (a stage that left the rule out would start the replays), and a right one goes on to the first replay.
+    calls = []
+    real_build_missing, real_run_code = build_missing, run_code
+    build_missing = lambda _build: []  # noqa: E731
+    run_code = lambda command, _env: calls.append(command) or (1, "a planted failure of the replay")  # noqa: E731
+    try:
+        # Also when the stage accepts: an accept of pictures drawn from a wrong stream would keep the fault.
+        for name, frames, accept in (("wrong", wrong, False), ("wrong", wrong, True), ("right", right, False), ("right", right, True)):
+            with tempfile.TemporaryDirectory() as folder:
+                with open(os.path.join(folder, "a.nircap"), "wb") as file:
+                    file.write(stream_rule.plant(frames))
+                calls.clear()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    assert not stage_baseline(folder, accept, "no build", os.path.join(folder, "now"))
+            assert len(calls) == (0 if name == "wrong" else 1), (name, accept, calls)
+        assert "replay.py" in calls[0][1]
+    finally:
+        build_missing, run_code = real_build_missing, real_run_code
     print("validate_retained self-test: ok")
 
 
