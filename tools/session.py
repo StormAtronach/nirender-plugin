@@ -213,6 +213,23 @@ def plugin_mods(modlist, root=None):
     return [name for name in names if os.path.isfile(os.path.join(root, "mods", name, harness.PLUGIN_FILE))]
 
 
+# The plugin's line of a refusal of the renderer (src/install.rs `refused_message`), and the line
+# that its main.lua writes to the progress file then.
+REFUSAL_MARKS = ("the renderer is refused for this session", "] REFUSED: ")
+# The lines of an older plugin that give the cause before the refusal line.
+CAUSE_MARKS = ("no detour on ", " cannot run as Rust", "(PORT LOCKED")
+
+
+def refusal_of(lines):
+    """The reason for the run to stop when `lines` (the plugin's lines, without "nirender: ") hold a
+    refusal of the renderer: the cause lines before it, then the refusal line; else None."""
+    for index, line in enumerate(lines):
+        if any(mark in line for mark in REFUSAL_MARKS):
+            causes = [earlier for earlier in lines[:index] if any(mark in earlier for mark in CAUSE_MARKS)]
+            return "the plugin refused the renderer: " + " | ".join(causes + [line.strip()])
+    return None
+
+
 class Run:
     """The folder and the files of one run of the game."""
 
@@ -238,7 +255,7 @@ class Run:
         spec.update(values)
         return spec
 
-    def launch(self, spec, timeout, tag, mods=(), disable=(), facts=(), full_dump=False, enable=(), plugins=()):
+    def launch(self, spec, timeout, tag, mods=(), disable=(), facts=(), full_dump=False, enable=(), plugins=(), stop=None):
         """Starts the game with `spec` and follows it until the scenario says DONE.
 
         `mods` are the other mods of the run, as (name, {path in the mod: source file}); the
@@ -247,7 +264,8 @@ class Run:
         list after the runner's own mods (theirs win), `plugins` plugins that are active for the run (`harness.Deployment.enable_plugin`).
         The mod list and the Morrowind.ini are as they were after the run. `facts` are more lines for the record
         of what the run ran (`harness.write_setup`). `full_dump`: MWSE writes a full-memory dump at a
-        crash (`mwse_run_settings`).
+        crash (`mwse_run_settings`). `stop`: a function that `harness.run_game` calls every 2 s; a
+        text it returns ends the run (`refusal`).
 
         A run is a background run unless NIRENDER_FOREGROUND=1 (the owner, 2026-10-20): the
         runner stages MWSE.json with RunInBackground = true (stage_mwse_config) and does
@@ -279,7 +297,7 @@ class Run:
             problem = ring_problem_of_instance()
             if problem:
                 raise SystemExit(problem)
-            done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground, facts=facts)
+            done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground, facts=facts, stop=stop)
         finally:
             # run_game also restores. This restore is for a failure before run_game gets to
             # that point.
@@ -290,6 +308,18 @@ class Run:
                 shutil.copy2(path, self.path("mgeXE.log"))
                 break
         return done
+
+    def refusal(self):
+        """The plugin's refusal of the renderer in this run so far, with its cause (`refusal_of`),
+        or None: from the live mgeXE.log of the game (fresh since the start), the plugin's own log
+        and the progress file. For `launch(stop=...)`."""
+        lines = []
+        fresh = [path for path in MGE_LOGS if os.path.isfile(path) and self.started and os.path.getmtime(path) > self.started]
+        for path in fresh[:1] + [self.log, self.progress]:
+            if os.path.isfile(path):
+                text = open(path, encoding="utf-8", errors="replace").read().splitlines()
+                lines += [line[len(common.PLUGIN_PREFIX):] if line.startswith(common.PLUGIN_PREFIX) else line for line in text]
+        return refusal_of(lines)
 
     def plugin_lines(self):
         """The plugin's lines of this run (`common.plugin_lines`)."""

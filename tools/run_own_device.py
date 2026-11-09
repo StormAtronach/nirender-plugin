@@ -369,9 +369,11 @@ def weather_note(pinned, lines):
 
 
 def launch_run(run, spec, args, mods):
-    """Starts the run (`session.Run.launch`) with the options of the command line."""
+    """Starts the run (`session.Run.launch`) with the options of the command line. A refusal of
+    the renderer by the plugin ends the run at once, with its cause (`session.Run.refusal`), not at
+    the end of the budget."""
     return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)], full_dump=args.full_dump,
-                      enable=args.enable_mod, plugins=args.enable_plugin)
+                      enable=args.enable_mod, plugins=args.enable_plugin, stop=run.refusal)
 
 
 def build_commits(mge_build):
@@ -1110,6 +1112,40 @@ def self_test_mge_log_problems():
     assert problems(">> Using the wgpu renderer: no Direct3D device\nx failed to load/compile\n") == ["MGE XE could not compile 1 shaders"]
 
 
+def self_test_refusal():
+    """A refusal line of the plugin stops the run, with the lines of its cause; other lines do not."""
+    refusal_of = session.refusal_of
+    assert refusal_of(["census: 8 of 348 functions differ from the database", "install: 313 ports installed, 0 failed"]) is None
+    # The lines of plugin 862873b on MWSE.dll bf6a3039 (run 20261110-003000).
+    old = [
+        "census: 0x6a9d84 NiDX8Renderer::deleting_dtor+0x4 [4]: [38, e5, 50, 03] was [88, 00, 00, 00] -> call 0x3bb82c0 in MWSE.dll (PORT LOCKED: it stays game code here)",
+        "no detour on NiDX8Renderer::deleting_dtor: entry bytes differ from the database",
+        "1 of 313 ports cannot run as Rust: NiDX8Renderer::deleting_dtor",
+        "install: the renderer is refused for this session (see the census above); the game keeps MGE XE on Direct3D 9",
+        "own device: the game asked for a Direct3D 8; refused (see above)",
+    ]
+    reason = refusal_of(old)
+    assert reason.startswith("the plugin refused the renderer: census: 0x6a9d84"), reason
+    assert "no detour on NiDX8Renderer::deleting_dtor" in reason and reason.endswith("the game keeps MGE XE on Direct3D 9"), reason
+    # The progress line of main.lua.
+    assert "REFUSED: 1 of 313" in refusal_of(["[nirender.owndevice] step sh-start: true", "[nirender] REFUSED: 1 of 313 ports cannot run as Rust"])
+    # The live log of MGE XE, as Run.refusal reads it.
+    with tempfile.TemporaryDirectory() as folder:
+        saved = (session.MGE_LOGS, session.RESULTS)
+        session.RESULTS = folder
+        log = os.path.join(folder, "mgeXE.log")
+        session.MGE_LOGS = (log,)
+        try:
+            run = session.Run("refusal-test")
+            run.started = time.time() - 10
+            assert run.refusal() is None
+            with open(log, "w", encoding="utf-8") as file:
+                file.write("MGE-XE\n" + "".join("nirender: %s\n" % line for line in old))
+            assert run.refusal() == reason, run.refusal()
+        finally:
+            session.MGE_LOGS, session.RESULTS = saved
+
+
 def self_test_ring_problem():
     """A plugin and a helper with different ring marks are refused before the start; the same
     mark, no mark or no helper are not. The helper is the Root file that wins in the mod list."""
@@ -1251,6 +1287,9 @@ def self_test_full_dump():
             self.options = options
             return True
 
+        def refusal(self):
+            return None
+
     for full_dump in (False, True):
         run = FakeRun()
         launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=full_dump, enable_mod=[], enable_plugin=[]), [])
@@ -1258,6 +1297,8 @@ def self_test_full_dump():
     run = FakeRun()
     launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=False, enable_mod=["Mirror test"], enable_plugin=["mirrorTest.esp"]), [])
     assert run.options["enable"] == ["Mirror test"] and run.options["plugins"] == ["mirrorTest.esp"], run.options
+    # A refusal of the renderer ends the run (self_test_refusal).
+    assert run.options["stop"] == run.refusal, run.options
 
 
 def self_test_enable():
@@ -1552,6 +1593,7 @@ def self_test_use_instance():
 def self_test():
     """The tests of the argument handling: no game, no build."""
     self_test_mge_log_problems()
+    self_test_refusal()
     self_test_ring_problem()
     self_test_weather()
     self_test_checks()

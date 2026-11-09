@@ -436,6 +436,19 @@ pub fn follows(addr: usize, read: impl Fn(usize) -> u8, module_of: impl Fn(usize
     })
 }
 
+/// True when a known patch of another mod that a port follows covers `addr`, whatever bytes are
+/// there now: the address ranges of [`follows`], for the check of an MWSE.dll before a deploy
+/// (`mwse_sites`).
+#[cfg(test)]
+pub fn followed_range(addr: usize) -> bool {
+    FOLLOWED.iter().any(|followed| match *followed {
+        Followed::Operand { at, len } => (at..at + len).contains(&addr),
+        Followed::Patch { at, bytes } => (at..at + bytes.len()).contains(&addr),
+        Followed::InsertedCall { at } => (at..at + 6).contains(&addr),
+        Followed::CallOfPatch { at, head, tail, .. } => (at..at + head.len() + 4 + tail.len()).contains(&addr),
+    })
+}
+
 /// The ports whose Rust runs the whole engine function and only notes what it changed (the
 /// new property and effect states of a shape). The game code past their stolen bytes runs as
 /// it is in memory, so a change there by another mod is kept.

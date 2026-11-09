@@ -1,0 +1,78 @@
+# The places that an MWSE.dll names in the ported functions and that are no patch of a port
+# (src/mwse_sites.rs, tools/check_mwse_sites.py). One line each: the value, the form (push,
+# mov-r32, mov-m, data), the most occurrences of that form, and why. A new form or a higher
+# count fails until it is reviewed; a value is never added without a reason.
+0x6a9e10 mov-r32 2 NiDX8Renderer::dtor: SE_NI_DX8RENDERER_FNADDR_DTOR, the expected callee of the call at 0x6A9D83 and the callee of NI::DX8Renderer::destruct; a call of the engine function, so the detour of dtor_port runs
+0x6aa000 data 1 NiDX8Renderer::dtor+0x1f0: a round constant (a multiple of 0x1000) in data, not a site list
+0x6ab000 data 1 NiDX8Renderer::Recreate+0x180: a round constant (a multiple of 0x1000) in data, not a site list
+0x6ac000 data 1 NiDX8Renderer::SetUseWBuffer+0x10: a round constant (a multiple of 0x1000) in data, not a site list
+0x6ad000 data 1 NiDX8Renderer::RenderTriStrips+0x40: a round constant (a multiple of 0x1000) in data, not a site list
+0x6ae000 data 1 NiDX8Renderer::DrawSkinnedPrimitive+0x190: a round constant (a multiple of 0x1000) in data, not a site list
+0x6af000 data 1 NiDX8Renderer::DrawSkinnedPrimitive2+0x70: a round constant (a multiple of 0x1000) in data, not a site list
+0x6afef0 mov-r32 2 NiDX8Renderer::precacheGeometryData+0x160: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6aff07 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x177: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6aff0a mov-r32 1 NiDX8Renderer::precacheGeometryData+0x17a: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6aff37 mov-r32 4 NiDX8Renderer::precacheGeometryData+0x1a7: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6aff44 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x1b4: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6aff6a mov-m 1 NiDX8Renderer::precacheGeometryData+0x1da: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6aff77 mov-r32 1 NiDX8Renderer::precacheGeometryData+0x1e7: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6affc8 mov-m 1 NiDX8Renderer::precacheGeometryData+0x238: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6affd9 mov-m 1 NiDX8Renderer::precacheGeometryData+0x249: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6afffa mov-r32 3 NiDX8Renderer::precacheGeometryData+0x26a: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6afffc mov-m 1 NiDX8Renderer::precacheGeometryData+0x26c: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6afffc mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26c: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6afffd mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26d: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6afffe mov-r32 1 NiDX8Renderer::precacheGeometryData+0x26e: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6b0000 data 1 NiDX8Renderer::precacheGeometryData+0x270: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b0061 data 1 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x31: text in data (bytes "a.k."), not a site list
+0x6b0063 data 1 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x33: text in data (bytes "c.k."), not a site list
+0x6b006b data 3 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x3b: text in data (bytes "k.k."), not a site list
+0x6b006d data 3 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x3d: text in data (bytes "m.k."), not a site list
+0x6b006e data 2 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x3e: text in data (bytes "n.k."), not a site list
+0x6b0073 data 3 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x43: text in data (bytes "s.k."), not a site list
+0x6b0075 data 4 NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer+0x45: text in data (bytes "u.k."), not a site list
+0x6b0e20 mov-r32 2 NiGetD3DFormatForNiPixelFormat: SE_NI_PIXELFORMAT_FNADDR_GETD3DFORMAT, called by NI::PixelFormat::getD3DFormat; a call of the engine function, so the port's detour runs
+0x6b1000 data 1 NiDX8Renderer_static::GetAdapters+0x40: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b2000 data 1 NiDX8DeviceDesc::getScreenFormatEnum+0x140: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b3000 data 1 NiDX8TexturePass::resetForNewFrame+0x60: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b4000 data 1 NiDX8TexturePass::acquireSubpassForPixelShader+0x120: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b41b0 mov-r32 1 NiDX8TexturePass::setCTPipelineState: the expected old value of the vtable slot 0x74F650+8 (PatchUtil.cpp overrideVirtualTableEnforced) and the callee of NI::DX8TexturePass::setCTPipelineState; MWSE's slot calls the engine function, so the port's detour runs
+0x6b5000 data 1 NiDX8TexturePass::setCTPipelineState+0xe50: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b6000 data 1 NiDX8TexturePass::texGen_WorldPerspective_Claude_+0x150: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b6165 data 1 NiDX8TexturePass::texGen_SphereMap_Claude_+0xd5: text in data (bytes "eak."), not a site list
+0x6b6361 data 5 NiDX8TexturePass::texGen_DiffuseCubeMap_Claude_+0x61: text in data (bytes "ack."), not a site list
+0x6b6365 data 2 NiDX8TexturePass::texGen_DiffuseCubeMap_Claude_+0x65: text in data (bytes "eck."), not a site list
+0x6b636f data 5 NiDX8TexturePass::texGen_DiffuseCubeMap_Claude_+0x6f: text in data (bytes "ock."), not a site list
+0x6b6e61 data 3 NiDX8TextureData_static::FindClosestPixelFormat+0x11: text in data (bytes "ank."), not a site list
+0x6b6e69 data 2 NiDX8TextureData_static::FindClosestPixelFormat+0x19: text in data (bytes "ink."), not a site list
+0x6b7000 data 1 NiDX8TextureData::FindMatchingPixelFormat+0x90: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b726f data 1 NiDX8TextureData::FindMatchingPixelFormat+0x2ff: text in data (bytes "ork."), not a site list
+0x6b8000 data 1 NiDX8RenderState::ctor+0x290: a round constant (a multiple of 0x1000) in data, not a site list
+0x6b9000 data 1 NiDX8ConfigurableTexturePipeline::create+0x10: a round constant (a multiple of 0x1000) in data, not a site list
+0x6ba000 data 1 NiDX8ConfigurableTexturePipeline::initPipelineState+0x160: a round constant (a multiple of 0x1000) in data, not a site list
+0x6bb000 data 1 NiDX8LightManager::dtor+0x70: a round constant (a multiple of 0x1000) in data, not a site list
+0x6bd000 data 1 NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer+0x20: a round constant (a multiple of 0x1000) in data, not a site list
+0x6be000 data 1 NiDX8VertexBufferManager::PackUntransformedVB+0x1b0: a round constant (a multiple of 0x1000) in data, not a site list
+0x6be811 push 3 NiDX8VertexBufferManager::GetVBInfo+0x181: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6bf000 data 1 NiD3DShaderInterface::compileVertexShader+0x200: a round constant (a multiple of 0x1000) in data, not a site list
+0x6c0000 data 1 NiDX8SourceTextureData::CopyDataToSurface+0xc0: a round constant (a multiple of 0x1000) in data, not a site list
+0x6c002d data 21 NiDX8SourceTextureData::CopyDataToSurface+0xed: text in data (bytes "-.l."), not a site list
+0x6c0061 data 13 NiDX8SourceTextureData::Update+0x11: text in data (bytes "a.l."), not a site list
+0x6c0062 data 4 NiDX8SourceTextureData::Update+0x12: text in data (bytes "b.l."), not a site list
+0x6c0064 data 2 NiDX8SourceTextureData::Update+0x14: text in data (bytes "d.l."), not a site list
+0x6c0065 data 9 NiDX8SourceTextureData::Update+0x15: text in data (bytes "e.l."), not a site list
+0x6c0066 data 2 NiDX8SourceTextureData::Update+0x16: text in data (bytes "f.l."), not a site list
+0x6c0067 data 18 NiDX8SourceTextureData::Update+0x17: text in data (bytes "g.l."), not a site list
+0x6c0069 data 5 NiDX8SourceTextureData::Update+0x19: text in data (bytes "i.l."), not a site list
+0x6c006c data 4 NiDX8SourceTextureData::Update+0x1c: text in data (bytes "l.l."), not a site list
+0x6c006d data 2 NiDX8SourceTextureData::Update+0x1d: text in data (bytes "m.l."), not a site list
+0x6c006e data 6 NiDX8SourceTextureData::Update+0x1e: text in data (bytes "n.l."), not a site list
+0x6c006f data 1 NiDX8SourceTextureData::Update+0x1f: text in data (bytes "o.l."), not a site list
+0x6c0070 data 3 NiDX8SourceTextureData::Update+0x20: text in data (bytes "p.l."), not a site list
+0x6c0072 data 8 NiDX8SourceTextureData::Update+0x22: text in data (bytes "r.l."), not a site list
+0x6c0073 data 4 NiDX8SourceTextureData::Update+0x23: text in data (bytes "s.l."), not a site list
+0x6c0075 data 1 NiDX8SourceTextureData::Update+0x25: text in data (bytes "u.l."), not a site list
+0x6c00c7 mov-r32 1 NiDX8SourceTextureData::Update+0x77: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6c2000 data 1 NiDX8TexturePass::setTextureFiltering+0x60: a round constant (a multiple of 0x1000) in data, not a site list
+0x6e5000 data 1 NiTriShape::Display+0x70: a round constant (a multiple of 0x1000) in data, not a site list
+0x6f5000 data 1 NiRenderer::dtor+0x80: a round constant (a multiple of 0x1000) in data, not a site list
