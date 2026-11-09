@@ -30,8 +30,13 @@ unsafe fn before_begin_paint(args: &[usize]) {
 /// True when a port follows the change that the census found.
 unsafe fn port_follows(change: &census::Change) -> bool {
     let func = change.func;
-    let live = core::slice::from_raw_parts(func.ea as *const u8, func.size);
-    follows_change(func, live, change.offset, change.len, |addr| *(addr as *const u8), module_name_of)
+    // The function as the census compared it: under the plugin's own jump, the displaced bytes.
+    let bytes = change.compared();
+    let read = |addr: usize| match addr.checked_sub(func.ea).and_then(|offset| bytes.get(offset)) {
+        Some(&byte) => byte,
+        None => *(addr as *const u8),
+    };
+    follows_change(func, &bytes, change.offset, change.len, read, module_name_of)
 }
 
 /// The file name of the module that holds `address`, or [`ports::THIS_PLUGIN`] for this plugin's own
@@ -65,22 +70,20 @@ fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, le
 
 /// Does the census and writes it to the log. It locks the port of a function that another
 /// mod changed in a way that the port does not follow. With `hooked`, the entries hold the
-/// jumps of this plugin. These jumps are not a change. Returns the number of changed
-/// functions.
+/// jumps of this plugin. These jumps are not a change: the census compares the bytes that each
+/// displaced (`census::compared`). Returns the number of changed functions.
 pub unsafe fn census(hooked: bool) -> usize {
     let mut changed: Vec<usize> = Vec::new();
-    for change in &census::changes() {
+    for change in &census::changes(hooked) {
         if crate::atomic_count::covers(change.func.ea + change.offset, change.len) {
             continue;
         }
         let port = ports::all().find(|p| p.addr == change.func.ea);
-        if hooked && change.offset < 16 && port.map_or(false, |p| p.installed()) {
-            continue;
-        }
         changed.push(change.func.ea);
+        let jump = if change.own_jump_changed { " (the plugin's jump at the entry is changed by another module)" } else { "" };
         let note = match port {
             None => "",
-            Some(_) if port_follows(change) => " (the port follows the change)",
+            Some(_) if !change.own_jump_changed && port_follows(change) => " (the port follows the change)",
             Some(port) => {
                 let ran = !port.locked() && port.mode() != Mode::Off;
                 port.lock();
@@ -103,7 +106,7 @@ pub unsafe fn census(hooked: bool) -> usize {
                 }
             }
         };
-        crate::log!("census: {}{}", census::describe(change), note);
+        crate::log!("census: {}{}{}", census::describe(change), jump, note);
     }
     changed.dedup();
     crate::log!("census: {} of {} functions differ from the database", changed.len(), FUNCS.len());
