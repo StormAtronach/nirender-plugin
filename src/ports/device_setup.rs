@@ -5,6 +5,10 @@
 //! have them. Each frame only frees a block from `operator new` when the constructor that
 //! runs on the block throws. A frame of `dtor` only runs the member destructors when one of
 //! them throws.
+//!
+//! MWSE sends the call of `dtor` in `deleting_dtor` to its own function, which releases the
+//! skin partition buffers first. The port calls the target that is in memory at that call
+//! ([`SITES`]).
 
 use core::mem::transmute;
 
@@ -32,6 +36,15 @@ use crate::engine::{
 use crate::mem::{rd, wr};
 use crate::ports::{hash_map, light_manager, ni, render_state, texture_pipeline};
 use crate::shadow::Regions;
+// The macros of `site` call `target` for the address of the callee.
+use crate::site::{call_target as target, site_thiscall};
+
+/// The call of `NiDX8Renderer::dtor` (0x6A9E10) in `NiDX8Renderer::deleting_dtor`. MWSE
+/// e2b957c25d sends it to `NI::DX8Renderer::destruct`.
+const DTOR_SITE: usize = 0x6A9D83;
+
+/// The call sites whose target the ports of this module read from memory.
+pub static SITES: &[usize] = &[DTOR_SITE];
 
 // ---------------------------------------------------------------------------------------
 // Engine data at fixed addresses
@@ -1739,7 +1752,8 @@ pub unsafe fn dtor(this: usize) {
 /// `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&deleting_dtor_port::STATE);
-    dtor(this);
+    // The game's `dtor`, which is the port `dtor_port`, or the function of a mod that calls it.
+    site_thiscall!(DTOR_SITE, this);
     if flags & 1 != 0 {
         operator_delete(this);
     }
@@ -1959,6 +1973,26 @@ mod tests {
 
     fn renderer() -> Vec<u8> {
         vec![0u8; R::SIZE]
+    }
+
+    #[test]
+    fn the_dtor_site_is_the_call_of_dtor_in_deleting_dtor() {
+        let func = crate::hook::find(0x6A9D80).unwrap();
+        let code = crate::census::expected(func);
+        let at = DTOR_SITE - func.ea;
+        assert_eq!(code[at], 0xE8);
+        let rel = i32::from_le_bytes(code[at + 1..at + 5].try_into().unwrap());
+        assert_eq!((DTOR_SITE + 5).wrapping_add(rel as usize), 0x6A9E10);
+        assert!(crate::ports::serves_site(DTOR_SITE));
+    }
+
+    #[test]
+    fn a_redirected_dtor_call_is_followed() {
+        // The bytes in memory after MWSE e2b957c25d: only the target of the call changed.
+        let func = crate::hook::find(0x6A9D80).unwrap();
+        let mut live = crate::census::expected(func).to_vec();
+        live[4..8].copy_from_slice(&[0x38, 0xE5, 0x50, 0x03]);
+        assert_eq!(crate::site::classify(func, &live, 4, 4), crate::site::Kind::RedirectedCall(DTOR_SITE));
     }
 
     #[test]

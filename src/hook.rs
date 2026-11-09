@@ -102,6 +102,15 @@ pub unsafe fn install(ea: usize, detour: usize, stack_args: usize, cleanup: Clea
     install_raw(ea, &func.head[..func.steal], &relocs, detour, stack_args, cleanup)
 }
 
+/// True when the entry bytes in memory, `live`, are the instructions of `head`. The 4 bytes at
+/// each offset of `relocs` are the target of a call or a jump: another mod can change it (MWSE
+/// sends the call of `NiDX8Renderer::deleting_dtor` to its own function), and the trampoline
+/// keeps the target that is in memory. The opcode before them must still be the same.
+fn head_matches(live: &[u8], head: &[u8], relocs: &[usize]) -> bool {
+    let in_target = |at: usize| relocs.iter().any(|&offset| (offset..offset + 4).contains(&at));
+    live.len() == head.len() && (0..head.len()).all(|at| in_target(at) || live[at] == head[at])
+}
+
 /// Does the same as `install`, for a function outside the table. `head` holds the whole
 /// instructions that the jump displaces. When the function is shorter than the jump, `head`
 /// holds all of the function. `relocs` are the offsets in `head` of the 32-bit relative
@@ -130,7 +139,7 @@ pub unsafe fn install_raw(
         return finish(ea, at, 5, detour, stack_args, cleanup);
     }
     let steal = head.len();
-    if live[..steal] != *head {
+    if !head_matches(&live[..steal], head, relocs) {
         return Err(format!("entry bytes differ from the database: {:02x?} against {:02x?}", &live[..steal], head));
     }
     let mut code = head.to_vec();
@@ -204,5 +213,36 @@ mod tests {
         assert_eq!(&code[code.len() - 6..], &[0x83, 0xC4, 8, 0x59, 0x5A, 0xC3]);
         let none = entry_thunk_code(0, 0x100, 0, Cleanup::Callee);
         assert_eq!(*none.last().unwrap(), 0xC3);
+    }
+
+    #[test]
+    fn a_call_with_another_target_in_the_head_matches() {
+        // NiDX8Renderer::deleting_dtor: push esi; mov esi, ecx; call NiDX8Renderer::dtor.
+        let func = find(0x6A9D80).unwrap();
+        let head = &func.head[..func.steal];
+        let relocs = [4];
+        assert_eq!(func.relocs[0], 4);
+        assert!(head_matches(head, head, &relocs));
+        // MWSE e2b957c25d sends the call to its own function in MWSE.dll.
+        let mut live = head.to_vec();
+        live[4..8].copy_from_slice(&[0x38, 0xE5, 0x50, 0x03]);
+        assert!(head_matches(&live, head, &relocs));
+        // Without the offset of the target, the same bytes do not match.
+        assert!(!head_matches(&live, head, &[]));
+    }
+
+    #[test]
+    fn another_opcode_or_another_byte_in_the_head_does_not_match() {
+        let func = find(0x6A9D80).unwrap();
+        let head = &func.head[..func.steal];
+        let relocs = [4];
+        // A jump in place of the call.
+        let mut live = head.to_vec();
+        live[3] = 0xE9;
+        assert!(!head_matches(&live, head, &relocs));
+        // Another first instruction.
+        let mut live = head.to_vec();
+        live[0] = 0x55;
+        assert!(!head_matches(&live, head, &relocs));
     }
 }
