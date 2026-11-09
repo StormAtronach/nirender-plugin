@@ -209,7 +209,7 @@ pub struct FrameParameters {
     /// is out of view.
     pub shadow_reach: f32,
     /// The number of views of a frame that get the parts a mod asks for (the player's
-    /// `views.full_tier_max`, 0 to 4): see `engine::full_tier`. [`None`] keeps the number the
+    /// `views.full_tier_max`, up to 32, the view slots): see `engine::full_tier`. [`None`] keeps the number the
     /// player has (1 at the start).
     pub full_tier_max: Option<usize>,
 }

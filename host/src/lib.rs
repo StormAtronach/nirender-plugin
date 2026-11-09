@@ -256,7 +256,8 @@ struct PostCopy {
     depth: wgpu::Texture,
 }
 
-/// The pairs of copies that the player keeps: the full tier has at most four places.
+/// The pairs of copies that the player keeps, at least: the cache has a pair for each place of
+/// the full tier when the player allows more places than this.
 const POST_COPIES_KEPT: usize = 4;
 
 /// What a frame has, in its order. `feed` collects the items and `run_items` does them.

@@ -1,8 +1,9 @@
 //! The places of the full tier (D82 stage 3b, section 3.4e of `d82-view-per-render.md`). A mod
 //! asks for parts of MGE XE in a view of its own (`mge.camera.setViewOptions`); the plugin
 //! writes the parts of each view slot as the frame event `EVENT_VIEW_OPTIONS`. The player
-//! limits how many views a frame get them: `views.full_tier_max` (default 1, 0 to 4; 0 refuses
-//! every request). The places are sticky, so that the full tier does not jump between views
+//! limits how many views a frame get them: `views.full_tier_max` (default 1; 0 refuses every
+//! request; the code takes up to [`MAX_PLACES`]). The places are sticky, so that the full tier
+//! does not jump between views
 //! when a mod walks its mirrors in a changing order:
 //!
 //! - a view that holds a place keeps it while it has options and renders at least once in
@@ -24,8 +25,10 @@ use crate::stream_format::VIEW_SLOTS;
 /// The frames without a scene after which a holder loses its place to a waiting view (the
 /// plugin's `view_slots::RETIRE_FRAMES`).
 pub(crate) const IDLE_FRAMES: u64 = 60;
-/// The largest value of `views.full_tier_max`.
-pub(crate) const MAX_PLACES: usize = 4;
+/// The most places the code takes, one for each view slot: a place is held by a view slot, so
+/// a frame cannot use more. The player's range of `views.full_tier_max` is the setting's own
+/// (`FULL_TIER_MAX_RANGE` of mge-config), at most this.
+pub(crate) const MAX_PLACES: usize = VIEW_SLOTS;
 /// The default of `views.full_tier_max`.
 pub(crate) const DEFAULT_PLACES: usize = 1;
 
@@ -79,13 +82,18 @@ impl Default for FullTier {
 }
 
 impl FullTier {
-    /// Sets `views.full_tier_max`; a value past the range is clamped. The places below the new
-    /// number keep their holders and their numbers.
+    /// Sets `views.full_tier_max`; a value above [`MAX_PLACES`] is clamped. The places below
+    /// the new number keep their holders and their numbers.
     pub(crate) fn set_max(&mut self, max: usize) {
         self.max = max.min(MAX_PLACES);
         for place in &mut self.places[self.max..] {
             *place = None;
         }
+    }
+
+    /// How many places a frame may use now (`views.full_tier_max`).
+    pub(crate) fn max(&self) -> usize {
+        self.max
     }
 
     /// The start of a frame.
@@ -265,7 +273,8 @@ mod tests {
         assert_eq!(tier.counts.cleared, 1);
     }
 
-    /// 0 refuses every request; the number is clamped to 4; a lower number takes places back.
+    /// 0 refuses every request; the number is clamped to the code's bound; a lower number takes
+    /// places back.
     #[test]
     fn the_number_of_places_is_the_players() {
         let mut tier = FullTier::default();
@@ -274,8 +283,7 @@ mod tests {
         tier.frame_start();
         assert_eq!(parts(&mut tier, 1), 0);
         assert_eq!(tier.counts.refused, 1);
-        tier.set_max(99);
-        assert_eq!(tier.max, MAX_PLACES);
+        tier.set_max(4);
         for slot in 1..=5 {
             tier.options(slot, 1);
         }
@@ -346,6 +354,35 @@ mod tests {
         assert_eq!(tier.scene(2).map(|g| g.place), Some(1));
         assert_eq!(tier.scene(4), None);
         assert!(tier.line().starts_with("full tier: 2 places of at most 2;"));
+    }
+
+    /// A number above 4 up to the code's bound is served, and keeps the holders and the numbers
+    /// below it when it grows; above the bound it is clamped (the place of D82 caps, design B).
+    #[test]
+    fn a_number_above_four_up_to_the_bound_is_served_and_a_larger_one_is_clamped() {
+        let mut tier = FullTier::default();
+        tier.set_max(6);
+        tier.frame_start();
+        for slot in 1..=8u8 {
+            tier.options(u32::from(slot), 1);
+        }
+        let got: Vec<Option<u8>> = (1..=8u8).map(|slot| tier.scene(slot).map(|grant| grant.place)).collect();
+        assert_eq!(got, vec![Some(0), Some(1), Some(2), Some(3), Some(4), Some(5), None, None]);
+        // A larger number keeps the holders and their numbers, and serves the waiting views.
+        tier.set_max(8);
+        assert_eq!(tier.scene(1).map(|grant| grant.place), Some(0));
+        assert_eq!(tier.scene(6).map(|grant| grant.place), Some(5));
+        assert_eq!(tier.scene(7).map(|grant| grant.place), Some(6));
+        assert_eq!(tier.scene(8).map(|grant| grant.place), Some(7));
+        // A smaller one takes the places above it back.
+        tier.set_max(6);
+        assert_eq!(tier.scene(7), None);
+        assert_eq!(tier.scene(6).map(|grant| grant.place), Some(5));
+        // The bound is the number of view slots.
+        tier.set_max(99);
+        assert_eq!((tier.max(), MAX_PLACES), (VIEW_SLOTS, VIEW_SLOTS));
+        tier.set_max(VIEW_SLOTS);
+        assert_eq!(tier.max(), VIEW_SLOTS);
     }
 
     /// A slot past the table and a slot with no options draw as without a tier.
