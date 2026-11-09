@@ -65,6 +65,9 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
             crate::log_pipe::start(file);
         }
         live::run(&name, backends, &args, extension);
+        // The buffer of stdout first, as at the other ends of the program: its lines go into
+        // the pipe only at the flush.
+        let _ = std::io::Write::flush(&mut std::io::stdout());
         crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
         return;
     }
