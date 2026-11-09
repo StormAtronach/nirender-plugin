@@ -50,7 +50,7 @@
 0x6bb000 data 1 NiDX8LightManager::dtor+0x70: a round constant (a multiple of 0x1000) in data, not a site list
 0x6bd000 data 1 NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer+0x20: a round constant (a multiple of 0x1000) in data, not a site list
 0x6be000 data 1 NiDX8VertexBufferManager::PackUntransformedVB+0x1b0: a round constant (a multiple of 0x1000) in data, not a site list
-0x6be811 push 3 NiDX8VertexBufferManager::GetVBInfo+0x181: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6be811 push 3 NiDX8VertexBufferManager::GetVBInfo+0x181: a window across a push's operand and the next call: no instruction
 0x6bf000 data 1 NiD3DShaderInterface::compileVertexShader+0x200: a round constant (a multiple of 0x1000) in data, not a site list
 0x6c0000 data 1 NiDX8SourceTextureData::CopyDataToSurface+0xc0: a round constant (a multiple of 0x1000) in data, not a site list
 0x6c002d data 21 NiDX8SourceTextureData::CopyDataToSurface+0xed: text in data (bytes "-.l."), not a site list
@@ -69,7 +69,7 @@
 0x6c0072 data 8 NiDX8SourceTextureData::Update+0x22: text in data (bytes "r.l."), not a site list
 0x6c0073 data 4 NiDX8SourceTextureData::Update+0x23: text in data (bytes "s.l."), not a site list
 0x6c0075 data 1 NiDX8SourceTextureData::Update+0x25: text in data (bytes "u.l."), not a site list
-0x6c00c7 mov-r32 1 NiDX8SourceTextureData::Update+0x77: no literal in the MWSE source (3e9e2fe415); a constant that the compiler made, not a site
+0x6c00c7 mov-r32 1 NiDX8SourceTextureData::Update+0x77: a window across a displacement and the next instruction: no instruction
 0x6c2000 data 1 NiDX8TexturePass::setTextureFiltering+0x60: a round constant (a multiple of 0x1000) in data, not a site list
 0x6e5000 data 1 NiTriShape::Display+0x70: a round constant (a multiple of 0x1000) in data, not a site list
 0x6f5000 data 1 NiRenderer::dtor+0x80: a round constant (a multiple of 0x1000) in data, not a site list
