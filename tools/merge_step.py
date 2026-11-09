@@ -69,7 +69,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
 from common import git_env  # noqa: E402
-from make_play_set import BASELINE, WAIT_SECONDS, load_slots, say  # noqa: E402
+from make_play_set import BASELINE, WAIT_SECONDS, has_captures, load_slots, say  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
@@ -142,6 +142,14 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
 
 def needs_clean_sibling(stages):
     return any(name in ("replay gate", "d3d8 build", "build of the dist") for name, _, _ in stages)
+
+
+def baseline_problem(stages, baseline):
+    """Why the replay gate of these stages cannot compare, as a text, or None. main() asks before the take and the
+    builds: a baseline with no captures failed the gate only after them (2026-11-09, Rob's run 8b51a23d59)."""
+    if not any(name == "replay gate" for name, _, _ in stages) or has_captures(baseline):
+        return None
+    return "%s has no capture (*.nircap), so the replay gate cannot compare: give --baseline a folder with the captures" % baseline
 
 
 def tree_problem(kind, repo, stages, head, commit, changed, sibling_changed=False):
@@ -593,6 +601,19 @@ def self_test():
         # A pass against a named folder does not move the ref.
         assert moves_the_ref(BASELINE) and not moves_the_ref(os.path.join(root, "copy"))
 
+        # A baseline with no capture refuses a round with the replay gate before its take and builds (Rob's run
+        # 8b51a23d59 failed the gate at 0 s after its builds); a round with no gate needs no baseline.
+        empty, filled = os.path.join(root, "empty-baseline"), os.path.join(root, "filled-baseline")
+        os.makedirs(empty)
+        os.makedirs(filled)
+        open(os.path.join(filled, "seyda.nircap"), "wb").close()
+        gate_round = stages_for("plugin", plugin, ["host/src/retained.rs"], empty)
+        problem = baseline_problem(gate_round, empty)
+        assert problem and empty in problem and "no capture" in problem, problem
+        assert baseline_problem(gate_round, os.path.join(root, "no-such-folder")), "a missing folder"
+        assert baseline_problem(stages_for("plugin", plugin, ["host/src/retained.rs"], filled), filled) is None
+        assert baseline_problem(stages_for("plugin", plugin, ["src/lib.rs"], empty), empty) is None, "no gate, no baseline"
+
         # A refusal for lack of room ends the wait, and a place in the queue goes on.
         class Slots:
             DONE, REFUSED, QUEUED = 0, 1, 3
@@ -725,6 +746,10 @@ def main():
     problem = tree_problem(kind, repo, stages, git(repo, "rev-parse", "HEAD"), commit, bool(git(repo, "status", "--porcelain", "--untracked-files=no")), sibling_changed)
     if problem:
         say("FAIL the tree: %s" % problem)
+        return 1
+    problem = baseline_problem(stages, baseline)
+    if problem:
+        say("FAIL the baseline: %s" % problem)
         return 1
     sibling_hash = git(sibling, "rev-parse", "--short=10", "HEAD") if has_sibling else "none"
     say("%s %s, sibling %s, baseline %s: %d changed paths from %s; stages: %s" % (os.path.basename(repo), commit[:10], sibling_hash, baseline, len(paths), base[:10], ", ".join(name for name, _, _ in stages)))
