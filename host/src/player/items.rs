@@ -646,7 +646,7 @@ impl Player {
                 let picture = target_texture(device, size.0, size.1, texture.format(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
                 let depth_usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
                 let depth = target_texture(device, size.0, size.1, depth_texture.format(), depth_usage);
-                if self.post_copies.len() >= POST_COPIES_KEPT {
+                if self.post_copies.len() >= POST_COPIES_KEPT.max(self.views.tier.max()) {
                     self.post_copies.remove(0);
                 }
                 self.post_copies.push(PostCopy { size, picture, depth });
