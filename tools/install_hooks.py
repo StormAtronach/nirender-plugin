@@ -12,7 +12,11 @@
   before the renderer, is skipped with a line, so that no commit there needs `--no-verify`.
   The tools come from this repository (the sibling `nirender-plugin` of the tree, or the
   path written at install time when there is none).
-- The docs repository: `check_state_pages.py --install-hook` writes its own hook.
+- The docs repository: `check_state_pages.py --install-hook` writes its own hook. Its first
+  step refuses a commit on docs main (a merge conclusion excepted) that changes a `.py`, `.lua`,
+  `.sh`, `.ps1`, `.bat`, `.cmd`, `.rs`, `.cpp` or `.h` file under a folder named `scripts` or
+  `skills`, in any case. Such a change goes by a branch, the Reviewer and the Coordinator's
+  merge (W231, docs 722f306).
 
 A hook that is not ours is not replaced: the tool stops with its path. `git commit
 --no-verify` skips a hook for one commit. The hooks need no compile; a check whose
