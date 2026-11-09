@@ -133,8 +133,12 @@ pub struct PortState {
     /// Another mod changed this function in a way that the port does not serve. The function
     /// stays game code in this install. The mode cannot leave "off".
     pub locked: AtomicBool,
-    /// A function to call after each call of the port, in every mode. 0 means none.
+    /// A function to call after each call of the port on the main thread, in every mode. 0
+    /// means none. It runs on the main thread only, so it may claim it (`MainThread::claim`).
     pub after: AtomicUsize,
+    /// A function to call after each call of the port on a thread other than the main thread
+    /// (the engine's cell worker). 0 means none. It must be safe on that thread.
+    pub after_off_thread: AtomicUsize,
     /// A function to call before each call of the port, in every mode, with the arguments
     /// of the call. 0 means none. See `run_before`.
     pub before: AtomicUsize,
@@ -168,6 +172,7 @@ impl PortState {
             mode: AtomicU8::new(0),
             locked: AtomicBool::new(false),
             after: AtomicUsize::new(0),
+            after_off_thread: AtomicUsize::new(0),
             before: AtomicUsize::new(0),
             any_thread: AtomicUsize::new(0),
             live_calls: Counter::new(),
@@ -549,7 +554,9 @@ pub unsafe fn dispatch<R: Eax>(
     engine: impl FnOnce() -> u32,
 ) -> u32 {
     let eax = dispatch_inner(state, compare_eax, regions, rust, engine);
-    let after = state.after.load(Ordering::Relaxed);
+    // The thread of the call picks the hook: the main thread's hook may claim the main thread.
+    let hook = if on_main_thread() { &state.after } else { &state.after_off_thread };
+    let after = hook.load(Ordering::Relaxed);
     if after != 0 {
         core::mem::transmute::<usize, unsafe fn()>(after)();
     }
@@ -683,6 +690,45 @@ unsafe fn compare<R: Eax>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static MAIN_HOOK_CALLS: AtomicU32 = AtomicU32::new(0);
+    static OFF_THREAD_HOOK_CALLS: AtomicU32 = AtomicU32::new(0);
+
+    unsafe fn count_main_hook() {
+        MAIN_HOOK_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe fn count_off_thread_hook() {
+        OFF_THREAD_HOOK_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn no_detour() -> usize {
+        0
+    }
+
+    /// A port's `after` hook runs after a call on the main thread only, and its
+    /// `after_off_thread` hook after a call on another thread only: the first may claim the main
+    /// thread (`link_client::end_paint`), the second ends a removal of the cell worker
+    /// (`ports::geometry::worker_removal_ends`).
+    #[test]
+    fn each_after_hook_runs_on_its_own_thread() {
+        static PORT: PortState = PortState::new("a test port", 0, 0, crate::hook::Cleanup::Callee, no_detour);
+        PORT.after.store(count_main_hook as *const () as usize, Ordering::Relaxed);
+        PORT.after_off_thread.store(count_off_thread_hook as *const () as usize, Ordering::Relaxed);
+        // SAFETY: the port is in mode off: each call runs the engine closure, which does nothing.
+        let call = || unsafe { dispatch(&PORT, false, |_| {}, |_| 0u32, || 0) };
+
+        let _turn = crate::main_thread::TestTurn::take();
+        let before = main_thread_for_test();
+        call();
+        let after_main = (MAIN_HOOK_CALLS.load(Ordering::SeqCst), OFF_THREAD_HOOK_CALLS.load(Ordering::SeqCst));
+        std::thread::spawn(call).join().unwrap();
+        let after_other = (MAIN_HOOK_CALLS.load(Ordering::SeqCst), OFF_THREAD_HOOK_CALLS.load(Ordering::SeqCst));
+        restore_main_thread(before);
+
+        assert_eq!(after_main, (1, 0), "a call on the main thread runs the main thread's hook only");
+        assert_eq!(after_other, (1, 1), "a call on another thread runs the other thread's hook only");
+    }
 
     #[test]
     fn the_thread_id_of_the_block_is_the_one_windows_gives() {
