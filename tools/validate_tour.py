@@ -13,6 +13,13 @@ largest ones first. Make a baseline by replaying a run and copying its folder.
 A run made with `--tour-dual` has four frames for each stop: two in mode gpu, then two in
 mode off, with the time of the game held. Then this replays both (the off picture is
 `<cell>-<stop>-<id>-off.png`) and compares each pair: the two paths at one moment.
+
+A replay that the slot check refuses (a replay needs the whole build side) made no picture, and
+no picture of it is checked: it is "NOT RUN: slot refused", not a failed picture, and it gets
+no second try. Its pairs are not compared. The exit code is 1 when a picture failed, else 3 when
+a replay was not run, else 0.
+
+    python tools/validate_tour.py --self-test   # a planted refusal, with no replay
 """
 import argparse
 import os
@@ -23,6 +30,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PYTHON = sys.executable
+# The start of the refusal of slot.py's check of build work (`refuse_build_tool`), which replay.py calls.
+REFUSED = "Refused by the slot check"
+NOT_RUN = "NOT RUN: slot refused"
+NOT_RUN_CODE = 3
+# The runner of replay.py: the self-test replaces it.
+run_tool = subprocess.run
 
 
 def stops_of(run):
@@ -48,18 +61,26 @@ def replay(capture, frame, picture):
     # The helper of the build under test, not the default one of replay.py.
     if MGE_BUILD:
         command += ["--mge-build", MGE_BUILD]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = run_tool(command, capture_output=True, text=True)
     return result.returncode == 0 and os.path.isfile(picture), (result.stdout + result.stderr)[-400:]
+
+
+def refusal_of(output):
+    """The line of the slot check's refusal in the output of replay.py, or ""."""
+    return next((line.strip() for line in output.splitlines() if REFUSED in line), "")
 
 
 def replay_many(capture, items):
     """One run of the helper for all the frames of a capture: `items` are (frame, picture).
-    Returns the names of the pictures that were not made."""
+    Returns the names of the pictures that were not made, and the refusal of the slot check
+    ("" when the replay ran)."""
     prefix = os.path.join(os.path.dirname(items[0][1]), "tour-frames-%s" % os.path.basename(capture)[:-7])
     command = [PYTHON, os.path.join(HERE, "replay.py"), capture, prefix, "--frames-at", ",".join(str(f) for f, _ in items)]
     if MGE_BUILD:
         command += ["--mge-build", MGE_BUILD]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = run_tool(command, capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    refused = refusal_of(output)
     missing = []
     for frame, picture in items:
         made = "%s-%05d.png" % (prefix, frame)
@@ -69,9 +90,40 @@ def replay_many(capture, items):
             os.replace(made, picture)
         else:
             missing.append(os.path.basename(picture))
-    if missing:
-        print("replay of %s: %d pictures missing: %s" % (os.path.basename(capture), len(missing), (result.stdout + result.stderr)[-300:].strip()))
-    return missing
+    if refused:
+        print("%s: replay of %s: %d pictures not made: %s" % (NOT_RUN, os.path.basename(capture), len(missing), refused))
+    elif missing:
+        print("replay of %s: %d pictures missing: %s" % (os.path.basename(capture), len(missing), output[-300:].strip()))
+    return missing, refused
+
+
+def replay_all(work, jobs):
+    """Replays `work`, (capture, frame, picture, name), with one run of the helper for each capture, and a
+    second try alone for each picture that the first did not make. Returns the names of the failed pictures
+    and of those not run: a refused replay is not tried again, as the check would refuse it again."""
+    by_capture = {}
+    for capture, frame, picture, name in work:
+        by_capture.setdefault(capture, []).append((frame, picture))
+    failures, not_run = [], []
+    # The captures run at once, up to `jobs` (2026-10-16: 206 runs of the helper became 3).
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for missing, refused in pool.map(lambda kv: replay_many(kv[0], kv[1]), by_capture.items()):
+            (not_run if refused else failures).extend(missing)
+    for capture, frame, picture, name in work:
+        if name not in failures:
+            continue
+        # Once more, alone, one frame.
+        ok, text = replay(capture, frame, picture)
+        failures.remove(name)
+        if ok:
+            continue
+        if refusal_of(text):
+            print("%s: %s: %s" % (NOT_RUN, name, refusal_of(text)))
+            not_run.append(name)
+        else:
+            print("FAILED %s: %s" % (name, text.strip()[-200:]))
+            failures.append(name)
+    return failures, not_run
 
 
 def main():
@@ -107,30 +159,20 @@ def main():
                 # Two frames for each stop: the second one.
                 work.append((capture, stop * 2 - 1, os.path.join(out, name), name))
     print("%d stops to replay%s" % (len(work) // (2 if dual else 1), ", gpu and off at each" if dual else ""))
-    failures = []
-    # One run of the helper for each capture, with every frame of it (2026-10-16: 206 runs
-    # became 3). The captures run at once, up to --jobs.
-    by_capture = {}
-    for capture, frame, picture, name in work:
-        by_capture.setdefault(capture, []).append((frame, picture))
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for missing in pool.map(lambda kv: replay_many(kv[0], kv[1]), by_capture.items()):
-            failures.extend(missing)
-    for capture, frame, picture, name in work:
-        if name in failures:
-            # Once more, alone, one frame.
-            ok, text = replay(capture, frame, picture)
-            if ok:
-                failures.remove(name)
-            else:
-                print("FAILED %s: %s" % (name, text.strip()[-200:]))
-    print("%d pictures, %d failed" % (len(work) - len(failures), len(failures)))
+    failures, not_run = replay_all(work, args.jobs)
+    print("%d pictures, %d failed" % (len(work) - len(failures) - len(not_run), len(failures)))
+    if not_run:
+        print("%s: %d pictures not made, and not checked" % (NOT_RUN, len(not_run)))
     sys.path.insert(0, HERE)
     import picture_diff
 
     if pairs:
         rows = []
+        unrun = 0
         for gpu, off in pairs:
+            if gpu in not_run or off in not_run:
+                unrun += 1
+                continue
             a, b = os.path.join(out, gpu), os.path.join(out, off)
             if not (os.path.isfile(a) and os.path.isfile(b)):
                 rows.append((float("inf"), gpu, "missing"))
@@ -145,14 +187,14 @@ def main():
         for mean, name, text in rows[:40]:
             print("  %-48s %s" % (name, text))
         equal = sum(1 for mean, _, _ in rows if mean == 0)
-        print("pairs: %d of %d equal" % (equal, len(rows)))
+        print("pairs: %d of %d equal%s" % (equal, len(rows), "; %d pairs %s, not compared" % (unrun, NOT_RUN) if unrun else ""))
     if not args.against:
-        return 1 if failures else 0
+        return 1 if failures else NOT_RUN_CODE if not_run else 0
 
     rows = []
     import glob
     for _, _, picture, name in work:
-        if name.endswith("-off.png"):
+        if name.endswith("-off.png") or name in not_run:
             continue
         other = os.path.join(args.against, name)
         if not os.path.isfile(other):
@@ -173,8 +215,90 @@ def main():
         print("  %-48s %s" % (name, text))
     equal = sum(1 for mean, _, _ in rows if mean == 0)
     print("%d of %d equal" % (equal, len(rows)))
+    return NOT_RUN_CODE if not_run else 0
+
+
+def self_test():
+    """A planted refusal of the slot check: the replays of every capture are refused. No picture may count as
+    failed, none may get a second try, and each must count as not run. Then a replay that ran and made no
+    picture: a failure, after its second try."""
+    import contextlib
+    import io
+    import tempfile
+
+    refusal = "Refused by the slot check: replay.py: the build slot is held by rob: caps helper compile (place 1); a replay needs the whole build side."
+    calls = []
+
+    def refused(command, **_):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "", refusal + "\nTo pass anyway: SLOT_OVERRIDE=...\n")
+
+    def ran_without_picture(command, **_):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "gpu error: lost the device\n", "")
+
+    global run_tool
+    with tempfile.TemporaryDirectory() as folder:
+        work = [(os.path.join(folder, "tour-%d.nircap" % cell), frame, os.path.join(folder, "%d-%02d.png" % (cell, frame)), "%d-%02d.png" % (cell, frame))
+                for cell in (1, 2) for frame in (1, 3)]
+        printed = io.StringIO()
+        try:
+            run_tool = refused
+            with contextlib.redirect_stdout(printed):
+                failures, not_run = replay_all(work, 2)
+            assert failures == [], failures
+            assert sorted(not_run) == sorted(name for *_, name in work), not_run
+            assert len(calls) == 2, "one run for each capture, and no second try: %d runs" % len(calls)
+            assert printed.getvalue().count(NOT_RUN + ": replay of tour-") == 2 and "FAILED" not in printed.getvalue(), printed.getvalue()
+
+            calls.clear()
+            run_tool = ran_without_picture
+            with contextlib.redirect_stdout(io.StringIO()):
+                failures, not_run = replay_all(work[:2], 2)
+            assert sorted(failures) == sorted(name for *_, name in work[:2]) and not_run == [], (failures, not_run)
+            assert len(calls) == 3, "one run of the capture, and a second try of each picture: %d runs" % len(calls)
+
+            # A first run with no picture, then a refused second try (the hold ended between them): not run.
+            def refused_after_first(command, **kind):
+                return (ran_without_picture if len(calls) == 0 else refused)(command, **kind)
+
+            calls.clear()
+            run_tool = refused_after_first
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                failures, not_run = replay_all(work[:2], 2)
+            assert failures == [] and sorted(not_run) == sorted(name for *_, name in work[:2]), (failures, not_run)
+            assert "FAILED" not in printed.getvalue(), printed.getvalue()
+
+            # main(): a failed picture wins over a refused replay (exit code 1), and with only refused
+            # replays the exit code is NOT_RUN_CODE, with no failed picture.
+            run = os.path.join(folder, "run")
+            os.makedirs(run)
+            with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
+                file.write("tour: dual\ntour: cell 1 stop 1 a\ntour: cell 2 stop 1 b\n")
+            for cell in (1, 2):
+                open(os.path.join(run, "tour-%d.nircap" % cell), "wb").close()
+
+            def first_refused(command, **kind):
+                return (refused if "tour-1" in os.path.basename(command[2]) else ran_without_picture)(command, **kind)
+
+            real_argv = sys.argv
+            try:
+                sys.argv = ["validate_tour.py", run, "--jobs", "1"]
+                for tool, code, text in ((first_refused, 1, "0 pictures, 2 failed"), (refused, NOT_RUN_CODE, "0 pictures, 0 failed")):
+                    run_tool = tool
+                    with contextlib.redirect_stdout(io.StringIO()) as printed:
+                        assert main() == code, (tool.__name__, printed.getvalue())
+                    assert text in printed.getvalue() and NOT_RUN in printed.getvalue(), printed.getvalue()
+            finally:
+                sys.argv = real_argv
+        finally:
+            run_tool = subprocess.run
+    assert refusal_of("a\n" + refusal + "\nb") == refusal and refusal_of("replay of x: 3 pictures missing") == ""
+    print("validate_tour self-test: ok")
     return 0
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        sys.exit(self_test())
     sys.exit(main())
