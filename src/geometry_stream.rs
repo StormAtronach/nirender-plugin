@@ -1336,8 +1336,10 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
 /// draw: the vertices of a polygon can change. Returns the handle (the serial of the vertex
 /// array of the polygon), or 0 for a polygon with fewer than three vertices.
 ///
-/// The game keeps `d` on the x87 stack (64-bit mantissa); this code uses an `f64`, so a
-/// rounding can differ.
+/// The game keeps `d` on the x87 stack. The own device runs with the x87 control word 0x027F
+/// (53-bit precision, logged at install), so each x87 step rounds as an `f64` step does, and
+/// the product of two `f32` values is exact in both. The values here equal the game's. With
+/// 24-bit precision (a real Direct3D device) the game rounds each step to `f32`.
 pub unsafe fn note_screen_polygon(t: &MainThread, count: u32, vertices: usize, tex_coords: usize, colour: usize, near: f32, distance: f32) -> u32 {
     if !crate::capture::recording() || vertices == 0 || count < 3 {
         return 0;
