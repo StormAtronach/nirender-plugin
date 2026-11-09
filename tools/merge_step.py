@@ -34,6 +34,9 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
 --ignored --test-threads=1: the tests marked #[ignore] that need a GPU, one at a time, run through "merge_step.py
 --require-tests <command>", which fails when no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
 
+- for nirender-plugin, "mwse sites <instance>": tools/check_mwse_sites.py on the MWSE.dll deployed in each test install
+  (Morrowind75testing, Outlander-test), when the change touches the ports, the hooks, the install, the function table,
+  the call sites or the baseline of the check (Brief 22): a new port over an MWSE patch that is already deployed fails;
 - a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
 - the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
   helper's renderer, the shaders of the assets (the source of the shaders in a build), or a manifest or a lock of the
@@ -86,6 +89,7 @@ The gate needs what a diff cannot give:
 import argparse
 import contextlib
 import datetime
+import glob
 import importlib.util
 import inspect
 import io
@@ -144,6 +148,11 @@ D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
 # What a change must touch for the build of the dist alone: what the dist ships or checks and the replay cannot see (the
 # mod's Lua, which xtask checks against its list of shipped files; xtask itself).
 DIST_PATHS = {"plugin": ("mod/MWSE/mods/nirender/",), "mge": ("xtask/",)}
+# What a plugin change must touch for the check of MWSE's patch sites against the ports (check_mwse_sites.py, Brief 22):
+# a new port, hook or follow rule can meet an MWSE patch that is already deployed.
+MWSE_SITES_PATHS = ("src/ports/", "src/hook.rs", "src/install.rs", "src/gen/", "src/site.rs", "tools/mwse_sites.baseline")
+# The test installs whose deployed MWSE.dll the stage checks: the MWSE.dll of a mod's Root folder (Root Builder).
+TEST_INSTANCES = ("D:/Modlists/Morrowind75testing", "D:/Modlists/Outlander-test")
 # These move a build out of its tree. Cargo then returns 0, and the gate replays the old file of the build folder.
 BUILD_MOVERS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "NIRENDER_PLUGIN_DIR")
 
@@ -173,10 +182,20 @@ def gpu_command(plugin, package_args, skipped=()):
             "--", "--ignored", *skip, "--test-threads=1"]
 
 
-def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None):
+def deployed_mwse_dlls(instances=TEST_INSTANCES):
+    """The MWSE.dll of each test install, as (instance name, path): the first `mods/*/Root/MWSE.dll` of each."""
+    found = []
+    for instance in instances:
+        dlls = sorted(glob.glob(os.path.join(instance, "mods", "*", "Root", "MWSE.dll")))
+        if dlls:
+            found.append((os.path.basename(instance.rstrip("/\\")), dlls[0]))
+    return found
+
+
+def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None):
     """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `tips` are the
     commits of the base build, {"plugin": sha, "mge": sha}, and `base_folder` holds it: with both, the gate is followed by
-    the A/B stages."""
+    the A/B stages. `mwse_dlls` are the (instance, MWSE.dll) of the "mwse sites" stages, by default those deployed now."""
     python = sys.executable
     plugin = repo if kind == "plugin" else sibling_of(kind, repo)
     mge = repo if kind == "mge" else sibling_of(kind, repo)
@@ -194,6 +213,9 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
                   ("checks", plugin, tool("checks.py", "mge", "--mge", mge)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
+    if kind == "plugin" and touches(paths, MWSE_SITES_PATHS):
+        for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
+            stages.append(("mwse sites " + instance, plugin, tool("check_mwse_sites.py", dll)))
     if touches(paths, D3D8_PATHS[kind]):
         stages.append(("d3d8 build", mge, ["cargo", "build", "--quiet", "-p", "d3d8", "--profile", "release-dll"]))
         stages.append(("contract", plugin, tool("check_contract.py", "--mge", mge)))
@@ -890,6 +912,21 @@ def self_test():
         assert names("plugin", plugin, "host/src/retained.rs") == base + ["build for the gate", "replay gate"]
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"]
+        # A change of the ports, the hooks, the install or the table: the MWSE.dll of each test install against the ports.
+        dlls = [("Morrowind75testing", "D:/m75/MWSE.dll"), ("Outlander-test", "D:/o/MWSE.dll")]
+        for path in ("src/ports/device_setup.rs", "src/hook.rs", "src/install.rs", "src/gen/funcs.rs", "src/site.rs", "tools/mwse_sites.baseline"):
+            stages = stages_for("plugin", plugin, [path], mwse_dlls=dlls)
+            assert [name for name, _, _ in stages] == base + ["mwse sites Morrowind75testing", "mwse sites Outlander-test"], path
+            assert stages[-1][2][-2:] == [os.path.join("tools", "check_mwse_sites.py"), "D:/o/MWSE.dll"] and stages[-1][1] == plugin
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], mwse_dlls=dlls)] == base
+        assert [name for name, _, _ in stages_for("mge", mge, ["src/hook.rs"], mwse_dlls=dlls)] == ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
+        with tempfile.TemporaryDirectory() as installs:
+            for name in ("A", "B"):
+                os.makedirs(os.path.join(installs, name, "mods", "MWSE " + name, "Root"))
+                open(os.path.join(installs, name, "mods", "MWSE " + name, "Root", "MWSE.dll"), "wb").close()
+            os.makedirs(os.path.join(installs, "C", "mods"))
+            found = deployed_mwse_dlls([os.path.join(installs, name) for name in ("A", "B", "C")])
+            assert [name for name, _ in found] == ["A", "B"] and found[1][1].endswith(os.path.join("MWSE B", "Root", "MWSE.dll")), found
         # The mod's Lua: xtask dist checks it against its list of shipped files (7b7b72d broke the dist that way).
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + ["build of the dist"]
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == base + ["build for the gate", "replay gate"]

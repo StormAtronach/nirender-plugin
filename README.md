@@ -220,6 +220,9 @@ The instruments and the tests:
 - `NIRENDER_MCPATCH=<folders>` and `NIRENDER_VANILLA_EXE=<path>`: the inputs of the unit
   test that checks every Morrowind Code Patch record inside a ported function
   (`src/install.rs`); without them the test uses the paths of this machine.
+- `NIRENDER_MWSE_DLL=<path>`: the MWSE.dll that the unit test `every_mwse_site_in_a_port_is_followed`
+  checks against the ports (`src/mwse_sites.rs`); `tools/check_mwse_sites.py` sets it. Without it
+  the test is skipped; with it and no file, the test fails.
 
 The helper's diagnostic and test switches (`host/src/switches.rs`, read once; none is a
 setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own

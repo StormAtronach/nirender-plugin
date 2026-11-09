@@ -96,6 +96,9 @@ pub mod view_options;
 pub mod view_slots;
 pub mod win;
 pub mod x87;
+// The check of an MWSE.dll's patch sites before a deploy: only its test runs it.
+#[cfg(test)]
+mod mwse_sites;
 
 /// The build id of this plugin: its name, its version and its commit (`build.rs` puts the
 /// commit into BUILD_COMMIT). The first line of the log, the HEADER record of the stream and
