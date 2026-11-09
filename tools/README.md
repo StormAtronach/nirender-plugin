@@ -77,7 +77,6 @@ default is next to the main checkout when it is not next to the worktree (`commo
 | `capture_dump.py` | The records of a capture, for the root cause of a difference of a picture; the interface's shapes, for a picture that a menu lacks. |
 | `lights_count.py` | What clustered distant lights and a 3D light volume would hold, from a `lights.data`. |
 | `capture_space.py` | Which space the records of a capture are in (an origin, relative flags). |
-| `inventory.py` | The inventory of a capture, for the material model of the retained pipeline. |
 | `light_values_check.py` | The light values of a capture two ways: the LIGHT records against the lights inline in the SHAPE records. |
 | `retained_inputs_check.py` | The inputs of the retained table against the record path, from two captures of one view (mode gpu and mode off). |
 | `translation_error.py` | The error of the engine's 32-bit translations in a capture against the exact 64-bit ones. |

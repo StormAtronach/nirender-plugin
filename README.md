@@ -33,7 +33,8 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
   The traversal of the nodes is the engine's own code.
 - The retained instances: `src/instance_stream.rs` keeps a table of the shapes the helper
   holds. The plugin skips their display and sends a record only when a shape changes (the
-  records 23 to 28). The helper draws them from its own table (`host/src/retained.rs`).
+  records 23 to 26 and 28). It also sends the list of the instances that the engine displayed in
+  the main view (INSTANCE_SHOWN, 49; form D). The helper draws them from its own table (`host/src/retained.rs`).
 - The modes: `NIRENDER_RETAINED=off|gpu`, default `gpu`. `off` is the reference: the
   engine's own path. `nirender.retained(mode)` changes the mode in a live game; another mode
   changes nothing and writes a line to the log.
@@ -72,6 +73,11 @@ the current helper build with its `d3d8.dll` and `Data Files`. The stages:
 1. `capture`: a run at Seyda Neen and at Narsis with a capture, the counts, a replay.
 2. `baseline`: the kept captures of `results/baseline-records` against the accepted pictures.
 3. `only`: a run with the frame rate, the port times and the busy time of the helper.
+4. `clusters`: two replays of the capture, with the light clusters and with the lights of the
+   draws, compared; then the frame rate and the GPU time of each.
+5. `weathers`: the frame rate in each of the 10 weathers, two passes.
+6. `tour`: the test level in one session; at each stop two frames in mode gpu and two in mode
+   off, which `tools/validate_tour.py` replays and compares.
 
 `results/` is not in git. The accepted pictures live only on disk.
 
@@ -216,7 +222,9 @@ switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 - `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),
-  over the setting of the extension.
+  over the setting of the extension. A count the device cannot use is lowered: without
+  TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES only 1 and 4 stand (`host/src/request.rs`,
+  `choose_samples`). The log says `samples: asked N, using M`.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting
   of the extension: for an A/B of the mouse's lag.
 - `MGE_XE_WAIT_YIELDS=<n>`: the looks with a yield before the helper blocks on the ring's event
