@@ -248,6 +248,7 @@ static SITE_LISTS: &[&[usize]] = &[
     draw_misc::SITES,
     draw::SITES,
     ct_pipeline_state::SITES,
+    device_setup::SITES,
     // `NiDX8TextureStage::updateRenderer`: `texture_pipeline` reads the target of this call.
     // The Morrowind Code Patch option "Bump/reflect map local lighting" (feature 131) changes it.
     &[0x6C1BA4],
