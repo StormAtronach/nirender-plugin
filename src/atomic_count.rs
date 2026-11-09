@@ -103,6 +103,8 @@ static STUBS: [AtomicUsize; SITES.len()] = [const { AtomicUsize::new(0) }; SITES
 
 /// The sites, as bits by their index, whose foreign bytes the log named.
 static TOLD: AtomicU64 = AtomicU64::new(0);
+// TOLD has one bit for each site.
+const _: () = assert!(SITES.len() <= 64);
 
 /// The registers that an `inc dword [r+4]` of a site uses (the modrm byte, mod 01, disp8).
 const INC_MODRMS: [u8; 5] = [0x40, 0x41, 0x45, 0x46, 0x47];
