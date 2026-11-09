@@ -18,7 +18,8 @@
         Num9 / Num7        around the exhibit, to the left / right (the view turns with it)
         Num1 / Num3        down / up
         Num/ / Num*        look up / down
-        Shift or Ctrl + one of the above: small steps
+        Shift or Ctrl + one of the above: small steps (Ctrl is also Sneak: an accept while the player
+        sneaks is refused, and the steps use the eye without Sneak)
         Num0               the default place (300 south of the exhibit, facing north)
         Num.               undo the last accept or skip
         Num-               skip this stop ("no good view"), with a note
@@ -233,19 +234,30 @@ local function centre(ref)
     return node and node.worldBoundOrigin and node.worldBoundOrigin:copy() or ref.position:copy()
 end
 
+-- Ctrl is the game's default Sneak key, and Sneak lowers the eye.
+local function sneaking()
+    return tes3.mobilePlayer.isSneaking
+end
+
 -- The camera follows a move of the player one frame later. The height of the eye above the player's place is
--- read when the two agree (no move in this frame); a second move in the same frame starts from the camera place
--- that the first one set (tool.pending, cleared each frame).
+-- read when the two agree (no move in this frame) and the player does not sneak; a second move in the same
+-- frame starts from the camera place that the first one set (tool.pending, cleared each frame).
 local function eyeHeight()
-    if not tool.pending then
+    if not tool.pending and not sneaking() then
         local d = tes3.getCameraPosition() - tes3.player.position
         if d.x * d.x + d.y * d.y < 400 then tool.eye = d.z end
     end
     return tool.eye or 125
 end
 
+-- The camera place without Sneak.
 local function cameraNow()
-    return tool.pending or tes3.getCameraPosition()
+    if tool.pending then return tool.pending end
+    local camera = tes3.getCameraPosition()
+    if sneaking() then
+        return tes3vector3.new(camera.x, camera.y, tes3.player.position.z + eyeHeight())
+    end
+    return camera
 end
 
 local function placeCamera(camera, yaw, pitch)
@@ -328,6 +340,10 @@ local function record(status, note)
     local ref = currentRef()
     if not ref then
         tes3.messageBox(NOT_LOADED)
+        return
+    end
+    if status == "accepted" and sneaking() then
+        tes3.messageBox("Nif fronts: not accepted: the player sneaks (Ctrl). Release Ctrl, then press Num5.")
         return
     end
     local k = key(STOPS[tool.index])
