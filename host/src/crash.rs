@@ -407,10 +407,13 @@ pub(crate) fn sample_rip(handle: isize) -> Option<usize> {
 pub(crate) fn stall_dump_and_end(frame_thread: u32, exit_code: u32, evidence: StallEvidence) -> ! {
     let file = DUMP.get().and_then(|path| std::fs::File::create(path).ok());
     // The last resort: the dump writer may wait for a lock that the suspended thread holds.
+    // The drain takes no lock and does not allocate, so the stall lines in the log pipe get to
+    // the file also on this path.
     std::thread::spawn(move || {
         // SAFETY: a sleep, then the end of this process.
         unsafe {
             Sleep(STALL_DUMP_SECONDS * 1000);
+            crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
             TerminateProcess(GetCurrentProcess(), exit_code);
         }
     });
