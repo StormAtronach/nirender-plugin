@@ -186,7 +186,8 @@ impl Player {
                 self.view_sky_seen = false;
                 self.view_scene_draws = [0; 2];
                 self.view_early_draws = 0;
-                for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world)) {
+                let in_back_buffer = plan::Plan::scene_in_back_buffer(in_target, self.stream.back_buffer);
+                for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world), in_back_buffer) {
                     self.plan_step(step);
                 }
             }

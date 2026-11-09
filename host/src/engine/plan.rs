@@ -81,23 +81,31 @@ impl Plan {
         *self = Plan::default();
     }
 
+    /// The draws of a scene go to the back buffer: the game does not draw into a texture of the
+    /// helper (`in_target`), and its draws go somewhere (`stream_back_buffer`: not into a texture
+    /// that the helper did not make). The `in_back_buffer` of [`Plan::scene_begin_view`].
+    pub(crate) fn scene_in_back_buffer(in_target: bool, stream_back_buffer: bool) -> bool {
+        !in_target && stream_back_buffer
+    }
+
     /// The start of a scene whose camera the plan does not know: [`Plan::scene_begin_view`] with
     /// the kind that the plugin's scene kind gives.
     #[cfg(test)]
     pub(crate) fn scene_begin(&mut self, kind: u32) -> Vec<Step> {
-        self.scene_begin_view(kind, if kind == scene::SCENE_OTHER { ViewKind::OtherScreen } else { ViewKind::Main })
+        self.scene_begin_view(kind, if kind == scene::SCENE_OTHER { ViewKind::OtherScreen } else { ViewKind::Main }, true)
     }
 
-    /// The start of a scene whose view has the kind `view` (from its camera and its target). At
-    /// the user interface scene of the game, in the back buffer, the world views are done and the
-    /// post-processing is due; an interface scene in a texture ([`ViewKind::Picture`]) is not
-    /// that scene. The table's blends that still wait for the flush of the queue go first, at the
+    /// The start of a scene whose view has the kind `view` (from its camera and its target).
+    /// `in_back_buffer`: the scene's draws go to the back buffer (not into a texture, known or
+    /// not). At the user interface scene of the game, in the back buffer, the world views are
+    /// done and the post-processing is due; an interface scene into a texture is not that
+    /// scene, as on Direct3D 9 (`rendertargetNormal`). The table's blends that still wait for the flush of the queue go first, at the
     /// first-person or the user interface scene: the engine flushes the queue in its water
     /// scene, so this is for a frame without one. The classes that no draw of the world camera
     /// brought go before them, as the engine draws its water before it flushes the queue.
     /// A world scene after a read of the back buffer starts a new picture: the game draws again
     /// after its clear (`renderMainScene` 0x41C535), and the world starts and ends again in it.
-    pub(crate) fn scene_begin_view(&mut self, kind: u32, view: ViewKind) -> Vec<Step> {
+    pub(crate) fn scene_begin_view(&mut self, kind: u32, view: ViewKind, in_back_buffer: bool) -> Vec<Step> {
         let mut steps = Vec::new();
         if self.picture_ended && kind == scene::SCENE_WORLD {
             self.frame_start();
@@ -112,8 +120,7 @@ impl Plan {
         if self.queue_open && (kind == scene::SCENE_FIRST_PERSON || kind == scene::SCENE_UI) {
             steps.push(self.sorted_blends());
         }
-        // The interface scene of the picture is in the back buffer: one into a texture is not it.
-        if kind == scene::SCENE_UI && view != ViewKind::Picture {
+        if kind == scene::SCENE_UI && in_back_buffer {
             steps.push(Step::Post);
         }
         // The world scene after a main view with a root of its own: the world began there and
@@ -608,13 +615,34 @@ mod tests {
     fn an_interface_scene_in_a_target_gives_no_post() {
         let (mut main, mut target) = (Plan::default(), Plan::default());
         world_scene(&mut main);
-        assert_eq!(target.scene_begin_view(SCENE_UI, ViewKind::Picture), vec![]);
+        assert_eq!(target.scene_begin_view(SCENE_UI, ViewKind::Picture, false), vec![]);
         target.scene_end(true, false, true, false, false);
         main.scene_begin(SCENE_FIRST_PERSON);
         main.scene_end(true, true, true, false, false);
         assert_eq!(main.scene_begin(SCENE_UI), vec![Step::Post]);
         assert!(main.take_post(true, true));
         assert!(!main.take_post(true, true));
+    }
+
+    /// An interface scene whose draws go to a texture that the helper did not make (the main plan
+    /// has its view as a main one) gives no post either; the one of the back buffer after it does.
+    #[test]
+    fn an_interface_scene_into_a_texture_that_is_not_known_gives_no_post() {
+        let mut main = Plan::default();
+        world_scene(&mut main);
+        assert_eq!(main.scene_begin_view(SCENE_UI, ViewKind::Main, false), vec![Step::MissingClasses]);
+        main.scene_end(true, false, true, false, false);
+        assert_eq!(main.scene_begin_view(SCENE_UI, ViewKind::Main, true), vec![Step::Post]);
+    }
+
+    /// A scene is in the back buffer when the game draws into no texture of the helper and its draws
+    /// go somewhere.
+    #[test]
+    fn a_scene_is_in_the_back_buffer_only_without_a_texture_and_with_a_destination() {
+        assert!(Plan::scene_in_back_buffer(false, true));
+        assert!(!Plan::scene_in_back_buffer(true, true));
+        assert!(!Plan::scene_in_back_buffer(false, false));
+        assert!(!Plan::scene_in_back_buffer(true, false));
     }
 
     /// A mod's mirror drawn after the world, with the engine's queue still open: a clear of the
@@ -716,7 +744,7 @@ mod tests {
     #[test]
     fn a_main_view_with_a_root_of_its_own_starts_the_world_at_its_first_place() {
         let mut plan = Plan::default();
-        assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main), vec![]);
+        assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true), vec![]);
         assert!(plan.main_other_root());
         assert_eq!(plan.view_first_place(true, true), vec![Step::StartWorld, Step::ReleaseHeld]);
         assert_eq!(plan.view_first_place(true, true), vec![]);
@@ -729,7 +757,7 @@ mod tests {
     #[test]
     fn a_draw_of_the_engine_starts_the_world_of_a_main_view_with_a_root_of_its_own() {
         let mut plan = Plan::default();
-        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
         // The walk is marked in the stream, but its event is of the world root.
         assert_eq!(plan.world_draw(true, true, false, false, true), (vec![Step::StartWorld, Step::ReleaseHeld], false));
         assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
@@ -738,7 +766,7 @@ mod tests {
     #[test]
     fn an_empty_main_view_with_a_root_of_its_own_starts_the_world_at_its_end() {
         let mut plan = Plan::default();
-        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::StartWorld, Step::ReleaseHeld, Step::EndWorld]);
     }
 
@@ -747,7 +775,7 @@ mod tests {
     #[test]
     fn a_world_scene_after_a_main_view_with_a_root_of_its_own_still_draws_the_main_view() {
         let mut plan = Plan::default();
-        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
         plan.view_first_place(true, true);
         plan.scene_end(true, true, true, false, false);
         // The step comes where the world would start: after the sky, at its first draw.
@@ -762,7 +790,7 @@ mod tests {
         plan.scene_end(true, true, true, false, false);
         // With the walk marked, it comes at the walk event.
         plan.frame_start();
-        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
         plan.view_first_place(true, true);
         plan.scene_end(true, true, true, false, true);
         plan.scene_begin(SCENE_WORLD);
@@ -772,7 +800,7 @@ mod tests {
         assert_eq!(plan.world_walk(true, true), vec![]);
         // An empty world scene: at its end.
         plan.frame_start();
-        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
         plan.view_first_place(true, true);
         plan.scene_end(true, true, true, false, false);
         plan.scene_begin(SCENE_WORLD);
@@ -805,7 +833,7 @@ mod tests {
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
         assert!(!plan.world_begun);
         let mut plan = Plan::default();
-        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main);
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
         assert_eq!(plan.view_first_place(false, true), vec![]);
         assert_eq!(plan.view_first_place(true, false), vec![]);
         assert!(!plan.world_begun);
