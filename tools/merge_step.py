@@ -61,12 +61,12 @@ each stage and the closing "N of N stages passed" line are in
 E:\\nirender-keep\\merge-step\\merge-step-<commit>.log, where the data rule on build output does not reach. A rerun for the same
 commit writes merge-step-<commit>-2.log, then -3, and so on: it never overwrites the log of an earlier round. It pushes nothing.
 
-A pass of the merge (every stage passed, against the accepted folder) closes the items that the merge subject names (D180):
-it appends one line for each W<n> to E:\\nirender-keep\\merge-step\\closes.tsv, which the Archivist reads in its batch. The
-columns are time (ISO, with the offset), item, repo, commit, stages ("6 of 6"), log and subject; the file starts with a header
-line. A failed stage writes nothing, nor does a subject with no item or an item it names as dropped ("W220 dropped"). A rerun of
-the same commit adds no line for an item that the file has for it. A reader that holds the file makes the append try again, then
-give up with a line: a missing close never fails the check.
+A pass of the merge (every stage passed, against the accepted folder) closes the item that the merge subject names (D180):
+a subject that ends with "(W<n>)" or "(W<n> <part>)", e.g. "(W96)" or "(W234 a)". It appends one line to
+E:\\nirender-keep\\merge-step\\closes.tsv, which the Archivist reads in its batch. The columns are time (ISO, with the offset),
+item, repo, commit, stages ("6 of 6"), log and subject; the file starts with a header line. A failed stage writes nothing, nor
+does any other subject. A rerun of the same commit adds no line for an item that the file has for it. A reader that holds the
+file makes the append try again, then give up with a line: a missing close never fails the check.
 
 The gate needs what a diff cannot give:
 
@@ -114,9 +114,9 @@ LOG_FOLDER = "E:\\nirender-keep\\merge-step"
 # each item that its merge subject names.
 CLOSES_FILE = os.path.join(LOG_FOLDER, "closes.tsv")
 CLOSES_HEADER = "time\titem\trepo\tcommit\tstages\tlog\tsubject"
-# An item of a merge subject: W<n>, with no digit after it ("W234a" is W234). An item the subject names as dropped is no
-# close: "Merge: log pipe follow-ups W219 and W221 (W220 dropped)".
-ITEM = re.compile(r"\bW(\d+)(?!\d)(?! dropped)")
+# The item of a merge subject: the subject ends with "(W<n>)" or "(W<n> <part>)", the form of the Coordinator's merge
+# subjects ("(W96)", "(W234 a)"). Any other subject names no item and closes nothing; a dropped item gets no merge.
+ITEM = re.compile(r"\((W\d+)(?: [^()]+)?\)$")
 # The tries of an append to the closes file while a reader holds it, and the wait between them.
 CLOSE_TRIES = 5
 CLOSE_WAIT_SECONDS = 0.5
@@ -399,8 +399,9 @@ def moves_the_ref(baseline):
 
 
 def items_of(subject):
-    """The items that a merge subject names, once each, in their order."""
-    return list(dict.fromkeys("W" + number for number in ITEM.findall(subject)))
+    """The item that a merge subject names at its end, as a list of one, or no item."""
+    match = ITEM.search(subject.strip())
+    return [match.group(1)] if match else []
 
 
 def close_lines(existing, when, repo_name, commit, stages, log_path, subject):
@@ -1489,14 +1490,14 @@ def self_test():
         assert log_path_of("fedcba9876543210", logs) == os.path.join(logs, "merge-step-fedcba9876.log"), "another commit starts at the plain name"
         assert "target" not in LOG_FOLDER.lower()
 
-        # The closing lines of the items (D180): the items of real merge subjects.
+        # The closing lines of the items (D180): only a subject that ends with "(W<n>)" or "(W<n> <part>)" names an item.
         assert items_of("Merge: a check that MWSE's vtable fills name their own slot (W93)") == ["W93"]
-        assert items_of("Merge: merge_step keeps its slot holds and every log (W222, W226, W228)") == ["W222", "W226", "W228"]
-        assert items_of("Merge: log pipe follow-ups W219 and W221 (W220 dropped)") == ["W219", "W221"]
-        assert items_of("Merge: the exit paths do not wait for stdout (W229, crate half)") == ["W229"]
-        assert items_of("Merge: part a (W234a), the same W234 b") == ["W234"]
-        assert items_of("Merge: merge_step runs the helper's GPU tests and holds the game slot (D161)") == []
-        assert items_of("Merge: say which views draw the table") == [] and items_of("Merge: XW12 and W") == []
+        assert items_of("Merge: the second part (W234 a)") == ["W234"] and items_of("Merge: the crate half (W229 crate half) ") == ["W229"]
+        for no_item in ("Merge: W96 in the middle of the subject", "Merge: W96 in the middle (D161)", "Merge: dropped W220",
+                        "Merge: log pipe follow-ups W219 and W221 (W220 dropped) and more", "Merge: lower case (w96)",
+                        "Merge: no parentheses W96", "Merge: two items (W222, W226)", "Merge: the plan (D161)",
+                        "Merge: say which views draw the table", "Merge: a letter on the number (W234a)", "Merge: empty ()"):
+            assert items_of(no_item) == [], no_item
 
         closes = os.path.join(root, "closes", "closes.tsv")
         os.makedirs(os.path.dirname(closes))
@@ -1521,12 +1522,14 @@ def self_test():
         line = "\t".join((when, "W93", PLUGIN_NAME, "862873b012", "6 of 6", round_log, subject))
         assert close([True] * 6, subject) == [line]
         assert closes_bytes() == (CLOSES_HEADER + "\r\n" + line + "\r\n").encode("ascii"), closes_bytes()
-        # A rerun of the commit writes nothing; a later commit of the item writes its line; two items give two lines.
+        # A rerun of the commit writes nothing; a later commit of the item writes its line, also in the part form; an item
+        # in the middle of a subject writes nothing.
         assert close([True] * 6, subject) == [], "a rerun wrote a second line"
         assert len(close([True] * 5, "Merge: part b (W93)", commit="abcdef0123456")) == 1
-        assert [written.split("\t")[1] for written in close([True] * 4, "Merge: two (W222, W226)", commit="1111111111aa")] == ["W222", "W226"]
+        assert [written.split("\t")[1] for written in close([True] * 4, "Merge: the second part (W234 b)", commit="1111111111aa")] == ["W234"]
+        assert close([True] * 6, "Merge: W96 in the middle of the subject", commit="3333333333") == []
         data = closes_bytes()
-        assert data.count(b"\r\n") == 5 and data.count(CLOSES_HEADER.encode("ascii")) == 1 and b"\n" not in data.replace(b"\r\n", b""), data
+        assert data.count(b"\r\n") == 4 and data.count(CLOSES_HEADER.encode("ascii")) == 1 and b"\n" not in data.replace(b"\r\n", b""), data
 
         # A reader that holds the file: the append is tried again, then given up with None, and nothing else happens.
         tries = []
