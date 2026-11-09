@@ -11,17 +11,23 @@ the exit codes: no constant of it may have a second definition in the two crates
 --mge in mgeHost64, and no name suffix may come back as a literal. MGE XE:
 MGE_EXTENSION_FORMAT in
 `d3d8/cpp/mge/mgeversion.h` equals EXTENSION_FORMAT in `mgeHost64/src/renderer.rs` (a unit
-test of mgeHost64 compares them too; this check needs no compile). `checks.py` runs both.
+test of mgeHost64 compares them too; this check needs no compile). And a record's version in
+renderer.rs (`const VERSION` of an `impl Name` block) that differs from the one at HEAD of the
+tree needs another EXTENSION_FORMAT than at HEAD: W68 changed the environment's version and
+layout and kept format 1 (2026-11-09). `checks.py` runs both.
 The design: handshake-design.md of the Numidium notes (2026-10-27).
 """
 import argparse
 import os
 import re
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 MGE = os.path.join(os.path.dirname(REPO), "MGE-XE-G7-render-link")
+sys.path.insert(0, HERE)
+import common  # noqa: E402
 
 
 def read(path):
@@ -124,17 +130,71 @@ def self_test():
     assert literal_copies('println!("{name}-ready"); format!("{name}{READ_EVENT}")', strings) == []
     assert literal_copies('"the pipeline-read"', strings) == []
     assert home_strings()["-records"] == "RECORDS_EVENT" and len(home_strings()) == 6
+    # A record's version against the extension format: W68 changed the environment's version and kept format 1.
+    before = "const EXTENSION_FORMAT: u32 = 1;\nimpl Settings {\n    const VERSION: u32 = 2;\n}\nimpl Environment {\n    pub const VERSION: u32 = 8;\n}\n"
+    assert record_versions(before) == {"Settings": 2, "Environment": 8}
+    assert version_problems(before, before) == []
+    w68 = before.replace("VERSION: u32 = 8", "VERSION: u32 = 9")
+    assert "Environment 8 -> 9" in version_problems(before, w68)[0]
+    assert version_problems(before, w68.replace("EXTENSION_FORMAT: u32 = 1", "EXTENSION_FORMAT: u32 = 2")) == []
+    # A new record with a version, and a record that loses its version, change the format too.
+    assert "Lights none -> 1" in version_problems(before, before + "impl Lights {\n    const VERSION: u32 = 1;\n}\n")[0]
+    assert "Settings 2 -> none" in version_problems(before, before.replace("impl Settings {\n    const VERSION: u32 = 2;\n}\n", ""))[0]
+    # A VERSION outside an impl, or of a trait impl's block, belongs to no record of this file.
+    assert record_versions("const VERSION: u32 = 3;\nimpl Extension for DistantLand {\n    const VERSION: u32 = 4;\n}\n") == {}
     print("check_handshake self-test: ok")
+
+
+RENDERER = "mgeHost64/src/renderer.rs"
+FORMAT_PATTERN = r"^const EXTENSION_FORMAT: u32 = (\d+);"
+
+
+def record_versions(text):
+    """The version of each extension record of renderer.rs: `const VERSION: u32 = N;` under the last `impl Name {`."""
+    versions = {}
+    owner = None
+    for line in text.splitlines():
+        found = re.match(r"^impl ([A-Za-z_][A-Za-z0-9_]*) \{", line)
+        if found:
+            owner = found.group(1)
+        found = re.match(r"^\s+(?:pub )?const VERSION: u32 = (\d+);", line)
+        if found and owner:
+            versions[owner] = int(found.group(1))
+    return versions
+
+
+def version_problems(before, now):
+    """A record whose version changed since `before` (renderer.rs of HEAD) while EXTENSION_FORMAT stayed: W68 changed
+    the environment's version and layout and kept format 1, and an old capture replayed with no environment."""
+    format_before = number(before, FORMAT_PATTERN, "EXTENSION_FORMAT in renderer.rs of HEAD")
+    format_now = number(now, FORMAT_PATTERN, "EXTENSION_FORMAT in renderer.rs")
+    if format_before != format_now:
+        return []
+    old, new = record_versions(before), record_versions(now)
+    changed = ["%s %s -> %s" % (name, old.get(name, "none"), new.get(name, "none")) for name in sorted(set(old) | set(new)) if old.get(name) != new.get(name)]
+    if not changed:
+        return []
+    return ["the version of a record changed (%s) and EXTENSION_FORMAT stayed %d: bump EXTENSION_FORMAT in renderer.rs and "
+            "MGE_EXTENSION_FORMAT in mgeversion.h" % (", ".join(changed), format_now)]
+
+
+def head_text(mge, path):
+    """The file at HEAD of the tree `mge`, or None with no git or no such file (a tree that is not a checkout)."""
+    done = subprocess.run(["git", "-C", mge, "show", "HEAD:" + path], capture_output=True, env=common.git_env())
+    return done.stdout.decode("utf-8") if done.returncode == 0 else None
 
 
 def check_mge(mge):
     header = read(os.path.join(mge, "d3d8", "cpp", "mge", "mgeversion.h"))
-    renderer = read(os.path.join(mge, "mgeHost64", "src", "renderer.rs"))
+    renderer = read(os.path.join(mge, *RENDERER.split("/")))
     cpp = number(header, r"^#define MGE_EXTENSION_FORMAT (\d+)", "MGE_EXTENSION_FORMAT in mgeversion.h")
-    rust = number(renderer, r"^const EXTENSION_FORMAT: u32 = (\d+);", "EXTENSION_FORMAT in renderer.rs")
+    rust = number(renderer, FORMAT_PATTERN, "EXTENSION_FORMAT in renderer.rs")
     problems = []
     if cpp != rust:
         problems.append("MGE_EXTENSION_FORMAT is %d in mgeversion.h and EXTENSION_FORMAT %d in renderer.rs" % (cpp, rust))
+    before = head_text(mge, RENDERER)
+    if before is not None:
+        problems += version_problems(before.replace("\r\n", "\n"), renderer)
     # mgeHost64 reads the stream's constants through the host crate, never as a copy.
     problems += check_folders(mge, (os.path.join("mgeHost64", "src"),), home_names())
     return problems
