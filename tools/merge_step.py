@@ -44,7 +44,8 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
   pair whose other half is already merged, the HEAD of the sibling holds code that the base of the tree lacks (a render-link
   that calls a function of a newer nirender fails the base build): --sibling-base <commit> builds the base at that commit of
   the sibling, which must be an ancestor of the sibling's HEAD. The tool prints it in the first line, and the key file of the
-  base build names it, as it names both commits;
+  base build names it, as it names both commits. With --sibling-base the A/B shows the change of both halves of the pair, since
+  the base holds the older commit of the sibling;
 - the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
   of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these.
 
@@ -366,13 +367,13 @@ def moves_the_ref(baseline):
 
 
 def resolve(repo, name):
-    """The commit of a name, or None."""
-    return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", name], capture_output=True, text=True, env=git_env()).stdout.strip() or None
+    """The commit of a name, or None. A name of a tree or a blob is no commit; a tag gives the commit it points to."""
+    return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", name + "^{commit}"], capture_output=True, text=True, env=git_env()).stdout.strip() or None
 
 
 def branch_of(repo):
     """The branch of the tree, or None."""
-    return subprocess.run(["git", "-C", repo, "symbolic-ref", "-q", "--short", "HEAD"], capture_output=True, text=True).stdout.strip() or None
+    return subprocess.run(["git", "-C", repo, "symbolic-ref", "-q", "--short", "HEAD"], capture_output=True, text=True, env=git_env()).stdout.strip() or None
 
 
 def is_ancestor(repo, older, newer):
@@ -557,7 +558,7 @@ def run_round(slots, stages, what, log_path, no_wait):
 
 
 def git(repo, *args):
-    done = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    done = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, env=git_env())
     if done.returncode != 0:
         raise SystemExit("git %s in %s: %s" % (" ".join(args), repo, done.stderr.strip()))
     return done.stdout.strip()
@@ -811,6 +812,26 @@ def self_test():
         subprocess.run(["git", "-C", sibling_tree, "checkout", "-q", "--detach", first], check=True, env=git_env())
         assert tips_for("plugin", plugin_of_pair, "base", second)[1].endswith("(%s)" % first[:10]) and "not an ancestor" in tips_for("plugin", plugin_of_pair, "base", second)[1], "a commit ahead of HEAD"
         assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", "no-such-name")[1], "an unknown name"
+        # resolve gives a commit: a tree is none, and an annotated tag gives the commit it points to.
+        tree_of_head = subprocess.run(["git", "-C", sibling_tree, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True, env=git_env()).stdout.strip()
+        assert len(tree_of_head) == 40 and resolve(sibling_tree, tree_of_head) is None, "the name of a tree is no commit"
+        assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", tree_of_head)[1], "--sibling-base with a tree"
+        subprocess.run(["git", "-C", sibling_tree, *author, "tag", "-a", "-m", "a tag", "a-tag", first], check=True, env=git_env())
+        assert resolve(sibling_tree, "a-tag") == first, "an annotated tag gives its commit, not the tag object"
+        assert tips_for("plugin", plugin_of_pair, "base", "a-tag") == ({"plugin": "base", "mge": first}, None)
+        # git() and branch_of answer for the folder they get, also with the GIT_ names of a hook in the environment.
+        alpha, beta = os.path.join(root, "alpha"), os.path.join(root, "beta")
+        for folder, branch in ((alpha, "alpha-branch"), (beta, "beta-branch")):
+            os.makedirs(folder)
+            for command in (["init", "-q", "-b", branch], author + ["commit", "-q", "--allow-empty", "-m", branch]):
+                subprocess.run(["git", "-C", folder, *command], check=True, env=git_env())
+        beta_head = resolve(beta, "HEAD")
+        os.environ["GIT_DIR"] = os.path.join(alpha, ".git")
+        try:
+            assert branch_of(beta) == "beta-branch", "branch_of answers for the hook's repository: %s" % branch_of(beta)
+            assert git(beta, "rev-parse", "HEAD") == beta_head, "git() answers for the hook's repository"
+        finally:
+            del os.environ["GIT_DIR"]
         assert tips_for("mge", sibling_tree, "base", first)[1].startswith("no sibling"), "no sibling tree"
         # Both A/B stages replay, so they take the whole build side.
         two = types.SimpleNamespace(take=two_places_take_for_ab)
@@ -1106,12 +1127,19 @@ def self_test():
                     thread = threading.Thread(target=run, daemon=True)
                     thread.start()
                     thread.join(DEADLINE_SECONDS)
+                    stuck = thread.is_alive()
+                    if stuck:
+                        # Free the build side, so that the round ends: a thread that waits on holds a file of the temporary folder,
+                        # and the cleanup of the folder fails with a PermissionError that hides the assert below.
+                        free_build_side()
+                        thread.join(DEADLINE_SECONDS)
             finally:
                 GamePlace.ask_in_queue = real_ask_in_queue
                 slots.note_active = real_note_active
                 globals()["WAIT_SECONDS"] = real_wait_seconds
                 as_session(own_session)
-            assert not thread.is_alive(), "the round still waits for the build side after %d s (%d waits): nothing freed it" % (DEADLINE_SECONDS, len(waits))
+            assert not stuck, "the round still waited for the build side after %d s (%d waits): nothing freed it" % (DEADLINE_SECONDS, len(waits))
+            assert not thread.is_alive(), "the round did not end after the build side was freed"
             if "error" in outcome:
                 raise outcome["error"]
             return outcome["round"], output.getvalue()
