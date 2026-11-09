@@ -3,8 +3,9 @@
     place of each stop of the tour, in the game. scenario.tour reads the result.
 
     Use: copy this file as Data Files/MWSE/mods/livecoding/livecoding.lua of the Livecoding mod, turn the mod on,
-    load a game with nifTest.esp on, press Alt+X (loads the script), then Ctrl+Alt+F (starts and stops the tool).
-    Turn the Livecoding mod off after the session: a harness run refuses to start while it is on.
+    start the game from Mod Organizer, load a game with nifTest.esp on, press Alt+X (loads the script), then
+    Ctrl+Alt+F (starts and stops the tool). Turn the Livecoding mod off after the session: a harness run refuses
+    to start while it is on.
 
     The stops are those of scenario.tour, in its order: in the cells @nifTest_1 to 3, each reference whose id
     starts with "@nif_", without "tile" in it, and not disabled, in the order of iterateReferences. The tool
@@ -17,7 +18,7 @@
         Num9 / Num7        around the exhibit, to the left / right (the view turns with it)
         Num1 / Num3        down / up
         Num/ / Num*        look up / down
-        Shift + one of the above: small steps
+        Shift or Ctrl + one of the above: small steps
         Num0               the default place (300 south of the exhibit, facing north)
         Num.               undo the last accept or skip
         Num-               skip this stop ("no good view"), with a note
@@ -25,13 +26,16 @@
         Home               this help
         End                hide or show all the UI (the HUD and the tool's text): as the gate's pictures
     Free flight: while the tool runs, the player flies and has no collision; move with the normal keys and
-    the mouse, then press Num5.
+    the mouse, then press Num5. The view is first person while the tool runs.
 
     The file: Data Files/MWSE/config/nif_fronts.json (in Mod Organizer: overwrite/MWSE/config/), written after
-    each accept, skip and undo. The tool never saves the game.
+    each accept, skip and undo, and at no other time. At each start the tool copies the file as it is to
+    nif_fronts-before.json in the same folder. If the file is there but is not a front file, the tool does not
+    start. The tool never saves the game.
 ]]
 
-local FILE = "config/nif_fronts"
+local FILE = "Data Files\\MWSE\\config\\nif_fronts.json"
+local COPY = "Data Files\\MWSE\\config\\nif_fronts-before.json"
 local VERSION = 1
 local CELLS = { "@nifTest_1", "@nifTest_2", "@nifTest_3" }
 local PREFIX = "@nif_"
@@ -41,7 +45,7 @@ local PLUGIN = "nifTest.esp"
 local GATE_FOV = 91.30851
 -- The default place of a stop: scenario.tourMove (300 units south of the exhibit, orientation 0).
 local DEFAULT_DISTANCE = 300
--- The steps: big, and small with Shift.
+-- The steps: big, and small with Shift or Ctrl.
 local STEP = { distance = { 25, 5 }, height = { 10, 2 }, orbit = { 5, 1 }, pitch = { 2, 0.5 } }
 
 -- The gate's stops (results/baseline-records/tour/accepted, W225 w225-stops.txt): the ids in the tour's order.
@@ -91,6 +95,8 @@ local tool = {
     help = false,
     before = nil,    -- the values the tool changes, set again at its end
     nextHud = 0,
+    changes = 0,     -- the writes of the file since the start
+    copied = nil,    -- the copy of the file made at the start
 }
 
 local function say(fmt, ...)
@@ -112,37 +118,53 @@ local function v3(t)
 end
 
 -- A test outside the owner's session sets _G.nifFrontsTestPath (an absolute path): the tool then reads and
--- writes that file, and nothing in the instance.
-local function readFile()
-    local path = _G.nifFrontsTestPath
-    if not path then return json.loadfile(FILE) end
+-- writes that file and its copy (the path with ".before"), and nothing in the instance.
+local function paths()
+    local test = _G.nifFrontsTestPath
+    if test then return test, test .. ".before" end
+    return FILE, COPY
+end
+
+local function readText(path)
     local f = io.open(path, "r")
     if not f then return nil end
     local text = f:read("*a")
     f:close()
-    return json.decode(text)
+    return text
 end
 
+local function writeText(path, text)
+    local f = assert(io.open(path, "w"))
+    f:write(text)
+    f:close()
+end
+
+-- Reads the file and keeps a copy of it. Returns false and the reason when the file is there but is not a
+-- front file: the tool then changes nothing.
 local function load()
-    local data = readFile()
-    if type(data) ~= "table" or type(data.fronts) ~= "table" then
-        data = { version = VERSION, fronts = {} }
+    local file, copy = paths()
+    local text = readText(file)
+    local data = { version = VERSION, fronts = {} }
+    if text then
+        local decoded = json.decode(text)
+        if type(decoded) ~= "table" or type(decoded.fronts) ~= "table" then
+            return false, string.format("%s is not a front file", file)
+        end
+        data = decoded
+        writeText(copy, text)
     end
     data.version = VERSION
     data.what = "Fronts of the stops of the NIF test level (D176): the camera place for each stop, set by hand. "
         .. "camera: world; local: in the exhibit's frame (offset rotated by the inverse of its rotation, yaw minus its yaw)."
     tool.data = data
+    tool.copied = text and copy or nil
+    return true
 end
 
 local function save()
-    local path = _G.nifFrontsTestPath
-    if not path then
-        json.savefile(FILE, tool.data, { indent = true })
-        return
-    end
-    local f = assert(io.open(path, "w"))
-    f:write(json.encode(tool.data, { indent = true }))
-    f:close()
+    local file = paths()
+    writeText(file, json.encode(tool.data, { indent = true }))
+    tool.changes = tool.changes + 1
 end
 
 local function counts()
@@ -300,9 +322,14 @@ local function entryOfNow(ref, status, note)
     return entry
 end
 
+local NOT_LOADED = "Nif fronts: the exhibit of this stop is not loaded here; Num6 or Num4 goes to it"
+
 local function record(status, note)
     local ref = currentRef()
-    if not ref then return end
+    if not ref then
+        tes3.messageBox(NOT_LOADED)
+        return
+    end
     local k = key(STOPS[tool.index])
     tool.undo[#tool.undo + 1] = { k, tool.data.fronts[k] or false }
     tool.data.fronts[k] = entryOfNow(ref, status, note)
@@ -325,16 +352,28 @@ local function undo()
 end
 
 local function askNote(done)
+    if not currentRef() then
+        tes3.messageBox(NOT_LOADED)
+        return
+    end
     local menu = tes3ui.createMenu({ id = NOTE_MENU, fixedFrame = true })
-    menu:createLabel({ text = "Skip " .. key(STOPS[tool.index]) .. ": a note, then Enter" })
+    menu:createLabel({ text = "Skip " .. key(STOPS[tool.index]) .. ": a note, then Enter. Cancel: no skip." })
     local input = menu:createTextInput({ id = "NifFronts_NoteInput" })
     input.widget.lengthLimit = 200
     input.minWidth = 400
-    input:register(tes3.uiEvent.keyEnter, function()
-        local text = input.text
+    local function close()
         menu:destroy()
         tes3ui.leaveMenuMode()
+    end
+    input:register(tes3.uiEvent.keyEnter, function()
+        local text = input.text
+        close()
         done(text)
+    end)
+    local cancel = menu:createButton({ id = "NifFronts_NoteCancel", text = "Cancel" })
+    cancel:register(tes3.uiEvent.mouseClick, function()
+        close()
+        tes3.messageBox("Nif fronts: no skip")
     end)
     menu:updateLayout()
     tes3ui.enterMenuMode(NOTE_MENU)
@@ -383,7 +422,7 @@ end
 local HELP = table.concat({
     "Num6/Num4 next/previous   Num5 accept   Num0 default   Num. undo",
     "Num8/Num2 nearer/farther   Num9/Num7 around   Num1/Num3 down/up   Num//Num* look up/down",
-    "Shift: small steps   Num- skip with a note   Num+ next stop without a front",
+    "Shift or Ctrl: small steps   Num- skip with a note   Num+ next stop without a front",
     "Home this help   End hide all UI   Ctrl+Alt+F stop the tool",
     "Free flight: the normal movement keys and the mouse (no collision, flying)",
 }, "\n")
@@ -465,19 +504,28 @@ local function start()
         tes3.messageBox("Nif fronts: %s is not on in this game. Turn it on in Mod Organizer and load a game.", PLUGIN)
         return
     end
+    tool.changes = 0
+    local loaded, reason = load()
+    if not loaded then
+        say("not started: %s", reason)
+        tes3.messageBox("Nif fronts: not started: %s. Correct or move the file, then start again.", reason)
+        return
+    end
     local mobile = tes3.mobilePlayer
     local multi = tes3ui.findMenu("MenuMulti")
-    tool.before = { collision = mobile.movementCollision, flying = mobile.isFlying, fov = mge.camera.fov, hud = multi and multi.visible }
+    tool.before = { collision = mobile.movementCollision, flying = mobile.isFlying, fov = mge.camera.fov,
+        hud = multi and multi.visible, thirdPerson = tes3.is3rdPerson() }
     -- Kept in the real global table too: a reload (Alt+X) while the tool runs makes a new copy, which sets
     -- these values again.
     _G.nifFrontsBefore = tool.before
-    load()
     tool.on = true
     mobile.movementCollision = false
     mobile.isFlying = true
     mge.camera.fov = GATE_FOV
-    say("start: movement collision %s, flying %s, FOV %.2f before; %d fronts in the file", tostring(tool.before.collision),
-        tostring(tool.before.flying), tool.before.fov, (function() local n = 0 for _ in pairs(tool.data.fronts) do n = n + 1 end return n end)())
+    tes3.force1stPerson()
+    say("start: movement collision %s, flying %s, FOV %.2f, third person %s before; %d fronts in the file; copy %s",
+        tostring(tool.before.collision), tostring(tool.before.flying), tool.before.fov, tostring(tool.before.thirdPerson),
+        (function() local n = 0 for _ in pairs(tool.data.fronts) do n = n + 1 end return n end)(), tool.copied or "none (no file)")
     local here = cellIndex(tes3.player.cell.id)
     if here then
         readLive()
@@ -510,6 +558,7 @@ local function stop()
         mobile.isFlying = b.flying == true
     end
     if b.fov then mge.camera.fov = b.fov end
+    if b.thirdPerson then tes3.force3rdPerson() end
     local multi = tes3ui.findMenu("MenuMulti")
     if multi then
         local block = multi:findChild(HUD_ID)
@@ -517,10 +566,10 @@ local function stop()
         if b.hud ~= nil then multi.visible = b.hud end
         multi:updateLayout()
     end
-    if tool.data then save() end
-    say("stop: movement collision %s, flying %s, FOV %.2f again", tostring(mobile and mobile.movementCollision),
-        tostring(mobile and mobile.isFlying), mge.camera.fov)
-    tes3.messageBox("Nif fronts: stopped; the file is saved")
+    say("stop: movement collision %s, flying %s, FOV %.2f, third person %s again; %d writes of the file",
+        tostring(mobile and mobile.movementCollision), tostring(mobile and mobile.isFlying), mge.camera.fov,
+        tostring(b.thirdPerson == true), tool.changes)
+    tes3.messageBox("Nif fronts: stopped; %d writes of the file in this session", tool.changes)
 end
 
 local KEYS = {
@@ -554,7 +603,8 @@ local function onKeyDown(e)
     if not tool.on or tes3.menuMode() then return end
     local action = KEYS[e.keyCode]
     if not action then return end
-    action(e.isShiftDown)
+    -- Ctrl too: with NumLock on, Windows can report Shift + a numpad key as the key without Shift.
+    action(e.isShiftDown or e.isControlDown)
     updateHud()
     return false
 end
