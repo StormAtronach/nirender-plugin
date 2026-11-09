@@ -1,5 +1,5 @@
-"""The expiry of the data rule (D71): one rule for each run folder, dump and set, wherever it lives. Without
-`--apply` it only lists.
+"""The expiry of the data rule (D71, D152): one rule for each run folder, dump and set, wherever it lives.
+Without `--apply` it only lists.
 
     python tools/clean_results.py                 # the sums of each place
     python tools/clean_results.py --list          # and each run, dump and set by name
@@ -11,18 +11,23 @@
 A run folder `<YYYYmmdd-HHMMSS>-<label>` lives in `results/` of a checkout, in E:\\nirender-results or in
 E:\\nirender-keep\\runs-*. Each gets one of five treatments:
 
-- cited: the docs, the notes of the sessions, the check cards, a commit message or the text of a named folder of
-  E:\\nirender-keep names it, or a dump inside it. It stays whole. A full citation counts by its date and time, a
-  short one by `-HHMMSS-` alone. A run's own log and a copy of a run are no citation.
+- kept: the keep list E:\\nirender-keep\\keep-runs.txt names it, with a reason and a date (clean_common.py has
+  the form). It stays whole.
 - running: younger than one hour. Not touched.
 - young: younger than 7 days. It stays whole.
-- trim: 7 to 30 days. The pictures, the captures and the film go, all else stays, and `trimmed.txt` lists
-  what went.
-- expired: 30 days or more. Removed.
+- trim: a cited run of 7 days or more, or an uncited run of 7 to 30 days. The pictures, the captures and the
+  film go, all else stays, and `trimmed.txt` lists what went. A cited run stays trimmed: its text does not
+  expire.
+- expired: an uncited run of 30 days or more. Removed.
 
-`--apply` refuses when the text may lack a citation: a folder or a file that cannot be read, a repository with no
-log, or too little text in all. An uncited run whose label the text holds is listed for the Archivist: its label
-alone keeps it from nothing.
+A run is cited when the docs, the notes of the sessions, the check cards, a commit message or the text of a
+named folder of E:\\nirender-keep names it, or a dump inside it. A full citation counts by its date and time, a
+short one by `-HHMMSS-` alone. A run's own log and a copy of a run are no citation. A citation keeps the text of
+a run, not its pictures: a record that needs the pictures puts the run on the keep list.
+
+`--apply` refuses when the text may lack a citation (a folder or a file that cannot be read, a repository with
+no log, or too little text in all) and when a line of the keep list has no run's name, reason or date. An
+uncited run whose label the text holds is listed for the Archivist: its label alone keeps it from nothing.
 
 A `results` that is a link is not followed: its target is a place of its own or none. Each folder that is
 no run stays: `baseline-records`, the bench captures, the named folders of E:\\nirender-keep.
@@ -36,8 +41,8 @@ A dump in C:\\tmp\\mwdumps or E:\\nirender-keep\\full-dumps-*:
 - A dump in another folder of E:\\nirender-keep is only listed.
 
 A set of E:\\nirender-keep\\mgebuilds stays when local.bat names it or it is the one before, when a process
-uses it, or when the text or the name of a baseline-* or gate-* folder names it. Others go 30 days after
-their newest write. When local.bat names no set that is here, no set goes.
+uses it, when the text or the name of a baseline-* or gate-* folder names it, or when the keep list names it.
+Others go 30 days after their newest write. When local.bat names no set that is here, no set goes.
 
 The tool refuses while a game or a helper runs. A removal never goes through a link. Each act goes to
 E:\\nirender-keep\\clean-worktrees.log.
@@ -65,7 +70,7 @@ PLAIN_DUMP_ROOTS = {"mwdumps", os.path.basename(common.KEPT_DUMPS)}
 COMPRESS_DAYS = 1
 SMALL_DUMP = 1 << 20
 FILE_ATTRIBUTE_COMPRESSED = 0x800
-TREATMENTS = ("cited", "running", "young", "trim", "expired")
+TREATMENTS = ("kept", "running", "young", "trim", "expired")
 
 
 def run_roots():
@@ -98,11 +103,13 @@ def plan_root(root, evidence, now):
         except OSError as error:
             print("not read, and it stays: %s (%s)" % (entry.path, error))
             continue
-        treatment = run_treatment(age, evidence.cites_run_with(entry.name, files))
+        cited = evidence.cites_run_with(entry.name, files)
+        treatment = run_treatment(age, cited, evidence.keeps(entry.path))
         rows.append({
             "name": entry.name,
             "path": entry.path,
             "treatment": treatment,
+            "cited": cited,
             "size": sum(file[1] for file in files),
             "files": files,
             "heavy": [file for file in files if is_heavy(file[0])] if treatment == "trim" else [],
@@ -126,7 +133,8 @@ def trim_run(row):
         except OSError as error:
             failures.append((path, str(error)))
     with open(long_path(os.path.join(row["path"], "trimmed.txt")), "a", encoding="ascii", errors="replace") as note:
-        note.write("trimmed by tools/clean_results.py on %s: the run is not cited; its text and dumps stay\n" % time.strftime("%Y-%m-%d %H:%M"))
+        until = "the run is cited, so they do not expire" if row["cited"] else "until the run expires"
+        note.write("trimmed by tools/clean_results.py on %s: the pictures, captures and film went; the text and dumps stay, %s\n" % (time.strftime("%Y-%m-%d %H:%M"), until))
         note.writelines(path + "\n" for path in gone)
     return failures
 
@@ -282,6 +290,8 @@ def plan_sets(sets, evidence, current, running, now):
     for entry in found:
         size, _, newest, links, unread = walk(entry.path)
         treatment = set_treatment((now - newest) / 86400 if newest else 0, evidence.cites_word(entry.name), entry.name in kept, users_of(entry.path, running), current_known)
+        if treatment == "go" and evidence.keeps(entry.path):
+            treatment = "stay: on the keep list"
         if unread and treatment == "go":
             treatment = "stay: %d folders could not be read" % unread
         rows.append({"name": entry.name, "path": entry.path, "size": size, "links": links, "treatment": treatment})
@@ -381,11 +391,11 @@ def main():
         return 1
     now = time.time()
     evidence = Evidence.load()
-    print("The evidence: %.1f MB of text, %d full and %d short citations." % (len(evidence.text) / 1e6, len(evidence.stamps), len(evidence.shorts)))
+    print("The evidence: %.1f MB of text, %d full and %d short citations; %d runs on the keep list %s." % (len(evidence.text) / 1e6, len(evidence.stamps), len(evidence.shorts), len(evidence.kept), common.KEEP_LIST))
     for problem in evidence.problems:
-        print("THE EVIDENCE MAY LACK A CITATION: " + problem)
+        print("THE EVIDENCE IS NOT WHOLE: " + problem)
     if evidence.problems and args.apply:
-        print("NOTHING DONE: an uncited run may be evidence.")
+        print("NOTHING DONE: a run may lose what a citation or the keep list keeps.")
         return 1
     roots, links = run_roots()
     plans = [(root, plan_root(root, evidence, now)) for root in roots]
@@ -422,7 +432,9 @@ def self_test():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
         common.LOG = os.path.join(temp, "test.log")
         root = os.path.join(temp, "results")
-        names = {"running": stamp(0.01) + "-a", "young": stamp(3) + "-b", "trim": stamp(10) + "-c", "expired": stamp(40) + "-d", "cited": stamp(50) + "-e"}
+        names = {"running": stamp(0.01) + "-a", "young": stamp(3) + "-b", "trim": stamp(10) + "-c", "expired": stamp(40) + "-d", "cited": stamp(50) + "-e", "kept": stamp(55) + "-k"}
+        # A cited run past 7 days trims and does not expire; only the keep list keeps a run whole (D152).
+        expected = {kind: "trim" if kind == "cited" else kind for kind in names}
         for name in names.values():
             os.makedirs(os.path.join(root, name, "sub"))
             for file in ("a.png", "b.nircap", "c.txt", "d.dmp", os.path.join("sub", "e.log"), os.path.join("sub", "f.png"), "g.ess"):
@@ -442,37 +454,48 @@ def self_test():
         subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(root, names["expired"], "results"), outside], capture_output=True, check=True)
         subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(root, names["trim"], "results"), outside], capture_output=True, check=True)
 
-        evidence = Evidence("see %s in a record" % names["cited"])
+        evidence = Evidence("see %s in a record" % names["cited"], kept={os.path.join(root, names["kept"]).replace("\\", "/").upper()})
         rows = plan_root(root, evidence, now)
         by_name = {row["name"]: row for row in rows}
-        assert len(rows) == 5, rows
-        for treatment, name in names.items():
-            assert by_name[name]["treatment"] == treatment, (treatment, by_name[name]["treatment"])
-        assert sorted(os.path.basename(file[0]) for file in by_name[names["trim"]]["heavy"]) == ["a.png", "b.nircap", "f.png"]
-        assert freed_by(by_name[names["trim"]]) == 300 and freed_by(by_name[names["expired"]]) == 700 and freed_by(by_name[names["young"]]) == 0
+        assert len(rows) == 6, rows
+        for kind, name in names.items():
+            assert by_name[name]["treatment"] == expected[kind], (kind, by_name[name]["treatment"])
+        for kind in ("trim", "cited"):
+            assert sorted(os.path.basename(file[0]) for file in by_name[names[kind]]["heavy"]) == ["a.png", "b.nircap", "f.png"], kind
+            assert freed_by(by_name[names[kind]]) == 300, kind
+        assert freed_by(by_name[names["expired"]]) == 700 and freed_by(by_name[names["young"]]) == 0 and freed_by(by_name[names["kept"]]) == 0
         before = {name: sorted(file[0] for file in files_in(os.path.join(root, name))) for name in names.values()}
         assert act_on_root(rows) == 0, open(common.LOG).read()
         assert not os.path.lexists(os.path.join(root, names["expired"]))
-        for name in (names["running"], names["young"], names["cited"]):
+        for name in (names["running"], names["young"], names["kept"]):
             assert sorted(file[0] for file in files_in(os.path.join(root, name))) == before[name], name
+        for kind, until in (("trim", "until the run expires"), ("cited", "do not expire")):
+            trimmed = os.path.join(root, names[kind])
+            left = sorted(["c.txt", "d.dmp", os.path.join("sub", "e.log"), "g.ess", "trimmed.txt"])
+            assert sorted(os.path.relpath(file[0], trimmed) for file in files_in(trimmed)) == left, kind
+            note = open(os.path.join(trimmed, "trimmed.txt")).read()
+            assert "a.png" in note and until in note, (kind, note)
         trimmed = os.path.join(root, names["trim"])
-        assert sorted(os.path.relpath(file[0], trimmed) for file in files_in(trimmed)) == sorted(["c.txt", "d.dmp", os.path.join("sub", "e.log"), "g.ess", "trimmed.txt"])
-        assert "a.png" in open(os.path.join(trimmed, "trimmed.txt")).read()
         assert os.path.lexists(os.path.join(trimmed, "results")), "a trim leaves a link"
         assert os.path.getsize(os.path.join(outside, "precious.txt")) == 1000
         assert os.path.exists(os.path.join(root, "bench", "keep.png")) and os.path.lexists(link_run)
-        # A second pass has nothing to do: the trim is done, and the note does not grow.
-        note = os.path.getsize(os.path.join(trimmed, "trimmed.txt"))
+        # A second pass has nothing to do: the trims are done, and the notes do not grow. The cited run stays
+        # trimmed at any age, and the kept run whole.
+        notes = {kind: os.path.getsize(os.path.join(root, names[kind], "trimmed.txt")) for kind in ("trim", "cited")}
         assert act_on_root(plan_root(root, evidence, now)) == 0
-        assert os.path.getsize(os.path.join(trimmed, "trimmed.txt")) == note
+        assert all(os.path.getsize(os.path.join(root, names[kind], "trimmed.txt")) == size for kind, size in notes.items())
+        later = {row["name"]: row["treatment"] for row in plan_root(root, evidence, now + 400 * 86400)}
+        assert later[names["cited"]] == "trim" and later[names["kept"]] == "kept" and later[names["trim"]] == "expired", later
+        # The null: without its line on the keep list, the kept run is an uncited old run, and goes.
+        assert {row["name"]: row["treatment"] for row in plan_root(root, Evidence(""), now)}[names["kept"]] == "expired"
 
-        # A dump that a record names keeps its old run whole, though the record does not name the run.
+        # A dump that a record names cites its old run, though the record does not name the run: the run stays trimmed.
         with_dump = stamp(45) + "-f"
         os.makedirs(os.path.join(root, with_dump))
         with open(os.path.join(root, with_dump, "Morrowind.exe.777.dmp"), "w") as out:
             out.write("d")
         kept_run = {row["name"]: row for row in plan_root(root, Evidence("the file Morrowind.exe.777.dmp"), now)}[with_dump]
-        assert kept_run["treatment"] == "cited", kept_run["treatment"]
+        assert kept_run["treatment"] == "trim" and kept_run["cited"], kept_run["treatment"]
 
         # A real LZX, on a dump in a folder of its own.
         place = os.path.join(temp, "full-dumps-x")
@@ -512,7 +535,7 @@ def self_test():
         # The dumps of the runs on E: go with their runs, by the runs' pointer files.
         assert dump_treatment(40, False, True, "expired") == "remove" and dump_treatment(2, False, True, "expired") == "remove"
         assert dump_treatment(40, True, False, "expired") == "stay"
-        assert all(dump_treatment(40, False, False, run) == "stay" for run in ("cited", "running", "young", "trim"))
+        assert all(dump_treatment(40, False, False, run) == "stay" for run in ("kept", "running", "young", "trim"))
         assert dump_treatment(40, False, True, "trim") == "compress"
         runs, kept_dumps = os.path.join(temp, "pointer-runs"), os.path.join(temp, "dumps")
         # Each run at its own time of day: a short citation counts by the time alone.
@@ -539,7 +562,8 @@ def self_test():
             targets["orphan " + kind] = target
         evidence = Evidence("a record of %s, and the short citation %s" % (names["cited"], orphans["cited"][8:16]))
         plans = [(runs, plan_root(runs, evidence, now))]
-        assert {row["name"]: row["treatment"] for row in plans[0][1]} == {names[kind]: kind for kind in names}, plans
+        # The cited run is past 7 days: it is trimmed, and its dump stays with it.
+        assert {row["name"]: row["treatment"] for row in plans[0][1]} == {names[kind]: "trim" if kind == "cited" else kind for kind in names}, plans
         owners = dump_owners(plans)
         assert set(owners) == {os.path.normcase(targets[kind]) for kind in names}, owners
         rows = {row["path"]: row for row in plan_dumps([kept_dumps], evidence, now, owners)}
@@ -572,6 +596,9 @@ def self_test():
         assert "the current" in by_name_rows["vd-a"] and "the current" in by_name_rows["f195"] and by_name_rows["f100"] == "go", by_name_rows
         for unknown in (None, "f999"):
             assert all(row["treatment"].startswith("stay") for row in plan_sets(sets, Evidence(""), unknown, [], now)), unknown
+        # A set on the keep list stays, and the others go as before.
+        listed = {row["name"]: row["treatment"] for row in plan_sets(sets, Evidence("a record names f100", kept={os.path.join(sets, "vd-a")}), "f195", running, now)}
+        assert listed["vd-a"] == "stay: on the keep list" and listed["f101"] == "go", listed
         assert act_on_sets(rows) == 0, open(common.LOG).read()
         assert not os.path.exists(os.path.join(sets, "f101")) and not os.path.exists(os.path.join(sets, "vd-a")) and os.path.exists(os.path.join(sets, "f100"))
         assert os.path.getsize(os.path.join(outside, "precious.txt")) == 1000

@@ -2,10 +2,18 @@
 same kind, the processes, the log, the citations and the expiry of the data rule (D71). No entry point:
 `clean_merged_worktrees.py` and `clean_results.py` are the tools.
 
-A run or a dump is evidence when a record, a plan page or a commit names it. Anything else expires:
+A run or a dump is evidence when a record, a plan page or a commit names it. A run stays whole only on the
+keep list, KEEP_LIST (D152). The rest expires:
 
-- a run folder: pictures and captures at PICTURE_DAYS, text and dumps at TEXT_DAYS;
+- a run folder: pictures and captures at PICTURE_DAYS; text and dumps at TEXT_DAYS, or never for a cited run;
 - a dump outside a run: at TEXT_DAYS.
+
+The keep list has one line for each kept path, its three fields split by tabs: the full path, the reason and
+the date the line was written (YYYY-MM-DD). The reason starts with `open: <id>` (the evidence of an open item),
+`tool: <name>` (a tool reads it) or `owner` (the owner's word). A run stays whole when its folder is a path of
+the list or lies in one; a set of mgebuilds stays too. Other paths (a file, a folder of E:\\nirender-keep) are no
+problem: the tools do not remove them. A line without a full path, a reason or a date is a problem, and no
+removal runs. A line that starts with `#` is a note.
 """
 import bisect
 import ctypes
@@ -39,6 +47,10 @@ SETS = os.path.join(KEEP_ROOT, "mgebuilds")
 # its path first, then its bytes and its source, with tabs.
 KEPT_DUMPS = os.path.join(KEEP_ROOT, "dumps")
 DUMPS_FILE = "dumps.txt"
+# The runs that stay whole, each with its reason (D152).
+KEEP_LIST = os.path.join(KEEP_ROOT, "keep-runs.txt")
+KEEP_REASON = re.compile(r"^(?:(?:open|tool):\s*\S.*|owner\b.*)$")
+KEEP_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GAME_PROGRAMS = {"morrowind.exe", "numidium.exe", "nirender-host.exe"}
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
@@ -419,20 +431,59 @@ def evidence_folders():
     return folders
 
 
-class Evidence:
-    """What the docs, the notes, the accepted baselines and the commit messages name."""
+def keep_key(path):
+    """A path of the keep list in one spelling: absolute, Windows' case and separators."""
+    return os.path.normcase(os.path.normpath(path))
 
-    def __init__(self, text, problems=()):
+
+def read_keep_list(path=KEEP_LIST):
+    """The paths on the keep list, in `keep_key` spelling, and its problems: a line without an absolute path, a
+    reason or a date, or a file that cannot be read. No file is an empty list."""
+    try:
+        with open(long_path(path), encoding="utf-8", errors="replace") as file:
+            lines = file.read().splitlines()
+    except FileNotFoundError:
+        return set(), []
+    except OSError as error:
+        return set(), ["the keep list cannot be read: %s (%s)" % (path, error)]
+    kept, problems = set(), []
+    for number, line in enumerate(lines, 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = [field.strip() for field in line.split("\t")]
+        kept_path = fields[0]
+        reason = fields[1] if len(fields) > 1 else ""
+        date = fields[2] if len(fields) > 2 else ""
+        if len(fields) > 3:
+            problems.append("the keep list, line %d: more than three fields (path, reason, date): %s" % (number, line))
+        elif not os.path.isabs(kept_path) or not os.path.splitdrive(kept_path)[0]:
+            problems.append("the keep list, line %d: no full path first: %s" % (number, line))
+        elif not KEEP_REASON.match(reason):
+            problems.append("the keep list, line %d: no reason (open: <id> | tool: <name> | owner) second: %s" % (number, line))
+        elif not KEEP_DATE.match(date):
+            problems.append("the keep list, line %d: no date (YYYY-MM-DD) third: %s" % (number, line))
+        else:
+            kept.add(keep_key(kept_path))
+    return kept, problems
+
+
+class Evidence:
+    """What the docs, the notes, the accepted baselines and the commit messages name, and the runs of the keep list."""
+
+    def __init__(self, text, problems=(), kept=()):
         self.text = text
-        # Why the text may lack a citation. A removal must not run on it: every run would read as uncited.
+        # Why the text may lack a citation, or the keep list a run. A removal must not run on it: every run
+        # would read as uncited, or a kept run as not kept.
         self.problems = list(problems)
+        self.kept = {keep_key(path) for path in kept}
         self.stamps = set(STAMP.findall(text))
         self.shorts = set(SHORT_CITATION.findall(text))
         self.dump_numbers = set(DUMP_NUMBER.findall(text))
 
     @classmethod
-    def load(cls, folders=None, names=None, repos=COMMIT_REPOS, least=LEAST_EVIDENCE):
-        """The text of each folder and each commit message. `names` are folders whose own name counts too."""
+    def load(cls, folders=None, names=None, repos=COMMIT_REPOS, least=LEAST_EVIDENCE, keep_list=KEEP_LIST):
+        """The text of each folder and each commit message, and the keep list. `names` are folders whose own name
+        counts too."""
         folders = evidence_folders() if folders is None else folders
         names = glob.glob(os.path.join(KEEP_ROOT, "baseline-*")) + glob.glob(os.path.join(KEEP_ROOT, "gate-*")) if names is None else names
         # The name of a baseline can hold the set that it needs: baseline-accepted-20261102-f194.
@@ -461,7 +512,12 @@ class Evidence:
         text = "\n".join(parts)
         if len(text) < least:
             problems.append("only %d characters of text, and at least %d are expected" % (len(text), least))
-        return cls(text, problems)
+        kept, keep_problems = read_keep_list(keep_list)
+        return cls(text, problems + keep_problems, kept)
+
+    def keeps(self, path):
+        """True for a path that the keep list names, or that lies in a folder that it names."""
+        return any(same_or_under(path, kept) for kept in self.kept)
 
     def cites_run(self, name):
         """A full citation counts by its date and time, as a record can shorten the label. A short
@@ -512,16 +568,16 @@ def run_age_days(name, now):
         return None
 
 
-def run_treatment(age_days, cited):
-    """What happens to a run folder: "cited" and "running" and "young" stay whole, "trim" loses its pictures,
-    "expired" goes."""
-    if cited:
-        return "cited"
+def run_treatment(age_days, cited, kept=False):
+    """What happens to a run folder: "kept", "running" and "young" stay whole, "trim" loses its pictures,
+    "expired" goes. A citation keeps the text only: a cited run stays trimmed and never expires."""
+    if kept:
+        return "kept"
     if age_days < BUSY_DAYS:
         return "running"
     if age_days < PICTURE_DAYS:
         return "young"
-    if age_days < TEXT_DAYS:
+    if cited or age_days < TEXT_DAYS:
         return "trim"
     return "expired"
 
@@ -587,19 +643,50 @@ def self_test_common():
         repo = os.path.join(temp, "repo")
         assert git(temp, "init", "-q", "-b", "master", repo).returncode == 0
         assert git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "a commit names 20261103-020202-x").returncode == 0
-        good = Evidence.load([docs], [], [repo], least=100)
+        # The tests never read the real keep list: no file is an empty list.
+        no_list = os.path.join(temp, "no-keep-runs.txt")
+        good = Evidence.load([docs], [], [repo], least=100, keep_list=no_list)
         assert good.problems == [] and good.cites_run("20261103-010838-h14-w2") and good.cites_run("20261103-020202-x"), good.problems
-        assert "cannot be read" in " ".join(Evidence.load([os.path.join(temp, "no-docs")], [], [repo], least=1).problems)
-        assert "no commit messages" in " ".join(Evidence.load([docs], [], [os.path.join(temp, "no-repo")], least=1).problems)
+        assert good.kept == set() and not good.keeps("C:\\r\\20261103-010838-h14-w2")
+        assert "cannot be read" in " ".join(Evidence.load([os.path.join(temp, "no-docs")], [], [repo], least=1, keep_list=no_list).problems)
+        assert "no commit messages" in " ".join(Evidence.load([docs], [], [os.path.join(temp, "no-repo")], least=1, keep_list=no_list).problems)
         no_commits = os.path.join(temp, "empty-repo")
         assert git(temp, "init", "-q", "-b", "master", no_commits).returncode == 0
-        assert "no commit messages" in " ".join(Evidence.load([docs], [], [no_commits], least=1).problems), "a git log that fails"
-        assert "characters" in " ".join(Evidence.load([docs], [], [repo]).problems), "too little text"
+        assert "no commit messages" in " ".join(Evidence.load([docs], [], [no_commits], least=1, keep_list=no_list).problems), "a git log that fails"
+        assert "characters" in " ".join(Evidence.load([docs], [], [repo], keep_list=no_list).problems), "too little text"
         # A file held open with no sharing cannot be read.
         held = subprocess.Popen(["powershell", "-NoProfile", "-Command", "$f=[IO.File]::Open('%s','Open','ReadWrite','None'); Write-Output held; [Console]::In.ReadLine() | Out-Null; $f.Close()" % os.path.join(docs, "a.md")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         assert held.stdout.readline().strip() == "held"
-        assert "a file cannot be read" in " ".join(Evidence.load([docs], [], [repo], least=1).problems)
+        assert "a file cannot be read" in " ".join(Evidence.load([docs], [], [repo], least=1, keep_list=no_list).problems)
         held.communicate("\n")
+
+        # The keep list (D152), in the Archivist's form: path, reason, date, split by tabs. Each good line keeps its
+        # path and what lies in it; a path that is no run is no problem. A line without a full path, a reason or a
+        # date is a problem, and the problem reaches the evidence, so that no removal runs.
+        keep_list = os.path.join(temp, "keep-runs.txt")
+        good_line = "C:/r/results/20261101-010101-open\topen: risk 76; open: D150 C (the design)\t2026-11-09"
+        with open(keep_list, "w", encoding="ascii") as file:
+            file.write("# runs that stay whole\n#   open: <id>\tthe evidence\n\n" + good_line + "\n"
+                       "E:/keep/runs-x\ttool: proj76.py\t2026-11-09\n"
+                       "E:/keep/mgebuilds/f199\towner\t2026-11-09\n"
+                       "E:/bench/walk.nircap\ttool: bench_replay.py (the walk)\t2026-11-09\n")
+        kept, problems = read_keep_list(keep_list)
+        assert problems == [] and len(kept) == 4, (kept, problems)
+        listed = Evidence.load([docs], [], [repo], least=1, keep_list=keep_list)
+        assert listed.problems == [] and listed.keeps("c:\\R\\results\\20261101-010101-open") and listed.keeps("E:\\keep\\runs-x\\20261001-000000-y")
+        assert listed.keeps("E:/keep/mgebuilds/f199") and not listed.keeps("E:/keep/mgebuilds/f19") and not listed.keeps("C:/r/results/20261101-010101-opener")
+        for bad, words in (("C:/r/20261101-040404-x\t\t2026-11-09", "no reason"), ("C:/r/20261101-040404-x\tbecause it is cited\t2026-11-09", "no reason"),
+                           ("C:/r/20261101-040404-x\topen:\t2026-11-09", "no reason"), ("C:/r/20261101-040404-x", "no reason"),
+                           ("C:/r/20261101-040404-x\towner", "no date"), ("C:/r/20261101-040404-x\topen: risk 77\t9 Nov", "no date"),
+                           ("20261101-040404-x\towner\t2026-11-09", "no full path"), ("/r/20261101-040404-x\towner\t2026-11-09", "no full path"),
+                           ("C:/r/20261101-040404-x  owner  2026-11-09", "no reason"), ("C:/r/x\towner\t2026-11-09\textra", "more than three")):
+            with open(keep_list, "w", encoding="ascii") as file:
+                file.write(good_line + "\n" + bad + "\n")
+            kept, problems = read_keep_list(keep_list)
+            assert kept == {keep_key("C:/r/results/20261101-010101-open")} and len(problems) == 1 and words in problems[0] and "line 2" in problems[0], (bad, problems)
+            assert words in " ".join(Evidence.load([docs], [], [repo], least=1, keep_list=keep_list).problems), bad
+        # A keep list that cannot be read is a problem too: a folder of that name.
+        assert "cannot be read" in read_keep_list(docs)[1][0]
         # A copy of a run and the sets are no evidence, and each named folder is.
         names = [os.path.basename(path) for path in evidence_folders()]
         assert not any(name.startswith("runs-") or name == "mgebuilds" for name in names)
@@ -607,8 +694,12 @@ def self_test_common():
         assert is_heavy(name), name
     for name in ("host.txt", "MWSE.log", "a.DMP", "b.py", "c.sh", "d.ess", "e.ini", "f.xml", "g.wgsl", "h.dll", "none"):
         assert not is_heavy(name), name
-    for age, cited, expected in [(0.01, False, "running"), (0.01, True, "cited"), (6.9, False, "young"), (7.0, False, "trim"), (29.9, False, "trim"), (30.0, False, "expired"), (400, True, "cited")]:
-        assert run_treatment(age, cited) == expected, (age, cited)
+    # A citation keeps the text only: a cited run trims at 7 days and never expires. Only the keep list keeps a run whole.
+    for age, cited, kept, expected in [(0.01, False, False, "running"), (0.01, True, False, "running"), (6.9, True, False, "young"),
+                                       (6.9, False, False, "young"), (7.0, False, False, "trim"), (7.0, True, False, "trim"),
+                                       (29.9, False, False, "trim"), (30.0, False, False, "expired"), (400, True, False, "trim"),
+                                       (400, False, True, "kept"), (0.01, False, True, "kept"), (400, True, True, "kept")]:
+        assert run_treatment(age, cited, kept) == expected, (age, cited, kept)
     now = time.mktime(time.strptime("20261103-120000", "%Y%m%d-%H%M%S"))
     assert run_age_days("20261102-120000-x", now) == 1.0
     assert run_age_days("bench", now) is None and run_age_days("20261399-120000-x", now) is None

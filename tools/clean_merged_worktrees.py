@@ -63,8 +63,8 @@ Then, in this order, and any failure leaves the worktree as it is, apart from wh
 
 1. What a real `results` folder holds is copied to E:\\nirender-keep\\runs-<date>, unless a runs-*
    folder holds the same; the number and the size of the files must agree. By the expiry of
-   `clean_results.py`: a run that is cited or younger than 7 days whole, one of 7 to 30 days with no
-   pictures, an older one not at all. A folder that is no run and a loose file are copied whole.
+   `clean_results.py`: a run on the keep list or younger than 7 days whole; a cited run of 7 days or
+   more and an uncited one of 7 to 30 days with no pictures; an older uncited one not at all. A folder that is no run and a loose file are copied whole.
 2. A new walk finds each reparse point in the tree, and each is removed as a link, which leaves its
    target. `git worktree remove` goes through a junction: on 2026-10-29 one deleted
    E:\\nirender-results that way. A folder that the walk cannot read, or a link that is still there
@@ -492,7 +492,7 @@ def copy_results(results, keep_root, date, evidence, now):
             copied.append(target)
             continue
         age = run_age_days(name, now)
-        treatment = None if age is None else run_treatment(age, evidence.cites_run_with(name, files_in(source)))
+        treatment = None if age is None else run_treatment(age, evidence.cites_run_with(name, files_in(source)), evidence.keeps(source))
         if treatment == "expired":
             continue
         pictures = treatment != "trim"
@@ -729,12 +729,12 @@ def main():
         print("  %9s  %s" % (gigabytes(size), path))
     evidence = Evidence.load()
     for problem in evidence.problems:
-        print("THE EVIDENCE MAY LACK A CITATION: " + problem)
+        print("THE EVIDENCE IS NOT WHOLE: " + problem)
     if not args.apply:
         print("\nA dry run: nothing changed. --apply acts.")
         return 0
     if evidence.problems:
-        print("NOTHING DONE: a removal copies only the runs that are cited or young, and an uncited run may be evidence.")
+        print("NOTHING DONE: a removal copies a run by its citations and the keep list, and either may be incomplete.")
         return 1
     left = []
     failed = 0
@@ -938,20 +938,23 @@ def self_test():
                 open(os.path.join(results2, name, file), "w").write("x" * 10)
             return name
 
-        young, trimmed, expired, cited = run_folder(2), run_folder(10), run_folder(40), run_folder(50)
+        young, trimmed, expired, cited, kept = run_folder(2), run_folder(10), run_folder(40), run_folder(50), run_folder(60)
         make_junction(os.path.join(results2, trimmed, "link"), outside)
         make_junction(os.path.join(results2, "run-link"), outside)
         keep2 = os.path.join(temp, "keep2")
         os.makedirs(keep2)
-        copied = copy_results(results2, keep2, "today", Evidence("a record cites " + cited), now)
-        assert sorted(os.path.basename(c) for c in copied) == sorted([young, trimmed, cited]), copied
+        # A cited old run copies as text only; a run on the keep list copies whole (D152).
+        evidence2 = Evidence("a record cites " + cited, kept={os.path.join(results2, kept)})
+        copied = copy_results(results2, keep2, "today", evidence2, now)
+        assert sorted(os.path.basename(c) for c in copied) == sorted([young, trimmed, cited, kept]), copied
         target = os.path.join(keep2, "runs-today")
         assert sorted(os.listdir(os.path.join(target, young))) == ["a.png", "b.log", "c.dmp"]
-        assert sorted(os.listdir(os.path.join(target, cited))) == ["a.png", "b.log", "c.dmp"]
+        assert sorted(os.listdir(os.path.join(target, kept))) == ["a.png", "b.log", "c.dmp"]
+        assert sorted(os.listdir(os.path.join(target, cited))) == ["b.log", "c.dmp"]
         assert sorted(os.listdir(os.path.join(target, trimmed))) == ["b.log", "c.dmp"]
         assert not os.path.exists(os.path.join(target, expired)) and not os.path.lexists(os.path.join(target, "run-link"))
         # A second removal finds the same files kept, with or without the pictures.
-        assert copy_results(results2, keep2, "later", Evidence("a record cites " + cited), now) == []
+        assert copy_results(results2, keep2, "later", evidence2, now) == []
 
         # The output folders of a tree: its target with a link in it, a member's, a target with no build's marks, a link.
         built = os.path.join(temp, "built")
