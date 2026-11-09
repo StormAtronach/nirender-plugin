@@ -18,15 +18,15 @@
 //! made before the stream and that was not in view at its start. The module makes the
 //! renderer drop the buffers of such an object after the frame, so the next frame has them.
 //!
-//! A file from a stream that is running (`tee`) gets each texture of the link at the first
-//! record of the file that names it, read from the texture's own pixel data
+//! A file from a stream that is running (`tee`) gets each source texture at the first record
+//! of the file that names it, read from the pixel data or the file of its source texture
 //! (`name_texture`). The plugin keeps no copy of the texture levels that the game locks: an
 //! unlock frees the level once its bytes are in the stream (risk 42, `own_host::unlock_level`).
 //! Only while a file is open does an unlock keep the level, because a file that holds writes its
 //! changed textures later from those copies. So the snapshot at a file's start writes a texture
 //! of the own host only when it still has all its locked levels; one with a freed level comes in
-//! at its naming, and the snapshot's log line counts those. A texture of a device call with a
-//! freed level has no naming: the same line counts it as not in the file.
+//! at its naming, and the snapshot's log line counts those. The line of the file's textures at
+//! its end counts a named texture that the file lacks.
 //!
 //! The file: the 8 bytes `NIRCAP01`, then records. A record is a tag (u32), the length of its
 //! data in bytes (u32), and the data. All numbers are little endian. The tags are in `tag`.
@@ -1744,7 +1744,7 @@ pub unsafe fn mark(text: &str) {
     let frees = &crate::own_host::LEVEL_FREES;
     let largest_free = crate::overlay::largest_free_now();
     crate::log!(
-        "level copies at the mark '{text}': {} levels of {} textures, {:.1} MB, of them {} dynamic textures, {:.1} MB; freed at unlock since the start: {} levels, {:.1} MB; locks of a freed level {} ({} textures made dynamic); copies out of a level surface {} ({} of a freed one); largest free block {:.1} MB",
+        "level copies at the mark '{text}': {} levels of {} textures, {:.1} MB, of them {} dynamic textures, {:.1} MB; freed at unlock since the start: {} levels, {:.1} MB; locks of a freed level {} ({} textures made dynamic, {} read-only, {} with a rectangle); copies out of a level surface {} ({} of a freed one); largest free block {:.1} MB",
         copies.levels,
         copies.textures,
         copies.bytes as f64 / 1e6,
@@ -1754,6 +1754,8 @@ pub unsafe fn mark(text: &str) {
         frees.bytes.load(Ordering::Relaxed) as f64 / 1e6,
         frees.locks_after_free.load(Ordering::Relaxed),
         frees.made_dynamic.load(Ordering::Relaxed),
+        frees.read_only_locks_of_freed.load(Ordering::Relaxed),
+        frees.part_locks_of_freed.load(Ordering::Relaxed),
         frees.copies_from_level.load(Ordering::Relaxed),
         frees.copies_from_freed.load(Ordering::Relaxed),
         largest_free as f64 / 1e6

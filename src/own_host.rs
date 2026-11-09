@@ -74,10 +74,6 @@ struct Object {
     /// changes (a new revision of its pixel data). Its unlocks keep their blocks from then on,
     /// so that each change reuses them.
     dynamic: bool,
-    /// A texture of the link (`texture_create`): a source texture of the engine, which a capture
-    /// file reads from its own pixel data (`capture::name_texture`). False for a texture of a
-    /// device call.
-    from_link: bool,
 }
 
 /// The bytes of a level with this width and height, and the bytes of one of its rows.
@@ -124,10 +120,10 @@ pub unsafe fn snapshot() {
     let mut sorted = live;
     sorted.sort_by_key(|&o| order(&(*(o as *const Object)).kind));
     let mut count = [0u32; 4];
-    // The textures that an unlock freed a level of (risk 42): from the link, and from a device
-    // call. The file reads a texture of the link at its first naming (`capture::name_texture`);
-    // one of a device call has no other way into the file.
-    let mut freed = [0u32; 2];
+    // The textures that an unlock freed a level of (risk 42). The file reads each of them at
+    // its first naming (`capture::name_texture`), from the pixel data or the file of its source
+    // texture; the capture's line of its textures counts a texture that it lacks.
+    let mut freed = 0u32;
     for object in sorted {
         let o = &*(object as *const Object);
         let handle = object as u32;
@@ -136,7 +132,7 @@ pub unsafe fn snapshot() {
         match o.kind {
             Kind::Texture if !in_file(o) => {
                 if o.freed_levels != 0 && !is_rendered(o) {
-                    freed[usize::from(!o.from_link)] += 1;
+                    freed += 1;
                 }
             }
             Kind::LevelSurface if o.owner.is_null() || !in_file(&*o.owner) => {}
@@ -168,11 +164,7 @@ pub unsafe fn snapshot() {
         }
     }
     crate::log!("own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces", count[0], count[1], count[2], count[3]);
-    crate::log!(
-        "own host: {} textures of the link with freed levels come into the file at their naming; {} of a device call with freed levels are not in it",
-        freed[0],
-        freed[1]
-    );
+    crate::log!("own host: {freed} textures with a freed level are not in the snapshot: each comes into the file at its first naming");
 }
 
 /// Whether the snapshot of a capture file writes a texture: a rendered one always (its picture
@@ -365,7 +357,6 @@ unsafe fn new_object(lock: &DeviceLock, kind: Kind, table: &'static Table) -> *m
         level_memory: Vec::new(),
         freed_levels: 0,
         dynamic: false,
-        from_link: false,
     }));
     LIVE.get(&lock).push(object as usize);
     object
@@ -659,6 +650,10 @@ pub struct LevelFrees {
     /// out of a freed level.
     pub copies_from_level: AtomicU64,
     pub copies_from_freed: AtomicU64,
+    /// Locks of a freed level with D3DLOCK_READONLY, and with a rectangle: the locker reads the
+    /// zeros, or writes only a part of the level, and the unlock sends the zeros into the stream.
+    pub read_only_locks_of_freed: AtomicU64,
+    pub part_locks_of_freed: AtomicU64,
 }
 
 pub static LEVEL_FREES: LevelFrees = LevelFrees {
@@ -668,11 +663,49 @@ pub static LEVEL_FREES: LevelFrees = LevelFrees {
     made_dynamic: AtomicU64::new(0),
     copies_from_level: AtomicU64::new(0),
     copies_from_freed: AtomicU64::new(0),
+    read_only_locks_of_freed: AtomicU64::new(0),
+    part_locks_of_freed: AtomicU64::new(0),
 };
 
-unsafe extern "system" fn texture_lock(this: *mut Object, level: u32, locked: *mut u32, _rectangle: usize, _flags: u32) -> u32 {
+/// True after the first log line of [`note_lock`].
+static FREED_LOCK_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Counts a lock of a freed level that reads it (D3DLOCK_READONLY) or that has a rectangle
+/// (risk 42). The engine's locker of a source texture writes the whole level with no rectangle
+/// and no flags; any other lock of a freed level gets zeros and sends them at its unlock, so
+/// the texture turns black in the helper. The first such lock gets a log line. Before
+/// [`lock_level`], which clears the freed bit.
+unsafe fn note_lock(texture: *const Object, level: u32, rectangle: usize, flags: u32) {
+    let object = &*texture;
+    if object.freed_levels & level_bit(level) == 0 {
+        return;
+    }
+    let read_only = flags & crate::d3d::D3DLOCK_READONLY != 0;
+    let part = rectangle != 0;
+    if read_only {
+        LEVEL_FREES.read_only_locks_of_freed.fetch_add(1, Ordering::Relaxed);
+    }
+    if part {
+        LEVEL_FREES.part_locks_of_freed.fetch_add(1, Ordering::Relaxed);
+    }
+    if (read_only || part) && !FREED_LOCK_LOGGED.swap(true, Ordering::Relaxed) {
+        crate::log!(
+            "own host: ERROR (risk 42): a lock of the freed level {level} of the texture {:#x} ({} x {}, format {}) with the flags {flags:#x}{}: it gets zeros, and its unlock sends them; only the first such lock is logged, the mark line counts all",
+            texture as usize,
+            object.width,
+            object.height,
+            object.format,
+            if part { " and a rectangle" } else { "" }
+        );
+    }
+}
+
+unsafe extern "system" fn texture_lock(this: *mut Object, level: u32, locked: *mut u32, rectangle: usize, flags: u32) -> u32 {
     let _lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "texture LockRect");
+    if level < (*this).levels {
+        note_lock(this, level, rectangle, flags);
+    }
     lock_level(this, level, locked)
 }
 
@@ -855,11 +888,12 @@ fn lock_offset(left: u32, top: u32, width: u32, height: u32, row: u32, pixel: u3
     (left < width && top < height).then(|| top as usize * row as usize + left as usize * pixel as usize)
 }
 
-unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, rectangle: usize, _flags: u32) -> u32 {
+unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, rectangle: usize, flags: u32) -> u32 {
     let lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "surface LockRect");
     let object = &mut *this;
     if object.kind == Kind::LevelSurface {
+        note_lock(object.owner, object.level, rectangle, flags);
         return lock_level(object.owner, object.level, locked);
     }
     if locked.is_null() {
@@ -1050,7 +1084,6 @@ unsafe extern "C" fn texture_create(texture: *const TextureV1) -> u32 {
     (*object).height = texture.height;
     (*object).levels = texture.levels.max(1);
     (*object).format = texture.d3d_format;
-    (*object).from_link = true;
     object as u32
 }
 
@@ -1347,10 +1380,10 @@ pub unsafe fn report() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_pixels, in_snapshot, level_bit, lock_level, lock_offset, new_object, nothing_to_do, read_within, release, surface_lock, unlock_level_into, Kind, LevelCopies, Object,
+        copy_pixels, in_snapshot, level_bit, lock_level, lock_offset, new_object, note_lock, nothing_to_do, read_within, release, surface_lock, unlock_level_into, Kind, LevelCopies, Object,
         BACK_BUFFER, CUTSCENE_SHADER_CALLS, LEVEL_FREES, OK, REMOVE_LIGHT_CALL, SURFACE_TABLE, TEXTURE_TABLE,
     };
-    use crate::d3d::{DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
+    use crate::d3d::{D3DLOCK_READONLY, DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
     use crate::instance_stream::{test_list_one, test_shown_state};
     use core::sync::atomic::Ordering;
 
@@ -1462,7 +1495,7 @@ mod tests {
         assert_eq!(lock_offset(100, 200, 64, 64, 256, 0), Some(0));
     }
 
-    /// A texture of this host of 8 x 8 pixels of 4 bytes with two levels, from the link.
+    /// A texture of this host of 8 x 8 pixels of 4 bytes with two levels.
     unsafe fn test_texture() -> *mut Object {
         let lock = crate::sync::device_lock();
         let texture = new_object(&lock, Kind::Texture, &TEXTURE_TABLE);
@@ -1470,7 +1503,6 @@ mod tests {
         (*texture).height = 8;
         (*texture).levels = 2;
         (*texture).format = 21;
-        (*texture).from_link = true;
         texture
     }
 
@@ -1597,6 +1629,34 @@ mod tests {
             // A rendered texture is in the snapshot always: its picture comes from the helper.
             (*texture).usage = 1;
             assert!(in_snapshot(&*texture));
+            release(texture);
+        }
+    }
+
+    /// A read-only lock and a lock with a rectangle of a freed level are counted; the same locks
+    /// of a level that holds its bytes are not, and neither is a whole lock of a freed level (the
+    /// engine's locker).
+    #[test]
+    fn a_read_only_or_part_lock_of_a_freed_level_is_counted() {
+        unsafe {
+            let texture = test_texture();
+            let read_only = || LEVEL_FREES.read_only_locks_of_freed.load(Ordering::Relaxed);
+            let part = || LEVEL_FREES.part_locks_of_freed.load(Ordering::Relaxed);
+            let rectangle = [0u32, 0, 4, 4];
+            let rectangle = rectangle.as_ptr() as usize;
+
+            lock_and_fill(texture, 0, 1);
+            let (r, p) = (read_only(), part());
+            note_lock(texture, 0, rectangle, D3DLOCK_READONLY);
+            assert_eq!((read_only(), part()), (r, p), "a level that holds its bytes");
+            unlock(texture, 0, false);
+
+            let (r, p) = (read_only(), part());
+            note_lock(texture, 0, 0, D3DLOCK_READONLY);
+            assert!(read_only() > r && part() == p, "a read-only lock of a freed level");
+            let (r, p) = (read_only(), part());
+            note_lock(texture, 0, rectangle, 0);
+            assert!(read_only() == r && part() > p, "a lock with a rectangle of a freed level");
             release(texture);
         }
     }
