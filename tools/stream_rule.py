@@ -17,9 +17,11 @@ world scene of the same frame, not the helper.
 The projection of a scene is the first projection command after its scene record: the camera's own
 (`SetCameraData`). A later projection in the scene (a screen polygon) is not the camera's.
 
-A capture with no scene of kind 5 gives NOT RUN, not a pass: it holds no actor in shadow range, so
-the rule saw none of the draws that risk 76 spoiled. The exit code is 0 for a pass, 1 for a failure,
-5 for NOT RUN.
+A capture with no scene of kind 5 that was checked gives NOT RUN, not a pass: it holds no actor in
+shadow range, or its kind 5 scenes had no world scene with a projection in their frame, so the rule
+compared none of the draws that risk 76 spoiled. The exit code is 0 for a pass, 1 for a failure,
+5 for NOT RUN. The end of a scene ends its wait for a projection: a projection between scenes is
+no scene's.
 """
 import mmap
 import os
@@ -27,7 +29,7 @@ import struct
 import sys
 import tempfile
 
-TAG_SCENE_BEGIN, TAG_COMMAND, TAG_FRAME_END = 3, 8, 10
+TAG_SCENE_BEGIN, TAG_SCENE_END, TAG_COMMAND, TAG_FRAME_END = 3, 4, 8, 10
 COMMAND_TRANSFORM, D3DTS_PROJECTION = 3, 3
 SCENE_WORLD = 1
 # The scenes whose projection must be that of the world scene: the sorted alpha, the water, the two
@@ -54,6 +56,9 @@ def scene_projections(data):
             frame += 1
         elif tag == TAG_SCENE_BEGIN and length >= 8:
             kind, waiting = struct.unpack_from("<I", data, body + 4)[0], True
+        elif tag == TAG_SCENE_END:
+            # A projection after the end of a scene is not its camera's.
+            waiting = False
         elif tag == TAG_COMMAND and waiting and length >= 80:
             command, state = struct.unpack_from("<II", data, body)
             if command == COMMAND_TRANSFORM and state == D3DTS_PROJECTION:
@@ -74,12 +79,12 @@ def check_scenes(scenes):
             others.append((frame, kind, m11, m22))
     faults, checked, shadow = [], 0, 0
     for frame, kind, m11, m22 in others:
-        if kind == SCENE_SHADOW_CASTERS:
-            shadow += 1
         reference = world.get(frame)
         if reference is None:
             continue
         checked += 1
+        if kind == SCENE_SHADOW_CASTERS:
+            shadow += 1
         for term, value, expected in (("_11", m11, reference[0]), ("_22", m22, reference[1])):
             if abs(value - expected) > TOLERANCE:
                 faults.append((frame, kind, term, value, expected))
@@ -117,7 +122,8 @@ def describe(path, status, report):
 
 def plant(frames):
     """The bytes of a small capture, for the tests. `frames` is a list of frames, each a list of
-    (kind, _11, _22) for the scenes in it. Each scene has its scene record and a projection command."""
+    (kind, _11, _22) for the scenes in it. Each scene has its scene record, a projection command
+    (none when _11 is None) and its end record."""
     out = bytearray(b"NIRCAP01")
 
     def record(tag, body):
@@ -127,9 +133,11 @@ def plant(frames):
     for scenes in frames:
         for kind, m11, m22 in scenes:
             record(TAG_SCENE_BEGIN, struct.pack("<II", 0, kind) + bytes(16))
-            matrix = [0.0] * 16
-            matrix[0], matrix[5], matrix[10], matrix[11], matrix[14] = m11, m22, 1.0001, 1.0, -1.0001
-            record(TAG_COMMAND, struct.pack("<IIII", COMMAND_TRANSFORM, D3DTS_PROJECTION, 0, 0) + struct.pack("<16f", *matrix))
+            if m11 is not None:
+                matrix = [0.0] * 16
+                matrix[0], matrix[5], matrix[10], matrix[11], matrix[14] = m11, m22, 1.0001, 1.0, -1.0001
+                record(TAG_COMMAND, struct.pack("<IIII", COMMAND_TRANSFORM, D3DTS_PROJECTION, 0, 0) + struct.pack("<16f", *matrix))
+            record(TAG_SCENE_END, bytes(4))
         record(TAG_FRAME_END, bytes(4))
     return bytes(out)
 
@@ -162,7 +170,21 @@ def self_test():
     assert verdict([[(1,) + world, (5,) + world, (7,) + shadow, (11,) + shadow, (0,) + shadow]])[0] == PASS
     # A frame with no world scene (a menu) has nothing to compare with: its scenes are not checked.
     status, report = verdict([[(5,) + shadow], [(1,) + world, (5,) + world]])
-    assert status == PASS and report["checked"] == 1 and report["shadow_scenes"] == 2, report
+    assert status == PASS and report["checked"] == 1 and report["shadow_scenes"] == 1, report
+    # A pass needs a kind 5 scene that was CHECKED against a world scene of its frame (B1: kind 5 in
+    # a capture with no world scene; B2: a world scene with no projection command, kind 5 at 75 degrees).
+    status, report = verdict([[(5,) + shadow], [(5,) + shadow, (7,) + menu]])
+    assert status == NOT_RUN and report["checked"] == 0 and report["shadow_scenes"] == 0, (status, report)
+    status, report = verdict([[(1, None, None), (5,) + shadow]])
+    assert status == NOT_RUN and report["checked"] == 0 and report["shadow_scenes"] == 0, (status, report)
+    # B3: a projection between scenes is not credited to the scene that had none. Kind 5 with no
+    # projection of its own is not checked; the stray one (a screen polygon after its end) is no scene's.
+    data = bytearray(plant([[(1,) + world, (5, None, None)]]))
+    stray = struct.pack("<II", TAG_COMMAND, 16 + 64) + struct.pack("<IIII", COMMAND_TRANSFORM, D3DTS_PROJECTION, 0, 0) + struct.pack("<16f", *([0.0] * 5 + [2.0] + [0.0] * 10))
+    end = len(data) - 12
+    data[end:end] = stray
+    status, report = check_scenes(scene_projections(bytes(data)))
+    assert status == NOT_RUN and report["checked"] == 0 and not report["faults"], (status, report)
     # The world scene of the frame is the reference, not the first scene of the capture.
     zoomed = (1.9548, 3.4752)
     assert verdict([[(1,) + world, (5,) + world], [(1,) + zoomed, (5,) + zoomed]])[0] == PASS
@@ -174,6 +196,8 @@ def self_test():
     poly[0], poly[5] = 2.0, 2.0
     extra = struct.pack("<II", TAG_COMMAND, 16 + 64) + struct.pack("<IIII", COMMAND_TRANSFORM, D3DTS_PROJECTION, 0, 0) + struct.pack("<16f", *poly)
     end = len(data) - 12
+    # Inside the last scene: before its end record (12 bytes) and the frame end (12 bytes).
+    end = len(data) - 24
     data[end:end] = extra
     assert check_scenes(scene_projections(bytes(data)))[0] == PASS
     # A file and a file that is not a capture.
