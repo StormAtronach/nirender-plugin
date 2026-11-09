@@ -115,8 +115,9 @@ LOG_FOLDER = "E:\\nirender-keep\\merge-step"
 CLOSES_FILE = os.path.join(LOG_FOLDER, "closes.tsv")
 CLOSES_HEADER = "time\titem\trepo\tcommit\tstages\tlog\tsubject"
 # The item of a merge subject: the subject ends with "(W<n>)" or "(W<n> <part>)", the form of the Coordinator's merge
-# subjects ("(W96)", "(W234 a)"). Any other subject names no item and closes nothing; a dropped item gets no merge.
-ITEM = re.compile(r"\((W\d+)(?: [^()]+)?\)$")
+# subjects ("(W96)", "(W234 a)"). Any other subject names no item and closes nothing. A part that starts with "dropped" is
+# no part: master has "Merge: log pipe follow-ups W219 and W221 (W220 dropped)".
+ITEM = re.compile(r"\((W\d+)(?: (?!dropped\b)[^()]+)?\)$")
 # The tries of an append to the closes file while a reader holds it, and the wait between them.
 CLOSE_TRIES = 5
 CLOSE_WAIT_SECONDS = 0.5
@@ -1495,6 +1496,8 @@ def self_test():
         assert items_of("Merge: the second part (W234 a)") == ["W234"] and items_of("Merge: the crate half (W229 crate half) ") == ["W229"]
         for no_item in ("Merge: W96 in the middle of the subject", "Merge: W96 in the middle (D161)", "Merge: dropped W220",
                         "Merge: log pipe follow-ups W219 and W221 (W220 dropped) and more", "Merge: lower case (w96)",
+                        "Merge: log pipe follow-ups W219 and W221 (W220 dropped)", "Merge: a nested part (W234 (a))",
+                        "Merge: a dropped item (W96 dropped)", "Merge: the item (W96) is not at the end",
                         "Merge: no parentheses W96", "Merge: two items (W222, W226)", "Merge: the plan (D161)",
                         "Merge: say which views draw the table", "Merge: a letter on the number (W234a)", "Merge: empty ()"):
             assert items_of(no_item) == [], no_item
