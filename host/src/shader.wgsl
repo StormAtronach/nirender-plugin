@@ -176,7 +176,10 @@ fn draw_scene_ambient() -> vec4f {
     // A retained draw lights with the ambient of its own instance, scaled as the extension
     // scaled the scene's. The engine sums the ambient lights of the shape's own effect state
     // only when `useAmbientDiffuse` is set (`updateLights` 0x6BB6C0); `setState` (0x6BB200)
-    // can turn the lighting off or give a black ambient. The plugin's sum has neither gate.
+    // can turn the lighting off or give a black ambient. The plugin's sum
+    // (`ambient_of_state`) skips a light that is disabled or has a dimmer below 0.01. The
+    // helper's material applies the two other cases: an emissive-only draw gets a black
+    // ambient (`Derived::no_lights`), and a draw with the lighting off takes no light.
     if from_scene() { return draws[record].scene_ambient * scene.ambient_scale; }
     return draws[record].scene_ambient;
 }
