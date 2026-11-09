@@ -13,6 +13,8 @@ The checks of each list:
 - `check_contract.py`: `contract/mge_render_link.h` against `src/link.rs`.
 - `check_mwse_native.py`: the plugin's and MGE XE's copies of MWSE's native ABI against MWSE's
   header.
+- `check_mwse_vtable_fills.py`: each vtable slot that MWSE fills from a member function gets the
+  member of its own name (W93).
 - `check_handshake.py`: the host crate reads the plugin's `src/stream_format.rs`, and no
   constant of it has a second definition in the two crates; with `--mge` (the MGE XE list):
   MGE_EXTENSION_FORMAT of mgeversion.h equals the helper's EXTENSION_FORMAT, and mgeHost64 has
@@ -73,6 +75,9 @@ CHECKS = {
     "clip products": (PLUGIN / "tools" / "check_clip_products.py", REPOS / "MGE-XE-G7-render-link", ["--mge", str(REPOS / "MGE-XE-G7-render-link")]),
     "clip products parsing": (PLUGIN / "tools" / "check_clip_products.py", PLUGIN, ["--self-test"]),
     "mwse native": (PLUGIN / "tools" / "check_mwse_native.py", MWSE_HEADER),
+    # A vtable slot of MWSE's own NI classes filled with a member of another name: W93.
+    "mwse vtable fills": (PLUGIN / "tools" / "check_mwse_vtable_fills.py", MWSE, ["--mwse", str(MWSE)]),
+    "mwse vtable fills parsing": (PLUGIN / "tools" / "check_mwse_vtable_fills.py", PLUGIN, ["--self-test"]),
     "module headers": (STATE / "build_module_map.py", STATE, ["--plugin", str(PLUGIN)]),
     "skill names": (STATE / "check_names.py", STATE, ["--plugin", str(PLUGIN)]),
     # No new hand-written engine offset (src/gen/layouts.rs has them), and each one moved there
@@ -111,7 +116,7 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
