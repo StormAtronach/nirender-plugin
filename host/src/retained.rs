@@ -6,12 +6,14 @@
 //! lights (`INSTANCE_LIGHTS`), of its values (the `INSTANCE` record again) or its end
 //! (`INSTANCE_DELETE`).
 //!
-//! At the start of the world of a frame, and in each view that the extension replays (the
-//! water's mirror, with only the sky classes; the shadow maps do not use the table), the helper
-//! tests the bound of each visible instance against the planes of the view on the CPU and draws
-//! the ones in view with one indirect call for each bucket (the instances with one pipeline, one
-//! stencil reference, one pair of pool buffers, and, without the arrays of the frame, one set of
-//! textures).
+//! At the start of the world of a frame, the helper draws the instances that the engine
+//! displayed in the main view (its list, `INSTANCE_SHOWN`) with one indirect call for each
+//! bucket (the instances with one pipeline, one stencil reference, one pair of pool buffers,
+//! and, without the arrays of the frame, one set of textures). The engine culled them, so the
+//! main view tests no planes. A view that the extension replays tests the bound of each
+//! instance against its planes on the CPU first. The one such view is the water's mirror of
+//! MGE XE, and it draws only the sky classes, which no instance of the table has: the mirror
+//! draws nothing of the table.
 //! The values of the view (its matrices, the fog, the ambient light, the pixel step, the
 //! clip plane) are in a `Scene` uniform with a dynamic offset: the record of a retained
 //! instance has the flag 4 in `light_range.w`, and the shader takes those values from the
@@ -84,7 +86,8 @@ pub struct SceneData {
     /// lights record) is scaled as the scene's is.
     pub ambient_scale: [f32; 4],
     /// x: 1 when the view takes the point lights of the world from the clusters (the main
-    /// view, `MGE_XE_LIGHTS=world`); a reflection or a shadow map keeps the lights of the draw.
+    /// view, `MGE_XE_LIGHTS=world`); a view that the extension replays keeps the lights of the
+    /// draw.
     pub world_lights: [u32; 4],
     pub padding: [u32; 48],
 }
@@ -160,7 +163,8 @@ struct Slot {
     base_vertex: i32,
     /// The draw blends and the engine would sort it. The main view draws it at its place in
     /// the engine's sorted queue ([`tag::INSTANCE_QUEUED`]), where the engine flushes the
-    /// queue; the other views draw it back to front with the other sorted blends.
+    /// queue; a view that the extension replays draws it back to front with the other sorted
+    /// blends.
     sorted: bool,
     /// The shape's own alpha property blends and the engine does not sort it: the engine
     /// draws it at its display, in the order of its walk ([`engine::walk`]).
@@ -1287,7 +1291,7 @@ pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
 /// What a view does with the sorted blends of the table.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Sorted {
-    /// Draws them after the rest, back to front: a reflection, a shadow map.
+    /// Draws them after the rest, back to front: a view that the extension replays.
     Together,
     /// Draws the rest and keeps them for `Only`: the main view at the start of the world.
     Keep,
@@ -2499,8 +2503,8 @@ impl Player {
         let all_kept = if generation == 0 && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
         // Risk 34: the engine's queue takes every blend the engine displays and the plugin
         // writes its place, so a kept blend without one was not displayed by the engine in
-        // this frame: the main view does not draw it. The other views (the water's mirror, the
-        // shadow layers) cull with their own frustum. The count of them stays for the report.
+        // this frame: the main view does not draw it. A view that the extension replays culls
+        // with its own planes. The count of them stays for the report.
         let placed: std::collections::HashSet<u32> = deferred.iter().filter_map(|e| if let crate::Waiting::Table(id) = e.0 { Some(id) } else { None }).collect();
         let without_place = all_kept
             .iter()
