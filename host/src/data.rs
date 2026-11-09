@@ -141,10 +141,10 @@ pub struct LightData {
     pub direction: [f32; 4],
     /// The three numbers of the falloff; `w` is the falloff of a spot light.
     pub attenuation: [f32; 4],
-    /// The cosines of the half angles of a spot light; `z` is the radius of the light of the
-    /// game (from its first specular word, the light record's radius; 0 when the light has
-    /// none). The extension's shade can change them: then `x` is 1 over its cut-off, 0 for
-    /// none (`light_reach`).
+    /// `x` and `y`: the cosines of the half angles of a spot light (the inner, then the outer).
+    /// `z`: the radius of the light of the game (from its first specular word, the light
+    /// record's radius; 0 when the light has none). `w`: 1 over the cut-off that the
+    /// extension's shade gives the light, 0 for none (`light_reach`).
     pub cone: [f32; 4],
 }
 

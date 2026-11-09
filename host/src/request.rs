@@ -145,12 +145,12 @@ pub fn tier_c_shader_source(source: &str) -> String {
 }
 
 /// The source of the world shader with the text of an extension (its sky and draw parts):
-/// `shader.wgsl`, the depth functions after its `enable` directives, then the extension's
-/// text with the record of the draw read as `draws[record]` and sent through the functions
-/// of the shader.
+/// `shader.wgsl`, the depth functions after its `enable` directives, the cone of a spot light
+/// ([`crate::spot::WGSL`], for the shader and the extension), then the extension's text with
+/// the record of the draw read as `draws[record]` and sent through the functions of the shader.
 pub fn world_shader_source(extension_text: &str) -> String {
     let extension = retained::rewrite_extension_text(&extension_text.replace("draw.", "draws[record]."));
-    format!("{}\n{}\n{extension}", include_str!("shader.wgsl"), depth::wgsl())
+    format!("{}\n{}\n{}\n{extension}", include_str!("shader.wgsl"), depth::wgsl(), crate::spot::WGSL)
 }
 
 fn array_features() -> wgpu::Features {
@@ -687,5 +687,17 @@ mod tests {
     #[test]
     fn the_world_shader_is_valid_wgsl() {
         crate::assert_wgsl("shader.wgsl", &world_shader_source(&crate::extension::extension_shaders(None)));
+    }
+
+    /// The cone of a spot light has one home: the world shader has the text of spot.rs once,
+    /// before the extension's text, and `shader.wgsl` calls it and has no cone of its own.
+    #[test]
+    fn the_world_shader_takes_the_one_spot_cone() {
+        let source = world_shader_source("fn extension_shade(in: VertexOut) -> vec4f { return draw.fog_color; }\n");
+        assert_eq!(source.matches(crate::spot::WGSL).count(), 1);
+        assert_eq!(source.matches("fn spot_cone").count(), 1);
+        assert!(source.find(crate::spot::WGSL).unwrap() < source.find("fn extension_shade").unwrap());
+        let own = include_str!("shader.wgsl");
+        assert!(own.contains("spot_cone(light, direction)") && !own.contains("fn spot_cone") && !own.contains("light.cone.x"));
     }
 }

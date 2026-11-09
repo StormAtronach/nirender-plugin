@@ -36,6 +36,7 @@ use std::rc::Rc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 pub mod depth;
+pub mod spot;
 mod depth_merge;
 mod gamma;
 mod window_pass;
@@ -1096,7 +1097,7 @@ mod tests {
     #[test]
     fn the_reach_of_a_light() {
         use super::{LIGHT_REACH_MAX, LightData, light_reach};
-        let light = |cut: f32, radius: f32, range: f32| LightData { direction: [0.0, 0.0, 0.0, range], cone: [cut, 0.0, radius, 0.0], ..bytemuck::Zeroable::zeroed() };
+        let light = |cut: f32, radius: f32, range: f32| LightData { direction: [0.0, 0.0, 0.0, range], cone: [0.0, 0.0, radius, cut], ..bytemuck::Zeroable::zeroed() };
         // The cut-off of the light for each pixel, else the radius of the game, else the range.
         assert_eq!(light_reach(&light(1.0 / 512.0, 300.0, 1000.0)), 512.0);
         assert_eq!(light_reach(&light(0.0, 300.0, 1000.0)), 300.0);
@@ -1104,6 +1105,11 @@ mod tests {
         // A range without an end ends at one cell.
         assert_eq!(light_reach(&light(0.0, 0.0, f32::MAX)), LIGHT_REACH_MAX);
         assert_eq!(light_reach(&light(0.0, 0.0, f32::NAN)), LIGHT_REACH_MAX);
+        // The cosines of a spot light are not a cut-off: the reach is its radius, not 1 over
+        // the cosine of its inner angle.
+        let spot = LightData { cone: [0.88, 0.5, 300.0, 0.0], ..light(0.0, 300.0, 1000.0) };
+        assert_eq!(light_reach(&spot), 300.0);
+        assert_eq!(light_reach(&LightData { cone: [0.88, 0.5, 300.0, 1.0 / 512.0], ..spot }), 512.0);
     }
 
     /// A material with an alpha test and a decal: the base pass tests as the material says,
