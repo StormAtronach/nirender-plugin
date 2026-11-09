@@ -75,20 +75,18 @@ pub mod tag {
     /// the pixels. A texture whose record would not fit the ring comes without the pixels
     /// (the helper makes it with zeros), and each level follows as a [`TEXTURE_UPDATE`].
     pub const TEXTURE: u32 = 1;
-    /// handle, offset, size; then the bytes that the game wrote into a buffer of the device.
-    /// The plugin does not write it; an old capture file can hold it.
-    pub const BUFFER_DATA: u32 = 2;
+    // Tag 2 (the bytes that the game wrote into a buffer of the device) is retired (step
+    // R7b): no other tag takes its number.
     /// A `MgeLinkSceneV1`.
     pub const SCENE_BEGIN: u32 = 3;
-    /// flags (`SCENE_END_*` of `link.rs`). An older capture file has no word.
+    /// flags (`SCENE_END_*` of `link.rs`).
     pub const SCENE_END: u32 = 4;
     /// kind, a, b
     pub const FRAME_EVENT: u32 = 5;
     /// The object of the draws that follow: kind, class, flags, geometry, then its name.
     pub const OBJECT: u32 = 6;
-    /// Tag 7 (a `MgeLinkDrawStateV1` with its lights) is not written; an old capture file
-    /// can hold it.
-    ///
+    // Tag 7 (a `MgeLinkDrawStateV1` with its lights) is retired (step R7b): no other tag
+    // takes its number.
     /// command, a, b, c; then the data at an address: 16 floats for a transform. Only a
     /// transform is written (see `command`).
     pub const COMMAND: u32 = 8;
@@ -98,8 +96,8 @@ pub mod tag {
     /// The frame is complete.
     pub const FRAME_END: u32 = 10;
     /// The first record: the width and the height of the back buffer, the window of the
-    /// game, and the abilities of the stream (`HEADER_QUEUE_MARKED`; an older capture has
-    /// only the first three words).
+    /// game, and the abilities of the stream (`HEADER_QUEUE_MARKED`), then the stream format
+    /// and the build id (`stream_format::HEADER_BYTES`).
     pub const HEADER: u32 = 11;
     /// The game wrote a level of a texture: handle, level, width and height of the level,
     /// D3D format, size; then the bytes.

@@ -76,8 +76,8 @@ impl Player {
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
         println!("instances: {} records and {} moves ({} checked against a full record, {} different), {} draws from them, {} draws of an instance not known, {} shape twins skipped, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_moves, c.moves_checked, c.moves_different, c.instance_draws, c.instance_missing, c.shape_twins, c.merged_blends);
         println!(
-            "sorted queue: {} places of the table's blends drawn in the engine's order, {} of an instance not known, {} outside the world scene, {} of an instance the table does not sort; {} sorted blends of the table without a place, not displayed by the engine ({} of them in frames with no place at all; {} of them drawn between by depth, from a stream without the places); {} places after the frame's first sorted blends; {} items of the table's blends before a depth clear after the world (the queue still open)",
-            c.queued_places, c.queued_unknown, c.queued_outside, c.queued_not_sorted, c.sorted_without_place, c.sorted_without_place_no_places, c.sorted_without_place_drawn, c.queued_late_places, c.blends_before_clear
+            "sorted queue: {} places of the table's blends drawn in the engine's order, {} of an instance not known, {} outside the world scene, {} of an instance the table does not sort; {} sorted blends of the table without a place, not displayed by the engine ({} of them in frames with no place at all); {} places after the frame's first sorted blends; {} items of the table's blends before a depth clear after the world (the queue still open)",
+            c.queued_places, c.queued_unknown, c.queued_outside, c.queued_not_sorted, c.sorted_without_place, c.sorted_without_place_no_places, c.queued_late_places, c.blends_before_clear
         );
         println!(
             "walk places: {} places of the table's blends in the engine's walk, {} of an instance not known, {} outside a world view, {} after the table's main view; {} blends drawn in place by the engine that had no place, drawn by bucket; {} places whose walk order differs from their bucket order; {} places of an instance in a second view of its frame",
@@ -107,10 +107,8 @@ impl Player {
             println!("world scenes after a main view with a root of its own: {} (the table's main view drew in them, the world did not start again)", c.world_after_main_view);
         }
         self.print_view_times();
-        if self.views.slots_on {
-            println!("{}", self.views.slots_line());
-            println!("{}", self.views.tier.line());
-        }
+        println!("{}", self.views.slots_line());
+        println!("{}", self.views.tier.line());
         println!(
             "scene targets: {} scenes named their target, {} of them another target than the SetRenderTarget calls gave; {} draws of a world view with an orthographic projection",
             c.scene_targets, c.scene_target_changed, c.orthographic_world_draws
@@ -120,6 +118,50 @@ impl Player {
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
         );
+        let j = &r.joins;
+        let (views, pairs) = (r.views.max(1) as f64, j.pairs.max(1) as f64);
+        println!(
+            "draw calls of the table: {} calls in {} views, {:.1} calls a view; each call against the call before it ({} pairs): same pipeline {:.1}%, stencil {:.1}%, vertex buffer {:.1}%, index buffer {:.1}%; a call that repeats all four (could join the call before it): {:.1}% of the pairs, {:.1} a view, in {:.2} runs a view of {:.1} calls on average (longest {})",
+            r.calls,
+            r.views,
+            r.calls as f64 / views,
+            j.pairs,
+            100.0 * j.same_pipeline as f64 / pairs,
+            100.0 * j.same_stencil as f64 / pairs,
+            100.0 * j.same_vertices as f64 / pairs,
+            100.0 * j.same_indexes as f64 / pairs,
+            100.0 * j.joins.pairs as f64 / pairs,
+            j.joins.pairs as f64 / views,
+            j.joins.runs as f64 / views,
+            j.joins.calls as f64 / j.joins.runs.max(1) as f64,
+            j.joins.longest
+        );
+        if self.renderer.tier == crate::request::TextureTier::C {
+            println!(
+                "draw calls of the table, tier C: with the stage group of the call before too: {:.1}% of the pairs, {:.1} a view, in {:.2} runs a view of {:.1} calls on average (longest {})",
+                100.0 * j.stage_joins.pairs as f64 / pairs,
+                j.stage_joins.pairs as f64 / views,
+                j.stage_joins.runs as f64 / views,
+                j.stage_joins.calls as f64 / j.stage_joins.runs.max(1) as f64,
+                j.stage_joins.longest
+            );
+        }
+        println!(
+            "draw_retained: {:.3} ms a frame, {:.4} ms a view, {:.5} ms a call",
+            crate::ticks::duration(j.ticks).as_secs_f64() * 1000.0 / c.frames.max(1) as f64,
+            crate::ticks::duration(j.ticks).as_secs_f64() * 1000.0 / views,
+            crate::ticks::duration(j.ticks).as_secs_f64() * 1000.0 / r.calls.max(1) as f64
+        );
+        let l = &j.left_out;
+        let frames = c.frames.max(1) as f64;
+        println!(
+            "state sets left out (the pass had the value): pipeline lookups {:.1} a frame, stencil {:.1}, vertex buffer {:.1}, index buffer {:.1}",
+            l.pipelines as f64 / frames,
+            l.stencils as f64 / frames,
+            l.vertices as f64 / frames,
+            l.indexes as f64 / frames
+        );
+        println!("draw calls joined into the call before them (the buckets that set nothing new): {:.1} a frame, {:.1}% of the pairs", l.calls as f64 / frames, 100.0 * l.calls as f64 / j.pairs.max(1) as f64);
         println!("shown list: {} lists of the main view, {} instances in them", r.shown_lists, r.shown_ids);
         println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
         let (entries, entry_stages) = self.retained.effect_entry_counts();
@@ -141,17 +183,31 @@ impl Player {
             c.uv_bases, c.uv_steps, c.uv_missing
         );
         println!(
-            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB{}",
+            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB",
             c.instance_uploads_whole,
             c.instance_upload_runs,
+            c.instance_upload_bytes as f64 / 1e6
+        );
+        println!(
+            "table upload (D109 gain 3): case changed {} frames, {:.3} s; case all {} frames, {:.3} s; {} record writes with {:.1} MB (record {} bytes, instance entry {} bytes); {} entries moved in {} runs, {:.1} MB of runs of which {:.1} MB gap",
+            c.upload_changed_cases,
+            c.upload_changed_seconds,
+            c.instance_uploads_whole,
+            c.upload_all_seconds,
+            c.record_writes,
+            c.record_write_bytes as f64 / 1e6,
+            crate::data::RECORD_SIZE,
+            crate::data::INSTANCE_SIZE,
+            c.instance_entries_moved,
+            c.instance_upload_runs,
             c.instance_upload_bytes as f64 / 1e6,
-            if switches().instance_upload_all { " (MGE_XE_INSTANCE_UPLOAD=all: the segment goes whole above 64 changed slots)" } else { "" }
+            c.instance_gap_bytes as f64 / 1e6
         );
         println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
         println!("skinned shapes {}, particle systems {} ({} of them from INSTANCE_PARTICLES records)", c.shape_skinned, c.shape_particles, c.instance_particles);
         match self.renderer.particle_quads_made() {
             Some((systems, particles)) => println!("particle quads made on the GPU: {systems} systems, {particles} particles"),
-            None => println!("particle quads made on the GPU: none ({})", if switches().particle_quads_cpu { "MGE_XE_PARTICLE_QUADS=cpu" } else { "no system yet" }),
+            None => println!("particle quads made on the GPU: none (no system yet)"),
         }
         println!("shapes held for the extension {}, {} of them lost waiting for a place in the sorted queue, {} that blend drawn at the end of the world scene", c.held, c.held_sorted_lost, c.held_sorted_fallback);
         println!("classes of the extension: {} calls at a draw of the class, {} calls in frames without a draw of the class", c.class_calls, c.class_calls_without_draw);

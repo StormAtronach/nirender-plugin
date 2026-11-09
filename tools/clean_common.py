@@ -257,30 +257,45 @@ def current_folder(pid):
 def processes():
     """Each process with its program, command line and current folder: dicts, and how many
     processes gave no current folder."""
-    command = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+    # The creation time as a number (Windows file time, UTC), 0 when Windows gives none.
+    command = ("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,"
+               "@{n='Created';e={if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }}} | ConvertTo-Json -Compress")
     result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True, text=True, encoding="utf-8", errors="replace")
     found = []
     unread = 0
     for row in json.loads(result.stdout):
         folder = current_folder(row["ProcessId"])
         unread += folder is None
-        found.append({"pid": row["ProcessId"], "parent": row["ParentProcessId"], "name": row["Name"] or "", "exe": row["ExecutablePath"] or "", "command": row["CommandLine"] or "", "cwd": folder or ""})
+        found.append({"pid": row["ProcessId"], "parent": row["ParentProcessId"], "created": row["Created"] or 0, "name": row["Name"] or "",
+                      "exe": row["ExecutablePath"] or "", "command": row["CommandLine"] or "", "cwd": folder or ""})
     return found, unread
 
 
 def own_line(running, pid):
-    """This process and those that started it: the shell that runs this tool does not use a tree."""
-    parents = {process["pid"]: process.get("parent") for process in running}
-    line = set()
-    while pid in parents and pid not in line:
-        line.add(pid)
-        pid = parents[pid]
-    return line | {pid}
+    """This process and those that started it: the shell that runs this tool does not use a tree. Windows gives the id
+    of an ended process to a new process, so a parent id can name a stranger: the line ends at a process that was
+    created after its child, or whose time is not known."""
+    by_id = {process["pid"]: process for process in running}
+    line = {pid}
+    while pid in by_id:
+        child = by_id[pid]
+        parent = by_id.get(child.get("parent"))
+        if parent is None or parent["pid"] in line:
+            break
+        if not (parent.get("created") and child.get("created") and parent["created"] <= child["created"]):
+            break
+        line.add(parent["pid"])
+        pid = parent["pid"]
+    return line
 
 
 def users_of(tree_path, running, skip=None):
-    """The processes that use a tree, by name and id. `skip` holds the process ids to leave out: by default this process."""
+    """The processes that use a tree, by name and id. `skip` holds the process ids to leave out: by default this process.
+    The command line of a process that started this tool names the tree when it gives the tree's path (--name), so for
+    those processes only the program and the current folder count. A shell whose current folder is in the tree still
+    uses it."""
     skip = {os.getpid()} if skip is None else skip
+    starters = own_line(running, os.getpid())
     users = []
     for process in running:
         if process["pid"] in skip:
@@ -288,7 +303,7 @@ def users_of(tree_path, running, skip=None):
         slashes = os.path.normcase(os.path.abspath(tree_path)).replace("\\", "/")
         shell_form = "/" + slashes[0] + slashes[2:]
         command = os.path.normcase(process["command"]).replace("\\", "/")
-        in_command = re.search("(?:" + re.escape(slashes) + "|" + re.escape(shell_form) + r")(?=[/\"' ]|$)", command) is not None
+        in_command = process["pid"] not in starters and re.search("(?:" + re.escape(slashes) + "|" + re.escape(shell_form) + r")(?=[/\"' ]|$)", command) is not None
         if in_command or (process["exe"] and same_or_under(process["exe"], tree_path)) or (process["cwd"] and same_or_under(process["cwd"], tree_path)):
             users.append("%s %d" % (process["name"], process["pid"]))
     return users
@@ -535,8 +550,26 @@ def self_test_common():
     assert kept_set_names("f27", ["f27"]) == {"f27"} and kept_set_names("vd-a", ["vd-a"]) == {"vd-a"}
     assert old_play_set("C:\\tmp\\play185\\nirender-plugin", {195, 194}) and not old_play_set("C:\\tmp\\play194\\x", {195, 194})
     assert not old_play_set("C:\\tmp\\playset\\x", {195, 194}) and not old_play_set("C:\\tmp\\play185\\x", set()) and not old_play_set("C:\\tmp\\walk\\x", {195})
-    assert own_line([{"pid": 5, "parent": 3}, {"pid": 3, "parent": 1}, {"pid": 9, "parent": 3}], 5) == {5, 3, 1}
+    assert own_line([{"pid": 5, "parent": 3, "created": 30}, {"pid": 3, "parent": 1, "created": 20}, {"pid": 1, "parent": 0, "created": 10}, {"pid": 9, "parent": 3, "created": 40}], 5) == {5, 3, 1}
+    # Windows gives the id of an ended process to a new one: a "parent" created after its child, or with no known
+    # time, did not start it, and the line ends before it.
+    assert own_line([{"pid": 5, "parent": 3, "created": 30}, {"pid": 3, "parent": 1, "created": 40}], 5) == {5}
+    assert own_line([{"pid": 5, "parent": 3, "created": 30}, {"pid": 3, "parent": 1, "created": 0}], 5) == {5}
     assert users_of("C:\\t", [{"pid": 3, "name": "sh", "exe": "", "command": "", "cwd": "C:\\t\\x"}], skip={3}) == []
+    # The shell that runs this tool with --name of a tree does not use the tree by that command line (2026-11-09: the
+    # Coordinator's Bash tool showed as "in use: bash.exe 42772"). Another shell with the same command line uses it, and
+    # the starting shell uses it when its current folder is in the tree.
+    me = os.getpid()
+    tool_line = 'python tools/clean_merged_worktrees.py --name "C:\\t"'
+    starter = {"pid": me + 1, "parent": me + 2, "created": 200, "name": "bash.exe", "exe": "", "command": "bash -c '%s'" % tool_line, "cwd": "C:\\other"}
+    this = {"pid": me, "parent": me + 1, "created": 300, "name": "python.exe", "exe": "", "command": tool_line, "cwd": "C:\\other"}
+    stranger = dict(starter, pid=me + 3, parent=me + 2)
+    assert users_of("C:\\t", [this, starter, stranger]) == ["bash.exe %d" % (me + 3)]
+    # The Reviewer's case: the starting shell's own parent has ended, and its id now belongs to a cargo in the tree. That
+    # cargo is not of the tool's line, and it uses the tree.
+    reused = {"pid": me + 2, "parent": 1, "created": 400, "name": "cargo.exe", "exe": "", "command": "cargo test --manifest-path C:/t/host/Cargo.toml", "cwd": "C:\\other"}
+    assert users_of("C:\\t", [this, starter, reused]) == ["cargo.exe %d" % (me + 2)]
+    assert users_of("C:\\t", [this, dict(starter, cwd="C:\\t\\src")]) == ["bash.exe %d" % (me + 1)]
     assert set_treatment(40, False, False, False) == "go" and "younger" in set_treatment(10, False, False, False)
     for kept, used, cited in ((True, False, False), (False, True, False), (False, False, True)):
         assert "stay" in set_treatment(400, cited, kept, used)

@@ -3,8 +3,7 @@
 //! an input buffer of the frame, and a compute pass writes four vertices for each into a
 //! vertex buffer of the frame, as `NiDX8Renderer::RenderPoints` writes them (the position,
 //! the normal 0.3, the colour, the texture coordinates; 36 bytes). The draws then take the
-//! path of any shape. `MGE_XE_PARTICLE_QUADS=cpu` keeps the corners made on the CPU
-//! ([`Renderer::particles`]).
+//! path of any shape ([`Renderer::particles`]).
 //!
 //! The input and the vertices of a frame are not overwritten within the frame: each system
 //! gets its own range, also a system drawn twice (the world and a reflection). The compute
@@ -76,6 +75,38 @@ struct Job {
     /// The vertex buffer the job writes: the one of the frame when the job came (a buffer
     /// that grows later in the frame does not move it).
     vertices: Rc<wgpu::Buffer>,
+}
+
+/// The place of the quads of one particle system in the vertex buffer of the frame, and the
+/// values of its draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct QuadPlace {
+    /// The first vertex of the system's quads: the base vertex of its draw.
+    pub(crate) first_vertex: u32,
+    /// The indices of the system's draw: two triangles, six indices, for each quad.
+    pub(crate) indices: u32,
+    /// The vertices of the buffer taken after the system.
+    used_after: u64,
+    /// The bytes of a new buffer when the quads do not fit: they then start at vertex 0.
+    grow_to: Option<u64>,
+}
+
+/// Where the quads of `count` particles go in a vertex buffer of `capacity` bytes with
+/// `used` vertices taken: after the vertices taken, or at the start of a larger buffer.
+fn place_quads(used: u64, capacity: u64, count: u32) -> QuadPlace {
+    let vertices = u64::from(count) * 4;
+    let needed = (used + vertices) * VERTEX;
+    let (grow_to, used) = if needed > capacity {
+        (Some(needed.next_power_of_two()), 0)
+    } else {
+        (None, used)
+    };
+    QuadPlace {
+        first_vertex: used as u32,
+        indices: count * 6,
+        used_after: used + vertices,
+        grow_to,
+    }
 }
 
 pub(crate) struct ParticleQuads {
@@ -162,27 +193,24 @@ impl ParticleQuads {
         self.jobs.clear();
     }
 
-    /// Takes the particles of a system and gives the vertex buffer and the first vertex of
-    /// its quads. `sum` and `difference` are `(right + up) * radius` and `(up - right) *
-    /// radius`, as the CPU path makes them.
-    pub(crate) fn add(&mut self, device: &wgpu::Device, particles: &[u8], sum: [f32; 3], difference: [f32; 3]) -> (Rc<wgpu::Buffer>, i32) {
+    /// Takes the particles of a system and gives the vertex buffer of its quads and their
+    /// place in it, with the values of its draw. `sum` and `difference` are `(right + up) *
+    /// radius` and `(up - right) * radius`.
+    pub(crate) fn add(&mut self, device: &wgpu::Device, particles: &[u8], sum: [f32; 3], difference: [f32; 3]) -> (Rc<wgpu::Buffer>, QuadPlace) {
         let count = (particles.len() as u64 / PARTICLE) as u32;
-        let needed = (self.vertices_used + count as u64 * 4) * VERTEX;
-        if needed > self.vertex_capacity {
+        let place = place_quads(self.vertices_used, self.vertex_capacity, count);
+        if let Some(capacity) = place.grow_to {
             // A larger buffer for the rest of the frame; the jobs so far keep theirs.
-            let capacity = needed.next_power_of_two();
             self.vertices = Rc::new(storage(device, "particle quads, the vertices", capacity, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX));
             self.vertex_capacity = capacity;
-            self.vertices_used = 0;
         }
-        let first_vertex = self.vertices_used as u32;
-        self.jobs.push(Job { first_particle: self.particles_used as u32, count, first_vertex, sum, difference, vertices: self.vertices.clone() });
+        self.jobs.push(Job { first_particle: self.particles_used as u32, count, first_vertex: place.first_vertex, sum, difference, vertices: self.vertices.clone() });
         self.staged.extend_from_slice(&particles[..count as usize * PARTICLE as usize]);
         self.particles_used += count as u64;
-        self.vertices_used += count as u64 * 4;
+        self.vertices_used = place.used_after;
         self.systems += 1;
         self.particles += count as u64;
-        (self.vertices.clone(), first_vertex as i32)
+        (self.vertices.clone(), place)
     }
 
     /// Writes the staged particles and records the compute passes of the jobs that wait, into
@@ -281,5 +309,33 @@ mod tests {
     #[test]
     fn the_particle_quad_shader_is_valid_wgsl() {
         crate::assert_wgsl("particle quads", &SHADER);
+    }
+
+    /// Each system of a frame draws its own quads: the second starts after the first's
+    /// vertices, and one that does not fit starts a larger buffer at vertex 0. Each draw has
+    /// six indices for each particle.
+    #[test]
+    fn each_particle_system_draws_its_own_quads() {
+        let place = |first_vertex, indices, used_after, grow_to| QuadPlace {
+            first_vertex,
+            indices,
+            used_after,
+            grow_to,
+        };
+        let capacity = 100 * VERTEX;
+        let first = place_quads(0, capacity, 10);
+        assert_eq!(first, place(0, 60, 40, None));
+
+        let second = place_quads(first.used_after, capacity, 5);
+        assert_eq!(second, place(40, 30, 60, None));
+
+        // 60 + 80 vertices do not fit into 100.
+        let third = place_quads(second.used_after, capacity, 20);
+        let grown = (140 * VERTEX).next_power_of_two();
+        assert_eq!(third, place(0, 120, 80, Some(grown)));
+
+        // The new buffer takes the next system after the third's vertices.
+        let fourth = place_quads(third.used_after, grown, 1);
+        assert_eq!(fourth, place(80, 6, 84, None));
     }
 }

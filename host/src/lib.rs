@@ -736,7 +736,7 @@ struct Renderer {
     /// number of quads it has, and the buffer. It grows to the largest system seen.
     quad_indexes: Option<(u32, Rc<wgpu::Buffer>)>,
     /// The quads of the particle systems made on the GPU (`particle_quads`), made at the
-    /// first system; none with `MGE_XE_PARTICLE_QUADS=cpu`.
+    /// first system.
     particle_quads: Option<particle_quads::ParticleQuads>,
     /// The morphs of the geometries whose targets the plugin sent (`morph.rs`), made at the
     /// first `MORPH_TARGETS` record.
@@ -805,8 +805,8 @@ struct Player {
     /// light and the fog of the frame for their draws (`RETAINED_SCENE`).
     retained: RetainedSet,
     retained_values: Option<(u32, Option<[u32; 4]>)>,
-    /// The colour of the game's fog property in a scene record with the fog off; 0 from an
-    /// older capture.
+    /// The colour of the game's fog property in a scene record with the fog off; 0 when the
+    /// record has no colour (no flag `SCENE_FOG_COLOR`).
     fog_off_color: u32,
     /// The table's lights as the extension shaded them for the main view of this frame, and
     /// what the shade gives the scene: made before the clusters of the lights of the world
@@ -922,12 +922,8 @@ struct Player {
     plan: plan::Plan,
     /// The blended world draws of the frame that the engine sorts, and the places of the
     /// table's blends in the engine's queue: they wait for the item `SortedBlends` and keep
-    /// their order of arrival; the table's blends without a place go between them by depth
-    /// (the centre of the bound, the order of arrival, the draw or the place, the generation).
-    frame_sorted: Vec<([f32; 3], u32, Waiting, u32)>,
-    /// The near plane of the world's view of the frame, in the space of the world: the
-    /// depth of the sort of the blends.
-    world_near: Option<[f32; 4]>,
+    /// their order of arrival (the draw or the place, the generation).
+    frame_sorted: Vec<(Waiting, u32)>,
     /// The classes that the extension took in this frame, one bit for each.
     replaced: u32,
     /// The facts of the world at its end in this frame: the camera of the world for the call
@@ -1108,7 +1104,7 @@ mod tests {
             words[12 + map * 5] = 1;
         }
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let d = derive(&Material::parse(&bytes).unwrap(), 1, None);
+        let d = derive(&Material::parse(&bytes).unwrap(), 1, false);
         assert_eq!(d.passes.len(), 2);
         assert_eq!(d.alpha_tests, vec![[1, 5, 128], [0, 0, 0]]);
         assert_eq!(d.blends[1], [1, 5, 6]);

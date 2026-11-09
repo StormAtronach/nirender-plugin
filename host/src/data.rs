@@ -354,6 +354,18 @@ pub(crate) struct Counts {
     pub(crate) instance_uploads_whole: u64,
     pub(crate) instance_upload_runs: u64,
     pub(crate) instance_upload_bytes: u64,
+    /// The counters of D109 gain 3, for the table's upload (`retained_upload`): the frames of
+    /// the case "changed" and their time, the time of the case "all" (its count is
+    /// `instance_uploads_whole`), the records that went up one write each and their bytes, the
+    /// entries of the changed and the moved slots, and the bytes of a run that are not such an
+    /// entry (the gap that a run writes again).
+    pub(crate) upload_changed_cases: u64,
+    pub(crate) upload_changed_seconds: f64,
+    pub(crate) upload_all_seconds: f64,
+    pub(crate) record_writes: u64,
+    pub(crate) record_write_bytes: u64,
+    pub(crate) instance_entries_moved: u64,
+    pub(crate) instance_gap_bytes: u64,
     /// The textures that came again for a handle with a slot of the arrays.
     pub(crate) textures_replaced: u32,
     /// The pinned textures whose last use went (their slot is free for another).
@@ -507,9 +519,6 @@ pub(crate) struct Counts {
     pub(crate) sorted_without_place: u64,
     /// Of those, the ones in frames with no place at all (risk 34: a cause of the frame).
     pub(crate) sorted_without_place_no_places: u64,
-    /// Of those, the ones drawn between the engine's blends by depth: only from a stream
-    /// without the places (an older capture); the engine did not display the others.
-    pub(crate) sorted_without_place_drawn: u64,
     /// The places that came after the frame's first sorted blends (a later generation).
     pub(crate) queued_late_places: u64,
     /// The items of the table's sorted blends that went before a depth clear after the world
@@ -609,8 +618,8 @@ pub(crate) struct Counts {
     /// stream, and no flush of the frame came to it ([`Extension::held_sorted`]).
     pub(crate) held_sorted_lost: u64,
     /// The held shapes that blend in the engine's sorted queue and did not wait for a place in
-    /// it: the extension did not ask for it, a record has no queue mark (an older capture), or an
-    /// instance comes after a flush in the middle of the frame. They draw at the end of the world
+    /// it: the extension did not ask for it, a shape record has no queue mark, or an instance
+    /// comes after a flush in the middle of the frame. They draw at the end of the world
     /// scene.
     pub(crate) held_sorted_fallback: u64,
     pub(crate) texture_updates_lost: u32,

@@ -1103,7 +1103,7 @@ impl ApplicationHandler for App {
 
 /// The file name of this program, for a message to the player: numidium.exe as the helper
 /// of MGE XE, nirender-host.exe on its own.
-fn program_name() -> String {
+pub(crate) fn program_name() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
@@ -1134,7 +1134,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
     // The window of the game owns the boxes of this program, the one of a refused stream too.
-    let game_window = if data.len() >= HEADER_WINDOW_AT + 4 { super::word(&data, HEADER_WINDOW_AT) as isize } else { 0 };
+    let game_window = super::word(&data, HEADER_WINDOW_AT) as isize;
     super::gpu::set_owner_window(game_window);
     // The stream format of the plugin against this build's, before any record is read. A
     // difference ends this program: the plugin reads the exit code and shows no second box.

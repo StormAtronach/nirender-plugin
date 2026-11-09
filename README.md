@@ -141,70 +141,44 @@ under the home folder.
 The A/B:
 
 - `NIRENDER_PORT_TIMING=1` times each live port call.
-- `NIRENDER_COMPACT_MOVES=0` sends a move of a retained instance as the whole `INSTANCE`
-  record, as before `INSTANCE_MOVE`; `check` sends both, and the helper counts the moves whose
-  values differ from the full record's.
-- `NIRENDER_UV_STEPS=0` sends a geometry under a UV controller whole at each new revision,
-  as before `GEOMETRY_UV`; `check` sends both, and the plugin compares the step from the sent
-  coordinates with the engine's (the geometry line of the log).
-- `NIRENDER_MORPH_WEIGHTS=0` sends a geometry under a morph controller whole at each new
-  revision, as before `MORPH_TARGETS` and `MORPH_WEIGHTS`; `check` sends both, and the plugin
-  compares the weighted targets with the engine's positions (the geometry line of the log).
+- `NIRENDER_COMPACT_MOVES=check` sends a move of a retained instance as `INSTANCE_MOVE` and as
+  the whole `INSTANCE` record, and the helper counts the moves whose values differ from the
+  full record's.
+- `NIRENDER_UV_STEPS=check` sends a new revision of a geometry under a UV controller as
+  `GEOMETRY_UV` and whole, and the plugin compares the step from the sent coordinates with the
+  engine's (the geometry line of the log).
+- `NIRENDER_MORPH_WEIGHTS=check` sends a new revision of a geometry under a morph controller
+  as `MORPH_WEIGHTS` and whole, and the plugin compares the weighted targets with the engine's
+  positions (the geometry line of the log).
 - `NIRENDER_GEOMETRY_CENSUS=1` counts the geometries sent again, by the controllers of their
   shape, and logs the census at each stream mark (`geometry_stream::census_take`).
-- `NIRENDER_SKIP=0` makes the engine display the retained shapes too.
-- `NIRENDER_LANDSCAPE=0`, `NIRENDER_ACTORS=0` and `NIRENDER_ANIMATED=0` keep that class on
-  the engine's path.
-- `NIRENDER_NODE_KINDS=0` keeps a shape under a billboard, switch, level of detail, BSP,
-  animation or particle node on the engine's path (the rule before 2026-10-16).
 - `NIRENDER_EFFECT_TURN_CHECK=1` (a test switch): at the end of each world scene the plugin
   sends the engine's projection of each texture effect under a turning billboard, after the
   billboard's display, and clears the billboard's displayed flag. The helper compares it with
   its own (`host/src/effect_turn.rs`) and reports the largest difference by the pair of modes.
-- `NIRENDER_PARTICLES=off` keeps the particle systems on the engine's path (the rule before
-  2026-10-24). `nirender.particleDraws(false)` keeps them in the table but sends their draws
-  as the engine's records, live.
-- `MGE_XE_PARTICLE_QUADS=cpu` makes the quads of the particle systems on the CPU, not on the
-  GPU.
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
   adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
   `depth:` names the format in use).
-- `MGE_XE_DEPTH_REVERSED=0` keeps the float depth in the plain convention (near 0, far 1), not
-  reversed (near 1, far 0): for an A/B of the reversed depth (`host/src/depth.rs`).
 - `MGE_XE_ONE_DEPTH=1` draws the distant land and the game into one depth buffer, with an
   infinite far plane for every perspective projection of the world view (step 6 of the depth
   design; only with the reversed float depth). Off: depth step 6 stopped.
-- `NIRENDER_CONTROLLERS=0` keeps a shape with a controller on itself or on a property (a
-  morpher, a UV, flip, alpha or colour controller) on the engine's path (the rule before).
-- `NIRENDER_SKIN_TABLE=0` keeps the skinned shapes on the engine's display, with the palette
-  of the bones in each draw (`nirender.skinTable`).
 - `NIRENDER_ANIMATION=view|shadows|all`: which actors animate (`nirender.animationPolicy`);
   default the view and the shadow reach.
 - `NIRENDER_NOTE_EVERY=1`: the material and the geometry of every retained shape are noted at
   every display, not every 64th frame (`nirender.noteEvery`).
 - `NIRENDER_SKIP_PORT=<name>`: one port left uninstalled, to measure its cost. Only a port
   whose function is not the renderer's.
-- `NIRENDER_SKY=off` keeps the sky on the engine's records; `NIRENDER_SKY=count` also logs
-  each sky shape once. The default: the sky's instances in the table.
+- `NIRENDER_SKY=count` keeps the sky on the engine's records and logs each sky shape once.
+  The default: the sky's instances in the table.
 - `NIRENDER_WEATHER=on` puts the rain, snow and storm drops (class 9) into the table, drawn at
   the engine's places as the sky is (`nirender.weatherDraws(false)` turns their draws back to
   the engine's records in a session); `NIRENDER_WEATHER=count` logs each drop shape once. The
   default (`off`): the engine's records; the takeover of the drops is milestone 11.
-- `NIRENDER_MAP_FOG=0`: the engine reads the fog of war of the local map from the GPU; by
-  default the plugin keeps a CPU copy (`src/map_fog.rs`).
-- `NIRENDER_MAP_TILES=0`: the engine reads each map tile from the GPU at once; by default the
-  helper copies the tile on the GPU and sends the pixels some frames later
-  (`src/map_tiles.rs`).
-- `NIRENDER_READ_CACHE=0` turns off the cache of the reads of rendered textures
-  (`src/own_host.rs`).
 - `NIRENDER_CAPTURE_READS_MS=N`: the time in milliseconds for a capture's reads of the
   rendered textures, 500 by default, for a test of the stop (`src/own_host.rs`).
-- `NIRENDER_PACE=0`: no pacing of the game to the helper (`src/pacing.rs`). The pacing waits
-  at MWSE's start of a frame (native event 8, before the input of the frame) until the
-  helper will need the frame, so that the picture is as new as the helper allows. Without it
-  a frame waits about one frame of the helper in the ring.
-- `NIRENDER_PACE_LEAD_US=<n>`: the lead of the pacing in microseconds (default 200): the
-  frame is complete this long before the helper is free for it. For a test.
+- `NIRENDER_PACE_LEAD_US=<n>`: the lead of the pacing of the game to the helper
+  (`src/pacing.rs`) in microseconds (default 200): the frame is complete this long before the
+  helper is free for it. For a test.
 
 The instruments and the tests:
 
@@ -231,9 +205,8 @@ The instruments and the tests:
   (`src/install.rs`); without them the test uses the paths of this machine.
 
 The helper's diagnostic and test switches (`host/src/switches.rs`, read once; none is a
-setting). The three of the A/B list above (`MGE_XE_PARTICLE_QUADS`, `MGE_XE_DEPTH_FORMAT`,
-`MGE_XE_DEPTH_REVERSED`) are there too. MGE XE's own switches are in the RENDERER.md of the
-MGE-XE-G7 render-link worktree.
+setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own
+switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 
 - `MGE_XE_RETAINED=0`: the table draws nothing. With a capture of the plugin's mode `dual`
   (and the engine's walk), the engine's own draws of the same capture: the reference of a
@@ -244,12 +217,6 @@ MGE-XE-G7 render-link worktree.
   reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose for it.
 - `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
-- `MGE_XE_INSTANCE_UPLOAD=all`: the retained segment of the instances goes up whole when more
-  than 64 slots changed in a frame, as before the copy of `retained_upload`.
-- `MGE_XE_LAZY_PASS=0`: a pass on the game's targets begins when it is asked for, and a clear
-  does not carry into the next pass, as before `Player::begin_pass`.
-- `MGE_XE_PASS_GROUPS=0`: the game's draws before the world and after the post chain bind the
-  whole group of the texture arrays, as before `Renderer::small_array_group`.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),
   over the setting of the extension.
 - `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the setting

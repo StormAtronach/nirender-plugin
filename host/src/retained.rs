@@ -225,6 +225,164 @@ pub struct RetainedCounts {
     pub shown_ids: u64,
     pub turn_seconds: f64,
     pub upload_seconds: f64,
+    /// The repeats between the draw calls of a view, and the time of [`draw_retained`].
+    pub joins: JoinCounts,
+}
+
+/// Runs of two or more draw calls in a row that one call could draw.
+#[derive(Default)]
+pub struct JoinRuns {
+    /// The calls that equal the call before them.
+    pub pairs: u64,
+    pub runs: u64,
+    /// The calls in the runs.
+    pub calls: u64,
+    pub longest: u64,
+}
+
+/// How the draw calls of a view repeat the state of the call before them (D109 gain 4): the
+/// sets that would repeat a bound value, and the runs of calls that repeat all of it. A bucket
+/// with no pipeline ends a run.
+#[derive(Default)]
+pub struct JoinCounts {
+    /// The calls that had a call before them in their view.
+    pub pairs: u64,
+    /// Of those calls: the same pipeline key, stencil reference, vertex buffer and index buffer as
+    /// the call before.
+    pub same_pipeline: u64,
+    pub same_stencil: u64,
+    pub same_vertices: u64,
+    pub same_indexes: u64,
+    /// Calls that repeat all four.
+    pub joins: JoinRuns,
+    /// Calls that repeat all four and the stage group of the call before (tier C only).
+    pub stage_joins: JoinRuns,
+    /// The ticks that [`draw_retained`] takes, from its first line to its last.
+    pub ticks: u64,
+    /// The sets that [`draw_retained`] left out because the pass had the value (D109 4A).
+    pub left_out: LeftOut,
+}
+
+/// The sets of a view that repeated the value in the pass, by kind.
+#[derive(Default)]
+pub struct LeftOut {
+    /// The pipeline lookups and sets.
+    pub pipelines: u64,
+    pub stencils: u64,
+    pub vertices: u64,
+    pub indexes: u64,
+    /// The buckets that joined the call of the bucket before them (4B).
+    pub calls: u64,
+}
+
+/// What the draws of one [`draw_retained`] have set in the pass: a set that would repeat the
+/// bound value is left out. The pass starts with none of it set, and a bucket without a
+/// pipeline sets nothing, so it leaves the values as they are.
+#[derive(Default)]
+struct BoundDraw {
+    key: Option<PipelineKey>,
+    stencil: Option<u32>,
+    vertices: Option<usize>,
+    indexes: Option<usize>,
+}
+
+impl BoundDraw {
+    /// Makes `value` the bound one. Returns whether it differs from the one bound before, that
+    /// is, whether the pass needs the set.
+    fn change<T: PartialEq>(bound: &mut Option<T>, value: T) -> bool {
+        if bound.as_ref() == Some(&value) {
+            return false;
+        }
+        *bound = Some(value);
+        true
+    }
+}
+
+/// The arguments of the indirect call that waits for the buckets that join it: `count` arguments from
+/// `start` in the list of arguments. A count of 0 is no call.
+#[derive(Default)]
+struct CallRun {
+    start: usize,
+    count: usize,
+}
+
+impl CallRun {
+    /// Whether a bucket whose arguments begin at `start` can join the call: there is a call, and the
+    /// bucket's arguments follow its arguments.
+    fn extends(&self, start: usize) -> bool {
+        self.count > 0 && self.start + self.count == start
+    }
+
+    fn open(&mut self, start: usize, count: usize) {
+        (self.start, self.count) = (start, count);
+    }
+
+    /// The call to make now (its first argument and its count), if there is one. The run is then empty.
+    fn take(&mut self) -> Option<(usize, usize)> {
+        let call = (self.count > 0).then_some((self.start, self.count));
+        self.count = 0;
+        call
+    }
+}
+
+/// The state of a draw call that the next call may repeat.
+struct CallState {
+    key: PipelineKey,
+    stencil: u32,
+    vertices: usize,
+    indexes: usize,
+    stages: Option<Rc<wgpu::BindGroup>>,
+}
+
+/// Compares each draw call of a view with the call before it, into a [`JoinCounts`].
+#[derive(Default)]
+struct JoinProbe {
+    last: Option<CallState>,
+    run: u64,
+    stage_run: u64,
+}
+
+impl JoinProbe {
+    fn note(&mut self, counts: &mut JoinCounts, state: CallState) {
+        if let Some(last) = &self.last {
+            counts.pairs += 1;
+            let same = (last.key == state.key, last.stencil == state.stencil, last.vertices == state.vertices, last.indexes == state.indexes);
+            counts.same_pipeline += same.0 as u64;
+            counts.same_stencil += same.1 as u64;
+            counts.same_vertices += same.2 as u64;
+            counts.same_indexes += same.3 as u64;
+            let all = same.0 && same.1 && same.2 && same.3;
+            let stage = all && last.stages.as_ref().zip(state.stages.as_ref()).is_some_and(|(a, b)| Rc::ptr_eq(a, b));
+            Self::extend(&mut self.run, &mut counts.joins, all);
+            Self::extend(&mut self.stage_run, &mut counts.stage_joins, stage);
+        }
+        self.last = Some(state);
+    }
+
+    /// A bucket with no pipeline, or the end of the view: no call follows the call before.
+    fn end(&mut self, counts: &mut JoinCounts) {
+        Self::close(&mut self.run, &mut counts.joins);
+        Self::close(&mut self.stage_run, &mut counts.stage_joins);
+        self.last = None;
+    }
+
+    fn extend(run: &mut u64, runs: &mut JoinRuns, joins: bool) {
+        if joins {
+            runs.pairs += 1;
+            *run = if *run == 0 { 2 } else { *run + 1 };
+        } else {
+            Self::close(run, runs);
+        }
+    }
+
+    fn close(run: &mut u64, runs: &mut JoinRuns) {
+        if *run >= 2 {
+            runs.runs += 1;
+            runs.calls += *run;
+            runs.longest = runs.longest.max(*run);
+        }
+        *run = 0;
+    }
 }
 
 /// What an entry of the table's texture effects holds the stage of.
@@ -1399,6 +1557,7 @@ impl Renderer {
         let room = set.slots.len().min(self.retained_records);
         set.dirty.retain(|&i| (i as usize) < room);
         set.moved.retain(|&i| (i as usize) < room);
+        let case_began = std::time::Instant::now();
         if all {
             let mut records = vec![0u8; room * RECORD_SIZE];
             let copy = &mut self.retained_instance_copy;
@@ -1415,14 +1574,17 @@ impl Renderer {
                 self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.retained_instance_copy[..]));
             }
             self.counts.instance_uploads_whole += 1;
+            self.counts.upload_all_seconds += case_began.elapsed().as_secs_f64();
             set.dirty.clear();
             set.moved.clear();
-        } else if !switches().instance_upload_all {
+        } else {
             set.dirty.sort_unstable();
             set.dirty.dedup();
             for &i in &set.dirty {
                 if let Some(slot) = set.slots[i as usize].as_ref() {
                     self.queue.write_buffer(&self.record_buffer, (i as usize * RECORD_SIZE) as u64, bytemuck::bytes_of(&slot.data));
+                    self.counts.record_writes += 1;
+                    self.counts.record_write_bytes += RECORD_SIZE as u64;
                 }
             }
             // The entries of the changed and the moved slots go into the copy, then up as runs:
@@ -1444,48 +1606,22 @@ impl Renderer {
             while k < set.moved.len() {
                 let first = set.moved[k] as usize;
                 let mut last = first;
+                let mut entries = 1;
                 k += 1;
                 while k < set.moved.len() && set.moved[k] as usize <= last + 1 + RUN_GAP {
                     last = set.moved[k] as usize;
+                    entries += 1;
                     k += 1;
                 }
                 let run = &copy[first..=last];
                 self.queue.write_buffer(&self.instance_buffer, (first * INSTANCE_SIZE) as u64, bytemuck::cast_slice(run));
                 self.counts.instance_upload_runs += 1;
                 self.counts.instance_upload_bytes += (run.len() * INSTANCE_SIZE) as u64;
+                self.counts.instance_entries_moved += entries as u64;
+                self.counts.instance_gap_bytes += ((run.len() - entries) * INSTANCE_SIZE) as u64;
             }
-            set.dirty.clear();
-            set.moved.clear();
-        } else {
-            set.dirty.sort_unstable();
-            set.dirty.dedup();
-            for &i in &set.dirty {
-                if let Some(slot) = set.slots[i as usize].as_ref() {
-                    self.queue.write_buffer(&self.record_buffer, (i as usize * RECORD_SIZE) as u64, bytemuck::bytes_of(&slot.data));
-                }
-            }
-            // The instances of the changed and the moved slots: one write of the segment when
-            // there are many (an animated scene moves hundreds a frame), else one each.
-            set.moved.sort_unstable();
-            set.moved.dedup();
-            let instance_of = |i: usize, slot: &Slot| slot_instance(i, slot);
-            if set.dirty.len() + set.moved.len() > 64 {
-                let mut instances = vec![0u8; room * INSTANCE_SIZE];
-                for (i, slot) in set.slots.iter().take(room).enumerate() {
-                    if let Some(slot) = slot {
-                        instances[i * INSTANCE_SIZE..(i + 1) * INSTANCE_SIZE].copy_from_slice(bytemuck::bytes_of(&instance_of(i, slot)));
-                    }
-                }
-                if !instances.is_empty() {
-                    self.queue.write_buffer(&self.instance_buffer, 0, &instances);
-                }
-            } else {
-                for &i in set.dirty.iter().chain(set.moved.iter()) {
-                    if let Some(slot) = set.slots[i as usize].as_ref() {
-                        self.queue.write_buffer(&self.instance_buffer, (i as usize * INSTANCE_SIZE) as u64, bytemuck::bytes_of(&instance_of(i as usize, slot)));
-                    }
-                }
-            }
+            self.counts.upload_changed_cases += 1;
+            self.counts.upload_changed_seconds += case_began.elapsed().as_secs_f64();
             set.dirty.clear();
             set.moved.clear();
         }
@@ -1535,6 +1671,13 @@ impl Renderer {
         set.counts.buckets = set.buckets.len() as u32;
     }
 
+    /// Makes the indirect call of a run of buckets: `call` is the first argument and the count.
+    fn draw_run(&mut self, pass: &mut wgpu::RenderPass<'static>, (start, count): (usize, usize)) {
+        pass.multi_draw_indexed_indirect(&self.indirect_buffer, (start * ARGS_SIZE) as u64, count as u32);
+        self.counts.indirect_calls += 1;
+        self.counts.indirect_draws += count as u32;
+    }
+
     /// Writes the lights of the retained instances, as the shade of the extension made them
     /// for the frame.
     pub fn upload_retained_lights(&self, lights: &[LightData]) {
@@ -1564,6 +1707,10 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         return;
     }
     set.counts.views += 1;
+    let clock = crate::ticks::Clock::now();
+    let mut probe = JoinProbe::default();
+    let mut bound = BoundDraw::default();
+    let mut run = CallRun::default();
     let mut arrays_bound = false;
     let mut stages_bound: Option<Rc<wgpu::BindGroup>> = None;
     let mut shared_bound = false;
@@ -1608,21 +1755,56 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
                 other => other,
             };
         }
-        let Some(pipeline) = renderer.pipeline(key) else {
-            args.truncate(start);
-            continue;
+        // Scene slot 0 is the main view of the table; a replay has a slot of its own.
+        let origin = if view.scene_slot == 0 { crate::gpu::BindOrigin::Table } else { crate::gpu::BindOrigin::Replay };
+        let (vertices, indexes) = (Rc::as_ptr(&bucket.vertices) as usize, Rc::as_ptr(&bucket.indexes) as usize);
+        let stages = (renderer.tier == crate::request::TextureTier::C).then(|| renderer.stage_group(bucket.textures, bucket.samplers, view.target));
+        let stages_same = match &stages {
+            Some(group) => stages_bound.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, group)),
+            None => arrays_bound,
         };
-        pass.set_pipeline(&pipeline);
-        pass.set_stencil_reference(bucket.stencil);
+        let direct = renderer.indirect && args.len() <= renderer.indirect_capacity;
+        // A bucket that would set nothing that the bucket before did not set draws with the same state: its
+        // arguments follow those of the bucket before in `args`, so one call draws both (D109 4B).
+        let repeats = bound.key == Some(key) && bound.stencil == Some(bucket.stencil) && bound.vertices == Some(vertices) && bound.indexes == Some(indexes) && stages_same;
+        if repeats && direct && run.extends(start) {
+            run.count += count;
+            let left_out = &mut set.counts.joins.left_out;
+            left_out.pipelines += 1;
+            left_out.stencils += 1;
+            left_out.vertices += 1;
+            left_out.indexes += 1;
+            left_out.calls += 1;
+            probe.note(&mut set.counts.joins, CallState { key, stencil: bucket.stencil, vertices, indexes, stages: stages_bound.clone() });
+            set.counts.calls += 1;
+            continue;
+        }
+        // The call of the run is made before the sets of this bucket, with the state it was built for.
+        if let Some(call) = run.take() {
+            renderer.draw_run(pass, call);
+        }
+        if bound.key != Some(key) {
+            let Some(pipeline) = renderer.pipeline(key) else {
+                args.truncate(start);
+                probe.end(&mut set.counts.joins);
+                continue;
+            };
+            pass.set_pipeline(&pipeline);
+            bound.key = Some(key);
+        } else {
+            set.counts.joins.left_out.pipelines += 1;
+        }
+        if BoundDraw::change(&mut bound.stencil, bucket.stencil) {
+            pass.set_stencil_reference(bucket.stencil);
+        } else {
+            set.counts.joins.left_out.stencils += 1;
+        }
         if !frame_bound {
             pass.set_bind_group(0, &*renderer.frame_group, &[view.scene_slot * SCENE_SIZE as u32]);
             frame_bound = true;
         }
-        // Scene slot 0 is the main view of the table; a replay has a slot of its own.
-        let origin = if view.scene_slot == 0 { crate::gpu::BindOrigin::Table } else { crate::gpu::BindOrigin::Replay };
-        if renderer.tier == crate::request::TextureTier::C {
-            let group = renderer.stage_group(bucket.textures, bucket.samplers, view.target);
-            if !stages_bound.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &group)) {
+        if let Some(group) = stages {
+            if !stages_same {
                 pass.set_bind_group(1, &*group, &[]);
                 crate::gpu::note_array_bind(origin);
                 stages_bound = Some(group);
@@ -1633,17 +1815,24 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             crate::gpu::note_array_bind(origin);
             arrays_bound = true;
         }
-        pass.set_vertex_buffer(0, bucket.vertices.slice(..));
+        probe.note(&mut set.counts.joins, CallState { key, stencil: bucket.stencil, vertices, indexes, stages: stages_bound.clone() });
+        if BoundDraw::change(&mut bound.vertices, vertices) {
+            pass.set_vertex_buffer(0, bucket.vertices.slice(..));
+        } else {
+            set.counts.joins.left_out.vertices += 1;
+        }
         if !shared_bound {
             pass.set_vertex_buffer(1, renderer.defaults.slice(..));
             pass.set_vertex_buffer(2, renderer.instance_buffer.slice(..));
             shared_bound = true;
         }
-        pass.set_index_buffer(bucket.indexes.slice(..), wgpu::IndexFormat::Uint16);
-        if renderer.indirect && args.len() <= renderer.indirect_capacity {
-            pass.multi_draw_indexed_indirect(&renderer.indirect_buffer, (start * ARGS_SIZE) as u64, count as u32);
-            renderer.counts.indirect_calls += 1;
-            renderer.counts.indirect_draws += count as u32;
+        if BoundDraw::change(&mut bound.indexes, indexes) {
+            pass.set_index_buffer(bucket.indexes.slice(..), wgpu::IndexFormat::Uint16);
+        } else {
+            set.counts.joins.left_out.indexes += 1;
+        }
+        if direct {
+            run.open(start, count);
         } else {
             for a in &args[start..] {
                 pass.draw_indexed(a.first_index..a.first_index + a.index_count, a.base_vertex, a.first_instance..a.first_instance + 1);
@@ -1652,11 +1841,16 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         }
         set.counts.calls += 1;
     }
+    if let Some(call) = run.take() {
+        renderer.draw_run(pass, call);
+    }
+    probe.end(&mut set.counts.joins);
     if view.sorted == Sorted::Only {
         set.kept_sorted = order;
     } else {
         set.order = order;
     }
+    set.counts.joins.ticks += clock.elapsed();
 }
 
 impl RetainedSet {
@@ -1783,7 +1977,7 @@ impl RetainedSet {
         self.order.sort_unstable();
         self.sorted_order.sort_unstable();
         // The main view: a blend out of the sort with a place in the engine's walk draws there.
-        if view.sorted == Sorted::Keep && self.walk.on {
+        if view.sorted == Sorted::Keep {
             let slots = &self.slots;
             self.counts.walk_reordered += self.walk.leave_out(&mut self.order, |slot| slots[slot as usize].as_ref().map(|s| s.id)) as u64;
             self.counts.walk_without_place += self.order.iter().filter(|e| e.0 >> 32 == crate::engine::walk::GROUP_IN_PLACE && slots[e.3 as usize].as_ref().is_some_and(|s| s.in_place)).count() as u64;
@@ -1919,7 +2113,6 @@ impl Player {
             shape.world = self.retained.world_of(r);
             shape.relative = false;
             shape.material = material::d3d_material(&r.colours);
-            shape.fill = derived.fill;
             shape.lights.clear();
         }
         self.stream.shape_fog = None;
@@ -2227,8 +2420,6 @@ impl Player {
     /// writes depth and does not blend ([`Extension::shade`]), one time for the frame.
     /// Engine-rules R10, R20 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_main(&mut self, facts: &WorldFacts) {
-        // The near plane of the world's view, for the depth of the sort of the blends.
-        self.world_near = Some(view_planes(&facts.view, &facts.projection)[4]);
         if self.retained.by_id.is_empty() || !self.retained_on {
             return;
         }
@@ -2277,7 +2468,7 @@ impl Player {
         // (a read-back) they may not be, and the instance draws at the end of the world scene.
         for (h, id, sorted) in held {
             let in_place = self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&h));
-            let queued = sorted && self.frame_sorted.iter().any(|entry| matches!(entry.2, crate::Waiting::Table(place) if place == id));
+            let queued = sorted && self.frame_sorted.iter().any(|entry| matches!(entry.0, crate::Waiting::Table(place) if place == id));
             // A shape in place that the engine queued has its place in the queue: a blended mask
             // whose stencil it tests goes before it there.
             let in_queue = queued && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&h));
@@ -2294,125 +2485,77 @@ impl Player {
 
     /// Draws the sorted blends of the frame where the engine flushes its sorted queue: the
     /// blended draws of the engine's path and the places of the table's blends that waited
-    /// (`frame_sorted`), and the kept blends of the table without a place. The waiting
-    /// entries keep their order of arrival: the engine sorted them, the table's blends with
-    /// them (the plugin puts those into the engine's queue, [`tag::INSTANCE_QUEUED`]), and a
-    /// node that orders its subtree (a sort adjust node) gives an order that the depth of
-    /// each shape does not. A kept blend without a place (an older capture, a queue that did
-    /// not take the shape) goes between them by the depth of its bound centre along the view
-    /// (`merge_picks`). A run of the table's entries is one `draw_retained` call; a draw of
-    /// the engine's path is issued between them.
+    /// (`frame_sorted`). The waiting entries keep their order of arrival: the engine sorted
+    /// them, the table's blends with them (the plugin puts those into the engine's queue,
+    /// [`tag::INSTANCE_QUEUED`]), and a node that orders its subtree (a sort adjust node) gives
+    /// an order that the depth of each shape does not. A run of the table's entries is one
+    /// `draw_retained` call; a draw of the engine's path is issued between them.
     /// Engine-rules R21, R22 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_sorted(&mut self, generation: u32) {
-        let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.3 == generation);
+        let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.1 == generation);
         self.frame_sorted = later;
         let view = if generation == 0 { self.retained.sorted_view.take() } else { self.retained.sorted_view };
         let all_kept = if generation == 0 && self.retained_on && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
-        // The kept blends of the instances with a place in the queue draw at their place.
-        let placed: std::collections::HashSet<u32> = deferred.iter().filter_map(|e| if let crate::Waiting::Table(id) = e.2 { Some(id) } else { None }).collect();
-        let kept: Vec<(u64, u32, u32, u32)> = all_kept
+        // Risk 34: the engine's queue takes every blend the engine displays and the plugin
+        // writes its place, so a kept blend without one was not displayed by the engine in
+        // this frame: the main view does not draw it. The other views (the water's mirror, the
+        // shadow layers) cull with their own frustum. The count of them stays for the report.
+        let placed: std::collections::HashSet<u32> = deferred.iter().filter_map(|e| if let crate::Waiting::Table(id) = e.0 { Some(id) } else { None }).collect();
+        let without_place = all_kept
             .iter()
-            .copied()
             .filter(|entry| placed.is_empty() || !self.retained.slots[entry.3 as usize].as_ref().is_some_and(|s| placed.contains(&s.id)))
-            .collect();
-        self.renderer.counts.sorted_without_place += kept.len() as u64;
+            .count() as u64;
+        self.renderer.counts.sorted_without_place += without_place;
         // Risk 34: a frame whose kept blends found no place at all points to a cause of the
         // frame (a scene or a Click that did not queue); a frame with some places, to a cause
         // of the shape.
         if placed.is_empty() {
-            self.renderer.counts.sorted_without_place_no_places += kept.len() as u64;
+            self.renderer.counts.sorted_without_place_no_places += without_place;
         }
-        // Risk 34: the engine's queue takes every blend the engine displays and the plugin
-        // writes its place, so a kept blend without one was not displayed by the engine in
-        // this frame: the main view does not draw it. A stream without the places (an older
-        // capture) keeps them between the engine's blends by depth. The other views (the
-        // water's mirror, the shadow layers) cull with their own frustum.
-        let kept = if self.stream.queue_marked { Vec::new() } else { kept };
-        self.renderer.counts.sorted_without_place_drawn += kept.len() as u64;
         // An item after the world end (the engine flushed its queue in a later scene): the
         // post-processing reads the copy of the world depth, so what these blends write goes
         // into it ([`late_depth`]): the depth before the run here, after it at the end.
-        let late = self.world_depth_kept && (!deferred.is_empty() || !kept.is_empty());
+        let late = self.world_depth_kept && !deferred.is_empty();
         if late {
             self.copy_depth(3, "depth: before late sorted blends");
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         if crate::dump_wanted() != 0 {
-            println!("sorted blends: {} kept, {} of the engine's path, pass open {}, frame {}", kept.len(), deferred.len(), self.pass.is_some(), self.renderer.counts.frames);
-            for &(key, bucket, _, slot) in &kept {
-                if let Some(s) = self.retained.slots[slot as usize].as_ref() {
-                    println!("  kept slot {} id {} class {} bucket {} bound {:?} key {:x}", slot, s.id, s.class, bucket, s.bound, key);
-                }
-            }
+            println!("sorted blends: {} without a place (not drawn), {} of the engine's path, pass open {}, frame {}", without_place, deferred.len(), self.pass.is_some(), self.renderer.counts.frames);
         }
-        if kept.is_empty() && deferred.is_empty() {
+        if deferred.is_empty() {
             return;
         }
-        let near = self.world_near.unwrap_or([0.0; 4]);
-        let deferred: Vec<(u64, crate::Waiting)> = deferred
-            .into_iter()
-            .map(|(c, sequence, waiting, _)| {
-                let depth = (near[0] * c[0] + near[1] * c[1] + near[2] * c[2] + near[3]).max(0.0);
-                ((!depth.to_bits() as u64) << 32 | sequence as u64, waiting)
-            })
-            .collect();
-        self.renderer.counts.merged_blends += deferred.iter().filter(|e| matches!(e.1, crate::Waiting::Draw(_))).count() as u64;
+        self.renderer.counts.merged_blends += deferred.iter().filter(|e| matches!(e.0, crate::Waiting::Draw(_))).count() as u64;
         if !self.pass_wanted() {
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
-        let kept_keys: Vec<u64> = kept.iter().map(|entry| entry.0).collect();
-        let deferred_keys: Vec<u64> = deferred.iter().map(|entry| entry.0).collect();
-        // The places of the table that follow each other draw as one run.
-        let mut run: Vec<(u64, u32, u32, u32)> = Vec::new();
-        // The held shapes that follow each other in the queue, with no other draw between them,
-        // go in one call. They draw from one copy of the picture, so that no surface shows another
-        // through its refraction (`flushWaterVolumes` of the Direct3D 9 path).
-        let mut surfaces: Vec<HeldDraw> = Vec::new();
-        let mut surfaces_facts: Option<WorldFacts> = None;
-        for pick in merge_picks(&kept_keys, &deferred_keys) {
-            match pick {
-                Pick::Table(start, end) => {
-                    self.draw_sorted_run(view, core::mem::take(&mut run));
-                    self.give_held_run(&mut surfaces, surfaces_facts);
-                    self.draw_sorted_run(view, kept[start..end].to_vec());
-                }
-                Pick::Engine(j) => match &deferred[j].1 {
-                    crate::Waiting::Draw(draw) => {
-                        self.draw_sorted_run(view, core::mem::take(&mut run));
-                        self.give_held_run(&mut surfaces, surfaces_facts);
+        // The order of the flush is a plan made from the kinds of the queue (`SortedPlan`); the
+        // steps run here in that order.
+        let kinds: Vec<QueuedKind> = deferred
+            .iter()
+            .map(|(waiting, _)| match waiting {
+                crate::Waiting::Draw(_) => QueuedKind::Draw,
+                crate::Waiting::Held(..) => QueuedKind::Held,
+                &crate::Waiting::Table(id) => QueuedKind::Table(id),
+            })
+            .collect();
+        let waits: Vec<u32> = self.held_sorted_wait.iter().map(|waiting| waiting.0).collect();
+        let plan = SortedPlan::build(&kinds, &waits, |id, placed| self.retained.placed_entries(id, placed));
+        self.renderer.counts.queued_places += plan.queued_places;
+        self.renderer.counts.queued_not_sorted += plan.queued_not_sorted;
+        for step in plan.steps {
+            match step {
+                SortedStep::Run(entries) => self.draw_sorted_run(view, entries),
+                SortedStep::Draw(at) => {
+                    if let crate::Waiting::Draw(draw) = &deferred[at].0 {
                         let draw = draw.clone();
                         self.issue(&draw);
                     }
-                    crate::Waiting::Held(held, facts) => {
-                        self.draw_sorted_run(view, core::mem::take(&mut run));
-                        surfaces.push((**held).clone());
-                        surfaces_facts = Some(**facts);
-                    }
-                    &crate::Waiting::Table(id) => {
-                        self.renderer.counts.queued_places += 1;
-                        // A held instance of a blended slot draws here, at its place in the
-                        // engine's queue, with the run before it drawn first.
-                        if let Some(at) = self.held_sorted_wait.iter().position(|waiting| waiting.0 == id) {
-                            let (_, held, facts) = self.held_sorted_wait.remove(at);
-                            self.draw_sorted_run(view, core::mem::take(&mut run));
-                            surfaces.push(held);
-                            surfaces_facts = Some(facts);
-                        } else {
-                            let mut placed = Vec::new();
-                            if self.retained.placed_entries(id, &mut placed) != 0 {
-                                self.renderer.counts.queued_not_sorted += 1;
-                            }
-                            if !placed.is_empty() {
-                                self.give_held_run(&mut surfaces, surfaces_facts);
-                                run.append(&mut placed);
-                            }
-                        }
-                    }
-                },
+                }
+                SortedStep::Held(sources) => self.give_held_sources(&deferred, sources),
             }
         }
-        self.draw_sorted_run(view, run);
-        self.give_held_run(&mut surfaces, surfaces_facts);
         self.retained.kept_sorted = all_kept;
         if late {
             self.merge_late_depth();
@@ -2420,7 +2563,136 @@ impl Player {
     }
 }
 
+/// An entry of the engine's sorted queue, as [`SortedPlan`] reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum QueuedKind {
+    /// A draw of the engine's path.
+    Draw,
+    /// A held shape.
+    Held,
+    /// A place of the table: the id of its instance.
+    Table(u32),
+}
+
+/// Where a held shape of a [`SortedStep::Held`] comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HeldSource {
+    /// The entry of the queue with this index.
+    Queue(usize),
+    /// The held draw of the table place with this id, which waited.
+    Wait(u32),
+}
+
+/// A step of the flush of the sorted queue.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SortedStep {
+    /// The places of the table that follow each other, as one `draw_retained` call.
+    Run(Vec<(u64, u32, u32, u32)>),
+    /// The held shapes that follow each other, with no other draw between them, in one call. They
+    /// draw from one copy of the picture, so that no surface shows another through its refraction
+    /// (`flushWaterVolumes` of the Direct3D 9 path).
+    Held(Vec<HeldSource>),
+    /// The draw of the engine's path at this index of the queue.
+    Draw(usize),
+}
+
+/// The order in which the sorted queue is flushed: the steps, and the counts of the places that
+/// the plan read.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SortedPlan {
+    pub(crate) steps: Vec<SortedStep>,
+    /// The places of the table in the queue.
+    pub(crate) queued_places: u64,
+    /// The places of the table with a slot that the table does not sort.
+    pub(crate) queued_not_sorted: u64,
+}
+
+impl SortedPlan {
+    /// Plans the flush of a queue of the kinds `queue`, in its order. `held_waits` are the ids of the
+    /// table places whose held draw waits for its place; a place takes the first one with its id.
+    /// `placed_entries` puts the sorted entries of an instance into the list and returns the number
+    /// of its slots that the table does not sort. A run or a held group ends at a draw of the
+    /// engine's path, and a run ends at a held shape. A place with entries ends a held group.
+    pub(crate) fn build(queue: &[QueuedKind], held_waits: &[u32], mut placed_entries: impl FnMut(u32, &mut Vec<(u64, u32, u32, u32)>) -> u32) -> SortedPlan {
+        let mut plan = SortedPlan::default();
+        let mut waits = held_waits.to_vec();
+        let mut run: Vec<(u64, u32, u32, u32)> = Vec::new();
+        let mut held: Vec<HeldSource> = Vec::new();
+        for (at, kind) in queue.iter().enumerate() {
+            match *kind {
+                QueuedKind::Draw => {
+                    debug_assert!(run.is_empty() || held.is_empty(), "a run and a held group are never both open");
+                    plan.close_run(&mut run);
+                    plan.close_held(&mut held);
+                    plan.steps.push(SortedStep::Draw(at));
+                }
+                QueuedKind::Held => {
+                    plan.close_run(&mut run);
+                    held.push(HeldSource::Queue(at));
+                }
+                QueuedKind::Table(id) => {
+                    plan.queued_places += 1;
+                    if let Some(wait) = waits.iter().position(|&waiting| waiting == id) {
+                        waits.remove(wait);
+                        plan.close_run(&mut run);
+                        held.push(HeldSource::Wait(id));
+                    } else {
+                        let mut placed = Vec::new();
+                        if placed_entries(id, &mut placed) != 0 {
+                            plan.queued_not_sorted += 1;
+                        }
+                        if !placed.is_empty() {
+                            plan.close_held(&mut held);
+                            run.append(&mut placed);
+                        }
+                    }
+                }
+            }
+        }
+        plan.close_run(&mut run);
+        plan.close_held(&mut held);
+        plan
+    }
+
+    fn close_run(&mut self, run: &mut Vec<(u64, u32, u32, u32)>) {
+        if !run.is_empty() {
+            self.steps.push(SortedStep::Run(core::mem::take(run)));
+        }
+    }
+
+    fn close_held(&mut self, held: &mut Vec<HeldSource>) {
+        if !held.is_empty() {
+            self.steps.push(SortedStep::Held(core::mem::take(held)));
+        }
+    }
+}
+
 impl Player {
+    /// Gives the extension the held shapes of a [`SortedStep::Held`] in one call: the held shapes
+    /// of the queue's entries, and the held draws of table places that waited, each taken out of
+    /// the waiting list. The facts of the last one are those of the call.
+    fn give_held_sources(&mut self, deferred: &[(crate::Waiting, u32)], sources: Vec<HeldSource>) {
+        let (mut held, mut facts) = (Vec::new(), None);
+        for source in sources {
+            match source {
+                HeldSource::Queue(at) => {
+                    if let crate::Waiting::Held(shape, shape_facts) = &deferred[at].0 {
+                        held.push((**shape).clone());
+                        facts = Some(**shape_facts);
+                    }
+                }
+                HeldSource::Wait(id) => {
+                    if let Some(at) = self.held_sorted_wait.iter().position(|waiting| waiting.0 == id) {
+                        let (_, shape, shape_facts) = self.held_sorted_wait.remove(at);
+                        held.push(shape);
+                        facts = Some(shape_facts);
+                    }
+                }
+            }
+        }
+        self.give_held_run(&mut held, facts);
+    }
+
     /// Gives the extension the held shapes that wait in `surfaces`, in one call, and empties
     /// the list. Nothing without shapes.
     fn give_held_run(&mut self, surfaces: &mut Vec<HeldDraw>, facts: Option<WorldFacts>) {
@@ -2592,40 +2864,9 @@ fn bucket_key(group: u8, bucket: u32, depth: f32) -> u64 {
     }
 }
 
-/// One step of the sorted blends: a run of the table's entries, or one draw of the engine's
-/// path.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Pick {
-    Table(usize, usize),
-    Engine(usize),
-}
-
-/// The order of the sorted blends from the keys of the two lists (far first: a smaller key
-/// is farther). The table's keys are sorted; the engine's keys are in the engine's order and
-/// stay in it. Before each draw of the engine, the table's entries with a key not larger
-/// than its key go as one run.
-fn merge_picks(kept: &[u64], deferred: &[u64]) -> Vec<Pick> {
-    let mut picks = Vec::new();
-    let mut i = 0;
-    for (j, &key) in deferred.iter().enumerate() {
-        let start = i;
-        while i < kept.len() && kept[i] <= key {
-            i += 1;
-        }
-        if i > start {
-            picks.push(Pick::Table(start, i));
-        }
-        picks.push(Pick::Engine(j));
-    }
-    if i < kept.len() {
-        picks.push(Pick::Table(i, kept.len()));
-    }
-    picks
-}
-
 #[cfg(test)]
-mod merge_tests {
-    use super::{merge_picks, slot_bones, Pick, NO_BONES};
+mod bone_tests {
+    use super::{slot_bones, NO_BONES};
 
     #[test]
     fn a_slot_waits_for_the_bones_its_list_names() {
@@ -2634,45 +2875,6 @@ mod merge_tests {
         // A list that names the matrix after the 26 bones of the skin.
         assert_eq!(slot_bones(40, 26, 27), NO_BONES);
         assert_eq!(slot_bones(40, 27, 27), 40);
-    }
-
-    #[test]
-    fn the_engine_order_stays_when_its_keys_are_not_sorted() {
-        // A sort adjust node in mode 64: its shapes come in the order of the tree, and their
-        // own depths are not sorted. No table entry.
-        assert_eq!(merge_picks(&[], &[30, 10, 20]), vec![Pick::Engine(0), Pick::Engine(1), Pick::Engine(2)]);
-    }
-
-    #[test]
-    fn the_table_entries_go_before_the_first_nearer_draw_of_the_engine() {
-        assert_eq!(
-            merge_picks(&[5, 15, 40], &[10, 30]),
-            vec![Pick::Table(0, 1), Pick::Engine(0), Pick::Table(1, 2), Pick::Engine(1), Pick::Table(2, 3)]
-        );
-    }
-
-    #[test]
-    fn a_run_of_table_entries_is_one_pick() {
-        assert_eq!(merge_picks(&[1, 2, 3], &[9]), vec![Pick::Table(0, 3), Pick::Engine(0)]);
-        assert_eq!(merge_picks(&[1, 2], &[]), vec![Pick::Table(0, 2)]);
-    }
-
-    #[test]
-    fn sorted_engine_keys_give_the_merge_of_before() {
-        // The keys of the engine are sorted when no node orders a subtree: the picks are
-        // the merge of two sorted lists, as before the change.
-        assert_eq!(
-            merge_picks(&[2, 4, 6], &[1, 3, 5, 7]),
-            vec![
-                Pick::Engine(0),
-                Pick::Table(0, 1),
-                Pick::Engine(1),
-                Pick::Table(1, 2),
-                Pick::Engine(2),
-                Pick::Table(2, 3),
-                Pick::Engine(3)
-            ]
-        );
     }
 }
 
@@ -3282,4 +3484,187 @@ fn rewrite_index(text: &str, open: &str, call: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+
+    fn key(pipeline: u32) -> PipelineKey {
+        PipelineKey { fvf: pipeline, stride: 0, topology: 0, blend: [0; 3], depth: [0; 3], cull: 0, fill: 0, stencil: [0; 7], color_write: 0, samples: 1 }
+    }
+
+    fn state(pipeline: u32, stencil: u32) -> CallState {
+        CallState { key: key(pipeline), stencil, vertices: 1, indexes: 2, stages: None }
+    }
+
+    /// The calls A A A B B C: three pairs repeat all four (two runs, of 3 and 2 calls), and each of
+    /// the four is counted by itself.
+    #[test]
+    fn the_repeats_and_the_runs_of_a_view_are_counted() {
+        let (mut counts, mut probe) = (JoinCounts::default(), JoinProbe::default());
+        for (pipeline, stencil) in [(1, 0), (1, 0), (1, 0), (2, 0), (2, 0), (2, 1)] {
+            probe.note(&mut counts, state(pipeline, stencil));
+        }
+        probe.end(&mut counts);
+        assert_eq!((counts.pairs, counts.same_pipeline, counts.same_stencil, counts.same_vertices, counts.same_indexes), (5, 4, 4, 5, 5));
+        assert_eq!((counts.joins.pairs, counts.joins.runs, counts.joins.calls, counts.joins.longest), (3, 2, 5, 3));
+        assert_eq!(counts.stage_joins.pairs, 0, "no stage group in tiers A and B");
+    }
+
+    /// A bucket with no pipeline ends a run, and the first call of a view has no call before it.
+    #[test]
+    fn a_missing_pipeline_ends_a_run() {
+        let (mut counts, mut probe) = (JoinCounts::default(), JoinProbe::default());
+        for call in [Some(1), Some(1), None, Some(1), Some(1)] {
+            match call {
+                Some(pipeline) => probe.note(&mut counts, state(pipeline, 0)),
+                None => probe.end(&mut counts),
+            }
+        }
+        probe.end(&mut counts);
+        assert_eq!((counts.pairs, counts.joins.pairs, counts.joins.runs, counts.joins.calls, counts.joins.longest), (2, 2, 2, 4, 2));
+    }
+
+    /// The first set of a pass is always made, a repeat is left out, and a value that comes
+    /// back after another one is set again.
+    #[test]
+    fn a_set_is_left_out_only_when_the_pass_has_the_value() {
+        let mut bound = None;
+        let sets: Vec<bool> = [4, 4, 4, 7, 7, 4].into_iter().map(|stencil| BoundDraw::change(&mut bound, stencil)).collect();
+        assert_eq!(sets, vec![true, false, false, true, false, true]);
+    }
+
+    /// The calls that the loop of `draw_retained` makes for buckets, as it decides them: a bucket joins
+    /// the run when it repeats the state and its arguments follow those of the run; `None` is a bucket
+    /// without a pipeline, which ends the run. Returns the calls (first argument, count).
+    fn calls_of(buckets: &[Option<(usize, usize, bool)>]) -> Vec<(usize, usize)> {
+        let (mut run, mut calls) = (CallRun::default(), Vec::new());
+        for bucket in buckets {
+            match *bucket {
+                Some((start, count, repeats)) if repeats && run.extends(start) => run.count += count,
+                Some((start, count, _)) => {
+                    calls.extend(run.take());
+                    run.open(start, count);
+                }
+                None => calls.extend(run.take()),
+            }
+        }
+        calls.extend(run.take());
+        calls
+    }
+
+    /// Buckets that repeat the state join the call before them, with their arguments in the same
+    /// order: the calls together draw the arguments 0..9 once each, one after the other.
+    #[test]
+    fn buckets_that_repeat_the_state_join_one_call_and_keep_the_arguments_in_order() {
+        let buckets = [Some((0, 2, false)), Some((2, 3, true)), Some((5, 1, true)), Some((6, 2, false)), Some((8, 1, true))];
+        let calls = calls_of(&buckets);
+        assert_eq!(calls, vec![(0, 6), (6, 3)]);
+        let drawn: Vec<usize> = calls.iter().flat_map(|&(start, count)| start..start + count).collect();
+        assert_eq!(drawn, (0..9).collect::<Vec<_>>());
+    }
+
+    /// A bucket without a pipeline ends the run: the bucket after it opens a call, even when it repeats
+    /// the state. So does a bucket whose arguments do not follow the run's (the arguments of a bucket
+    /// before it were cut out).
+    #[test]
+    fn a_bucket_without_a_pipeline_or_a_gap_in_the_arguments_ends_the_run() {
+        assert_eq!(calls_of(&[Some((0, 2, false)), Some((2, 1, true)), None, Some((3, 2, true)), Some((5, 1, true))]), vec![(0, 3), (3, 3)]);
+        assert_eq!(calls_of(&[Some((0, 2, false)), Some((4, 1, true))]), vec![(0, 2), (4, 1)]);
+        assert_eq!(calls_of(&[None, Some((0, 2, true))]), vec![(0, 2)]);
+    }
+
+    /// A zero is a value like any other: a pass starts with nothing set, not with a zero.
+    #[test]
+    fn the_first_value_is_set_even_when_it_is_zero() {
+        let mut bound = None;
+        assert!(BoundDraw::change(&mut bound, 0u32));
+        assert!(!BoundDraw::change(&mut bound, 0u32));
+    }
+}
+
+#[cfg(test)]
+mod sorted_plan_tests {
+    use super::*;
+
+    /// One entry per place: the id, so that a run shows which places it holds and in which order.
+    fn placed_of(id: u32, placed: &mut Vec<(u64, u32, u32, u32)>) -> u32 {
+        placed.push((id as u64, 0, 0, id));
+        0
+    }
+
+    fn run_of(ids: &[u32]) -> SortedStep {
+        SortedStep::Run(ids.iter().map(|&id| (id as u64, 0, 0, id)).collect())
+    }
+
+    /// The three kinds of the queue in a known order: places of the table, a draw of the engine's
+    /// path, a held shape, a place whose held draw waited. The steps keep the order of the queue,
+    /// a run ends at a draw and at a held shape, and a place with entries ends a held group.
+    #[test]
+    fn the_flush_keeps_the_order_of_the_queue() {
+        use QueuedKind::*;
+        let queue = [Table(1), Table(2), Draw, Table(3), Held, Held, Table(4), Table(5), Draw, Held, Table(6)];
+        let plan = SortedPlan::build(&queue, &[6], placed_of);
+        assert_eq!(
+            plan.steps,
+            vec![
+                run_of(&[1, 2]),
+                SortedStep::Draw(2),
+                run_of(&[3]),
+                SortedStep::Held(vec![HeldSource::Queue(4), HeldSource::Queue(5)]),
+                run_of(&[4, 5]),
+                SortedStep::Draw(8),
+                SortedStep::Held(vec![HeldSource::Queue(9), HeldSource::Wait(6)]),
+            ]
+        );
+        assert_eq!((plan.queued_places, plan.queued_not_sorted), (6, 0));
+    }
+
+    /// A held draw that waited takes the place of its id once, and the run before it is closed.
+    #[test]
+    fn a_waiting_held_draw_joins_the_held_group_at_its_place() {
+        use QueuedKind::*;
+        let plan = SortedPlan::build(&[Table(1), Table(2), Table(3)], &[2, 2], placed_of);
+        assert_eq!(plan.steps, vec![run_of(&[1]), SortedStep::Held(vec![HeldSource::Wait(2)]), run_of(&[3])]);
+        // The second wait of the id stays for a second place with that id.
+        let twice = SortedPlan::build(&[Table(2), Table(2)], &[2, 2], placed_of);
+        assert_eq!(twice.steps, vec![SortedStep::Held(vec![HeldSource::Wait(2), HeldSource::Wait(2)])]);
+    }
+
+    /// A place with no entries leaves the run and the held group as they are, and a place with slots
+    /// that the table does not sort is counted.
+    #[test]
+    fn a_place_without_entries_changes_no_step() {
+        use QueuedKind::*;
+        let without = |id: u32, placed: &mut Vec<(u64, u32, u32, u32)>| {
+            if id != 9 {
+                placed.push((id as u64, 0, 0, id));
+            }
+            (id == 9) as u32
+        };
+        let plan = SortedPlan::build(&[Held, Table(9), Table(1), Draw], &[], without);
+        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Queue(0)]), run_of(&[1]), SortedStep::Draw(3)]);
+        assert_eq!(plan.queued_not_sorted, 1);
+        assert!(SortedPlan::build(&[], &[], placed_of).steps.is_empty());
+    }
+
+    /// A place with no entries between two held shapes leaves the held group open: the two shapes
+    /// draw from one copy of the picture, in one call.
+    #[test]
+    fn a_place_without_entries_keeps_the_held_group_open() {
+        use QueuedKind::*;
+        let without = |_id: u32, _placed: &mut Vec<(u64, u32, u32, u32)>| 1;
+        let plan = SortedPlan::build(&[Held, Table(9), Held], &[], without);
+        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Queue(0), HeldSource::Queue(2)])]);
+    }
+
+    /// A held draw that waited belongs to one place. A second place of the same id draws its
+    /// entries.
+    #[test]
+    fn a_wait_is_taken_by_one_place_only() {
+        use QueuedKind::*;
+        let plan = SortedPlan::build(&[Table(2), Table(2)], &[2], placed_of);
+        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Wait(2)]), run_of(&[2])]);
+    }
 }

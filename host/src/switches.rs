@@ -55,27 +55,10 @@ pub(crate) struct Switches {
     /// `MGE_XE_DEPTH_FORMAT=24`: the depth of the frame in `Depth24PlusStencil8` even when the
     /// adapter has `Depth32FloatStencil8`: for an A/B of the format and the test of its fallback.
     pub(crate) depth24: bool,
-    /// `MGE_XE_DEPTH_REVERSED=0`: the float depth of the frame keeps the plain convention (near
-    /// 0, far 1): for an A/B of the reversed depth (`depth::reversed`).
-    pub(crate) depth_plain: bool,
     /// `MGE_XE_ONE_DEPTH=1`: the distant land and the game in one depth buffer, with an
     /// infinite far plane (`depth::one_buffer`). Temporary, for the test of step 6 of the depth
     /// design.
     pub(crate) one_depth: bool,
-    /// `MGE_XE_PARTICLE_QUADS=cpu`: the quads of the particle systems made on the CPU, as
-    /// before the compute pass of `particle_quads`: for its A/B.
-    pub(crate) particle_quads_cpu: bool,
-    /// `MGE_XE_INSTANCE_UPLOAD=all`: the retained segment of the instances goes up whole when
-    /// more than 64 slots changed in a frame, as before the copy of `retained_upload`: for its
-    /// A/B.
-    pub(crate) instance_upload_all: bool,
-    /// `MGE_XE_LAZY_PASS=0`: a pass on the game's targets begins when it is asked for, and a
-    /// clear does not carry into the next pass, as before `Player::begin_pass`: for its A/B.
-    pub(crate) lazy_pass: bool,
-    /// `MGE_XE_PASS_GROUPS=0`: the game's draws before the world and after the post chain bind
-    /// the whole group of the texture arrays, as before `Renderer::small_array_group`: for its
-    /// A/B.
-    pub(crate) pass_groups: bool,
     /// `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the
     /// setting of the extension ([`crate::Extension::frame_latency`]): for an A/B of the
     /// mouse's lag.
@@ -137,12 +120,7 @@ impl Switches {
             record_limit: read.number::<usize>("MGE_XE_RECORD_LIMIT").map(|n| n.max(1024)),
             samples: read.number::<u32>("MGE_XE_SAMPLES").map(|n| n.clamp(1, 8)),
             depth24: read.choice("MGE_XE_DEPTH_FORMAT", &["24", "32"]) == Some("24"),
-            depth_plain: read.on("MGE_XE_DEPTH_REVERSED") == Some(false),
             one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
-            particle_quads_cpu: read.choice("MGE_XE_PARTICLE_QUADS", &["cpu", "gpu"]) == Some("cpu"),
-            instance_upload_all: read.choice("MGE_XE_INSTANCE_UPLOAD", &["all", "changed"]) == Some("all"),
-            lazy_pass: read.on("MGE_XE_LAZY_PASS") != Some(false),
-            pass_groups: read.on("MGE_XE_PASS_GROUPS") != Some(false),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
             wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),
             present: read.choice("MGE_XE_PRESENT", &["immediate", "mailbox", "fifo", "auto"]).map(|mode| match mode {

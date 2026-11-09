@@ -49,6 +49,9 @@ The gate needs what a diff cannot give:
   accepted pictures also hold the distant land and the mgeXE.toml of their time, from the testing instance.
 """
 import argparse
+import contextlib
+import inspect
+import io
 import os
 import subprocess
 import sys
@@ -171,12 +174,45 @@ def verdict(log, text):
     log.flush()
 
 
+# The start of the refusal of slot.py's `refuse_build_tool`, which replay.py calls for each replay of the gate.
+SLOT_REFUSAL = "Refused by the slot check: "
+
+
+def slot_refusal_in(output):
+    """The first sentence of the last refusal of the slot check in a stage's output, or None. A replay that the slot
+    check refused (no room on C, another holder) is no fault of the pictures, and the FAIL line must say so."""
+    refusal = None
+    for line in output.splitlines():
+        at = line.find(SLOT_REFUSAL)
+        if at >= 0:
+            refusal = line[at + len(SLOT_REFUSAL):]
+    if refusal is None:
+        return None
+    # The refusal names its tool first: "replay.py: only 29.0 GB free on C, ...".
+    tool, colon, reason = refusal.partition(": ")
+    if colon and (tool.endswith(".py") or tool == "build tool"):
+        refusal = reason
+    return refusal.split(". ")[0].strip()
+
+
+def output_since(log, start):
+    """What the log file holds after the byte `start`: the output of the stage that wrote there."""
+    with open(log.name, "rb") as file:
+        file.seek(start)
+        return file.read().decode("utf-8", "replace")
+
+
 def run_stage(name, folder, command, log):
     began = time.time()
     log.write("\n== %s: %s in %s\n" % (name, " ".join(command), folder))
     log.flush()
+    start = log.tell()
     code = subprocess.run(command, cwd=folder, env=stage_env(os.environ), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
-    verdict(log, "%s %s (%d s)%s" % ("PASS" if code == 0 else "FAIL", name, time.time() - began, "" if code == 0 else ": exit code %d" % code))
+    failure = ""
+    if code != 0:
+        refusal = slot_refusal_in(output_since(log, start))
+        failure = ": exit code %d%s" % (code, "; refused by the slot check: %s" % refusal if refusal else "")
+    verdict(log, "%s %s (%d s)%s" % ("PASS" if code == 0 else "FAIL", name, time.time() - began, failure))
     return code == 0
 
 
@@ -235,26 +271,60 @@ def is_ancestor(repo, older, newer):
     return subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", older, newer]).returncode == 0
 
 
-def take_build(slots, what, no_wait):
-    """Takes the build slot, and asks again in its queue, so that the place stays. False with --no-wait, when it must wait,
-    and on a refusal, as waiting cannot pass that."""
+def take_options(slots, stages):
+    """The options of the take: the whole build side (both places) when a stage replays, as a replay needs it (the
+    owner's D139). A slot.py from before D139 has one place, and its take has no such option."""
+    replays = any(name == "replay gate" for name, _, _ in stages)
+    if replays and "whole" in inspect.signature(slots.take).parameters:
+        return {"whole": True}
+    return {}
+
+
+# The refusal of slot.py when this session already holds the build slot under another label: another run of this
+# session, usually an earlier merge_step that still runs. The first form is slot.py's until 2026-11-09, the second its
+# plainer form after it.
+OWN_HOLD = ("this session holds it as", "your session already holds the build slot as")
+
+
+def take_build(slots, what, no_wait, options=None):
+    """Takes the build slot, and asks again in its queue, so that the place stays. A hold of another run of this session
+    (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN" line, with
+    --no-wait when it must wait, and on any other refusal, as waiting cannot pass that."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
+    waiting_for_own = False
     while True:
         try:
-            reply = slots.take("build", what, minutes=SLOT_MINUTES)
+            reply = slots.take("build", what, minutes=SLOT_MINUTES, **(options or {}))
         except slots.StateBusy as error:
             say("the state of the slots is busy, and I ask again: %s" % error)
             time.sleep(WAIT_SECONDS)
             continue
-        say(reply.text.splitlines()[0])
         if reply.code == slots.DONE:
+            # All lines: a take of the build slot names the free space on C, and warns when the cleaning is due.
+            say(reply.text)
             return True
-        if reply.code == slots.REFUSED:
+        first = reply.text.splitlines()[0]
+        own = reply.code == slots.REFUSED and any(phrase in first for phrase in OWN_HOLD)
+        if reply.code == slots.REFUSED and not own:
+            say("NOT RUN: the take of the build slot was refused: %s" % first)
             return False
         if no_wait:
-            slots.leave("build", what)
+            if not own:
+                slots.leave("build", what)
+            say("NOT RUN: --no-wait, and the build slot is not free: %s" % first)
             return False
+        if own and not waiting_for_own:
+            say("waiting: another run of this session holds the build slot, and this run starts after its release: %s" % first)
+        elif not own:
+            say(first)
+        waiting_for_own = own
         time.sleep(WAIT_SECONDS)
+
+
+def release_build(slots):
+    """Releases the build slot and prints all lines of the reply: after a build, slot.py names the free space on C and
+    warns when the cleaning is due (the owner's D138 and D141)."""
+    say(slots.release("build").text)
 
 
 def git(repo, *args):
@@ -362,7 +432,32 @@ def self_test():
         assert "out" in text
         # The verdict of each stage is in the log too, so that a kept log shows it.
         assert "== PASS good (" in text and "== FAIL bad (" in text and ": exit code 4" in text, text
+        assert "refused" not in text, "a stage with no refusal names none"
         assert summary_line([True, False, True], "x.log") == "2 of 3 stages passed; the output is in x.log"
+
+        # A replay that the slot check refused: the FAIL line names the reason, as validate_retained prints it (indented,
+        # the last lines of replay.py). An older refusal in the log before the stage does not count.
+        refused = "       Refused by the slot check: replay.py: only 29.0 GB free on C, and a build needs 30 GB. Ask the Coordinator to read the lists"
+        with open(os.path.join(root, "log5.txt"), "w", encoding="utf-8") as log:
+            assert not run_stage("replay gate", root, [sys.executable, "-c", "print(%r); raise SystemExit(1)" % refused], log)
+            assert not run_stage("after", root, [sys.executable, "-c", "raise SystemExit(4)"], log)
+        with open(os.path.join(root, "log5.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert ": exit code 1; refused by the slot check: only 29.0 GB free on C, and a build needs 30 GB\n" in text, text
+        assert "== FAIL after (" in text and text.count("refused by the slot check") == 1, text
+        assert slot_refusal_in("x\nRefused by the slot check: build tool: the build slot is held by A: x, since t. More") == "the build slot is held by A: x, since t"
+        assert slot_refusal_in("Refused by the slot check: game: x") == "game: x" and slot_refusal_in("FAIL x") is None
+
+        # The release prints every line of the reply: the free space on C and the warning follow the first line.
+        class Released:
+            @staticmethod
+            def release(slot):
+                return types.SimpleNamespace(code=0, text="%s: released: x\ndisk C: 29.0 GB free\nWARNING: below 30 GB" % slot)
+
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            release_build(Released)
+        assert shown.getvalue() == "build: released: x\ndisk C: 29.0 GB free\nWARNING: below 30 GB\n", shown.getvalue()
 
         # The gate does not run on a failed build, and a failure stops no other stage.
         good, bad = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(4)"]
@@ -399,8 +494,9 @@ def self_test():
 
             @classmethod
             def take(cls, *_, **__):
-                code = cls.replies.pop(0)
-                return types.SimpleNamespace(code=code, text="a reply")
+                reply = cls.replies.pop(0)
+                code, text = reply if isinstance(reply, tuple) else (reply, "a reply\nmore")
+                return types.SimpleNamespace(code=code, text=text)
 
             @staticmethod
             def leave(*_):
@@ -408,10 +504,67 @@ def self_test():
 
         Slots.replies = [Slots.REFUSED]
         assert take_build(Slots, "x", False) is False
+        # A take prints every line of the reply (the free space on C follows); a refusal or a wait prints the first.
         Slots.replies = [Slots.DONE]
-        assert take_build(Slots, "x", False) is True
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            assert take_build(Slots, "x", False) is True
+        assert shown.getvalue() == "a reply\nmore\n", shown.getvalue()
+        Slots.replies = [Slots.REFUSED]
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            assert take_build(Slots, "x", False) is False
+        assert shown.getvalue() == "NOT RUN: the take of the build slot was refused: a reply\n", shown.getvalue()
         Slots.replies = [Slots.QUEUED]
-        assert take_build(Slots, "x", True) is False and Slots.replies == []
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            assert take_build(Slots, "x", True) is False and Slots.replies == []
+        assert shown.getvalue() == "NOT RUN: --no-wait, and the build slot is not free: a reply\n", shown.getvalue()
+
+        # Another run of this session holds the slot (2026-11-08 23:22:44, the Coordinator): this run waits for its
+        # release, with one line, and then takes the slot. With --no-wait it ends with NOT RUN.
+        own = (Slots.REFUSED, 'build: refused: this session holds it as "merge_step: other" (since t); a take with another label is a second run.\nRun...')
+        Slots.replies = [own, own, own, Slots.DONE]
+        sleeps = []
+        real_sleep, time.sleep = time.sleep, sleeps.append
+        try:
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                assert take_build(Slots, "x", False) is True and Slots.replies == []
+        finally:
+            time.sleep = real_sleep
+        lines = shown.getvalue().splitlines()
+        assert len(sleeps) == 3 and lines[0].startswith("waiting: another run of this session holds the build slot") and lines[1:] == ["a reply", "more"], lines
+        Slots.replies = [own]
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            assert take_build(Slots, "x", True) is False
+        assert shown.getvalue().startswith("NOT RUN: --no-wait, and the build slot is not free: build: refused: this session holds it"), shown.getvalue()
+        # The plainer form of the refusal waits alike.
+        plainer = (Slots.REFUSED, 'build: refused: your session already holds the build slot as "merge_step: other" (since t); work in this session runs under that hold')
+        Slots.replies = [plainer, Slots.DONE]
+        real_sleep, time.sleep = time.sleep, sleeps.append
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert take_build(Slots, "x", False) is True and Slots.replies == []
+        finally:
+            time.sleep = real_sleep
+
+        # A round with the replay gate takes the whole build side (D139); one without takes a place; a slot.py from
+        # before D139 has no such option, and its take gets none.
+        def two_places_take(slot, who, *, minutes=None, timing=False, whole=False):
+            pass
+
+        def one_place_take(slot, who, *, minutes=None, timing=False):
+            pass
+
+        gate = [("plugin tests", root, good), ("replay gate", root, good)]
+        assert take_options(types.SimpleNamespace(take=two_places_take), gate) == {"whole": True}
+        assert take_options(types.SimpleNamespace(take=two_places_take), gate[:1]) == {}
+        assert take_options(types.SimpleNamespace(take=one_place_take), gate) == {}
+        asked = []
+        Slots.take = classmethod(lambda cls, *args, **options: asked.append(options) or types.SimpleNamespace(code=cls.DONE, text="a reply"))
+        assert take_build(Slots, "x", False, {"whole": True}) is True and asked == [{"minutes": SLOT_MINUTES, "whole": True}], asked
 
         # The log keeps its name, and its folder is made.
         logs = os.path.join(root, "new", "logs")
@@ -466,7 +619,7 @@ def main():
 
     slots = load_slots()
     what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
-    if not take_build(slots, what, args.no_wait):
+    if not take_build(slots, what, args.no_wait, take_options(slots, stages)):
         return 3
     try:
         log_path = log_path_of(commit)
@@ -476,7 +629,7 @@ def main():
             summary = summary_line(results, log_path)
             log.write("\n== %s\n" % summary)
     finally:
-        say(slots.release("build").text.splitlines()[0])
+        release_build(slots)
     say(summary)
     if not all(results):
         return 1

@@ -1452,53 +1452,20 @@ impl Renderer {
     /// colour, the texture coordinates; 36 bytes). The quads are `(right + up) * radius`
     /// and `(up - right) * radius` from the position, scaled by the size of the particle.
     /// The buffer replaces the one of the last frame under the same key. The corners are made
-    /// on the GPU (`particle_quads`), or on the CPU with `MGE_XE_PARTICLE_QUADS=cpu`.
+    /// on the GPU (`particle_quads`).
     pub(crate) fn particles(&mut self, handle: u32, radius: f32, right: [f32; 3], up: [f32; 3], particles: &[u8]) {
         let clock = ticks::Clock::now();
         const STRIDE: usize = 36;
-        const NORMAL: f32 = 0.3;
         let count = particles.len() / 20;
         let sum: [f32; 3] = core::array::from_fn(|i| (right[i] + up[i]) * radius);
         let difference: [f32; 3] = core::array::from_fn(|i| (up[i] - right[i]) * radius);
         let index = self.quad_index_buffer(count as u32);
-        if !switches().particle_quads_cpu {
-            let device = self.device.clone();
-            let quads = self.particle_quads.get_or_insert_with(|| particle_quads::ParticleQuads::new(&device));
-            let (vertex, base_vertex) = quads.add(&device, particles, sum, difference);
-            self.counts.shape_particles += 1;
-            // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-            let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: count as u32 * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex, first_index: 0, unique: None, influence_range: None, bones_needed: 0, uv: None, drawn_in: 0 };
-            self.put_geometry(handle, geometry);
-            self.counts.times[TIME_BUFFERS] += clock.elapsed();
-            return;
-        }
-        let mut bytes = Vec::with_capacity(count * 4 * STRIDE);
-        for p in particles.chunks_exact(20) {
-            let position = [float(p, 0), float(p, 4), float(p, 8)];
-            let size = float(p, 12);
-            let colour = &p[16..20];
-            let s: [f32; 3] = core::array::from_fn(|i| sum[i] * size);
-            let d: [f32; 3] = core::array::from_fn(|i| difference[i] * size);
-            let corners = [
-                ([position[0] - s[0], position[1] - s[1], position[2] - s[2]], [0.0f32, 0.0f32]),
-                ([position[0] - d[0], position[1] - d[1], position[2] - d[2]], [1.0, 0.0]),
-                ([s[0] + position[0], s[1] + position[1], s[2] + position[2]], [1.0, 1.0]),
-                ([d[0] + position[0], d[1] + position[1], d[2] + position[2]], [0.0, 1.0]),
-            ];
-            for (at, uv) in corners {
-                for v in at.iter().chain([NORMAL; 3].iter()) {
-                    bytes.extend_from_slice(&v.to_le_bytes());
-                }
-                bytes.extend_from_slice(colour);
-                bytes.extend_from_slice(&uv[0].to_le_bytes());
-                bytes.extend_from_slice(&uv[1].to_le_bytes());
-            }
-        }
-        let quads = count as u32;
-        let vertex = Rc::new(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("particles"), contents: &bytes, usage: wgpu::BufferUsages::VERTEX }));
+        let device = self.device.clone();
+        let quads = self.particle_quads.get_or_insert_with(|| particle_quads::ParticleQuads::new(&device));
+        let (vertex, place) = quads.add(&device, particles, sum, difference);
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: quads * 6, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: 0, first_index: 0, unique: None, influence_range: None, bones_needed: 0, uv: None, drawn_in: 0 };
+        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: place.indices, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: place.first_vertex as i32, first_index: 0, unique: None, influence_range: None, bones_needed: 0, uv: None, drawn_in: 0 };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }
