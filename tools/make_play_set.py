@@ -93,7 +93,26 @@ KEPT_RUNS = "E:/nirender-keep/runs-%s"
 HARNESS = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
 BATCH = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua"))
 LIVECODING = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua"))
-BASELINE = os.path.join(PLUGIN_REPO, "results", "baseline-records")
+BASELINE_PARTS = ("results", "baseline-records")
+
+
+def has_captures(folder):
+    """Whether a baseline folder holds the captures that the replay gate replays."""
+    return os.path.isdir(folder) and any(name.endswith(".nircap") for name in os.listdir(folder))
+
+
+def accepted_baseline(tree, main):
+    """The folder of the gate's accepted captures: the tree's own when it has captures, else the main checkout's
+    (`main`). results/ is not tracked, so a worktree in C:/tmp has none (2026-11-09: a merge_step of a worktree group
+    failed its gate at 0 s, after its builds). The tree's own when neither has captures, so that a check names it."""
+    near = os.path.join(tree, *BASELINE_PARTS)
+    if has_captures(near) or not main:
+        return near
+    far = os.path.join(main, *BASELINE_PARTS)
+    return far if has_captures(far) else near
+
+
+BASELINE = accepted_baseline(PLUGIN_REPO, main_checkout())
 PLUGIN_TARGET = os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
 TOUR_CELLS = "@nifTest_1;@nifTest_2;@nifTest_3"
 TESTING_MODLIST = "D:/Modlists/Morrowind75testing/profiles/Default/modlist.txt"
@@ -322,26 +341,43 @@ def slot_label(what):
     return "make_play_set: %s" % what
 
 
+@contextlib.contextmanager
+def slot_asker(slots, slot):
+    """The asks of a loop of takes of one slot, as a function (who, **kind) -> the reply. It asks through slot.py's
+    LoopWaiter when the slot tool has it: a `leave` of the loop's place then ends the wait at its next ask (WAIT_ENDED),
+    where a loop of plain takes asks again and takes a new place (2026-11-09 07:51, a merge_step after its leave). A
+    slot.py from before LoopWaiter gets plain takes."""
+    waiter_kind = getattr(slots, "LoopWaiter", None)
+    if waiter_kind is None:
+        yield lambda who, **kind: slots.take(slot, who, **kind)
+        return
+    with waiter_kind(slot) as waiter:
+        yield waiter.take
+
+
 def ask_slot(slots, slot, what, no_wait, whole=False):
     """Takes a slot, and waits in its queue. It asks again at each wait, so that it keeps its place. `whole` asks
     for both places of the build side. Returns "" when it holds the slot, else the first line of the reply that
-    ends the wait: a refusal, or a place in the queue with `no_wait`."""
+    ends the wait: a refusal, the end of the wait after a `leave` of its place, or a place in the queue with
+    `no_wait`."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     kind = {"whole": True} if whole else {}
-    while True:
-        try:
-            reply = slots.take(slot, slot_label(what), minutes=SLOT_MINUTES, **kind)
-        except slots.StateBusy as error:
-            say("the state of the slots is busy, and I ask again: %s" % error)
+    with slot_asker(slots, slot) as ask:
+        while True:
+            try:
+                reply = ask(slot_label(what), minutes=SLOT_MINUTES, **kind)
+            except slots.StateBusy as error:
+                say("the state of the slots is busy, and I ask again: %s" % error)
+                time.sleep(WAIT_SECONDS)
+                continue
+            first = reply.text.splitlines()[0]
+            say(first)
+            if reply.code == slots.DONE:
+                return ""
+            # Only a place in the queue waits: a refusal and the end of a wait (WAIT_ENDED) stop it.
+            if no_wait or reply.code != slots.QUEUED:
+                return first
             time.sleep(WAIT_SECONDS)
-            continue
-        first = reply.text.splitlines()[0]
-        say(first)
-        if reply.code == slots.DONE:
-            return ""
-        if no_wait or reply.code == slots.REFUSED:
-            return first
-        time.sleep(WAIT_SECONDS)
 
 
 def take_game(slots, what, no_wait):
@@ -887,6 +923,22 @@ def self_test():
     global WAIT_SECONDS
     import io
 
+    # The accepted baseline: the tree's when it has captures, else the main checkout's; the tree's when neither has
+    # (a worktree in C:/tmp has no results/: 2026-11-09, Rob's merge_step).
+    with tempfile.TemporaryDirectory() as folder:
+        tree, main = os.path.join(folder, "tree"), os.path.join(folder, "main")
+        tree_baseline, main_baseline = os.path.join(tree, *BASELINE_PARTS), os.path.join(main, *BASELINE_PARTS)
+        assert accepted_baseline(tree, main) == tree_baseline, "neither has captures: the tree's, for the check to name"
+        os.makedirs(main_baseline)
+        open(os.path.join(main_baseline, "seyda.nircap"), "wb").close()
+        assert accepted_baseline(tree, main) == main_baseline, "the tree has no results/"
+        os.makedirs(tree_baseline)
+        assert accepted_baseline(tree, main) == main_baseline, "the tree's folder has no capture"
+        open(os.path.join(tree_baseline, "narsis.nircap"), "wb").close()
+        assert accepted_baseline(tree, main) == tree_baseline, "the tree's own captures first"
+        assert accepted_baseline(tree, None) == tree_baseline
+        assert has_captures(main_baseline) and not has_captures(os.path.join(folder, "none"))
+
     # Two sets' gates at the same second write into two folders, outside the baseline folder.
     when = time.localtime()
     first, second = gate_now("tree", "E:/sets/f202", when), gate_now("tree", "E:/sets/f203", when)
@@ -993,6 +1045,39 @@ def self_test():
             assert "the game slot for x" in str(stop)
         else:
             raise AssertionError("a refusal of the game slot went on")
+
+        # With slot.py's LoopWaiter, a leave of the place ends the wait: ask_slot stops at WAIT_ENDED, and a stage is
+        # NOT RUN (2026-11-09 07:51). The plain takes of Side are not used. A slot.py without LoopWaiter gets plain
+        # takes: the tests above.
+        class Waiting(Side):
+            WAIT_ENDED = 5
+            asked, waiter_asks = [], []
+
+            class LoopWaiter:
+                def __init__(self, slot):
+                    self.slot = slot
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    pass
+
+                def take(self, who, **kind):
+                    Waiting.waiter_asks.append((self.slot, who, kind.get("whole", False)))
+                    return types.SimpleNamespace(code=Waiting.replies.pop(0), text="build: this wait ended without the slot: the place was left\nmore")
+
+        Waiting.replies = [Slots.QUEUED, Waiting.WAIT_ENDED]
+        with contextlib.redirect_stdout(io.StringIO()):
+            stop = ask_slot(Waiting, "build", "x", False, whole=True)
+        assert stop.startswith("build: this wait ended") and Waiting.replies == [], stop
+        assert Waiting.asked == [] and Waiting.waiter_asks == [("build", "make_play_set: x", True)] * 2, (Waiting.asked, Waiting.waiter_asks)
+        Waiting.replies = [Waiting.WAIT_ENDED]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), whole_build_side(Waiting, "x", False):
+                raise AssertionError("the stage ran after the end of its wait")
+        except SmokeNotRun as stop:
+            assert "this wait ended" in str(stop), stop
     finally:
         WAIT_SECONDS = wait_seconds
     # A replay that the slot check refused is NOT RUN in validate_tour.py's output, and no failed picture.

@@ -69,7 +69,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
 from common import git_env  # noqa: E402
-from make_play_set import BASELINE, WAIT_SECONDS, load_slots, say  # noqa: E402
+from make_play_set import BASELINE, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
@@ -142,6 +142,14 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
 
 def needs_clean_sibling(stages):
     return any(name in ("replay gate", "d3d8 build", "build of the dist") for name, _, _ in stages)
+
+
+def baseline_problem(stages, baseline):
+    """Why the replay gate of these stages cannot compare, as a text, or None. main() asks before the take and the
+    builds: a baseline with no captures failed the gate only after them (2026-11-09, Rob's run 8b51a23d59)."""
+    if not any(name == "replay gate" for name, _, _ in stages) or has_captures(baseline):
+        return None
+    return "%s has no capture (*.nircap), so the replay gate cannot compare: give --baseline a folder with the captures" % baseline
 
 
 def tree_problem(kind, repo, stages, head, commit, changed, sibling_changed=False):
@@ -322,36 +330,41 @@ OWN_HOLD = ("this session holds it as", "your session already holds the build sl
 def take_build(slots, what, no_wait, options=None):
     """Takes the build slot, and asks again in its queue, so that the place stays. A hold of another run of this session
     (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN" line, with
-    --no-wait when it must wait, and on any other refusal, as waiting cannot pass that."""
+    --no-wait when it must wait, on the end of the wait after a `leave` of its place, and on any other refusal, as
+    waiting cannot pass that."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     waiting_for_own = False
-    while True:
-        try:
-            reply = slots.take("build", what, minutes=SLOT_MINUTES, **(options or {}))
-        except slots.StateBusy as error:
-            say("the state of the slots is busy, and I ask again: %s" % error)
+    with slot_asker(slots, "build") as ask:
+        while True:
+            try:
+                reply = ask(what, minutes=SLOT_MINUTES, **(options or {}))
+            except slots.StateBusy as error:
+                say("the state of the slots is busy, and I ask again: %s" % error)
+                time.sleep(WAIT_SECONDS)
+                continue
+            if reply.code == slots.DONE:
+                # All lines: a take of the build slot names the free space on C, and warns when the cleaning is due.
+                say(reply.text)
+                return True
+            first = reply.text.splitlines()[0]
+            if reply.code == getattr(slots, "WAIT_ENDED", None):
+                say("NOT RUN: this run left the queue of the build slot: %s" % first)
+                return False
+            own = reply.code == slots.REFUSED and any(phrase in first for phrase in OWN_HOLD)
+            if reply.code == slots.REFUSED and not own:
+                say("NOT RUN: the take of the build slot was refused: %s" % first)
+                return False
+            if no_wait:
+                if not own:
+                    slots.leave("build", what)
+                say("NOT RUN: --no-wait, and the build slot is not free: %s" % first)
+                return False
+            if own and not waiting_for_own:
+                say("waiting: another run of this session holds the build slot, and this run starts after its release: %s" % first)
+            elif not own:
+                say(first)
+            waiting_for_own = own
             time.sleep(WAIT_SECONDS)
-            continue
-        if reply.code == slots.DONE:
-            # All lines: a take of the build slot names the free space on C, and warns when the cleaning is due.
-            say(reply.text)
-            return True
-        first = reply.text.splitlines()[0]
-        own = reply.code == slots.REFUSED and any(phrase in first for phrase in OWN_HOLD)
-        if reply.code == slots.REFUSED and not own:
-            say("NOT RUN: the take of the build slot was refused: %s" % first)
-            return False
-        if no_wait:
-            if not own:
-                slots.leave("build", what)
-            say("NOT RUN: --no-wait, and the build slot is not free: %s" % first)
-            return False
-        if own and not waiting_for_own:
-            say("waiting: another run of this session holds the build slot, and this run starts after its release: %s" % first)
-        elif not own:
-            say(first)
-        waiting_for_own = own
-        time.sleep(WAIT_SECONDS)
 
 
 def release_build(slots):
@@ -593,6 +606,19 @@ def self_test():
         # A pass against a named folder does not move the ref.
         assert moves_the_ref(BASELINE) and not moves_the_ref(os.path.join(root, "copy"))
 
+        # A baseline with no capture refuses a round with the replay gate before its take and builds (Rob's run
+        # 8b51a23d59 failed the gate at 0 s after its builds); a round with no gate needs no baseline.
+        empty, filled = os.path.join(root, "empty-baseline"), os.path.join(root, "filled-baseline")
+        os.makedirs(empty)
+        os.makedirs(filled)
+        open(os.path.join(filled, "seyda.nircap"), "wb").close()
+        gate_round = stages_for("plugin", plugin, ["host/src/retained.rs"], empty)
+        problem = baseline_problem(gate_round, empty)
+        assert problem and empty in problem and "no capture" in problem, problem
+        assert baseline_problem(gate_round, os.path.join(root, "no-such-folder")), "a missing folder"
+        assert baseline_problem(stages_for("plugin", plugin, ["host/src/retained.rs"], filled), filled) is None
+        assert baseline_problem(stages_for("plugin", plugin, ["src/lib.rs"], empty), empty) is None, "no gate, no baseline"
+
         # A refusal for lack of room ends the wait, and a place in the queue goes on.
         class Slots:
             DONE, REFUSED, QUEUED = 0, 1, 3
@@ -674,6 +700,38 @@ def self_test():
         Slots.take = classmethod(lambda cls, *args, **options: asked.append(options) or types.SimpleNamespace(code=cls.DONE, text="a reply"))
         assert take_build(Slots, "x", False, {"whole": True}) is True and asked == [{"minutes": SLOT_MINUTES, "whole": True}], asked
 
+        # With slot.py's LoopWaiter, a leave of the place ends the wait: the next ask returns WAIT_ENDED, and the run is
+        # NOT RUN with no take (2026-11-09 07:51: a loop of plain takes took the whole side after its leave). The plain
+        # take of this fake gives the slot, so a loop that does not ask through the waiter takes it.
+        class Waiting(Slots):
+            WAIT_ENDED = 5
+            asks = []
+
+            class LoopWaiter:
+                def __init__(self, slot):
+                    Waiting.asks.append(("enter", slot))
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    Waiting.asks.append(("exit",))
+
+                def take(self, who, **_):
+                    Waiting.asks.append(("ask", who))
+                    return types.SimpleNamespace(code=Waiting.replies.pop(0), text="build: this wait ended without the slot: the place was left or dropped\nmore")
+
+        Waiting.replies = [Slots.QUEUED, Waiting.WAIT_ENDED]
+        real_sleep, time.sleep = time.sleep, sleeps.append
+        try:
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                assert take_build(Waiting, "x", False) is False and Waiting.replies == []
+        finally:
+            time.sleep = real_sleep
+        assert Waiting.asks == [("enter", "build"), ("ask", "x"), ("ask", "x"), ("exit",)], Waiting.asks
+        assert shown.getvalue().splitlines()[-1] == "NOT RUN: this run left the queue of the build slot: build: this wait ended without the slot: the place was left or dropped", shown.getvalue()
+
         # The log keeps its name, and its folder is made.
         logs = os.path.join(root, "new", "logs")
         assert log_path_of("0123456789abcdef", logs) == os.path.join(logs, "merge-step-0123456789.log") and os.path.isdir(logs)
@@ -725,6 +783,10 @@ def main():
     problem = tree_problem(kind, repo, stages, git(repo, "rev-parse", "HEAD"), commit, bool(git(repo, "status", "--porcelain", "--untracked-files=no")), sibling_changed)
     if problem:
         say("FAIL the tree: %s" % problem)
+        return 1
+    problem = baseline_problem(stages, baseline)
+    if problem:
+        say("FAIL the baseline: %s" % problem)
         return 1
     sibling_hash = git(sibling, "rev-parse", "--short=10", "HEAD") if has_sibling else "none"
     say("%s %s, sibling %s, baseline %s: %d changed paths from %s; stages: %s" % (os.path.basename(repo), commit[:10], sibling_hash, baseline, len(paths), base[:10], ", ".join(name for name, _, _ in stages)))
