@@ -1387,6 +1387,28 @@ unsafe fn reject_at_record(mt: &MainThread, t: &mut Tables, shape: usize, cause:
     t.reject_pending(shape, true);
 }
 
+/// The reject test at a turn of every 64th frame that no event made due (`display_work`).
+/// A Lua write that no notifier reported and that rejects the shape (a depth function, a
+/// controller) then reaches the table at the 64th frame, as every other write does. True
+/// when the shape left the table. Else the live state is updated as at a recheck, but the
+/// generation stays: a new generation would make every instance send its notes again.
+unsafe fn periodic_reject(mt: &MainThread, t: &mut Tables, shape: usize, property_state: usize) -> bool {
+    let rechecks = &mut *RECHECKS.get(mt);
+    let mut live = false;
+    if reject_reason(shape, property_state, &mut live).is_some() {
+        rechecks[6] += 1;
+        t.reject_pending(shape, true);
+        return true;
+    }
+    if let Some(instance) = t.instances.get_mut(&shape) {
+        if instance.live != live {
+            rechecks[5] += 1;
+        }
+        instance.live = live || instance.live;
+    }
+    false
+}
+
 /// The lines of `Tables::note_end` in the log of a session; the report counts them all.
 const MOST_END_LINES: u64 = 64;
 
@@ -1757,9 +1779,9 @@ pub enum Recheck {
 }
 
 /// The rechecks asked for (by cause: 0 a property state, 1 an effect state, 2 a Lua
-/// change), the rechecks done (3), the instances they rejected (4), and the instances whose
-/// live state changed (5).
-static RECHECKS: MainCell<[u64; 6]> = MainCell::new([0; 6]);
+/// change), the rechecks done (3), the instances they rejected (4), the instances whose
+/// live state changed (5), and the instances that the turn of every 64th frame rejected (6).
+static RECHECKS: MainCell<[u64; 7]> = MainCell::new([0; 7]);
 
 /// The objects a Lua mod changed (`nirender.changed`, from
 /// `mod/MWSE/mods/nirender/notifier.lua`): [`ChangeNotes`].
@@ -2294,6 +2316,13 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     instance.software = software;
     let event_due = note_every() || instance.live || !instance.sent || effects_changed || software_changed || instance.generation != generation;
     let due = event_due || id.wrapping_add(frame).is_multiple_of(CHECK_FRAMES);
+    if due && !event_due && periodic_reject(mt, t, shape, property_state) {
+        return false;
+    }
+    let Some(instance) = t.instances.get_mut(&shape) else {
+        mark(shape, false);
+        return false;
+    };
     if due {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         // A skinned geometry is packed with the bone influences of its skin.
@@ -2602,8 +2631,8 @@ pub unsafe fn report(mt: &MainThread) -> String {
         t.light_records
     ) + "\n"
         + &format!(
-            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; Lua change notes {}, display checks {} ({:.3} ms, the worst frame {:.3} ms), shapes hit {}, clears of the changed objects {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}; the note of every 64th frame found changed: {}\n",
-            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], notes, change_notes[0], change_ms[0], change_ms[1].max(change_ms[2]), change_notes[1], clears, t.effects.len(), t.effect_notes, t.texture_notes,
+            "rechecks: asked by a new property state {}, by a new effect state {}, by a Lua change {}; done {}, rejected {}, live changed {}; rejected by the turn of every 64th frame {}; Lua change notes {}, display checks {} ({:.3} ms, the worst frame {:.3} ms), shapes hit {}, clears of the changed objects {}; texture effects watched {}, materials noted again for a changed effect {}, for a freed texture {}; the note of every 64th frame found changed: {}\n",
+            rechecks[0], rechecks[1], rechecks[2], rechecks[3], rechecks[4], rechecks[5], rechecks[6], notes, change_notes[0], change_ms[0], change_ms[1].max(change_ms[2]), change_notes[1], clears, t.effects.len(), t.effect_notes, t.texture_notes,
             crate::material_stream::GROUP_NAMES.iter().zip(t.periodic_changes).map(|(name, n)| format!("{name} {n}")).collect::<Vec<_>>().join(", ")
         )
         + &format!(
@@ -3329,6 +3358,42 @@ mod tests {
             }
             assert_eq!(*HANDED_BACK.get(&mt), handed_back + 2);
             assert_eq!(take_shown_list(&mt), None);
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// A kept shape whose depth function a Lua write changes in place to "greater", with no
+    /// notifier call, leaves the table at its next turn of every 64th frame (W70). With "less
+    /// or equal" it stays.
+    #[test]
+    fn the_64th_frame_turn_rejects_a_depth_function_changed_in_place() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[81]);
+            let shape = test.shapes[0];
+            let mut z_buffer = vec![0u32; 0x20];
+            let mut property_state = vec![0u32; 0x20];
+            let (z, state) = (z_buffer.as_mut_ptr() as usize, property_state.as_mut_ptr() as usize);
+            wr(state, PS::propZBuffer, z);
+            wr::<u16>(z, PROPERTY_FLAGS, 1);
+            wr::<u32>(z, ZP::testFunction, 3);
+            let rejects = (*RECHECKS.get(&mt))[6];
+
+            assert!(!periodic_reject(&mt, &mut tables(&mt), shape, state));
+            assert!(tables(&mt).instances.contains_key(&shape));
+            assert_eq!((*RECHECKS.get(&mt))[6], rejects);
+
+            wr::<u32>(z, ZP::testFunction, 4);
+            assert!(periodic_reject(&mt, &mut tables(&mt), shape, state));
+            assert!(!tables(&mt).instances.contains_key(&shape));
+            assert_eq!((*RECHECKS.get(&mt))[6], rejects + 1);
+
+            assert!(tables(&mt).rejected.remove(&shape));
             test.end(&mt);
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
