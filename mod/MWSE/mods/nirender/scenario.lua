@@ -85,9 +85,14 @@ return function(nirender, spec, name)
             end
             -- South of the object, with the view to the north, at it.
             local at = ref.position
-            tes3.player.position = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
+            local target = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
+            tes3.player.position = target
             tes3.player.orientation = tes3vector3.new(0, 0, 0)
             scenario.after(spec.tourSeconds or 1.5, function()
+                -- The player is still at the place of this stop (a step of up to 5 units is allowed).
+                local place = tes3.player.position
+                scenario.say("tour: stop %d %s: move held %s, at %.0f %.0f %.0f, target %.0f %.0f %.0f", index, ref.object.id,
+                    place:distance(target) <= 5 and "yes" or "NO", place.x, place.y, place.z, target.x, target.y, target.z)
                 if each then
                     each(index, ref, function() stop(index + 1) end)
                 else
