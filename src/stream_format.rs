@@ -76,7 +76,8 @@
 /// 2026-11-08). A helper of format 7 would draw nothing of the table in the main view. 9: the
 /// scene flag `link::SCENE_LIKE_EXTERIOR` is the one source of "the cell is like an exterior",
 /// and MGE XE's environment record no longer has it (W84, 2026-11-09). A helper of format 8 would
-/// take every cell for a plain interior.
+/// take every cell for a plain interior. A shape record no longer ends with the world bound of the
+/// shape (the retired flag 0x400; no reader since the D126 batch 1).
 pub const STREAM_FORMAT: u32 = 9;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
