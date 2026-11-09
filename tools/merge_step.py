@@ -1018,52 +1018,113 @@ def self_test():
         assert "merge_step: x aaaaaaaaaa (game slot)" in shown.getvalue(), shown.getvalue()
         assert "NOT RUN: --no-wait, and the game slot is not free" in shown.getvalue(), shown.getvalue()
 
-        # A check that waits for the build side keeps its place in the game queue: it holds the free game slot at its first
-        # wait, and another session that asks for the game meanwhile gets no place before it. (2026-11-09: the check waited
-        # for the build side with no ask for the game, and a timing take got the game slot first.)
+        # A check that waits for the build side keeps its place in the game queue (2026-11-09: the check waited for the build
+        # side with no ask for the game, and a timing take got the game slot first). Two other sessions hold both build places
+        # and free them from inside the wait, at the wait that each case names. A case has a bound: a fault that keeps the
+        # build side held ends the case with an assert and not with a wait with no end.
         own_session = os.environ["CLAUDE_CODE_SESSION_ID"]
+        builders = ("builder-1", "builder-2")
+        real_ask_in_queue = GamePlace.ask_in_queue
+        real_note_active = slots.note_active
+        real_wait_seconds = globals()["WAIT_SECONDS"]
+        DEADLINE_SECONDS = 30
 
         def as_session(name):
             os.environ["CLAUDE_CODE_SESSION_ID"] = name
 
-        for other in ("builder-1", "builder-2"):
-            as_session("merge-step-self-test-" + other)
-            assert slots.take("build", "other: " + other, minutes=5).code == slots.DONE
-        as_session(own_session)
-        seen = []
-        real_ask_in_queue = GamePlace.ask_in_queue
-        real_wait_seconds = globals()["WAIT_SECONDS"]
-
-        def ask_then_let_others_act(self):
-            real_ask_in_queue(self)
-            if seen:
-                return
-            seen.append(self.held)
-            as_session("merge-step-self-test-gamer")
-            seen.append(slots.take("game", "other: a game", minutes=5).code)
-            # A take that got the slot (the fault under test) is released, so that the round ends and the asserts below fail.
-            slots.release("game", "other: a game")
-            slots.leave("game", "other: a game")
-            for other in ("builder-1", "builder-2"):
+        def free_build_side():
+            for other in builders:
                 as_session("merge-step-self-test-" + other)
                 assert slots.release("build", "other: " + other).code == slots.DONE
             as_session(own_session)
 
-        GamePlace.ask_in_queue = ask_then_let_others_act
-        globals()["WAIT_SECONDS"] = 0.05
-        try:
-            waiting_output = io.StringIO()
-            with contextlib.redirect_stdout(waiting_output):
-                waiting_round = run_round(slots, [("both held", root, both_held)], "merge_step: x ffffffffff", round_log, False)
-        finally:
-            GamePlace.ask_in_queue = real_ask_in_queue
-            globals()["WAIT_SECONDS"] = real_wait_seconds
+        def round_that_waits(what, on_wait):
+            """The output and the game notes of a round that waits for the build side. `on_wait(count, place)` runs at
+            each wait of the build take, after the round's own ask for the game. An exception of `on_wait` ends the round
+            and reaches the caller."""
+            for other in builders:
+                as_session("merge-step-self-test-" + other)
+                assert slots.take("build", "other: " + other, minutes=5).code == slots.DONE
             as_session(own_session)
-        assert seen, "the round did not wait for the build side: the test does not test the wait"
-        assert seen[0] is True, "the check does not hold the free game slot while it waits for the build side"
-        assert seen[1] != slots.DONE, "another session got the game slot before the check"
-        assert "game held for the merge check, waiting for the build side since " in waiting_output.getvalue(), waiting_output.getvalue()
+            waits = []
+            game_notes = []
+
+            def asked(place):
+                real_ask_in_queue(place)
+                waits.append(place)
+                on_wait(len(waits), place, game_notes)
+
+            def noted(slot, now):
+                if slot == "game":
+                    game_notes.append(now)
+                return real_note_active(slot, now)
+
+            outcome = {}
+
+            def run():
+                try:
+                    outcome["round"] = run_round(slots, [("both held", root, both_held)], what, round_log, False)
+                except BaseException as error:  # a KeyboardInterrupt of `on_wait` too
+                    outcome["error"] = error
+
+            # The round runs in a thread that the case gives a deadline: a fault that keeps the build side held (the ask for
+            # the game removed, so that nothing frees it) ends the case with an assert and not with a wait with no end.
+            GamePlace.ask_in_queue = asked
+            slots.note_active = noted
+            globals()["WAIT_SECONDS"] = 0.05
+            output = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(output):
+                    thread = threading.Thread(target=run, daemon=True)
+                    thread.start()
+                    thread.join(DEADLINE_SECONDS)
+            finally:
+                GamePlace.ask_in_queue = real_ask_in_queue
+                slots.note_active = real_note_active
+                globals()["WAIT_SECONDS"] = real_wait_seconds
+                as_session(own_session)
+            assert not thread.is_alive(), "the round still waits for the build side after %d s (%d waits): nothing freed it" % (DEADLINE_SECONDS, len(waits))
+            if "error" in outcome:
+                raise outcome["error"]
+            return outcome["round"], output.getvalue()
+
+        # Case 1: the check holds the free game slot at its first wait, notes its work at the next wait, and another session
+        # that asks for the game meanwhile gets no place before it.
+        seen = {}
+
+        def let_others_act(count, place, game_notes):
+            if count == 1:
+                seen["held at the first wait"] = place.held
+                as_session("merge-step-self-test-gamer")
+                seen["game take of another session"] = slots.take("game", "other: a game", minutes=5).code
+                # A take that got the slot (the fault under test) is released, so that the round ends and the asserts below fail.
+                slots.release("game", "other: a game")
+                slots.leave("game", "other: a game")
+                as_session(own_session)
+            elif count == 2:
+                seen["game notes at the second wait"] = len(game_notes)
+                free_build_side()
+
+        waiting_round, waiting_output = round_that_waits("merge_step: x ffffffffff", let_others_act)
+        assert seen.get("held at the first wait") is True, "the check does not hold the free game slot while it waits for the build side: %s" % seen
+        assert seen.get("game take of another session") != slots.DONE, "another session got the game slot before the check: %s" % seen
+        assert seen.get("game notes at the second wait", 0) >= 1, "the check does not note the work of the game slot it holds while it waits: %s" % seen
+        assert "game held for the merge check, waiting for the build side since " in waiting_output, waiting_output
         assert waiting_round is not None and waiting_round[0] == [True], waiting_round
+        assert holders() == [], holders()
+
+        # Case 2: a Ctrl-C in the wait, after the early hold, releases the game slot (else it stays held for its whole lease).
+        def interrupt_at_the_second_wait(count, place, game_notes):
+            if count == 2:
+                raise KeyboardInterrupt
+
+        try:
+            round_that_waits("merge_step: x gggggggggg", interrupt_at_the_second_wait)
+            raise AssertionError("the interrupt did not reach the caller")
+        except KeyboardInterrupt:
+            pass
+        assert "game.holder" not in holders(), "a Ctrl-C in the wait leaves the game slot held: %s" % holders()
+        free_build_side()
         assert holders() == [], holders()
 
         # The notes of the game slot's work: one at once, then one each period, and none after the round.
