@@ -590,8 +590,15 @@ def keep_holds(slots, what, game, options, no_wait, log):
     A/B were then refused by the slot check. The take again waits in the queue like the first take, keeps the run's place
     in the game queue meanwhile, and logs one line for each take. False when a take again did not give the slot."""
     needed = len(slots.units_of("build")) if options.get("whole") else 1
+    owner = slots.owner_of(slots.session_id(), what)
     for _ in range(KEEP_ROUNDS):
-        slots.note_active("build", time.time())
+        # The build work of the places of this run, as the hook and the tool checks of slot.py note it: a hold of another run
+        # gets no note. A slot.py from before `note_holder_build` has the one note for the slot.
+        note_holder_build = getattr(slots, "note_holder_build", None)
+        if note_holder_build is not None:
+            note_holder_build(owner, time.time())
+        else:
+            slots.note_active("build", time.time())
         lost = False
         held = places_held(slots, "build", what)
         if held is not None and held < needed:
@@ -1344,7 +1351,9 @@ def self_test():
             assert slots.take("build", "other: " + builders[0], minutes=5, whole=True).code == slots.DONE
             as_session(own_session)
             refused = io.StringIO()
+            seen_before = [slots.last_active(unit) for unit in slots.units_of("build")]
             assert keep_holds(slots, what, game, {}, True, refused) is False, "no wait: nothing is taken again"
+            assert [slots.last_active(unit) for unit in slots.units_of("build")] == seen_before, "the run notes build work for a hold of another session"
         assert "taking it again" in refused.getvalue()
         as_session("merge-step-self-test-" + builders[0])
         assert slots.release("build", "other: " + builders[0]).code == slots.DONE
@@ -1354,6 +1363,40 @@ def self_test():
             assert run_stages([("a", root, good), ("b", root, good)], stopped, lambda: False) == [False, False]
             stopped.seek(0)
             assert "== NOT RUN a: the slot hold of this run ended and was not taken again" in stopped.read()
+
+        # Case 6: both holds lapse, the game is taken by another session, and the build side lapses again while the run waits for
+        # the game. The run takes the game, then looks again, and takes the build side a second time.
+        what = "merge_step: x kkkkkkkkkk"
+        with slot_asker(slots, "game") as game_ask, contextlib.redirect_stdout(io.StringIO()):
+            game = GamePlace(slots, GAME_LABEL % what, game_ask)
+            assert slots.take("build", what, minutes=5).code == slots.DONE and game.take(False)
+            lapse_now()
+            assert holders() == [], holders()
+            as_session("merge-step-self-test-gamer")
+            assert slots.take("game", "other: a game", minutes=5).code == slots.DONE
+            as_session(own_session)
+            lapsed_while_waiting = []
+            sleeps_for_the_game = []
+
+            def lapse_while_waiting(seconds):
+                # The first wait for the game: the build side of the run lapses, and so does the hold of the other session.
+                sleeps_for_the_game.append(seconds)
+                assert len(sleeps_for_the_game) < 40, "the run waits for a game that nothing frees"
+                if not lapsed_while_waiting:
+                    lapsed_while_waiting.append(1)
+                    lapse_now()
+
+            twice = io.StringIO()
+            real_sleep, time.sleep = time.sleep, lapse_while_waiting
+            try:
+                assert keep_holds(slots, what, game, {}, False, twice) is True
+            finally:
+                time.sleep = real_sleep
+            assert places_held(slots, "build", what) == 1 and places_held(slots, "game", game.label) == 1, "both holds are the run's after the second look: " + twice.getvalue()
+            assert twice.getvalue().count("re-took the build side") == 2 and game.retakes == 1, twice.getvalue()
+            game.release()
+            slots.release("build", what)
+        assert holders() == [], holders()
 
         # The notes of the game slot's work: one at once, then one each period, and none after the round.
         noted = []
