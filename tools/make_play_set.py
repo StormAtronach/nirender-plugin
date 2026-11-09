@@ -322,26 +322,43 @@ def slot_label(what):
     return "make_play_set: %s" % what
 
 
+@contextlib.contextmanager
+def slot_asker(slots, slot):
+    """The asks of a loop of takes of one slot, as a function (who, **kind) -> the reply. It asks through slot.py's
+    LoopWaiter when the slot tool has it: a `leave` of the loop's place then ends the wait at its next ask (WAIT_ENDED),
+    where a loop of plain takes asks again and takes a new place (2026-11-09 07:51, a merge_step after its leave). A
+    slot.py from before LoopWaiter gets plain takes."""
+    waiter_kind = getattr(slots, "LoopWaiter", None)
+    if waiter_kind is None:
+        yield lambda who, **kind: slots.take(slot, who, **kind)
+        return
+    with waiter_kind(slot) as waiter:
+        yield waiter.take
+
+
 def ask_slot(slots, slot, what, no_wait, whole=False):
     """Takes a slot, and waits in its queue. It asks again at each wait, so that it keeps its place. `whole` asks
     for both places of the build side. Returns "" when it holds the slot, else the first line of the reply that
-    ends the wait: a refusal, or a place in the queue with `no_wait`."""
+    ends the wait: a refusal, the end of the wait after a `leave` of its place, or a place in the queue with
+    `no_wait`."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     kind = {"whole": True} if whole else {}
-    while True:
-        try:
-            reply = slots.take(slot, slot_label(what), minutes=SLOT_MINUTES, **kind)
-        except slots.StateBusy as error:
-            say("the state of the slots is busy, and I ask again: %s" % error)
+    with slot_asker(slots, slot) as ask:
+        while True:
+            try:
+                reply = ask(slot_label(what), minutes=SLOT_MINUTES, **kind)
+            except slots.StateBusy as error:
+                say("the state of the slots is busy, and I ask again: %s" % error)
+                time.sleep(WAIT_SECONDS)
+                continue
+            first = reply.text.splitlines()[0]
+            say(first)
+            if reply.code == slots.DONE:
+                return ""
+            # Only a place in the queue waits: a refusal and the end of a wait (WAIT_ENDED) stop it.
+            if no_wait or reply.code != slots.QUEUED:
+                return first
             time.sleep(WAIT_SECONDS)
-            continue
-        first = reply.text.splitlines()[0]
-        say(first)
-        if reply.code == slots.DONE:
-            return ""
-        if no_wait or reply.code == slots.REFUSED:
-            return first
-        time.sleep(WAIT_SECONDS)
 
 
 def take_game(slots, what, no_wait):
@@ -993,6 +1010,39 @@ def self_test():
             assert "the game slot for x" in str(stop)
         else:
             raise AssertionError("a refusal of the game slot went on")
+
+        # With slot.py's LoopWaiter, a leave of the place ends the wait: ask_slot stops at WAIT_ENDED, and a stage is
+        # NOT RUN (2026-11-09 07:51). The plain takes of Side are not used. A slot.py without LoopWaiter gets plain
+        # takes: the tests above.
+        class Waiting(Side):
+            WAIT_ENDED = 5
+            asked, waiter_asks = [], []
+
+            class LoopWaiter:
+                def __init__(self, slot):
+                    self.slot = slot
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    pass
+
+                def take(self, who, **kind):
+                    Waiting.waiter_asks.append((self.slot, who, kind.get("whole", False)))
+                    return types.SimpleNamespace(code=Waiting.replies.pop(0), text="build: this wait ended without the slot: the place was left\nmore")
+
+        Waiting.replies = [Slots.QUEUED, Waiting.WAIT_ENDED]
+        with contextlib.redirect_stdout(io.StringIO()):
+            stop = ask_slot(Waiting, "build", "x", False, whole=True)
+        assert stop.startswith("build: this wait ended") and Waiting.replies == [], stop
+        assert Waiting.asked == [] and Waiting.waiter_asks == [("build", "make_play_set: x", True)] * 2, (Waiting.asked, Waiting.waiter_asks)
+        Waiting.replies = [Waiting.WAIT_ENDED]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), whole_build_side(Waiting, "x", False):
+                raise AssertionError("the stage ran after the end of its wait")
+        except SmokeNotRun as stop:
+            assert "this wait ended" in str(stop), stop
     finally:
         WAIT_SECONDS = wait_seconds
     # A replay that the slot check refused is NOT RUN in validate_tour.py's output, and no failed picture.
