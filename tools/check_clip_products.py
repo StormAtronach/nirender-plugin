@@ -24,6 +24,15 @@ Two more rules close that gap (the stage rules of the far-origin fix, MGE 674c7a
   reason. So a product that the first rule does not see (the w added on another line) still has to end in `clip_of`.
 - No stage reads `u.view_projection`. That field is the absolute matrix of the view group. The stages use `clip_of`, which takes the
   matrix made relative to the eye (`view::relative`).
+
+The stage rules do not find these forms (the Reviewer's list, a reviewer reads them):
+
+- A local `clip` that is assigned again before `out.position = clip;`, such as `var clip = clip_of(w); clip = s.m * p;`. The rule
+  sees one `clip_of` made in the stage and does not follow the later assignment.
+- A vertex stage in the return form, `-> @builtin(position) vec4f { return s.m * p; }`. It has no `out.position = ...;` to read.
+  The tree has such stages today (renderer/blend.rs, ripples.rs, water.rs, water/dry.rs), all screen triangles.
+- A mixed value such as `clip * 0.0 + s.m * p`: the rule reads that `clip` is made with `clip_of` and not what the rest of the
+  expression adds.
 """
 import argparse
 import os
