@@ -1064,7 +1064,7 @@ def self_test():
             def run():
                 try:
                     outcome["round"] = run_round(slots, [("both held", root, both_held)], what, round_log, False)
-                except Exception as error:  # an assert of `on_wait` too
+                except BaseException as error:  # a KeyboardInterrupt of `on_wait` too
                     outcome["error"] = error
 
             # The round runs in a thread that the case gives a deadline: a fault that keeps the build side held (the ask for
@@ -1111,6 +1111,20 @@ def self_test():
         assert seen.get("game notes at the second wait", 0) >= 1, "the check does not note the work of the game slot it holds while it waits: %s" % seen
         assert "game held for the merge check, waiting for the build side since " in waiting_output, waiting_output
         assert waiting_round is not None and waiting_round[0] == [True], waiting_round
+        assert holders() == [], holders()
+
+        # Case 2: a Ctrl-C in the wait, after the early hold, releases the game slot (else it stays held for its whole lease).
+        def interrupt_at_the_second_wait(count, place, game_notes):
+            if count == 2:
+                raise KeyboardInterrupt
+
+        try:
+            round_that_waits("merge_step: x gggggggggg", interrupt_at_the_second_wait)
+            raise AssertionError("the interrupt did not reach the caller")
+        except KeyboardInterrupt:
+            pass
+        assert "game.holder" not in holders(), "a Ctrl-C in the wait leaves the game slot held: %s" % holders()
+        free_build_side()
         assert holders() == [], holders()
 
         # The notes of the game slot's work: one at once, then one each period, and none after the round.
