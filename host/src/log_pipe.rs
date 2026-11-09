@@ -9,6 +9,7 @@
 //! pipe, so each end of the program drains the pipe first ([`drain`], with a limit). A thread
 //! that must write a line while another thread can hold the lock of stdout (the watchdog,
 //! after a stall) writes with [`write_direct`], which takes no lock of the standard library.
+//! The ends after a panic or a crash write their lines with [`ExitLines`] for the same reason.
 //!
 //! The pipe is a named pipe whose read end is opened for overlapped I/O. Windows lets only one
 //! call at a time into a handle opened for synchronous I/O: a look into the pipe
@@ -200,6 +201,20 @@ impl LogPipe {
         write_all(self.write, bytes);
         true
     }
+
+    /// [`LogPipe::write_direct`], but a line without room waits for room until `deadline`.
+    fn write_direct_by(&self, bytes: &[u8], deadline: Instant) -> bool {
+        loop {
+            if self.write_direct(bytes) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            // SAFETY: a plain sleep.
+            unsafe { Sleep(DRAIN_LOOK_MS) };
+        }
+    }
 }
 
 /// The writer thread: it copies the pipe into the file until the pipe breaks.
@@ -296,6 +311,56 @@ pub(crate) fn write_direct(text: &[u8]) -> bool {
             write_all(unsafe { GetStdHandle(STD_OUTPUT) }, text);
             true
         }
+    }
+}
+
+/// The longest time that the lines of one end of the program wait for room in the pipe, all
+/// of them together. The drain after them has its own limit, [`DRAIN_LIMIT`].
+pub(crate) const EXIT_LINES_WAIT: Duration = Duration::from_secs(1);
+
+/// The lines of an end of the program after a panic or a crash. A print of the standard
+/// library takes the lock of stdout, and another thread can hold that lock while it waits in
+/// a full pipe for the disk: the end would wait as long as the disk. These lines take no lock
+/// ([`write_direct`]). A line waits for room in the pipe until one deadline for all the lines
+/// of the end ([`EXIT_LINES_WAIT`]); after it, a line is dropped and counted. The minidump
+/// keeps what the dropped lines had.
+pub(crate) struct ExitLines {
+    deadline: Instant,
+    dropped: u32,
+}
+
+impl ExitLines {
+    pub(crate) fn new() -> ExitLines {
+        ExitLines { deadline: Instant::now() + EXIT_LINES_WAIT, dropped: 0 }
+    }
+
+    /// Writes `text` and a newline as one write, so that the line stays whole between the
+    /// lines of other threads.
+    pub(crate) fn line(&mut self, text: &str) {
+        let mut bytes = Vec::with_capacity(text.len() + 1);
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.push(b'\n');
+        let written = match PIPE.get() {
+            Some(pipe) => pipe.write_direct_by(&bytes, self.deadline),
+            None => write_direct(&bytes),
+        };
+        if !written {
+            self.dropped += 1;
+        }
+    }
+
+    /// The count of the dropped lines, when the pipe has room for it: for an end that drains
+    /// the pipe itself after it (`gpu::exit_now`).
+    pub(crate) fn write_dropped_count(&self) {
+        if self.dropped > 0 {
+            write_direct(format!("log: {} lines of this end were dropped: the pipe had no room\n", self.dropped).as_bytes());
+        }
+    }
+
+    /// The count of the dropped lines last, when the pipe has room for it, then the drain.
+    pub(crate) fn end(self) {
+        self.write_dropped_count();
+        drain(DRAIN_LIMIT);
     }
 }
 
@@ -465,6 +530,240 @@ mod tests {
         assert!(began.elapsed() < Duration::from_millis(100));
         assert_eq!(pipe.waiting(), before);
         assert!(sink.read_all(1, Duration::from_millis(100)).is_empty(), "nothing goes into the file");
+    }
+
+    /// The longest time of an end of the program in the tests below: the lines wait at most
+    /// [`EXIT_LINES_WAIT`] and the drain at most [`DRAIN_LIMIT`]; the rest is room for the
+    /// minidump and a busy test machine.
+    const EXIT_SECONDS: u64 = 20;
+
+    /// The exit code with which the panic test ends its child after the panic hook returned.
+    const HOOK_RETURNED: u32 = 42;
+
+    /// Puts the pipe of the program between stdout and a held sink (a disk that holds the
+    /// writes), then lets a thread print until it waits inside a print into the full pipe:
+    /// that thread holds the lock of stdout from then on. For a test in a child process: the
+    /// stdout of the process stays held.
+    fn hold_stdout_in_a_full_pipe() {
+        let sink = HeldSink::new(4096);
+        start(sink.write);
+        // The sink stays open for the life of the process: its end would let the writes go.
+        std::mem::forget(sink);
+        std::thread::spawn(|| loop {
+            println!("{}", "x".repeat(100));
+        });
+        let pipe = PIPE.get().expect("the pipe of the program");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pipe.waiting() + DIRECT_MARGIN <= u64::from(PIPE_BYTES) {
+            assert!(Instant::now() < deadline, "the pipe did not fill");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The thread is inside the print that does not fit.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn TerminateProcess(process: isize, code: u32) -> i32;
+        fn RaiseException(code: u32, flags: u32, count: u32, arguments: *const usize);
+    }
+
+    /// A refusal of the live start (`request::refuse_live`: the reason lines, the refusal
+    /// line, the box lines, `gpu::exit_now`) ends the program while another thread holds the
+    /// lock of stdout in a full pipe: its lines take no lock of stdout, and the drain keeps to
+    /// its limit. The test shows no box (`gpu::NO_BOX`).
+    #[test]
+    fn the_end_of_a_refusal_does_not_wait_for_stdout() {
+        crate::crash::tests::in_child_ending_with(
+            module_path!(),
+            "the_end_of_a_refusal_does_not_wait_for_stdout_in_this_process",
+            crate::stream_format::EXIT_GPU,
+            EXIT_SECONDS,
+        );
+    }
+
+    #[test]
+    #[ignore = "holds stdout for good: run alone by the_end_of_a_refusal_does_not_wait_for_stdout"]
+    fn the_end_of_a_refusal_does_not_wait_for_stdout_in_this_process() {
+        crate::gpu::NO_BOX.store(true, Ordering::Relaxed);
+        hold_stdout_in_a_full_pipe();
+        let refusal = crate::request::Refusal {
+            backend: wgpu::Backends::DX12,
+            adapter: Some("a test adapter".into()),
+            reason: "a test refusal".into(),
+        };
+        crate::request::refuse_live(&[refusal]);
+    }
+
+    /// The panic hook writes its lines, the minidump and its report while another thread holds
+    /// the lock of stdout in a full pipe, and returns: the lines wait for room until their
+    /// deadline, then they are dropped.
+    #[test]
+    fn the_panic_hook_does_not_wait_for_stdout() {
+        let child = crate::crash::tests::in_child_ending_with(
+            module_path!(),
+            "the_panic_hook_does_not_wait_for_stdout_in_this_process",
+            HOOK_RETURNED,
+            EXIT_SECONDS,
+        );
+        std::fs::remove_file(exit_dump(child)).ok();
+    }
+
+    #[test]
+    #[ignore = "holds stdout for good: run alone by the_panic_hook_does_not_wait_for_stdout"]
+    fn the_panic_hook_does_not_wait_for_stdout_in_this_process() {
+        crate::crash::install(exit_dump(std::process::id()));
+        hold_stdout_in_a_full_pipe();
+        let _ = std::panic::catch_unwind(|| panic!("a test of the end after a panic"));
+        // SAFETY: the handle of the own process; nothing runs after the call.
+        unsafe { TerminateProcess(GetCurrentProcess(), HOOK_RETURNED) };
+    }
+
+    /// The exception filter writes its lines, the minidump and its report while another thread
+    /// holds the lock of stdout in a full pipe, and the process ends with the code of the
+    /// exception. The test raises an access violation with `RaiseException`: the filter gets
+    /// the same record as for a fault of the processor.
+    #[test]
+    fn the_crash_filter_does_not_wait_for_stdout() {
+        let child = crate::crash::tests::in_child_ending_with(
+            module_path!(),
+            "the_crash_filter_does_not_wait_for_stdout_in_this_process",
+            ACCESS_VIOLATION,
+            EXIT_SECONDS,
+        );
+        std::fs::remove_file(exit_dump(child)).ok();
+    }
+
+    /// EXCEPTION_ACCESS_VIOLATION.
+    const ACCESS_VIOLATION: u32 = 0xC000_0005;
+
+    #[test]
+    #[ignore = "holds stdout for good and crashes: run alone by the_crash_filter_does_not_wait_for_stdout"]
+    fn the_crash_filter_does_not_wait_for_stdout_in_this_process() {
+        crate::crash::install(exit_dump(std::process::id()));
+        hold_stdout_in_a_full_pipe();
+        // SAFETY: an exception that nobody handles: the filter of crash::install ends the process.
+        unsafe { RaiseException(ACCESS_VIOLATION, 1, 0, core::ptr::null()) };
+    }
+
+    /// The exit code of an end test whose checks passed in its child process.
+    const CHECKS_PASSED: u32 = 43;
+
+    /// All the lines of an end share one deadline: 30 lines into a full pipe end in far less
+    /// than 30 waits of [`EXIT_LINES_WAIT`].
+    #[test]
+    fn the_lines_of_an_end_share_one_deadline() {
+        crate::crash::tests::in_child_ending_with(
+            module_path!(),
+            "the_lines_of_an_end_share_one_deadline_in_this_process",
+            CHECKS_PASSED,
+            EXIT_SECONDS,
+        );
+    }
+
+    #[test]
+    #[ignore = "holds stdout for good: run alone by the_lines_of_an_end_share_one_deadline"]
+    fn the_lines_of_an_end_share_one_deadline_in_this_process() {
+        hold_stdout_in_a_full_pipe();
+        let began = Instant::now();
+        let mut lines = ExitLines::new();
+        for n in 0..30 {
+            lines.line(&format!("an end line {n}"));
+        }
+        let dropped = lines.dropped;
+        lines.end();
+        let spent = began.elapsed();
+        let code = if dropped != 30 {
+            DROPPED_WRONG
+        } else if spent >= EXIT_LINES_WAIT + DRAIN_LIMIT + Duration::from_secs(2) {
+            TOO_SLOW
+        } else {
+            CHECKS_PASSED
+        };
+        end_test_with(code);
+    }
+
+    /// The end of the lines writes the count of the dropped lines and drains the pipe: when it
+    /// returns, the writer has put the lines and the count line into the file.
+    #[test]
+    fn the_end_of_the_lines_drains_the_pipe() {
+        crate::crash::tests::in_child_ending_with(
+            module_path!(),
+            "the_end_of_the_lines_drains_the_pipe_in_this_process",
+            CHECKS_PASSED,
+            EXIT_SECONDS,
+        );
+    }
+
+    #[test]
+    #[ignore = "changes the stdout of the process: run alone by the_end_of_the_lines_drains_the_pipe"]
+    fn the_end_of_the_lines_drains_the_pipe_in_this_process() {
+        let sink = HeldSink::new(4096);
+        start(sink.write);
+        let pipe = PIPE.get().expect("the pipe of the program");
+
+        // The disk holds the writes, and the pipe has less room than a direct line needs: the
+        // first two lines wait until the deadline, then they are dropped.
+        // The writer takes its first read (64 KB) out of the pipe and waits in the sink with it;
+        // a second fill tops the pipe up after that read.
+        let full = u64::from(PIPE_BYTES) - DIRECT_MARGIN / 2;
+        write_all(pipe.write, &vec![b'f'; full as usize]);
+        std::thread::sleep(Duration::from_millis(100));
+        write_all(pipe.write, &vec![b'f'; (full - pipe.waiting()) as usize]);
+        let mut lines = ExitLines::new();
+        lines.line("a line that finds no room");
+        lines.line("a second line that finds no room");
+
+        // The disk lets go; the 30 lines of 2 KB go in once the pipe has room again.
+        let (sent, got) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sent.send(sink.read_all(usize::MAX, Duration::from_secs(5)));
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pipe.waiting() > u64::from(PIPE_BYTES) / 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let text: Vec<String> = (0..30).map(|n| format!("{n:02} {}", "y".repeat(2000))).collect();
+        for line in &text {
+            lines.line(line);
+        }
+        let dropped = lines.dropped;
+        lines.end();
+        let drained = pipe.waiting() == 0 && pipe.reading.waits();
+
+        let file = got.recv().unwrap_or_default();
+        let mut wanted: Vec<u8> = text.iter().flat_map(|line| format!("{line}\n").into_bytes()).collect();
+        wanted.extend_from_slice(b"log: 2 lines of this end were dropped: the pipe had no room\n");
+        let code = if dropped != 2 {
+            DROPPED_WRONG
+        } else if !drained {
+            NOT_DRAINED
+        } else if !file.ends_with(&wanted) {
+            FILE_WRONG
+        } else {
+            CHECKS_PASSED
+        };
+        end_test_with(code);
+    }
+
+    /// The exit codes of an end test whose check failed: the count of the dropped lines, the
+    /// drain, the bytes in the file, the time.
+    const DROPPED_WRONG: u32 = 44;
+    const NOT_DRAINED: u32 = 45;
+    const FILE_WRONG: u32 = 46;
+    const TOO_SLOW: u32 = 47;
+
+    /// Ends the child process of an end test with `code`. A test in such a child reports by its
+    /// exit code alone: a print or a panic would wait for the lock of stdout.
+    fn end_test_with(code: u32) -> ! {
+        // SAFETY: the handle of the own process; nothing runs after the call.
+        unsafe { TerminateProcess(GetCurrentProcess(), code) };
+        unreachable!("TerminateProcess of the own process returns")
+    }
+
+    /// The minidump of an end test in the child process `child`.
+    fn exit_dump(child: u32) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("nirender-host-exit-test-{child}.dmp"))
     }
 
     /// The direct write of the program takes no lock of the standard library: it returns while
