@@ -10,9 +10,14 @@
 //! kind above it (`REJECTED_KINDS`).
 //! A controller on a node above moves the instance in place. A controller on the shape or on
 //! one of its properties makes it a live shape: its display runs the controllers' `OnPreDisplay` and
-//! notes the geometry and the material each time. A blended shape is retained: the helper
-//! sorts the blends of its table back to front. The class of a shape is decided once and
-//! kept until the shape is deleted.
+//! notes the geometry and the material each time. A blended shape is retained. In the main
+//! view, a blend that the engine sorts draws at its place in the engine's sorted queue
+//! ([`capture::tag::INSTANCE_QUEUED`]), and the helper does not draw one without a place in
+//! this frame. A blend that the engine does not sort draws at its place in the engine's walk
+//! ([`capture::tag::INSTANCE_WALK`]) when it has one, else in the engine's order of display.
+//! The other views (the water's mirror, the shadow layers) draw the sorted blends of the
+//! table back to front. The class of a shape is decided once and kept until the shape is
+//! deleted.
 //!
 //! The modes ([`Mode`]):
 //! - `off`: no instance.
