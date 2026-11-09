@@ -85,52 +85,34 @@ unsafe fn set_alpha_target() -> usize {
     PATCH_SET_EFFECT_STATE
 }
 
-/// The call at [`SET_ALPHA_SITE`]. With the Code Patch option on, the target is
-/// `patchSetEffectState`. It takes the property from EDX and drops the stack argument. Thus
-/// the call gives it both, as the call site does. Without the option the target is
-/// `NiDX8RenderState::updateAlphaStates` (0x6B8480, a port too), a `__thiscall` with the
-/// property on the stack.
+/// The call at [`SET_ALPHA_SITE`]. The engine's site sets ECX to the render state and EDX to
+/// the alpha property, and pushes the property [V IDA 0x6B5659 to 0x6B5663]. The call gives
+/// every target the same: `__fastcall` with the render state, the property in EDX and the
+/// property on the stack, which the callee pops. `patchSetEffectState` of the Code Patch reads
+/// EDX. `NiDX8RenderState::updateAlphaStates` (0x6B8480, a port too) is a `__thiscall` that
+/// reads the stack argument and ignores EDX. A target of another mod gets what the engine
+/// would give it.
 unsafe fn set_alpha_state(render_state: usize, alpha_property: usize) {
     set_alpha_state_through(set_alpha_target(), render_state, alpha_property);
 }
 
 /// [`set_alpha_state`] for a call that reaches `target`.
 unsafe fn set_alpha_state_through(target: usize, render_state: usize, alpha_property: usize) {
-    let call = alpha_call_of(target);
-    if call == AlphaCall::Unknown {
+    if !is_known_alpha_target(target) {
         log_unknown_alpha_target(target, &UNKNOWN_ALPHA_TARGET_LOGGED);
     }
-    if call == AlphaCall::PatchSetEffectState {
-        let f: unsafe extern "fastcall" fn(usize, usize, usize) -> u32 = transmute(target);
-        f(render_state, alpha_property, alpha_property);
-    } else {
-        let f: unsafe extern "thiscall" fn(usize, usize) -> u32 = transmute(target);
-        f(render_state, alpha_property);
-    }
+    let f: unsafe extern "fastcall" fn(usize, usize, usize) -> u32 = transmute(target);
+    f(render_state, alpha_property, alpha_property);
 }
 
 /// `NiDX8RenderState::updateAlphaStates`, the target of the call at [`SET_ALPHA_SITE`] without
 /// the Code Patch option.
 const UPDATE_ALPHA_STATES: usize = 0x6B8480;
 
-/// Which function the call at [`SET_ALPHA_SITE`] reaches, which fixes the ABI of the call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AlphaCall {
-    /// The Code Patch's function: `__fastcall`, the property in EDX.
-    PatchSetEffectState,
-    /// The engine's function: `__thiscall`, the property on the stack.
-    UpdateAlphaStates,
-    /// Another function (a third mod redirected the call). It is called as the engine's, which
-    /// is a guess about its ABI; [`log_unknown_alpha_target`] names it.
-    Unknown,
-}
-
-fn alpha_call_of(target: usize) -> AlphaCall {
-    match target {
-        PATCH_SET_EFFECT_STATE => AlphaCall::PatchSetEffectState,
-        UPDATE_ALPHA_STATES => AlphaCall::UpdateAlphaStates,
-        _ => AlphaCall::Unknown,
-    }
+/// Whether `target` is one of the two functions that the call at [`SET_ALPHA_SITE`] is known
+/// to reach: the Code Patch's `patchSetEffectState` or the engine's `updateAlphaStates`.
+fn is_known_alpha_target(target: usize) -> bool {
+    matches!(target, PATCH_SET_EFFECT_STATE | UPDATE_ALPHA_STATES)
 }
 
 static UNKNOWN_ALPHA_TARGET_LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -142,7 +124,7 @@ fn log_unknown_alpha_target(target: usize, logged: &core::sync::atomic::AtomicBo
         return false;
     }
     crate::log!(
-        "texture pass: the call at 0x{SET_ALPHA_SITE:X} goes to 0x{target:X}, neither the Code Patch's patchSetEffectState (0x{PATCH_SET_EFFECT_STATE:X}) nor updateAlphaStates (0x{UPDATE_ALPHA_STATES:X}); it is called as a __thiscall with the property on the stack, which may not be its ABI"
+        "texture pass: the call at 0x{SET_ALPHA_SITE:X} goes to 0x{target:X}, neither the Code Patch's patchSetEffectState (0x{PATCH_SET_EFFECT_STATE:X}) nor updateAlphaStates (0x{UPDATE_ALPHA_STATES:X}); it gets the registers and the stack argument that the engine's call site gives (ECX the render state, EDX and the stack argument the alpha property)"
     );
     true
 }
@@ -1678,28 +1660,29 @@ mod tests {
     use std::cell::RefCell;
 
     #[test]
-    fn the_call_at_the_alpha_site_gets_its_abi_from_a_known_target_only() {
-        assert_eq!(alpha_call_of(0x7364E0), AlphaCall::PatchSetEffectState);
-        assert_eq!(alpha_call_of(0x6B8480), AlphaCall::UpdateAlphaStates);
+    fn only_the_two_known_functions_are_known_alpha_targets() {
+        assert!(is_known_alpha_target(0x7364E0));
+        assert!(is_known_alpha_target(0x6B8480));
         for other in [0, 0x6B8481, 0x7364E1, 0x1000_0000, usize::MAX] {
-            assert_eq!(alpha_call_of(other), AlphaCall::Unknown, "target {other:#x}");
+            assert!(!is_known_alpha_target(other), "target {other:#x}");
         }
     }
 
     thread_local! {
-        static ALPHA_CALLS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
+        static ALPHA_CALLS: RefCell<Vec<[usize; 3]>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "thiscall" fn fake_alpha_target(render_state: usize, alpha_property: usize) -> u32 {
-        ALPHA_CALLS.with(|calls| calls.borrow_mut().push((render_state, alpha_property)));
+    /// A target that records ECX, EDX and the stack argument, as the engine's site sets them.
+    unsafe extern "fastcall" fn fake_alpha_target(render_state: usize, in_edx: usize, on_stack: usize) -> u32 {
+        ALPHA_CALLS.with(|calls| calls.borrow_mut().push([render_state, in_edx, on_stack]));
         0
     }
 
     #[test]
-    fn a_call_to_an_unknown_function_is_made_as_a_thiscall_and_logs_its_target() {
+    fn a_target_gets_the_render_state_and_the_property_in_edx_and_on_the_stack_and_an_unknown_one_is_logged() {
         UNKNOWN_ALPHA_TARGET_LOGGED.store(false, core::sync::atomic::Ordering::Relaxed);
         unsafe { set_alpha_state_through(fake_alpha_target as *const () as usize, 0x11, 0x22) };
-        assert_eq!(ALPHA_CALLS.with(|calls| core::mem::take(&mut *calls.borrow_mut())), [(0x11, 0x22)]);
+        assert_eq!(ALPHA_CALLS.with(|calls| core::mem::take(&mut *calls.borrow_mut())), [[0x11, 0x22, 0x22]]);
         assert!(UNKNOWN_ALPHA_TARGET_LOGGED.load(core::sync::atomic::Ordering::Relaxed));
     }
 
