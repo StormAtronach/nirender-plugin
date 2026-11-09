@@ -229,7 +229,7 @@ pub struct FrameParameters {
 /// - `indexes` (storage, `array<u32>`): the index of a light in `lights`.
 ///
 /// A light is in each cluster that its reach touches: the cut-off of `shade` when
-/// `cone.x` is more than 0 (`cone.x` is 1 over it), else the radius of the light of the game
+/// `cone.w` is more than 0 (`cone.w` is 1 over it), else the radius of the light of the game
 /// (`cone.z`), else its range (`direction.w`), at most [`LIGHT_REACH_MAX`]. A directional light
 /// is in each cluster.
 pub struct FrameLights<'a> {
@@ -279,8 +279,8 @@ const LIGHT_VISIBLE: f32 = 1.0 / 256.0;
 
 /// The reach of a point or spot light in the clusters: see [`FrameLights`].
 pub fn light_reach(light: &LightData) -> f32 {
-    let reach = if light.cone[0] > 0.0 {
-        1.0 / light.cone[0]
+    let reach = if light.cone[3] > 0.0 {
+        1.0 / light.cone[3]
     } else if light.cone[2] > 0.0 {
         light.cone[2]
     } else {
@@ -290,13 +290,13 @@ pub fn light_reach(light: &LightData) -> f32 {
 }
 
 /// The reach of a point or spot light in the clusters of the game's draws. With a cut-off
-/// (the extension's fade: `cone[0]` is 1 over it), the cut-off. Without one (a light with no
+/// (the extension's fade: `cone[3]` is 1 over it), the cut-off. Without one (a light with no
 /// radius, as a mod's light made in Lua; or the fade off), the distance where its own
 /// attenuation brings its brightest colour under one level: the engine's light has no end,
 /// and a draw takes a clustered light only when the light is one of its own, so the reach
 /// only bins it.
 pub(crate) fn cluster_reach(light: &LightData) -> f32 {
-    let reach = if light.cone[0] > 0.0 { 1.0 / light.cone[0] } else { attenuation_reach(light) };
+    let reach = if light.cone[3] > 0.0 { 1.0 / light.cone[3] } else { attenuation_reach(light) };
     reach.min(LIGHT_REACH_MAX).max(0.0)
 }
 
@@ -793,7 +793,7 @@ mod tests {
         light.diffuse = [diffuse, diffuse * 0.5, 0.0, 0.0];
         light.position[3] = 1.0;
         light.attenuation = [attenuation[0], attenuation[1], attenuation[2], 0.0];
-        light.cone[0] = cut;
+        light.cone[3] = cut;
         light
     }
 

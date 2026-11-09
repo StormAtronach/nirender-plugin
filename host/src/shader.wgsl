@@ -19,6 +19,7 @@ struct Light {
     // The three attenuation values. w: the falloff of a spot light.
     attenuation: vec4f,
     // A spot light: the cosine of half of the inner angle and of half of the outer angle.
+    // z: the radius of the light of the game. w: 1 over the cut-off of the extension's fade.
     cone: vec4f,
 }
 
