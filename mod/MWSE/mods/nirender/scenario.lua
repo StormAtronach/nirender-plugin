@@ -53,6 +53,32 @@ return function(nirender, spec, name)
         tes3.runLegacyScript({ command = string.format('CenterOnCell "%s"', cell) })
     end
 
+    -- The movement collision of the player before the first move of a tour; nil outside a tour.
+    local collision_before = nil
+
+    -- The move of a tour to `ref`: the player south of it, with the view to the north, at it,
+    -- and with movement collision off. Returns the place. `scenario.tourEnd` gives movement
+    -- collision the value it had before the first move.
+    function scenario.tourMove(ref)
+        if collision_before == nil then
+            collision_before = tes3.mobilePlayer.movementCollision
+            scenario.say("tour: movement collision %s, off for the tour", tostring(collision_before))
+        end
+        tes3.mobilePlayer.movementCollision = false
+        local at = ref.position
+        local target = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
+        tes3.player.position = target
+        tes3.player.orientation = tes3vector3.new(0, 0, 0)
+        return target
+    end
+
+    function scenario.tourEnd()
+        if collision_before == nil then return end
+        tes3.mobilePlayer.movementCollision = collision_before
+        collision_before = nil
+        scenario.say("tour: movement collision %s again", tostring(tes3.mobilePlayer.movementCollision))
+    end
+
     -- Puts the player in front of each object of the cell whose id starts with spec.tour, for
     -- spec.tourSeconds each, then calls `done`. A test level shows some effects only from
     -- near: its meshes have level-of-detail nodes. Without spec.tour, or in a cell that has
@@ -71,23 +97,13 @@ return function(nirender, spec, name)
         end
         if #stops == 0 then return scenario.after(seconds, done) end
         scenario.say("tour of %d objects in '%s'", #stops, tes3.player.cell.editorName)
-        -- The tour moves the player with movement collision off, and sets the value it found
-        -- again at its end.
-        local collision = tes3.mobilePlayer.movementCollision
-        tes3.mobilePlayer.movementCollision = false
-        scenario.say("tour: movement collision %s, off for the tour", tostring(collision))
         local function stop(index)
             local ref = stops[index]
             if not ref then
-                tes3.mobilePlayer.movementCollision = collision
-                scenario.say("tour: movement collision %s again", tostring(tes3.mobilePlayer.movementCollision))
+                scenario.tourEnd()
                 return done()
             end
-            -- South of the object, with the view to the north, at it.
-            local at = ref.position
-            local target = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
-            tes3.player.position = target
-            tes3.player.orientation = tes3vector3.new(0, 0, 0)
+            local target = scenario.tourMove(ref)
             scenario.after(spec.tourSeconds or 1.5, function()
                 -- The player is still at the place of this stop (a step of up to 5 units is allowed).
                 local place = tes3.player.position
