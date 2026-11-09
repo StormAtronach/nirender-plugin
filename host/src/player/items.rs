@@ -380,8 +380,8 @@ impl Player {
 
     /// The facts of the world scene as the stream has them now. With `first`, the sun and
     /// the ambient light come from the frame's `RETAINED_SCENE` record; before the first such
-    /// record (the menus before the first world, and the modes off and dual without MWSE's
-    /// override), from the shape record in progress (the first draw of the world), or from the
+    /// record (the menus before the first world, and the mode off without MWSE's override),
+    /// from the shape record in progress (the first draw of the world), or from the
     /// last one for a world scene without a draw. Without `first`, they are those of the world's
     /// start.
     pub(crate) fn world_facts(&mut self, first: bool) -> WorldFacts {
@@ -1120,8 +1120,8 @@ impl Player {
 /// Whether the fog of the world is on, and its words: the colour, the start, the end, the range
 /// flag. The scene record has the game's own fog property, which the plugin reads each frame: a
 /// record without fog means that the property is off, with its colour kept and no distances.
-/// Only before the first record (the menus before the first world, and the modes off and dual
-/// without MWSE's override), the fog of the last draw with fog.
+/// Only before the first record (the menus before the first world, and the mode off without
+/// MWSE's override), the fog of the last draw with fog.
 fn world_fog(record: Option<(u32, Option<[u32; 4]>)>, off_color: u32, last_draw: [u32; 4]) -> (bool, [u32; 4]) {
     match record {
         Some((_, Some(fog))) => (true, fog),

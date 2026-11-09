@@ -34,7 +34,7 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
 - The retained instances: `src/instance_stream.rs` keeps a table of the shapes the helper
   holds. The plugin skips their display and sends a record only when a shape changes (the
   records 23 to 28). The helper draws them from its own table (`host/src/retained.rs`).
-- The modes: `NIRENDER_RETAINED=off|dual|gpu`, default `gpu`. `off` is the reference: the
+- The modes: `NIRENDER_RETAINED=off|gpu`, default `gpu`. `off` is the reference: the
   engine's own path. `nirender.retained(mode)` changes the mode in a live game.
 - The threads: a port runs its Rust code on the main thread only. The cell worker's calls
   run the engine function and reach the plugin as events (`src/worker_events.rs`). A table
