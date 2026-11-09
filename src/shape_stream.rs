@@ -463,7 +463,7 @@ pub unsafe fn send_particles(t: &MainThread,
 /// change with the camera, so they come with each draw, like the world matrix.
 unsafe fn effect_words(renderer: usize) -> Option<[u32; EFFECT_WORDS]> {
     use crate::gen::layouts::{NiDX8Renderer as R, NiDynamicEffectState as DES};
-    use crate::ports::texture_pass_b::{EFFECT_STAGE_WORDS, effect_stage_words};
+    use crate::ports::texture_pass_b::{EFFECT_STAGE_WORDS, effect_stage_words, effect_stages_before};
     let effect_state: usize = rd(renderer, R::currentEffectState);
     if effect_state == 0 {
         return None;
@@ -474,8 +474,9 @@ unsafe fn effect_words(renderer: usize) -> Option<[u32; EFFECT_WORDS]> {
         return None;
     }
     let mut words = [0u32; EFFECT_WORDS];
-    words[..EFFECT_STAGE_WORDS].copy_from_slice(&effect_stage_words(renderer, environment));
-    words[EFFECT_STAGE_WORDS..].copy_from_slice(&effect_stage_words(renderer, fog_map));
+    let [environment_before, fog_before] = effect_stages_before(renderer, effect_state);
+    words[..EFFECT_STAGE_WORDS].copy_from_slice(&effect_stage_words(renderer, environment, environment_before));
+    words[EFFECT_STAGE_WORDS..].copy_from_slice(&effect_stage_words(renderer, fog_map, fog_before));
     if words.iter().all(|&w| w == 0) {
         return None;
     }
