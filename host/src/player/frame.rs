@@ -409,6 +409,7 @@ impl Player {
         let lost = sorted_lost(self.held_sorted_wait.len(), self.frame_sorted.iter().map(|entry| entry.0.kind()));
         self.renderer.counts.held_sorted_lost += lost.held;
         self.renderer.counts.draws_sorted_lost += lost.draws;
+        self.renderer.counts.places_sorted_lost += lost.tables;
         self.held_sorted_wait.clear();
         self.frame_sorted.clear();
         self.retained.walk.frame_start();
@@ -579,23 +580,23 @@ impl Player {
 
 /// The entries that waited for a flush of the sorted queue and found none in their picture: the
 /// held shapes (those of the stream wait in `held_sorted_wait`, those of the engine's path in
-/// the queue) and the blended draws of the engine's path.
+/// the queue), the blended draws of the engine's path and the places of the table's blends.
 #[derive(Default, PartialEq, Eq, Debug)]
 struct SortedLost {
     held: u64,
     draws: u64,
+    tables: u64,
 }
 
 /// Counts what a picture's start drops from the sorted queue: `held_waiting` entries of
 /// `held_sorted_wait` and the entries of `queue` by kind.
 fn sorted_lost(held_waiting: usize, queue: impl Iterator<Item = WaitingKind>) -> SortedLost {
-    let mut lost = SortedLost { held: held_waiting as u64, draws: 0 };
+    let mut lost = SortedLost { held: held_waiting as u64, ..SortedLost::default() };
     for kind in queue {
         match kind {
             WaitingKind::Held => lost.held += 1,
             WaitingKind::Draw => lost.draws += 1,
-            // The table's place in the queue draws nothing of its own.
-            WaitingKind::Table => {}
+            WaitingKind::Table => lost.tables += 1,
         }
     }
     lost
@@ -617,10 +618,17 @@ mod tests {
 
     #[test]
     fn a_waiting_draw_left_at_the_next_pictures_start_is_counted() {
-        let queue = [WaitingKind::Draw, WaitingKind::Table, WaitingKind::Held, WaitingKind::Draw, WaitingKind::Draw];
+        let queue = [WaitingKind::Draw, WaitingKind::Held, WaitingKind::Draw, WaitingKind::Draw];
         // Two held shapes of the stream wait beside the queue: they count as held, not as draws.
-        assert_eq!(sorted_lost(2, queue.into_iter()), SortedLost { held: 3, draws: 3 });
+        assert_eq!(sorted_lost(2, queue.into_iter()), SortedLost { held: 3, draws: 3, tables: 0 });
         assert_eq!(sorted_lost(0, std::iter::empty()), SortedLost::default());
+    }
+
+    #[test]
+    fn a_waiting_table_place_left_at_the_next_pictures_start_is_counted() {
+        let queue = [WaitingKind::Table, WaitingKind::Draw, WaitingKind::Table, WaitingKind::Held];
+        // The places of the table's blends count apart from the draws of the engine's path.
+        assert_eq!(sorted_lost(0, queue.into_iter()), SortedLost { held: 1, draws: 1, tables: 2 });
     }
 
     #[test]

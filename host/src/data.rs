@@ -620,6 +620,10 @@ pub(crate) struct Counts {
     /// found none in their picture: the next picture's start dropped them, and nothing drew
     /// them.
     pub(crate) draws_sorted_lost: u64,
+    /// The places of the table's sorted blends that waited for the flush and found none in their
+    /// picture: the next picture's start dropped them, and the table's blends of those instances
+    /// were not drawn in that picture.
+    pub(crate) places_sorted_lost: u64,
     /// The held shapes that blend in the engine's sorted queue and did not wait for a place in
     /// it: the extension did not ask for it, a shape record has no queue mark, or an instance
     /// comes after a flush in the middle of the frame. They draw at the end of the world
