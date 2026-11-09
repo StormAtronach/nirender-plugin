@@ -93,7 +93,26 @@ KEPT_RUNS = "E:/nirender-keep/runs-%s"
 HARNESS = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
 BATCH = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua"))
 LIVECODING = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua"))
-BASELINE = os.path.join(PLUGIN_REPO, "results", "baseline-records")
+BASELINE_PARTS = ("results", "baseline-records")
+
+
+def has_captures(folder):
+    """Whether a baseline folder holds the captures that the replay gate replays."""
+    return os.path.isdir(folder) and any(name.endswith(".nircap") for name in os.listdir(folder))
+
+
+def accepted_baseline(tree, main):
+    """The folder of the gate's accepted captures: the tree's own when it has captures, else the main checkout's
+    (`main`). results/ is not tracked, so a worktree in C:/tmp has none (2026-11-09: a merge_step of a worktree group
+    failed its gate at 0 s, after its builds). The tree's own when neither has captures, so that a check names it."""
+    near = os.path.join(tree, *BASELINE_PARTS)
+    if has_captures(near) or not main:
+        return near
+    far = os.path.join(main, *BASELINE_PARTS)
+    return far if has_captures(far) else near
+
+
+BASELINE = accepted_baseline(PLUGIN_REPO, main_checkout())
 PLUGIN_TARGET = os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
 TOUR_CELLS = "@nifTest_1;@nifTest_2;@nifTest_3"
 TESTING_MODLIST = "D:/Modlists/Morrowind75testing/profiles/Default/modlist.txt"
@@ -903,6 +922,22 @@ def smoke_wiring_test(fake_slots):
 def self_test():
     global WAIT_SECONDS
     import io
+
+    # The accepted baseline: the tree's when it has captures, else the main checkout's; the tree's when neither has
+    # (a worktree in C:/tmp has no results/: 2026-11-09, Rob's merge_step).
+    with tempfile.TemporaryDirectory() as folder:
+        tree, main = os.path.join(folder, "tree"), os.path.join(folder, "main")
+        tree_baseline, main_baseline = os.path.join(tree, *BASELINE_PARTS), os.path.join(main, *BASELINE_PARTS)
+        assert accepted_baseline(tree, main) == tree_baseline, "neither has captures: the tree's, for the check to name"
+        os.makedirs(main_baseline)
+        open(os.path.join(main_baseline, "seyda.nircap"), "wb").close()
+        assert accepted_baseline(tree, main) == main_baseline, "the tree has no results/"
+        os.makedirs(tree_baseline)
+        assert accepted_baseline(tree, main) == main_baseline, "the tree's folder has no capture"
+        open(os.path.join(tree_baseline, "narsis.nircap"), "wb").close()
+        assert accepted_baseline(tree, main) == tree_baseline, "the tree's own captures first"
+        assert accepted_baseline(tree, None) == tree_baseline
+        assert has_captures(main_baseline) and not has_captures(os.path.join(folder, "none"))
 
     # Two sets' gates at the same second write into two folders, outside the baseline folder.
     when = time.localtime()
