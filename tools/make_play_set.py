@@ -774,6 +774,8 @@ def smoke_wiring_test(fake_slots):
         "passed": (0, "  ok   12 of 12 pictures equal to the accepted ones in x\n"),
         "not run": (1, "       %s\n  FAIL %s: replay.py: %s\n" % (refused, NOT_RUN, refused)),
         "failed": (1, "       %s: replay of tour-1.nircap: 84 pictures not made: %s\n       120 pictures, 2 failed\n  FAIL validate_tour.py ended with the code 1\n" % (NOT_RUN, refused)),
+        # A NOT RUN FAIL line beside a FAIL line of another kind: a failure.
+        "mixed": (1, "  FAIL 11 of 12 pictures equal to the accepted ones in x\n       %s\n  FAIL %s: validate_tour.py: %s\n" % (refused, NOT_RUN, refused)),
     }
     outcome = {}
 
@@ -823,6 +825,7 @@ def smoke_wiring_test(fake_slots):
                 "take game", "bats"], events
             assert smoke("not run", "passed") is SmokeNotRun and events[-1] == "release build", "the gate refused: NOT RUN, and the side is free"
             assert smoke("failed", "passed") is SmokeFailed, "the gate failed, and a NOT RUN beside it does not hide it"
+            assert smoke("mixed", "passed") is SmokeFailed, "a NOT RUN FAIL line does not hide a FAIL line of another kind"
             assert smoke("passed", "not run") is SmokeNotRun, "the tour's replays refused: NOT RUN"
             assert smoke("passed", "all not run") is SmokeNotRun, "all the tour's replays refused, no pair: NOT RUN"
             assert smoke("passed", "failed") is SmokeFailed, "the tour failed, and a NOT RUN beside it does not hide it"
@@ -830,6 +833,7 @@ def smoke_wiring_test(fake_slots):
             globals().update(real)
             subprocess.run = real_run
     assert gate_not_run(gates["not run"][1], 1) and not gate_not_run(gates["failed"][1], 1) and not gate_not_run("", 1)
+    assert not gate_not_run(gates["mixed"][1], 1)
     assert not gate_not_run(gates["not run"][1], 0)
     assert tour_faults(tours["not run"][1], NOT_RUN_CODE) == [] and tour_faults(tours["failed"][1], 1)
 
