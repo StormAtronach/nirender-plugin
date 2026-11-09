@@ -104,6 +104,8 @@ SLOT_MINUTES = 45
 # The `what` of the label of the set's game hold. Each take of the game during the smoke has this label: slot.py
 # refuses a take of the holder's session with another label.
 SMOKE_GAME = "the smoke of the next set"
+# The `what` of the game hold of --bats-only.
+OWNER_START_GAME = "the step of the owner's start"
 # f185 had a largest mean of 0.001 at the tour's 103 stops. A change of the picture between two modes that
 # is larger than this is no noise. [I] The value is a judgement, with room for small differences. The gate
 # is the exact test: this is a second net.
@@ -314,6 +316,12 @@ def wait_for_build(slots, no_wait):
         time.sleep(WAIT_SECONDS)
 
 
+def slot_label(what):
+    """The label of a take of this tool, "<who: what>". A release names it too: from a terminal with no session,
+    slot.py owns a hold only by its label (`owner_of`), and a release without one owns nothing."""
+    return "make_play_set: %s" % what
+
+
 def ask_slot(slots, slot, what, no_wait, whole=False):
     """Takes a slot, and waits in its queue. It asks again at each wait, so that it keeps its place. `whole` asks
     for both places of the build side. Returns "" when it holds the slot, else the first line of the reply that
@@ -322,7 +330,7 @@ def ask_slot(slots, slot, what, no_wait, whole=False):
     kind = {"whole": True} if whole else {}
     while True:
         try:
-            reply = slots.take(slot, "make_play_set: %s" % what, minutes=SLOT_MINUTES, **kind)
+            reply = slots.take(slot, slot_label(what), minutes=SLOT_MINUTES, **kind)
         except slots.StateBusy as error:
             say("the state of the slots is busy, and I ask again: %s" % error)
             time.sleep(WAIT_SECONDS)
@@ -340,6 +348,11 @@ def take_game(slots, what, no_wait):
     """Takes the game slot, and waits in its queue. A refusal, or the queue with `no_wait`, ends with exit code 3."""
     if ask_slot(slots, "game", what, no_wait):
         sys.exit(3)
+
+
+def release_game(slots, what):
+    """Releases the game hold of the take with `what`, by its label. Returns the text of the reply."""
+    return slots.release("game", slot_label(what)).text
 
 
 def take_set_game(slots, no_wait):
@@ -366,7 +379,7 @@ def whole_build_side(slots, what, no_wait):
     taken between the live run and the tour's replays refused all of them). A refusal raises SmokeNotRun: also when
     this session holds a place with another label, as slot.py refuses that take (a second run). The hold ends with
     the stage."""
-    label = "make_play_set: %s" % what
+    label = slot_label(what)
     stop = ask_slot(slots, "build", what, no_wait, whole=True)
     if stop:
         raise SmokeNotRun("the whole build side for %s: %s" % (what, stop))
@@ -761,7 +774,10 @@ def smoke_wiring_test(fake_slots):
         @classmethod
         def release(cls, slot, who=None):
             events.append("release %s" % slot)
-            if who is not None and cls.held.get(slot) != who:
+            # As from a terminal with no session: a release without a label owns nothing (slot.py `owns`).
+            if who is None:
+                return types.SimpleNamespace(code=cls.REFUSED, text="%s: refused: the %s slot is held by another" % (slot, slot))
+            if cls.held.get(slot) != who:
                 return types.SimpleNamespace(code=cls.REFUSED, text="%s: refused: no place is held as \"%s\"" % (slot, who))
             cls.held.pop(slot, None)
             return types.SimpleNamespace(code=cls.DONE, text="released")
@@ -839,7 +855,14 @@ def smoke_wiring_test(fake_slots):
                 "take game", "bats"], events
             # Each take of the game was a renewal of the set's hold (f221: another label was refused), and the build
             # side is free after the smoke.
-            assert Slots.held == {"game": "make_play_set: " + SMOKE_GAME}, Slots.held
+            assert Slots.held == {"game": slot_label(SMOKE_GAME)}, Slots.held
+            # main() releases each game hold by the label of its take, also from a terminal with no session.
+            with contextlib.redirect_stdout(io.StringIO()):
+                release_game(Slots, SMOKE_GAME)
+                assert Slots.held == {}, "the smoke's game hold stays: %s" % Slots.held
+                take_game(Slots, OWNER_START_GAME, False)
+                release_game(Slots, OWNER_START_GAME)
+            assert Slots.held == {}, "the hold of --bats-only stays: %s" % Slots.held
             # A place of this session with another label: slot.py refuses the take (a second run), so the gate is NOT
             # RUN, and that hold is not released.
             other = "make_play_set: other work"
@@ -1180,7 +1203,7 @@ def main():
 
     if args.bats_only:
         values = local_bat_values(read_text(owner_local_bat))
-        take_game(slots, "the step of the owner's start", args.no_wait)
+        take_game(slots, OWNER_START_GAME, args.no_wait)
         notes = []
         try:
             tested = smoke_owner_bats(plugin_tree, values["MGE_BUILD"], values["NIRENDER_PLUGIN_DLL"], owner_local_bat, notes)
@@ -1188,7 +1211,7 @@ def main():
             say("FAILED: %s" % failure)
             return 1
         finally:
-            say(slots.release("game").text)
+            say(release_game(slots, OWNER_START_GAME))
         say("%d of %d bats reached the game's start%s" % (tested, len(OWNER_BATS), "; " + "; ".join(notes) if notes else ""))
         return 0
 
@@ -1274,7 +1297,7 @@ def main():
         if passed and args.keep_slot:
             say("game: kept for the next work of this session")
         else:
-            say(slots.release("game").text)
+            say(release_game(slots, SMOKE_GAME))
 
     # A set that passed stays good, but it must not read as the tips.
     moved = tips_moved((plugin_commit, mge_commit), current_tips())
