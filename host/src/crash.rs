@@ -114,8 +114,6 @@ extern "system" {
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
     fn GetLastError() -> u32;
-    fn GetStdHandle(which: u32) -> isize;
-    fn WriteFile(file: isize, bytes: *const u8, length: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
     fn TerminateProcess(process: isize, code: u32) -> i32;
     fn Sleep(milliseconds: u32);
     fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
@@ -178,8 +176,6 @@ static PROGRAM: OnceLock<Vec<u16>> = OnceLock::new();
 /// The seconds that the stall dump may take: then the program ends without it (the dump
 /// writer can wait for a lock that the suspended frame thread holds, \[I\]).
 const STALL_DUMP_SECONDS: u32 = 10;
-/// STD_OUTPUT_HANDLE.
-const STD_OUTPUT: u32 = -11i32 as u32;
 /// For the test of the plugin's limit on a dump that hangs ([`hold_next_dump`]): the next
 /// crash path holds where its dump would be.
 static HOLD_DUMP: AtomicBool = AtomicBool::new(false);
@@ -266,6 +262,7 @@ pub(crate) fn install(dump: PathBuf) {
         };
         report(dump);
         let _ = std::io::stdout().flush();
+        crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
     }));
     // SAFETY: the filter is a plain function of this program; it stays for the program's life.
     unsafe { SetUnhandledExceptionFilter(Some(filter)) };
@@ -321,6 +318,9 @@ unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
     };
     report(dump);
     let _ = std::io::stdout().flush();
+    // The process ends after the filter: the log pipe's writer puts the crash lines into the
+    // file first.
+    crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
     EXCEPTION_EXECUTE_HANDLER
 }
 
@@ -401,8 +401,9 @@ pub(crate) fn sample_rip(handle: isize) -> Option<usize> {
 /// samples of `evidence` are in the exception record ([`stall_record`]). Everything that
 /// allocates comes before the frame thread is suspended (the file, a thread that ends the
 /// program after [`STALL_DUMP_SECONDS`]): a thread suspended inside an allocation or a print
-/// holds its lock. After the suspend: the dump to the raw handle, one fixed line to the raw
-/// handle of the log, and `TerminateProcess`.
+/// holds its lock. After the suspend: the dump to the raw handle, one fixed line into the log
+/// without a lock ([`crate::log_pipe::write_direct`]), the drain of the log pipe, and
+/// `TerminateProcess`.
 pub(crate) fn stall_dump_and_end(frame_thread: u32, exit_code: u32, evidence: StallEvidence) -> ! {
     let file = DUMP.get().and_then(|path| std::fs::File::create(path).ok());
     // The last resort: the dump writer may wait for a lock that the suspended thread holds.
@@ -437,8 +438,10 @@ pub(crate) fn stall_dump_and_end(frame_thread: u32, exit_code: u32, evidence: St
                 }
             }
         };
-        let mut written = 0u32;
-        WriteFile(GetStdHandle(STD_OUTPUT), line.as_ptr(), line.len() as u32, &mut written, core::ptr::null_mut());
+        // Without a lock and without an allocation: behind the stall lines in the log pipe,
+        // then the drain, so that `TerminateProcess` does not drop them.
+        crate::log_pipe::write_direct(line);
+        crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
         TerminateProcess(GetCurrentProcess(), exit_code);
     }
     // `TerminateProcess` of this process does not return.
@@ -474,7 +477,9 @@ fn backtrace() -> Vec<String> {
     frames[..count as usize].iter().map(|&address| place(address as usize)).collect()
 }
 
-/// `module+offset` for an address, or the address alone when no module holds it.
+/// `module+offset` for an address, or the address alone when no module holds it. When the
+/// module exports a function at or below the offset, the nearest one follows:
+/// `ntdll.dll+0x1664e4 (NtWriteFile+0x14)`.
 pub(crate) fn place(address: usize) -> String {
     let mut module = core::ptr::null_mut();
     // SAFETY: the flags ask for the module that holds the address, without a reference count
@@ -489,7 +494,67 @@ pub(crate) fn place(address: usize) -> String {
     let length = unsafe { GetModuleFileNameW(module, name.as_mut_ptr(), name.len() as u32) } as usize;
     let path = String::from_utf16_lossy(&name[..length]);
     let file = path.rsplit(['\\', '/']).next().unwrap_or(&path);
-    format!("{file}+{:#x}", address - module as usize)
+    let offset = address - module as usize;
+    match nearest_export(module as usize, offset) {
+        Some((export, distance)) => format!("{file}+{offset:#x} ({export}+{distance:#x})"),
+        None => format!("{file}+{offset:#x}"),
+    }
+}
+
+/// The export of the loaded module at `base` that is nearest at or below `offset`, and the
+/// distance to it. None when the module has no export directory, or no export at or below the
+/// offset. The export need not hold the address: in a function that the module does not
+/// export, the result is the export before it.
+fn nearest_export(base: usize, offset: usize) -> Option<(String, usize)> {
+    // Every read is checked against the size of the image, which the module's headers give.
+    let read_u16 = |rva: usize, size: usize| -> Option<u16> {
+        // SAFETY: `base` is a loaded module, and `rva + 2` is inside its image.
+        (rva + 2 <= size).then(|| unsafe { ((base + rva) as *const u16).read_unaligned() })
+    };
+    let read_u32 = |rva: usize, size: usize| -> Option<u32> {
+        // SAFETY: `base` is a loaded module, and `rva + 4` is inside its image.
+        (rva + 4 <= size).then(|| unsafe { ((base + rva) as *const u32).read_unaligned() })
+    };
+
+    // The DOS header and the PE headers are at least one page, mapped with the module.
+    let headers = 0x1000;
+    let pe = read_u32(0x3c, headers)? as usize;
+    if read_u32(pe, headers)? != u32::from_le_bytes(*b"PE\0\0") {
+        return None;
+    }
+    let optional = pe + 24;
+    let image = read_u32(optional + 56, headers)? as usize;
+    // PE32+ (0x20B) has its data directories at 112 bytes into the optional header, PE32 at 96.
+    let directories = optional + if read_u16(optional, image)? == 0x20B { 112 } else { 96 };
+    let exports = read_u32(directories, image)? as usize;
+    let exports_size = read_u32(directories + 4, image)? as usize;
+    if exports == 0 {
+        return None;
+    }
+
+    let names = read_u32(exports + 24, image)? as usize;
+    let functions = read_u32(exports + 28, image)? as usize;
+    let name_table = read_u32(exports + 32, image)? as usize;
+    let ordinal_table = read_u32(exports + 36, image)? as usize;
+    let mut best: Option<(usize, usize)> = None;
+    for index in 0..names {
+        let ordinal = read_u16(ordinal_table + 2 * index, image)? as usize;
+        let function = read_u32(functions + 4 * ordinal, image)? as usize;
+        // An address inside the export directory is a forwarder: the name of an export of another module.
+        let forwarder = (exports..exports + exports_size).contains(&function);
+        if forwarder || function > offset || best.is_some_and(|(nearest, _)| function <= nearest) {
+            continue;
+        }
+        best = Some((function, read_u32(name_table + 4 * index, image)? as usize));
+    }
+
+    let (function, name) = best?;
+    let bytes: Vec<u8> = (name..image.min(name + 256)).map_while(|rva| {
+        // SAFETY: `rva` is inside the image.
+        let byte = unsafe { *((base + rva) as *const u8) };
+        (byte != 0).then_some(byte)
+    }).collect();
+    Some((String::from_utf8_lossy(&bytes).into_owned(), offset - function))
 }
 
 /// Writes the minidump of the process at `path`, with the exception of the thread `thread`
@@ -569,7 +634,7 @@ fn report(dump: Result<&Path, String>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -580,6 +645,26 @@ mod tests {
         assert!(same_file(&wide("numidium.exe"), &program));
         assert!(!same_file(&wide("D:\\Game\\nvoglv64.dll"), &program));
         assert!(!same_file(&wide("D:\\Game\\numidium.exe.bak"), &program));
+    }
+
+    /// The stall of 2026-11-09 sat at NtWriteFile+0x14: the place of that address names the
+    /// export. An address of this program, which exports nothing, has no export name.
+    #[test]
+    fn a_place_in_ntdll_names_the_nearest_export() {
+        extern "system" {
+            fn GetModuleHandleW(name: *const u16) -> isize;
+            fn GetProcAddress(module: isize, name: *const u8) -> *const c_void;
+        }
+        let ntdll_name: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
+        // SAFETY: ntdll is loaded in every process; both names end with a zero.
+        let write_file = unsafe { GetProcAddress(GetModuleHandleW(ntdll_name.as_ptr()), b"NtWriteFile\0".as_ptr()) } as usize;
+        assert_ne!(write_file, 0);
+        let text = place(write_file + 0x14);
+        assert!(text.starts_with("ntdll.dll+0x"), "{text}");
+        assert!(text.ends_with(" (NtWriteFile+0x14)"), "{text}");
+
+        let here = place(a_place_in_ntdll_names_the_nearest_export as fn() as usize);
+        assert!(!here.contains('('), "{here}");
     }
 
     #[test]
@@ -707,7 +792,13 @@ mod tests {
     /// (merge_step, 2026-11-03: 14 minutes). In a child of its own a dump shares its process with
     /// no other test. A timer in this process could not end a hang: the dump suspends it too.
     fn in_child(name: &str) {
-        let module = module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest);
+        in_child_of(module_path!(), name);
+    }
+
+    /// [`in_child`] for the ignored test `name` of the test module `module` (its
+    /// `module_path!()`).
+    pub(crate) fn in_child_of(module: &str, name: &str) {
+        let module = module.split_once("::").map_or(module, |(_, rest)| rest);
         let test = format!("{module}::{name}");
         // The child's output goes to a file, not a pipe: a pipe that nobody reads while this
         // test waits would stop a child that writes more than the pipe holds.

@@ -48,6 +48,7 @@ mod cli;
 use cli::*;
 mod crash;
 pub use crash::{hold_next_dump, rotate_log};
+mod log_pipe;
 mod watchdog;
 pub use watchdog::LongStep;
 mod tag;
