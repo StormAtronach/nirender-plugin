@@ -7,7 +7,7 @@
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
-It also takes the game slot, after the build slot and for the whole check (the owner's D161): the stages write their logs to
+It also takes the game slot (a lease of 4 hours), after the build slot and for the whole check (the owner's D161): the stages write their logs to
 E:, and a game that starts meanwhile stalls on its own log writes. The label is the build label plus " (game slot)". Both
 slots are released on every exit path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes
 the game slot's work each minute, as no game runs and the slot lapses after 15 idle minutes. --dry-run and --self-test take
@@ -24,10 +24,11 @@ After a later commit, <branch>@{1} moves past a merge that failed or had no run.
 the last commit that passed all stages, and the tool also refuses a <tip> newer than it. A branch with no such ref has only
 the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch.
 
-The stages of nirender-plugin: the plugin's tests, the host's tests, clippy_baseline.py --check, checks.py plugin. The
+The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
+GPU, as below, with the crash tests left out), clippy_baseline.py --check, checks.py plugin. The
 stages of render-link: the tests of the helper, mge-config and mge-probe; the helper's GPU tests (cargo test -p mgeHost64 --
---ignored: the tests marked #[ignore] that need a GPU, run through "merge_step.py --require-tests <command>", which fails when
-no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
+--ignored --test-threads=1: the tests marked #[ignore] that need a GPU, one at a time, run through "merge_step.py
+--require-tests <command>", which fails when no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
 
 - a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
 - the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
@@ -85,6 +86,9 @@ from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_sl
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
 SLOT_MINUTES = 60
+# The lease of the game slot: the stages of a round run for up to an hour on a slow day (the longest of 2026-11-09 ran 38
+# minutes), and the lease does not renew while they run.
+GAME_SLOT_MINUTES = 240
 # The label of this tool's hold of the game slot, from the label of its hold of the build slot.
 GAME_LABEL = "%s (game slot)"
 # How often a round notes the work of the game slot while its stages run (the slot's idle limit is 15 minutes).
@@ -96,6 +100,7 @@ BASE_STAGE = "base build"
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
 GPU_STAGE = "helper GPU tests"
+HOST_GPU_STAGE = "host GPU tests"
 REQUIRE_TESTS = "--require-tests"
 # What a change must touch for the gate, as paths from the root of each repo: a file, or a folder with its slash.
 GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
@@ -125,6 +130,16 @@ def sibling_of(kind, repo):
     return os.path.join(os.path.dirname(repo), MGE_NAME if kind == "plugin" else PLUGIN_NAME)
 
 
+def gpu_command(plugin, package_args, skipped=()):
+    """The command of a stage of ignored tests that need a GPU: cargo test --ignored, through the wrapper that fails when no
+    test ran. One test thread: each module's GPU tests hold a lock of their own, so side by side they ran at the same
+    time on one device and a timing test failed once under load. `skipped` names tests that stay out, by a part of their
+    path (the crash tests of the host dump this process and run alone)."""
+    skip = [argument for name in skipped for argument in ("--skip", name)]
+    return [sys.executable, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", *package_args,
+            "--", "--ignored", *skip, "--test-threads=1"]
+
+
 def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None):
     """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `tips` are the
     commits of the base build, {"plugin": sha, "mge": sha}, and `base_folder` holds it: with both, the gate is followed by
@@ -136,12 +151,13 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     if kind == "plugin":
         stages = [("plugin tests", plugin, ["cargo", "test", "--quiet"]),
                   ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
+                  (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["crash::"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
                   ("checks", plugin, tool("checks.py", "plugin")),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
     else:
         stages = [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config", "-p", "mge-probe"]),
-                  (GPU_STAGE, mge, [python, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored"]),
+                  (GPU_STAGE, mge, gpu_command(plugin, ["-p", "mgeHost64"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
                   ("checks", plugin, tool("checks.py", "mge", "--mge", mge)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
@@ -373,7 +389,7 @@ def take_options(slots, stages):
 OWN_HOLD = ("this session holds it as", "your session already holds the build slot as")
 
 
-def take_slot(slots, slot, what, no_wait, options=None):
+def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES):
     """Takes a slot ("build" or "game"), and asks again in its queue, so that the place stays. A hold of another run of
     this session (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN"
     line, with --no-wait when it must wait, on the end of the wait after a `leave` of its place, and on any other
@@ -383,7 +399,7 @@ def take_slot(slots, slot, what, no_wait, options=None):
     with slot_asker(slots, slot) as ask:
         while True:
             try:
-                reply = ask(what, minutes=SLOT_MINUTES, **(options or {}))
+                reply = ask(what, minutes=minutes, **(options or {}))
             except slots.StateBusy as error:
                 say("the state of the slots is busy, and I ask again: %s" % error)
                 time.sleep(WAIT_SECONDS)
@@ -423,7 +439,7 @@ def take_build(slots, what, no_wait, options=None):
 def take_game(slots, label, no_wait):
     """Takes the game slot for the whole check (the owner's D161): the stages write logs to E:, and a game that starts in
     that time stalls on its own log writes. The label is this run's own, so that its release names it."""
-    return take_slot(slots, "game", label, no_wait)
+    return take_slot(slots, "game", label, no_wait, minutes=GAME_SLOT_MINUTES)
 
 
 def release_build(slots):
@@ -538,7 +554,7 @@ def self_test():
         def names(kind, repo, *paths):
             return [name for name, _, _ in stages_for(kind, repo, paths)]
 
-        base = ["plugin tests", "host tests", "clippy baseline", "checks", "docs"]
+        base = ["plugin tests", "host tests", HOST_GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("plugin", plugin, "tools/x.py", "src/lib.rs") == base
         assert names("plugin", plugin, "host/src/shader.wgsl") == base + ["build for the gate", "replay gate"]
         assert names("plugin", plugin, "host/src/material.rs") == base + ["build for the gate", "replay gate"]
@@ -560,9 +576,15 @@ def self_test():
         # The GPU tests run the ignored tests of the helper in its tree, through the wrapper that fails on 0 tests, and the
         # plugin's tests do not run them.
         gpu_folder, gpu_command = stages_for("mge", mge, [])[1][1:]
-        assert gpu_folder == mge and gpu_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored"]
+        assert gpu_folder == mge and gpu_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored", "--test-threads=1"]
         assert gpu_command[:2] == [sys.executable, "-I"] and gpu_command[2] == os.path.join(plugin, "tools", "merge_step.py")
         assert all(name != GPU_STAGE for name, _, _ in stages_for("plugin", plugin, []))
+        # The host's GPU tests run in the host's folder, with the crash tests (which dump this process) left out, and the
+        # helper's stage is not in the plugin's list or the other way round.
+        host_folder, host_command = stages_for("plugin", plugin, [])[2][1:]
+        assert stages_for("plugin", plugin, [])[2][0] == HOST_GPU_STAGE and host_folder == os.path.join(plugin, "host")
+        assert host_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "--", "--ignored", "--skip", "crash::", "--test-threads=1"], host_command
+        assert all(name != HOST_GPU_STAGE for name, _, _ in stages_for("mge", mge, []))
         assert stages_for("mge", mge, [])[2][2][-2:] == ["--mge", mge]
         assert names("mge", mge, "mge-config/src/lib.rs") == mge_base + ["d3d8 build", "contract"]
         assert names("mge", mge, "mgeHost64/src/renderer/water.rs") == mge_base + ["build for the gate", "replay gate"]
@@ -828,6 +850,10 @@ def self_test():
         asked = []
         Slots.take = classmethod(lambda cls, *args, **options: asked.append(options) or types.SimpleNamespace(code=cls.DONE, text="a reply"))
         assert take_build(Slots, "x", False, {"whole": True}) is True and asked == [{"minutes": SLOT_MINUTES, "whole": True}], asked
+        # The game slot's lease is longer than the build slot's.
+        asked.clear()
+        assert take_game(Slots, "x (game slot)", False) is True and asked == [{"minutes": GAME_SLOT_MINUTES}], asked
+        assert GAME_SLOT_MINUTES > SLOT_MINUTES
 
         # With slot.py's LoopWaiter, a leave of the place ends the wait: the next ask returns WAIT_ENDED, and the run is
         # NOT RUN with no take (2026-11-09 07:51: a loop of plain takes took the whole side after its leave). The plain
