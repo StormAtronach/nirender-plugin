@@ -7,7 +7,8 @@
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
-It also takes the game slot (a lease of 4 hours), after the build slot and for the whole check (the owner's D161): the stages write their logs to
+It also takes the game slot (a lease of 4 hours) for the whole check (the owner's D161). It asks for it at each wait for
+the build slot, so that the check keeps its place in the game queue (it holds the game slot when that is free first). The stages write their logs to
 E:, and a game that starts meanwhile stalls on its own log writes. The label is the build label plus " (game slot)". Both
 slots are released on every exit path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes
 the game slot's work each minute, as no game runs and the slot lapses after 15 idle minutes. --dry-run and --self-test take
@@ -389,14 +390,17 @@ def take_options(slots, stages):
 OWN_HOLD = ("this session holds it as", "your session already holds the build slot as")
 
 
-def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES):
+def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES, ask=None, while_waiting=None):
     """Takes a slot ("build" or "game"), and asks again in its queue, so that the place stays. A hold of another run of
     this session (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN"
     line, with --no-wait when it must wait, on the end of the wait after a `leave` of its place, and on any other
-    refusal, as waiting cannot pass that. A Ctrl-C in the wait leaves the queue."""
+    refusal, as waiting cannot pass that. A Ctrl-C in the wait leaves the queue. `ask` is an asker of the caller (see
+    `slot_asker`), which keeps its place across takes. `while_waiting()` runs at each wait of a take that waits."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     waiting_for_own = False
-    with slot_asker(slots, slot) as ask:
+    with contextlib.ExitStack() as stack:
+        if ask is None:
+            ask = stack.enter_context(slot_asker(slots, slot))
         while True:
             try:
                 reply = ask(what, minutes=minutes, **(options or {}))
@@ -429,16 +433,64 @@ def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES):
             elif not own:
                 say(first)
             waiting_for_own = own
+            if while_waiting:
+                while_waiting()
             time.sleep(WAIT_SECONDS)
 
 
-def take_build(slots, what, no_wait, options=None):
-    return take_slot(slots, "build", what, no_wait, options)
+def take_build(slots, what, no_wait, options=None, while_waiting=None):
+    return take_slot(slots, "build", what, no_wait, options, while_waiting=while_waiting)
+
+
+class GamePlace:
+    """The game slot of one round, asked for from the start of the round. A check that waits for the build side keeps its
+    place in the game queue meanwhile: with no ask, another session's game take comes first, and this check then waits
+    for that game as well (2026-11-09, a merge check behind a timing take of 50 minutes). When the game is free for the
+    check before the build side is, it holds the game and notes its work, as no game runs and the slot lapses after 15 idle
+    minutes. The label is this run's own, so that its release names it."""
+
+    def __init__(self, slots, label, ask):
+        self.slots = slots
+        self.label = label
+        self.ask = ask
+        self.held = False
+        self.closed = False
+
+    def ask_in_queue(self):
+        """One ask while the build take waits: a place in the queue, or the hold, and then the note of its work."""
+        if self.held:
+            self.slots.note_active("game", time.time())
+            return
+        try:
+            reply = self.ask(self.label, minutes=GAME_SLOT_MINUTES)
+        except self.slots.StateBusy:
+            return
+        if reply.code == self.slots.DONE:
+            self.held = True
+            say("the game slot is free for this run before the build side: %s" % reply.text.splitlines()[0])
+
+    def take(self, no_wait):
+        """Takes the game slot for the whole check (the owner's D161): the stages write logs to E:, and a game that starts in
+        that time stalls on its own log writes."""
+        if self.held:
+            return True
+        self.held = take_slot(self.slots, "game", self.label, no_wait, minutes=GAME_SLOT_MINUTES, ask=self.ask)
+        return self.held
+
+    def release(self):
+        """Releases the hold, or leaves the queue when the run holds nothing. Prints every line of the reply."""
+        if self.closed:
+            return
+        self.closed = True
+        if self.held:
+            self.held = False
+            say(self.slots.release("game", self.label).text)
+        else:
+            self.slots.leave("game", self.label)
 
 
 def take_game(slots, label, no_wait):
-    """Takes the game slot for the whole check (the owner's D161): the stages write logs to E:, and a game that starts in
-    that time stalls on its own log writes. The label is this run's own, so that its release names it."""
+    """Takes the game slot at once, for a caller with no wait before it (the self-test)."""
     return take_slot(slots, "game", label, no_wait, minutes=GAME_SLOT_MINUTES)
 
 
@@ -477,23 +529,26 @@ def game_hold_noted(slots, seconds=GAME_NOTE_SECONDS):
 
 def run_round(slots, stages, what, log_path, no_wait):
     """The stages of one round with the build slot and the game slot held, both released on every exit path: a failing
-    stage, an exception and Ctrl-C. (results, summary), or None when a take did not give a slot."""
-    game_label = GAME_LABEL % what
-    if not take_build(slots, what, no_wait, take_options(slots, stages)):
-        return None
-    try:
-        if not take_game(slots, game_label, no_wait):
-            return None
+    stage, an exception and Ctrl-C. (results, summary), or None when a take did not give a slot. The run asks for the game
+    slot at each wait for the build side (see `GamePlace`), so that it keeps its place in the game queue."""
+    with slot_asker(slots, "game") as game_ask:
+        game = GamePlace(slots, GAME_LABEL % what, game_ask)
         try:
-            with game_hold_noted(slots), open(log_path, "w", encoding="utf-8", errors="replace") as log:
-                results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
-                # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
-                summary = summary_line(results, log_path)
-                log.write("\n== %s\n" % summary)
+            if not take_build(slots, what, no_wait, take_options(slots, stages), while_waiting=game.ask_in_queue):
+                return None
+            try:
+                if not game.take(no_wait):
+                    return None
+                with game_hold_noted(slots), open(log_path, "w", encoding="utf-8", errors="replace") as log:
+                    results = run_stages(stages, log, lambda: slots.note_active("build", time.time()))
+                    # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
+                    summary = summary_line(results, log_path)
+                    log.write("\n== %s\n" % summary)
+            finally:
+                game.release()
+                release_build(slots)
         finally:
-            release_game(slots, game_label)
-    finally:
-        release_build(slots)
+            game.release()
     return results, summary
 
 
@@ -962,6 +1017,52 @@ def self_test():
             os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
         assert "merge_step: x aaaaaaaaaa (game slot)" in shown.getvalue(), shown.getvalue()
         assert "NOT RUN: --no-wait, and the game slot is not free" in shown.getvalue(), shown.getvalue()
+
+        # A check that waits for the build side keeps its place in the game queue: it holds the free game slot at its first
+        # wait, and another session that asks for the game meanwhile gets no place before it. (2026-11-09: the check waited
+        # for the build side with no ask for the game, and a timing take got the game slot first.)
+        own_session = os.environ["CLAUDE_CODE_SESSION_ID"]
+
+        def as_session(name):
+            os.environ["CLAUDE_CODE_SESSION_ID"] = name
+
+        for other in ("builder-1", "builder-2"):
+            as_session("merge-step-self-test-" + other)
+            assert slots.take("build", "other: " + other, minutes=5).code == slots.DONE
+        as_session(own_session)
+        seen = []
+        real_ask_in_queue = GamePlace.ask_in_queue
+        real_wait_seconds = globals()["WAIT_SECONDS"]
+
+        def ask_then_let_others_act(self):
+            real_ask_in_queue(self)
+            if seen:
+                return
+            seen.append(self.held)
+            as_session("merge-step-self-test-gamer")
+            seen.append(slots.take("game", "other: a game", minutes=5).code)
+            # A take that got the slot (the fault under test) is released, so that the round ends and the asserts below fail.
+            slots.release("game", "other: a game")
+            slots.leave("game", "other: a game")
+            for other in ("builder-1", "builder-2"):
+                as_session("merge-step-self-test-" + other)
+                assert slots.release("build", "other: " + other).code == slots.DONE
+            as_session(own_session)
+
+        GamePlace.ask_in_queue = ask_then_let_others_act
+        globals()["WAIT_SECONDS"] = 0.05
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                waiting_round = run_round(slots, [("both held", root, both_held)], "merge_step: x ffffffffff", round_log, False)
+        finally:
+            GamePlace.ask_in_queue = real_ask_in_queue
+            globals()["WAIT_SECONDS"] = real_wait_seconds
+            as_session(own_session)
+        assert seen, "the round did not wait for the build side: the test does not test the wait"
+        assert seen[0] is True, "the check does not hold the free game slot while it waits for the build side"
+        assert seen[1] != slots.DONE, "another session got the game slot before the check"
+        assert waiting_round is not None and waiting_round[0] == [True], waiting_round
+        assert holders() == [], holders()
 
         # The notes of the game slot's work: one at once, then one each period, and none after the round.
         noted = []
