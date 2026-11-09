@@ -8,8 +8,8 @@ pub struct ReplayView {
     /// A change of the world before the view of the game, in the space of the world of the
     /// game and with the layout of Direct3D: a mirror for a reflection. [`None`]: no change.
     pub world: Option<[f64; 16]>,
-    /// Another view matrix and not that of the game, for a camera at another place: the
-    /// light of a shadow map. [`None`]: the view of each draw.
+    /// Another view matrix and not that of the game, for a camera at another place, if a
+    /// caller sets one; no caller sets it today. [`None`]: the view of each draw.
     pub view: Option<[f32; 16]>,
     /// Another projection. [`None`]: that of each draw.
     pub projection: Option<[f32; 16]>,
