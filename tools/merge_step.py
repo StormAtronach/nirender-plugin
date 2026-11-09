@@ -61,6 +61,13 @@ each stage and the closing "N of N stages passed" line are in
 E:\\nirender-keep\\merge-step\\merge-step-<commit>.log, where the data rule on build output does not reach. A rerun for the same
 commit writes merge-step-<commit>-2.log, then -3, and so on: it never overwrites the log of an earlier round. It pushes nothing.
 
+A pass of the merge (every stage passed, against the accepted folder) closes the item that the merge subject names (D180):
+a subject that ends with "(W<n>)" or "(W<n> <part>)", e.g. "(W96)" or "(W234 a)". It appends one line to
+E:\\nirender-keep\\merge-step\\closes.tsv, which the Archivist reads in its batch. The columns are time (ISO, with the offset),
+item, repo, commit, stages ("6 of 6"), log and subject; the file starts with a header line. A failed stage writes nothing, nor
+does any other subject. A rerun of the same commit adds no line for an item that the file has for it. A reader that holds the
+file makes the append try again, then give up with a line: a missing close never fails the check.
+
 The gate needs what a diff cannot give:
 
 - the two repos as siblings under their own names, as the helper's Cargo.toml names ../../nirender-plugin/host. A
@@ -72,6 +79,7 @@ The gate needs what a diff cannot give:
 """
 import argparse
 import contextlib
+import datetime
 import importlib.util
 import inspect
 import io
@@ -102,6 +110,17 @@ GAME_LABEL = "%s (game slot)"
 # How often a round notes the work of the game slot while its stages run (the slot's idle limit is 15 minutes).
 GAME_NOTE_SECONDS = 60
 LOG_FOLDER = "E:\\nirender-keep\\merge-step"
+# The closing lines of the items (D180): the Archivist reads this file in its batch. A pass of the merge appends one line for
+# each item that its merge subject names.
+CLOSES_FILE = os.path.join(LOG_FOLDER, "closes.tsv")
+CLOSES_HEADER = "time\titem\trepo\tcommit\tstages\tlog\tsubject"
+# The item of a merge subject: the subject ends with "(W<n>)" or "(W<n> <part>)", the form of the Coordinator's merge
+# subjects ("(W96)", "(W234 a)"). Any other subject names no item and closes nothing. A part that starts with "dropped" is
+# no part: master has "Merge: log pipe follow-ups W219 and W221 (W220 dropped)".
+ITEM = re.compile(r"\((W\d+)(?: (?!dropped\b)[^()]+)?\)$")
+# The tries of an append to the closes file while a reader holds it, and the wait between them.
+CLOSE_TRIES = 5
+CLOSE_WAIT_SECONDS = 0.5
 # The stages that replay the build of the gate or the kept base build.
 INSTANCE_STAGE = "instance A/B grass"
 BASE_STAGE = "base build"
@@ -378,6 +397,58 @@ def summary_line(results, log_path):
 def moves_the_ref(baseline):
     """Only a pass against the accepted folder is a pass of the merge."""
     return os.path.normcase(os.path.abspath(baseline)) == os.path.normcase(os.path.abspath(BASELINE))
+
+
+def items_of(subject):
+    """The item that a merge subject names at its end, as a list of one, or no item."""
+    match = ITEM.search(subject.strip())
+    return [match.group(1)] if match else []
+
+
+def close_lines(existing, when, repo_name, commit, stages, log_path, subject):
+    """The closing lines of a pass: one for each item of `subject` that the lines `existing` of the closes file do not
+    have for this commit. A rerun of a commit adds nothing; a later commit of the same item (its part b) adds a line."""
+    commit = commit[:10]
+    have = set()
+    for line in existing:
+        columns = line.rstrip("\r\n").split("\t")
+        if len(columns) >= 4:
+            have.add((columns[1], columns[3]))
+    subject = subject.replace("\t", " ")
+    return ["\t".join((when, item, repo_name, commit, stages, log_path, subject)) for item in items_of(subject) if (item, commit) not in have]
+
+
+def write_closes(path, when, repo_name, commit, stages, log_path, subject, tries=CLOSE_TRIES, wait=CLOSE_WAIT_SECONDS):
+    """Appends the closing lines of a pass to `path` (CRLF, ASCII), with the header first when the file is new. The open
+    is a plain append, which leaves the file to its readers. A reader that holds the file makes a PermissionError: the
+    append is tried again, then given up with a line, as a missing close must not fail the check. The lines written, or
+    None when the append was given up."""
+    for attempt in range(tries):
+        try:
+            existing = []
+            if os.path.exists(path):
+                with open(path, encoding="ascii", errors="replace") as closes:
+                    existing = closes.readlines()
+            lines = close_lines(existing, when, repo_name, commit, stages, log_path, subject)
+            if lines:
+                with open(path, "a", encoding="ascii", errors="replace", newline="\r\n") as closes:
+                    if not existing:
+                        closes.write(CLOSES_HEADER + "\n")
+                    closes.write("".join(line + "\n" for line in lines))
+            return lines
+        except PermissionError as error:
+            if attempt + 1 == tries:
+                say("closes: NOT WRITTEN to %s after %d tries (%s); the check stands, write the line by hand" % (path, tries, error))
+                return None
+            time.sleep(wait)
+
+
+def close_after(results, baseline, subject, write):
+    """The closing lines of a round, through `write(subject, stages)`: only when every stage passed and the pass is
+    against the accepted folder, as only that is a pass of the merge. None when the round writes no close."""
+    if not results or not all(results) or not moves_the_ref(baseline):
+        return None
+    return write(subject, "%d of %d" % (sum(results), len(results)))
 
 
 def resolve(repo, name):
@@ -1419,6 +1490,64 @@ def self_test():
             assert log.read() == "the refused round\n", "the rerun wrote into the log of the first round"
         assert log_path_of("fedcba9876543210", logs) == os.path.join(logs, "merge-step-fedcba9876.log"), "another commit starts at the plain name"
         assert "target" not in LOG_FOLDER.lower()
+
+        # The closing lines of the items (D180): only a subject that ends with "(W<n>)" or "(W<n> <part>)" names an item.
+        assert items_of("Merge: a check that MWSE's vtable fills name their own slot (W93)") == ["W93"]
+        assert items_of("Merge: the second part (W234 a)") == ["W234"] and items_of("Merge: the crate half (W229 crate half) ") == ["W229"]
+        for no_item in ("Merge: W96 in the middle of the subject", "Merge: W96 in the middle (D161)", "Merge: dropped W220",
+                        "Merge: log pipe follow-ups W219 and W221 (W220 dropped) and more", "Merge: lower case (w96)",
+                        "Merge: log pipe follow-ups W219 and W221 (W220 dropped)", "Merge: a nested part (W234 (a))",
+                        "Merge: a dropped item (W96 dropped)", "Merge: the item (W96) is not at the end",
+                        "Merge: no parentheses W96", "Merge: two items (W222, W226)", "Merge: the plan (D161)",
+                        "Merge: say which views draw the table", "Merge: a letter on the number (W234a)", "Merge: empty ()"):
+            assert items_of(no_item) == [], no_item
+
+        closes = os.path.join(root, "closes", "closes.tsv")
+        os.makedirs(os.path.dirname(closes))
+        when = "2026-11-09T20:15:00+04:00"
+        round_log = "E:\\nirender-keep\\merge-step\\merge-step-862873b012.log"
+
+        def close(results, subject, commit="862873b0123456789", baseline=BASELINE):
+            return close_after(results, baseline, subject,
+                               lambda subject, stages: write_closes(closes, when, PLUGIN_NAME, commit, stages, round_log, subject, wait=0))
+
+        def closes_bytes():
+            with open(closes, "rb") as written:
+                return written.read()
+
+        subject = "Merge: a check that MWSE's vtable fills name their own slot (W93)"
+        # A failed stage writes nothing and makes no file; so do a pass against another folder and a subject with no item.
+        assert close([True, False, True, True, True, True], subject) is None and not os.path.exists(closes), "a fail wrote a close"
+        assert close([], subject) is None and not os.path.exists(closes), "a round with no stage wrote a close"
+        assert close([True] * 6, subject, baseline=os.path.join(root, "other")) is None and not os.path.exists(closes)
+        assert close([True] * 6, "Merge: say which views draw the table") == [] and not os.path.exists(closes), "a subject with no item wrote"
+        # A pass writes the header and one line, CRLF.
+        line = "\t".join((when, "W93", PLUGIN_NAME, "862873b012", "6 of 6", round_log, subject))
+        assert close([True] * 6, subject) == [line]
+        assert closes_bytes() == (CLOSES_HEADER + "\r\n" + line + "\r\n").encode("ascii"), closes_bytes()
+        # A rerun of the commit writes nothing; a later commit of the item writes its line, also in the part form; an item
+        # in the middle of a subject writes nothing.
+        assert close([True] * 6, subject) == [], "a rerun wrote a second line"
+        assert len(close([True] * 5, "Merge: part b (W93)", commit="abcdef0123456")) == 1
+        assert [written.split("\t")[1] for written in close([True] * 4, "Merge: the second part (W234 b)", commit="1111111111aa")] == ["W234"]
+        assert close([True] * 6, "Merge: W96 in the middle of the subject", commit="3333333333") == []
+        data = closes_bytes()
+        assert data.count(b"\r\n") == 4 and data.count(CLOSES_HEADER.encode("ascii")) == 1 and b"\n" not in data.replace(b"\r\n", b""), data
+
+        # A reader that holds the file: the append is tried again, then given up with None, and nothing else happens.
+        tries = []
+
+        def held(*args, **kwargs):
+            tries.append(args[0])
+            raise PermissionError("held by a reader")
+
+        globals()["open"] = held
+        try:
+            given_up = write_closes(closes, when, PLUGIN_NAME, "2222222222", "6 of 6", round_log, "Merge: x (W300)", tries=3, wait=0)
+        finally:
+            del globals()["open"]
+        assert given_up is None and len(tries) == 3, tries
+        assert closes_bytes() == data, "a given-up append changed the file"
     print("merge_step self-test: ok")
 
 
@@ -1485,11 +1614,21 @@ def main():
 
     slots = load_slots()
     what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
-    done = run_round(slots, stages, what, log_path_of(commit), args.no_wait)
+    log_path = log_path_of(commit)
+    done = run_round(slots, stages, what, log_path, args.no_wait)
     if done is None:
         return 3
     results, summary = done
     say(summary)
+    # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none.
+    subject = git(repo, "log", "-1", "--format=%s", commit)
+    when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    written = close_after(results, baseline, subject,
+                          lambda subject, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), commit, stages, log_path, subject))
+    if written:
+        say("closes: %s in %s" % (", ".join(line.split("\t")[1] for line in written), CLOSES_FILE))
+    elif written == []:
+        say("closes: nothing to write (no new item in the subject %r)" % subject)
     if not all(results):
         return 1
     if moves_the_ref(baseline):
