@@ -158,8 +158,9 @@ struct Slot {
     /// triangle list, one for each strip).
     ranges: Vec<(u32, u32)>,
     base_vertex: i32,
-    /// The draw blends and the engine would sort it: the table draws it back to front with
-    /// the other sorted blends where the engine flushes its queue.
+    /// The draw blends and the engine would sort it. The main view draws it at its place in
+    /// the engine's sorted queue ([`tag::INSTANCE_QUEUED`]), where the engine flushes the
+    /// queue; the other views draw it back to front with the other sorted blends.
     sorted: bool,
     /// The shape's own alpha property blends and the engine does not sort it: the engine
     /// draws it at its display, in the order of its walk ([`engine::walk`]).
