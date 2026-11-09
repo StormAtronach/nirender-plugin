@@ -393,19 +393,26 @@ fn distinct(samples: &[usize]) -> usize {
 
 /// The frame thread stalled: the exit announced to the plugin, the log lines, then the dump
 /// and the end of the program.
-/// The lines are printed before the frame thread is suspended: a thread suspended inside a
-/// print or an allocation holds its lock, and a print after it would wait for ever.
+/// The lines are written before the frame thread is suspended: a thread suspended inside an
+/// allocation holds its lock. They are written without the lock of stdout
+/// ([`crate::log_pipe::write_direct`]): a frame thread held inside a print holds that lock,
+/// and a print of the watchdog would wait for it, with no dump and no end.
 fn stalled(frame_thread: u32, seconds: u64) -> ! {
-    use std::io::Write;
     // First the exit for the plugin: a dump that hangs is then ended with the code 30, not 31.
     crate::live::announce_exit(EXIT_STALLED);
-    println!("stalled for {seconds} s: the frame thread made no progress in a step; a minidump, then the program ends with the exit code {EXIT_STALLED}");
     let evidence = RING.evidence(PHASE.load(Ordering::Relaxed));
+    write_stall_lines(seconds, &evidence);
+    crate::crash::stall_dump_and_end(frame_thread, EXIT_STALLED, evidence)
+}
+
+/// The two lines of a stall: the stall, then the evidence of the samples.
+fn write_stall_lines(seconds: u64, evidence: &StallEvidence) {
+    let stall = format!("stalled for {seconds} s: the frame thread made no progress in a step; a minidump, then the program ends with the exit code {EXIT_STALLED}\n");
+    crate::log_pipe::write_direct(stall.as_bytes());
     let began = RING.look_began_ms.load(Ordering::Acquire);
     let waiting = (began != NO_LOOK).then(|| now_ms().saturating_sub(began));
-    println!("{}", evidence_line(&evidence, RING.costliest_us.load(Ordering::Relaxed), waiting, crate::crash::place));
-    let _ = std::io::stdout().flush();
-    crate::crash::stall_dump_and_end(frame_thread, EXIT_STALLED, evidence)
+    let line = format!("{}\n", evidence_line(evidence, RING.costliest_us.load(Ordering::Relaxed), waiting, crate::crash::place));
+    crate::log_pipe::write_direct(line.as_bytes());
 }
 
 #[link(name = "kernel32")]
@@ -419,6 +426,28 @@ mod tests {
 
     fn looks(watch: &mut Watch, count: usize, look: Look) -> Option<u64> {
         (0..count).map(|_| watch.look(look)).last().flatten()
+    }
+
+    /// The lines of a stall are written while another thread holds the lock of stdout: a frame
+    /// thread held inside a print holds it. The test runs alone in a child process without the
+    /// harness's capture of the output, which a print of a test uses in place of stdout.
+    #[test]
+    fn the_stall_lines_do_not_wait_for_the_lock_of_stdout() {
+        crate::crash::tests::in_child_of(module_path!(), "the_stall_lines_do_not_wait_for_the_lock_of_stdout_in_this_process");
+    }
+
+    #[test]
+    #[ignore = "holds the lock of stdout: run alone by the_stall_lines_do_not_wait_for_the_lock_of_stdout"]
+    fn the_stall_lines_do_not_wait_for_the_lock_of_stdout_in_this_process() {
+        let held = std::io::stdout().lock();
+        let (done, waiter) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            write_stall_lines(5, &StallEvidence::default());
+            let _ = done.send(());
+        });
+        let returned = waiter.recv_timeout(Duration::from_secs(2)).is_ok();
+        drop(held);
+        assert!(returned, "the lines of a stall waited for the lock of stdout");
     }
 
     #[test]

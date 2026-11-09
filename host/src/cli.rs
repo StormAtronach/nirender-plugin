@@ -12,18 +12,18 @@ extern "system" {
 }
 
 /// Sends the text of this program, and the text of a failure, into a file. The file of the
-/// run before is kept as `<path>.1`.
-pub(crate) fn log_to(path: &str) {
+/// run before is kept as `<path>.1`. Returns the handle of the file, which stays open for the
+/// program's life.
+pub(crate) fn log_to(path: &str) -> Option<isize> {
     use std::os::windows::io::IntoRawHandle;
     crate::crash::rotate_log(std::path::Path::new(path));
-    if let Ok(file) = std::fs::File::create(path) {
-        let handle = file.into_raw_handle();
-        // STD_OUTPUT_HANDLE and STD_ERROR_HANDLE
-        unsafe {
-            SetStdHandle(-11i32 as u32, handle as _);
-            SetStdHandle(-12i32 as u32, handle as _);
-        }
+    let handle = std::fs::File::create(path).ok()?.into_raw_handle();
+    // STD_OUTPUT_HANDLE and STD_ERROR_HANDLE
+    unsafe {
+        SetStdHandle(-11i32 as u32, handle as _);
+        SetStdHandle(-12i32 as u32, handle as _);
     }
+    Some(handle as isize)
 }
 
 /// Runs the renderer as the program `nirender-host` does. `args` are the arguments of the
@@ -41,9 +41,7 @@ pub fn run(args: Vec<String>) {
 /// capture file.
 pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
     let log = option(&args, "--log");
-    if let Some(path) = &log {
-        log_to(path);
-    }
+    let log_file = log.as_deref().and_then(log_to);
     crate::crash::install(crate::crash::dump_path(log.as_deref()));
     println!("{}", live::reader_build(extension.as_deref()));
     switches::log_set();
@@ -60,7 +58,15 @@ pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
         std::process::exit(crate::request::probe(backends, texture_slots));
     }
     if let Some(name) = option(&args, "--live") {
-        return live::run(&name, backends, &args, extension);
+        // The live mode writes its log through a pipe, so that no print of the frame thread
+        // waits for the disk (`log_pipe`). The end of the stream drains the pipe: the program
+        // ends after the return.
+        if let Some(file) = log_file {
+            crate::log_pipe::start(file);
+        }
+        live::run(&name, backends, &args, extension);
+        crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
+        return;
     }
     // `--depth-control k=<near scale>,sink=on|off,raise=<units>`: the fault injections of the
     // distant land's depth for a replay (step 6 of the depth design); a live run has none.
