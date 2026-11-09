@@ -209,7 +209,7 @@ pub fn install() {
     // The end of a removal of geometry data on the cell worker, for the crossings of the
     // geometry cache (`ports::geometry`).
     if let Some(port) = crate::ports::all().find(|port| port.name == "NiRenderer_static::RemoveGeometryData") {
-        port.after.store(crate::ports::geometry::worker_removal_ends as *const () as usize, Ordering::Relaxed);
+        port.after_off_thread.store(crate::ports::geometry::worker_removal_ends as *const () as usize, Ordering::Relaxed);
     }
     if missing.is_empty() {
         crate::log!("worker events: {} ports write their events from the engine's cell worker", HOOKS.len());
@@ -288,6 +288,18 @@ pub fn report() -> String {
 mod tests {
     use super::*;
     use crate::ports::textures::{forget_unreadable, is_unreadable, mark_unreadable};
+
+    /// The end of a removal of the cell worker is the `after_off_thread` hook of
+    /// RemoveGeometryData. Its `after` hook runs on the main thread only, where no removal of
+    /// the worker ends.
+    #[test]
+    fn the_end_of_a_removal_is_the_hook_of_the_other_threads() {
+        install();
+        let port = crate::ports::all().find(|port| port.name == "NiRenderer_static::RemoveGeometryData").expect("the port");
+        let removal_ends = crate::ports::geometry::worker_removal_ends as *const () as usize;
+        assert_eq!(port.after_off_thread.load(Ordering::Relaxed), removal_ends);
+        assert_eq!(port.after.load(Ordering::Relaxed), 0);
+    }
 
     /// The hook and the call of the drain's arm, one by one. The arm in `drain` itself has no
     /// test: `drain` applies every kind of event, and the others need the tables of the game.

@@ -54,7 +54,7 @@ const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPar
 // The renderer's maps hashGeomBuffers and hashmap_skinPartitionsToGeomBuffers have no lock.
 // The ports below write them on the main thread; the engine's RemoveGeometryData writes them
 // on the cell worker. These counts tell whether the two ever overlap: the worker's removal
-// is a window from its `any_thread` hook to its `after` hook (`worker_events`), a write of
+// is a window from its `any_thread` hook to its `after_off_thread` hook (`worker_events`), a write of
 // the main thread is a window of `CacheWrite`. An overlap starts inside one of them.
 
 /// The windows of the two threads in the geometry cache, and the crossings between them. The
@@ -132,17 +132,15 @@ pub fn worker_removal_begins() {
     CACHE.removal_begins();
 }
 
-/// The `after` hook of `RemoveGeometryData`: a removal of the cell worker ends.
+/// The `after_off_thread` hook of `RemoveGeometryData`: a removal of the cell worker ends.
 ///
 /// # Safety
 ///
-/// Each call on the cell worker ends a removal that `worker_removal_begins` began on that thread,
-/// or the count of removals in progress goes below 0 (it wraps). On the main thread the function
-/// does nothing.
+/// Each call ends a removal that `worker_removal_begins` began on the same thread, or the count
+/// of removals in progress goes below 0 (it wraps). The port calls it on threads other than
+/// the main thread only (`shadow::dispatch`).
 pub unsafe fn worker_removal_ends() {
-    if !crate::shadow::on_main_thread() {
-        CACHE.removal_ends();
-    }
+    CACHE.removal_ends();
 }
 
 /// One line for the log: the removals of the worker and the crossings.
