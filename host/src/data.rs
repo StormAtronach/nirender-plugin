@@ -616,6 +616,10 @@ pub(crate) struct Counts {
     /// The held shapes that waited for a place in the sorted queue, instances and shapes of the
     /// stream, and no flush of the frame came to it ([`Extension::held_sorted`]).
     pub(crate) held_sorted_lost: u64,
+    /// The blended draws of the engine's path that waited for the flush of the sorted queue and
+    /// found none in their picture: the next picture's start dropped them, and nothing drew
+    /// them.
+    pub(crate) draws_sorted_lost: u64,
     /// The held shapes that blend in the engine's sorted queue and did not wait for a place in
     /// it: the extension did not ask for it, a shape record has no queue mark, or an instance
     /// comes after a flush in the middle of the frame. They draw at the end of the world

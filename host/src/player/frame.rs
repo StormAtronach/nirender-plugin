@@ -406,8 +406,9 @@ impl Player {
         self.held_draws.clear();
         self.taken.clear();
         // No flush of the picture came to its place: nothing drew it.
-        self.renderer.counts.held_sorted_lost += self.held_sorted_wait.len() as u64;
-        self.renderer.counts.held_sorted_lost += self.frame_sorted.iter().filter(|entry| matches!(entry.0, crate::Waiting::Held(..))).count() as u64;
+        let lost = sorted_lost(self.held_sorted_wait.len(), self.frame_sorted.iter().map(|entry| entry.0.kind()));
+        self.renderer.counts.held_sorted_lost += lost.held;
+        self.renderer.counts.draws_sorted_lost += lost.draws;
         self.held_sorted_wait.clear();
         self.frame_sorted.clear();
         self.retained.walk.frame_start();
@@ -576,6 +577,30 @@ impl Player {
 
 }
 
+/// The entries that waited for a flush of the sorted queue and found none in their picture: the
+/// held shapes (those of the stream wait in `held_sorted_wait`, those of the engine's path in
+/// the queue) and the blended draws of the engine's path.
+#[derive(Default, PartialEq, Eq, Debug)]
+struct SortedLost {
+    held: u64,
+    draws: u64,
+}
+
+/// Counts what a picture's start drops from the sorted queue: `held_waiting` entries of
+/// `held_sorted_wait` and the entries of `queue` by kind.
+fn sorted_lost(held_waiting: usize, queue: impl Iterator<Item = WaitingKind>) -> SortedLost {
+    let mut lost = SortedLost { held: held_waiting as u64, draws: 0 };
+    for kind in queue {
+        match kind {
+            WaitingKind::Held => lost.held += 1,
+            WaitingKind::Draw => lost.draws += 1,
+            // The table's place in the queue draws nothing of its own.
+            WaitingKind::Table => {}
+        }
+    }
+    lost
+}
+
 /// The textures of a flush that may leave the back buffer's items queued: a flush that names
 /// what it reads and writes (`touch`) in a drawn frame. The main view's table then waits for
 /// its list, which the plugin sends at the swap or just before a read of the back buffer; a
@@ -586,8 +611,17 @@ fn split_touch(touch: Option<super::split::Touch>, drawing: bool) -> Option<supe
 
 #[cfg(test)]
 mod tests {
-    use super::split_touch;
+    use super::{sorted_lost, split_touch, SortedLost};
     use crate::player::split::Touch;
+    use crate::WaitingKind;
+
+    #[test]
+    fn a_waiting_draw_left_at_the_next_pictures_start_is_counted() {
+        let queue = [WaitingKind::Draw, WaitingKind::Table, WaitingKind::Held, WaitingKind::Draw, WaitingKind::Draw];
+        // Two held shapes of the stream wait beside the queue: they count as held, not as draws.
+        assert_eq!(sorted_lost(2, queue.into_iter()), SortedLost { held: 3, draws: 3 });
+        assert_eq!(sorted_lost(0, std::iter::empty()), SortedLost::default());
+    }
 
     #[test]
     fn the_flush_split_holds_the_back_buffer_items_with_the_list() {

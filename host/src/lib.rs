@@ -771,6 +771,24 @@ enum Waiting {
     Held(Box<HeldDraw>, Box<WorldFacts>),
 }
 
+/// What a [`Waiting`] entry is, without its data.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WaitingKind {
+    Draw,
+    Table,
+    Held,
+}
+
+impl Waiting {
+    fn kind(&self) -> WaitingKind {
+        match self {
+            Waiting::Draw(_) => WaitingKind::Draw,
+            Waiting::Table(_) => WaitingKind::Table,
+            Waiting::Held(..) => WaitingKind::Held,
+        }
+    }
+}
+
 /// Reads the records of a stream in their order and draws the frames.
 struct Player {
     renderer: Renderer,
