@@ -25,7 +25,7 @@ the last commit that passed all stages, and the tool also refuses a <tip> newer 
 the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch.
 
 The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
-GPU, as below, with the crash tests left out), clippy_baseline.py --check, checks.py plugin. The
+GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin. The
 stages of render-link: the tests of the helper, mge-config and mge-probe; the helper's GPU tests (cargo test -p mgeHost64 --
 --ignored --test-threads=1: the tests marked #[ignore] that need a GPU, one at a time, run through "merge_step.py
 --require-tests <command>", which fails when no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
@@ -134,7 +134,7 @@ def gpu_command(plugin, package_args, skipped=()):
     """The command of a stage of ignored tests that need a GPU: cargo test --ignored, through the wrapper that fails when no
     test ran. One test thread: each module's GPU tests hold a lock of their own, so side by side they ran at the same
     time on one device and a timing test failed once under load. `skipped` names tests that stay out, by a part of their
-    path (the crash tests of the host dump this process and run alone)."""
+    path (the tests of the host that dump or crash this process run alone in a child; their names end in _in_this_process)."""
     skip = [argument for name in skipped for argument in ("--skip", name)]
     return [sys.executable, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", *package_args,
             "--", "--ignored", *skip, "--test-threads=1"]
@@ -151,7 +151,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     if kind == "plugin":
         stages = [("plugin tests", plugin, ["cargo", "test", "--quiet"]),
                   ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
-                  (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["crash::"])),
+                  (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["_in_this_process"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
                   ("checks", plugin, tool("checks.py", "plugin")),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
@@ -579,11 +579,11 @@ def self_test():
         assert gpu_folder == mge and gpu_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64", "--", "--ignored", "--test-threads=1"]
         assert gpu_command[:2] == [sys.executable, "-I"] and gpu_command[2] == os.path.join(plugin, "tools", "merge_step.py")
         assert all(name != GPU_STAGE for name, _, _ in stages_for("plugin", plugin, []))
-        # The host's GPU tests run in the host's folder, with the crash tests (which dump this process) left out, and the
+        # The host's GPU tests run in the host's folder, with the child-only tests (which dump this process; their names end in _in_this_process) left out, and the
         # helper's stage is not in the plugin's list or the other way round.
         host_folder, host_command = stages_for("plugin", plugin, [])[2][1:]
         assert stages_for("plugin", plugin, [])[2][0] == HOST_GPU_STAGE and host_folder == os.path.join(plugin, "host")
-        assert host_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "--", "--ignored", "--skip", "crash::", "--test-threads=1"], host_command
+        assert host_command[3:] == [REQUIRE_TESTS, "cargo", "test", "--quiet", "--", "--ignored", "--skip", "_in_this_process", "--test-threads=1"], host_command
         assert all(name != HOST_GPU_STAGE for name, _, _ in stages_for("mge", mge, []))
         assert stages_for("mge", mge, [])[2][2][-2:] == ["--mge", mge]
         assert names("mge", mge, "mge-config/src/lib.rs") == mge_base + ["d3d8 build", "contract"]
