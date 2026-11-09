@@ -339,20 +339,46 @@ unsafe fn run_paints(t: &MainThread) {
     if waiting == 0 {
         return;
     }
-    if cell_worker_running() {
+    let worker_running = cell_worker_running();
+    if worker_running {
         KEPT_FOR_WORKER.fetch_add(1, Ordering::Relaxed);
         MOST_KEPT.fetch_max(waiting, Ordering::Relaxed);
-        return;
     }
+    // The table is not open while the engine paints: a paint can defer another one.
     let paints = core::mem::take(&mut *PAINTS.get(t));
-    for (records, cell) in paints {
-        if is_open(t, cell_pixel_data(cell)) {
-            PAINTS.get(t).push((records, cell));
-        } else {
+    let still_waiting = run_due_paints(
+        paints,
+        worker_running,
+        |cell| is_open(t, cell_pixel_data(cell)),
+        |records, cell| {
             thiscall1(MAP_DRAW_CELL, records, cell as u32);
+        },
+    );
+    PAINTS.get(t).extend(still_waiting);
+    PAINTS_LEFT.store(PAINTS.get(t).len(), Ordering::Relaxed);
+}
+
+/// The work of [`run_paints`] with its reads and its draw given: while the cell worker can run,
+/// no paint runs; else each paint whose tile is closed is drawn, in order. Returns the paints that
+/// still wait.
+fn run_due_paints(
+    paints: Vec<(usize, usize)>,
+    worker_running: bool,
+    tile_open: impl Fn(usize) -> bool,
+    mut draw: impl FnMut(usize, usize),
+) -> Vec<(usize, usize)> {
+    if worker_running {
+        return paints;
+    }
+    let mut still_waiting = Vec::new();
+    for (records, cell) in paints {
+        if tile_open(cell) {
+            still_waiting.push((records, cell));
+        } else {
+            draw(records, cell);
         }
     }
-    PAINTS_LEFT.store(PAINTS.get(t).len(), Ordering::Relaxed);
+    still_waiting
 }
 
 /// After each Present, on the main thread: the tiles whose pixels came, and their paints.
@@ -463,4 +489,26 @@ pub fn report() -> String {
         MOST_KEPT.load(Ordering::Relaxed),
         PAINTS_LEFT.load(Ordering::Relaxed),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_due_paints;
+
+    /// Paints as (records, cell); the tile of cell 20 is open.
+    const PAINTS: [(usize, usize); 3] = [(1, 10), (2, 20), (3, 30)];
+
+    #[test]
+    fn no_paint_runs_while_the_cell_worker_can_run() {
+        let waiting = run_due_paints(PAINTS.to_vec(), true, |_| false, |records, _| panic!("paint {records} ran while the worker can run"));
+        assert_eq!(waiting, PAINTS.to_vec());
+    }
+
+    #[test]
+    fn with_the_worker_stopped_each_paint_with_a_closed_tile_runs_in_order() {
+        let mut drawn = Vec::new();
+        let waiting = run_due_paints(PAINTS.to_vec(), false, |cell| cell == 20, |records, cell| drawn.push((records, cell)));
+        assert_eq!(drawn, vec![(1, 10), (3, 30)]);
+        assert_eq!(waiting, vec![(2, 20)]);
+    }
 }
