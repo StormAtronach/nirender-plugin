@@ -29,8 +29,8 @@ mge --mge <repo>. The diff from <tip> to <commit> adds these:
   branches of BOTH repos in E:\\nirender-keep\\merge-step\\base-<branch> (key: both commits and the profile; a tip that
   moved builds again), and `instance A/B grass` replays a capture of Outlander-test with the base, the build under test and
   the base again, on the same data, and compares the pictures and the hash lines of the grass calls. NOT RUN is not a PASS:
-  it counts as a stage that did not pass (exit code 5 of the tool). The tips are <tip> for the tree's repo, and for the
-  sibling the shared branch (master of nirender-plugin, feature/wgpu-renderer of render-link);
+  it counts as a stage that did not pass (exit code 5 of the tool). The base is built at <tip> for the tree's repo and at
+  the HEAD of the sibling, which the build under test has too, so that the A/B shows the change of the tree's repo;
 - the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
   of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these.
 
@@ -68,14 +68,13 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
+from common import git_env  # noqa: E402
 from make_play_set import BASELINE, WAIT_SECONDS, load_slots, say  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
 SLOT_MINUTES = 60
 LOG_FOLDER = "E:\\nirender-keep\\merge-step"
-# The shared branch of each repo: the base build of the A/B stages is built at its tip.
-SHARED_BRANCH = {"plugin": "master", "mge": "feature/wgpu-renderer"}
 # The stages that replay the build of the gate or the kept base build.
 INSTANCE_STAGE = "instance A/B grass"
 BASE_STAGE = "base build"
@@ -293,7 +292,7 @@ def moves_the_ref(baseline):
 
 def resolve(repo, name):
     """The commit of a name, or None."""
-    return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", name], capture_output=True, text=True).stdout.strip() or None
+    return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", name], capture_output=True, text=True, env=git_env()).stdout.strip() or None
 
 
 def branch_of(repo):
@@ -374,16 +373,16 @@ def base_folder_of(branch):
 
 
 def tips_for(kind, repo, base):
-    """The commits of the base build: `base` for the tree's repo, the tip of the shared branch for the sibling. (tips, None),
-    or (None, why not)."""
+    """The commits of the base build: `base` for the tree's repo, and for the sibling the HEAD of its tree, which the build
+    under test has too: the two builds differ in the tree's repo only. (tips, None), or (None, why not)."""
     other = "mge" if kind == "plugin" else "plugin"
     sibling = sibling_of(kind, repo)
     if not os.path.isdir(sibling):
         return None, "no sibling %s for the base build" % sibling
-    sibling_tip = resolve(sibling, SHARED_BRANCH[other])
-    if sibling_tip is None:
-        return None, "the sibling %s has no branch %s: the base build is built at the tips of both" % (sibling, SHARED_BRANCH[other])
-    return {kind: base, other: sibling_tip}, None
+    sibling_head = resolve(sibling, "HEAD")
+    if sibling_head is None:
+        return None, "the sibling %s has no HEAD for the base build" % sibling
+    return {kind: base, other: sibling_head}, None
 
 
 def two_places_take_for_ab(slot, who, *, minutes=None, timing=False, whole=False):
@@ -553,6 +552,19 @@ def self_test():
         assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips)][-1] == "replay gate", "no folder, no A/B stage"
         assert base_folder_of("feature/wgpu-renderer") == os.path.join(LOG_FOLDER, "base-feature-wgpu-renderer") and base_folder_of("master").endswith("base-master")
         assert tips_for("plugin", os.path.join(root, "alone", PLUGIN_NAME), "b")[0] is None
+        # The sibling's side of the base is its HEAD, also when HEAD is behind its branch.
+        pair = os.path.join(root, "pair")
+        sibling_tree = os.path.join(pair, MGE_NAME)
+        os.makedirs(sibling_tree)
+        author = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+        for command in (["init", "-q"], author + ["commit", "-q", "--allow-empty", "-m", "one"], author + ["commit", "-q", "--allow-empty", "-m", "two"]):
+            subprocess.run(["git", "-C", sibling_tree, *command], check=True, env=git_env())
+        second = resolve(sibling_tree, "HEAD")
+        subprocess.run(["git", "-C", sibling_tree, "checkout", "-q", "--detach", "HEAD~1"], check=True, env=git_env())
+        first = resolve(sibling_tree, "HEAD")
+        assert first != second
+        assert tips_for("plugin", os.path.join(pair, PLUGIN_NAME), "base") == ({"plugin": "base", "mge": first}, None)
+        assert tips_for("mge", sibling_tree, "base")[1].startswith("no sibling")
         # Both A/B stages replay, so they take the whole build side.
         two = types.SimpleNamespace(take=two_places_take_for_ab)
         assert take_options(two, [("a", root, good), (INSTANCE_STAGE, root, good)]) == {"whole": True}
@@ -702,7 +714,7 @@ def main():
     baseline = os.path.abspath(args.baseline)
     stages = stages_for(kind, repo, paths, baseline) if kind else []
     if kind and any(name == "replay gate" for name, _, _ in stages):
-        tips, why = tips_for(kind, repo, base)
+        tips, why = tips_for(kind, repo, base) if branch else (None, "the tree is on no branch, and the kept base build is one for each branch")
         if why:
             say("FAIL the tree: %s" % why)
             return 1

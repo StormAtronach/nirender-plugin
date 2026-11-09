@@ -10,9 +10,10 @@ of that instance (the distant land, the game folder) and a COPY of its mgeXE.tom
 data of the instance changes at each full regeneration (D128, D129), and a picture of the day before would fail every
 merge. The stage compares two builds on the same data, on the same day:
 
-- the BASE build, `cargo xtask dist` of the current tips of the target branches of BOTH repos (numidium.exe comes from
-  both). `base-build` keeps it in a folder with a key file: the commit of each repo and the profile. It builds again
-  when a tip or the profile differs from the key, and uses the kept build when both tips equal it;
+- the BASE build, `cargo xtask dist` at the tip before the merge of the repo under test and at the HEAD of the sibling
+  tree, which the build under test uses too (numidium.exe comes from both repos, so the A/B shows the change of one repo).
+  `base-build` keeps it in a folder with a key file: the commit of each repo and the profile. It builds again when a
+  commit or the profile differs from the key, and uses the kept build when both commits equal it;
 - the build UNDER TEST (the dist-staging folder of the gate's build).
 
 `run` replays the capture with the base, with the build under test and with the base again, in that order, each with
@@ -25,7 +26,8 @@ hash line)": never a PASS of the hash.
 A stage prints NOT RUN, and exits with code 5, when it cannot judge:
 
 - an input is missing (the capture, the config copy, the distant land, the game folder, a build);
-- the game slot is held by a run on the instance (the game start regenerates the distant land);
+- the game slot is held or reserved for a run that names the instance (the game start regenerates the distant land), its
+  status is not "game: free" or "game: held by", or a Morrowind.exe from the instance's folder runs;
 - a file that the generator writes (`generation_report.toml`, `generation_state.bin`) changed its time or size between the
   first replay and the last;
 - the base prints hash lines and none of them holds a grass record (the capture does not reach the code).
@@ -45,7 +47,7 @@ from dataclasses import dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import build_missing, local  # noqa: E402
+from common import BUILD_PARTS, REPO, build_missing, local, main_checkout  # noqa: E402
 
 PASS, FAIL, NOT_RUN = 0, 1, 5
 KEEP_FOLDER = "E:\\nirender-keep\\merge-step"
@@ -72,8 +74,9 @@ class InstanceStage:
     guard: tuple
     # The variables of the replays.
     env: dict = field(default_factory=dict)
-    # The instance's name, as the label of a game run names it.
+    # The instance's name, as the label of a game run names it, and its folder.
     instance: str = ""
+    instance_dir: str = ""
 
 
 OUTLANDER = "D:/Modlists/Outlander-test"
@@ -81,7 +84,7 @@ GRASS = InstanceStage(name="grass", capture="outlander-pelagiad.nircap", config=
                       distant_land=local("outlander_distant_land", OUTLANDER + "/overwrite/distantland"),
                       game_dir=local("outlander_game_dir", OUTLANDER + "/Stock Game Folder"),
                       frames="1,15,29", guard=("generation_report.toml", "generation_state.bin"),
-                      env={"MGE_XE_GRASS_HASH": "1"}, instance="Outlander-test")
+                      env={"MGE_XE_GRASS_HASH": "1"}, instance="Outlander-test", instance_dir=local("outlander_dir", OUTLANDER))
 STAGES = {stage.name: stage for stage in (GRASS,)}
 
 
@@ -121,13 +124,46 @@ def guard_problem(before, after):
 
 def game_blocker(lines, instance):
     """Why the game slot stops a stage, as a text, or None. `lines` are the lines of the slot's status for the game: the
-    first one says "game: free" or names the holder. A run on another instance does not touch this one's data."""
-    first = lines[0] if lines else ""
-    if first.startswith("game: free") or not instance:
+    first one says "game: free" or "game: held by <the holder>", and a reservation follows on a line of its own. Any other
+    first line (a fault, a lease that ended) stops the stage, as the tool cannot tell who runs. A run or a reservation on
+    another instance does not touch this one's data; a holder whose label names no instance is seen by `process_blocker`."""
+    if not instance:
         return None
-    if instance.lower() in first.lower():
-        return "the game slot is held by a run on %s: %s" % (instance, first)
+    first = lines[0] if lines else ""
+    if first.startswith("game: held by"):
+        if instance.lower() in first.lower():
+            return "the game slot is held by a run on %s: %s" % (instance, first)
+    elif not first.startswith("game: free"):
+        return "the game slot is neither free nor held: %s" % (first or "no status line")
+    for line in lines[1:]:
+        if line.strip().startswith("reserved by") and instance.lower() in line.lower():
+            return "the game slot is reserved for a run on %s: %s" % (instance, line.strip())
     return None
+
+
+def is_inside(path, folder):
+    """The path is the folder or in it, as Windows reads names."""
+    path, folder = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return path == folder or path.startswith(folder + os.sep)
+
+
+def process_blocker(paths, folders):
+    """Why a running Morrowind.exe stops a stage, as a text, or None. `paths` are the exe paths of the running
+    Morrowind.exe processes; a game from the instance's folder rewrites its distant land, whatever its slot label says."""
+    for path in paths:
+        if any(folder and is_inside(path, folder) for folder in folders):
+            return "a Morrowind.exe of the instance runs: %s" % path
+    return None
+
+
+def process_listing():
+    """The exe paths of the running Morrowind.exe processes. It raises when the list cannot be read."""
+    command = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+               "Get-CimInstance Win32_Process -Filter \"Name='Morrowind.exe'\" | ForEach-Object { $_.ExecutablePath }"]
+    done = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+    if done.returncode != 0:
+        raise RuntimeError("the process list failed: %s" % done.stderr.strip()[:200])
+    return [line.strip() for line in done.stdout.splitlines() if line.strip()]
 
 
 def base_key(plugin_tip, mge_tip, profile=PROFILE):
@@ -204,13 +240,16 @@ def line_differences(a, b, what="hash line", limit=3):
 
 
 def picture_differences(folder_a, folder_b, compare):
-    """The pictures of `folder_a` that differ from those of `folder_b` or are not there, as texts. `compare(a_path,
-    b_path)` returns None for equal pictures, else a text of the numbers."""
+    """The pictures of the two folders that differ or are in one folder only, as texts. `compare(a_path, b_path)`
+    returns None for equal pictures, else a text of the numbers."""
     found = []
-    names = sorted(name for name in os.listdir(folder_a) if name.endswith(".png")) if os.path.isdir(folder_a) else []
-    if not names:
+    names_a, names_b = [sorted(name for name in os.listdir(folder) if name.endswith(".png")) if os.path.isdir(folder) else [] for folder in (folder_a, folder_b)]
+    if not names_a:
         return ["no picture in %s" % folder_a]
-    for name in names:
+    for name in sorted(set(names_a) | set(names_b)):
+        if name not in names_a:
+            found.append("%s: no picture in %s" % (name, folder_a))
+            continue
         other = os.path.join(folder_b, name)
         if not os.path.isfile(other):
             found.append("%s: no picture in %s" % (name, folder_b))
@@ -366,21 +405,38 @@ def replay(stage, folder, build, out, tag):
     return done.returncode, done.stdout + done.stderr, pictures
 
 
+HARNESS_PATH = ("moreFPS", "docs", "scripts", "test-harness-2026-10-03")
+
+
+def harness_folder():
+    """The folder of slot.py: in the moreFPS beside this tree, else beside the main checkout (a worktree group in
+    C:/tmp has no moreFPS next to it)."""
+    for repo in (REPO, main_checkout()):
+        if repo:
+            folder = os.path.join(os.path.dirname(repo), *HARNESS_PATH)
+            if os.path.isfile(os.path.join(folder, "slot.py")):
+                return folder
+    raise RuntimeError("no slot.py beside %s or beside the main checkout" % REPO)
+
+
 def slot_lines():
     """The lines of the slot status of the game."""
-    from make_play_set import load_slots
+    sys.path.insert(0, harness_folder())
+    import slot
 
-    return load_slots().slot_status("game", time.time())
+    return slot.slot_status("game", time.time())
 
 
-def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare):
+def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare, processes=process_listing):
     stage = STAGES[args.stage]
     folder = stage_folder(args.baseline, stage)
     if inputs_missing(stage, folder):
         # The accepted baseline folder serves when a named one holds no inputs.
         from make_play_set import BASELINE
 
+        out("the named baseline %s holds no inputs of %s: the accepted folder serves" % (args.baseline, stage.name))
         folder = stage_folder(BASELINE, stage)
+    out("inputs of %s from %s" % (stage.name, folder))
     missing = inputs_missing(stage, folder)
     for build, what in ((args.base_build, "base build"), (args.now_build, "build under test")):
         if build_missing(build):
@@ -388,7 +444,11 @@ def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare
     if missing:
         out("NOT RUN %s: missing: %s" % (stage.name, ", ".join(missing)))
         return NOT_RUN
-    blocker = game_blocker(lines_of_game(), stage.instance)
+    try:
+        blocker = game_blocker(lines_of_game(), stage.instance) or process_blocker(processes(), (stage.game_dir, stage.instance_dir))
+    except Exception as error:  # noqa: BLE001 - any fault of the slot tool or the process list means the same: the stage cannot tell
+        out("NOT RUN %s: the game slot or the game processes cannot be read: %s" % (stage.name, error))
+        return NOT_RUN
     if blocker:
         out("NOT RUN %s: %s" % (stage.name, blocker))
         return NOT_RUN
@@ -456,9 +516,19 @@ def self_test():
 
         # The game slot: a run on the instance stops the stage, a run elsewhere and a free slot do not.
         assert game_blocker(["game: free"], "Outlander-test") is None
-        assert game_blocker([], "Outlander-test") is None
         assert game_blocker(["game: held by Ryker: grass capture on Outlander-test, since t"], "Outlander-test").startswith("the game slot is held by a run on Outlander-test")
         assert game_blocker(["game: held by Rob: tour on Morrowind75testing, since t"], "Outlander-test") is None
+        # Any other first line stops the stage; a reservation is read; a Morrowind.exe from the instance's folder stops it.
+        assert "neither free nor held" in game_blocker(["game: CORRUPT: x. The checks pass"], "Outlander-test")
+        assert "neither free nor held" in game_blocker(["game: LEASE ENDED 3 min ago, holder x."], "Outlander-test")
+        assert "no status line" in game_blocker([], "Outlander-test")
+        assert game_blocker(["game: free", "  reserved by Ryker: grass on Outlander-test until t"], "Outlander-test").startswith("the game slot is reserved for a run on Outlander-test")
+        assert game_blocker(["game: free", "  reserved by Rob: tour on Morrowind75testing until t"], "Outlander-test") is None
+        assert game_blocker(["game: CORRUPT"], "") is None
+        inside = os.path.join(root, "inst", "Stock Game Folder", "Morrowind.exe")
+        assert process_blocker(["D:/other/Morrowind.exe", inside], (os.path.join(root, "inst", "Stock Game Folder"), "")) == "a Morrowind.exe of the instance runs: %s" % inside
+        assert process_blocker(["D:/other/Morrowind.exe"], (os.path.join(root, "inst"), "")) is None and process_blocker([], (root,)) is None
+        assert not is_inside(os.path.join(root, "inst2", "x"), os.path.join(root, "inst")) and is_inside(os.path.join(root, "INST", "x"), os.path.join(root, "inst"))
 
         # The key of the base build: both tips and the profile.
         key = base_key("p1", "m1")
@@ -493,6 +563,10 @@ def self_test():
         os.remove(os.path.join(b, "p-1.png"))
         assert picture_differences(a, b, same)[0].startswith("p-1.png: no picture")
         assert picture_differences(os.path.join(root, "none"), b, same) == ["no picture in %s" % os.path.join(root, "none")]
+        # A picture that only the second folder holds is a difference too: the base with one frame and the build with two.
+        open(os.path.join(b, "p-1.png"), "w").write("x")
+        open(os.path.join(b, "p-29.png"), "w").write("x")
+        assert picture_differences(a, b, same) == ["p-2.png: differs", "p-29.png: no picture in %s" % a]
 
         # The verdict. The null test comes first; a base with no hash line gives "hash NOT RUN", never a PASS of the hash.
         code, lines = judge([], [], [], [], [], [])
@@ -537,7 +611,34 @@ def self_test():
         # The stage with its replays stubbed: the order of the runs is base, build under test, base again.
         stage_args = argparse.Namespace(stage="grass", baseline=root, base_build=os.path.join(root, "bb"), now_build=os.path.join(root, "nb"), out=os.path.join(root, "o"))
         said = []
-        assert run_stage(stage_args, said.append, lambda: ["game: free"], same) == NOT_RUN and "missing" in said[0]
+        assert run_stage(stage_args, said.append, lambda: ["game: free"], same) == NOT_RUN and any("missing" in line for line in said) and any(line.startswith("inputs of grass from") for line in said) and said[0].startswith("the named baseline")
+
+        # A game slot that cannot be read is a NOT RUN, with the reason (a stage with its inputs in place).
+        full = InstanceStage("g", "c.nircap", "m.toml", stage.distant_land, stage.game_dir, "1", ())
+        STAGES["g"] = full
+        try:
+            os.makedirs(os.path.join(root, "base", "instance", "g"), exist_ok=True)
+            for name in ("c.nircap", "m.toml"):
+                open(os.path.join(root, "base", "instance", "g", name), "w").write("x")
+            for build in ("bb", "nb"):
+                for part in BUILD_PARTS:
+                    os.makedirs(os.path.dirname(os.path.join(root, build, part)), exist_ok=True)
+                    open(os.path.join(root, build, part), "w").write("x")
+
+            def unreadable():
+                raise RuntimeError("no slot.py")
+
+            said = []
+            gargs = argparse.Namespace(stage="g", baseline=os.path.join(root, "base"), base_build=os.path.join(root, "bb"), now_build=os.path.join(root, "nb"), out=os.path.join(root, "o"))
+            assert run_stage(gargs, said.append, unreadable, same) == NOT_RUN and any("cannot be read: no slot.py" in line for line in said), said
+
+            # A free slot and a Morrowind.exe in the game folder: the process list stops the stage before any replay.
+            said = []
+            running = os.path.join(full.game_dir, "Morrowind.exe")
+            assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: [running]) == NOT_RUN and any("a Morrowind.exe of the instance runs: %s" % running in line for line in said), said
+            assert not any(line.startswith("replay ") for line in said), said
+        finally:
+            del STAGES["g"]
     print("instance_ab self-test: ok")
 
 
