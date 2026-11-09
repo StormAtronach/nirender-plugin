@@ -17,6 +17,9 @@ The checks of each list:
   constant of it has a second definition in the two crates; with `--mge` (the MGE XE list):
   MGE_EXTENSION_FORMAT of mgeversion.h equals the helper's EXTENSION_FORMAT, and mgeHost64 has
   no copy of a constant of `src/stream_format.rs`.
+- `check_clip_products.py` (the MGE XE list): the helper's WGSL has no new product of a matrix
+  with a world position (`matrix * vec4f(world, 1.0)`); the known products are on an allow-list.
+  Use `clip_with` (W49).
 - `build_module_map.py` (docs): every module of ours has a `//!` header.
 - `check_names.py` (docs): no skill names a switch or a Lua call the code lost.
 
@@ -66,6 +69,9 @@ CHECKS = {
     "handshake": (PLUGIN / "tools" / "check_handshake.py", PLUGIN),
     "handshake search": (PLUGIN / "tools" / "check_handshake.py", PLUGIN, ["--self-test"]),
     "mge handshake": (PLUGIN / "tools" / "check_handshake.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
+    # No new absolute clip product (a matrix times a world position) in the helper's WGSL: W49.
+    "clip products": (PLUGIN / "tools" / "check_clip_products.py", REPOS / "MGE-XE-G7-render-link", ["--mge", str(REPOS / "MGE-XE-G7-render-link")]),
+    "clip products parsing": (PLUGIN / "tools" / "check_clip_products.py", PLUGIN, ["--self-test"]),
     "mwse native": (PLUGIN / "tools" / "check_mwse_native.py", MWSE_HEADER),
     "module headers": (STATE / "build_module_map.py", STATE, ["--plugin", str(PLUGIN)]),
     "skill names": (STATE / "check_names.py", STATE, ["--plugin", str(PLUGIN)]),
@@ -105,15 +111,15 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz"],
-    "mge": ["mge readme", "mge handshake", "mge contract", "mwse native", "module headers", "skill names"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz"],
+    "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 
 # The option that gives each check of the MGE XE tree another tree than the render-link sibling
 # (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
-MGE_OPTION = {"mge readme": "--mge-dir", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge"}
+MGE_OPTION = {"mge readme": "--mge-dir", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge"}
 
 
 def self_test():
