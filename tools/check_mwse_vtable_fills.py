@@ -33,9 +33,10 @@ CONSTRUCTOR = re.compile(r"\b(\w+_vTable)::\1\s*\(\s*\)")
 FILL = re.compile(r"^\s*(\w+)\s*=\s*[^;]*&\s*(?:\w+::)*\w+::(\w+)\s*\)?\s*;")
 
 
-def wrong_fills(lines):
-    """(line number, slot, member) for each fill in a vtable constructor whose member has another name."""
-    found = []
+def read_fills(lines):
+    """The count of the fills in the vtable constructors of `lines`, and (line number, slot, member) for each fill
+    whose member has another name."""
+    count, wrong = 0, []
     depth, body = 0, None
     for number, line in enumerate(lines, 1):
         code = line.split("//")[0]
@@ -43,12 +44,18 @@ def wrong_fills(lines):
             body = depth
         if body is not None and depth > body:
             match = FILL.match(code)
-            if match and match.group(1) != match.group(2) and (match.group(1), match.group(2)) not in KNOWN:
-                found.append((number, match.group(1), match.group(2)))
+            if match:
+                count += 1
+                if match.group(1) != match.group(2) and (match.group(1), match.group(2)) not in KNOWN:
+                    wrong.append((number, match.group(1), match.group(2)))
         depth += code.count("{") - code.count("}")
         if body is not None and depth <= body and "}" in code:
             body = None
-    return found
+    return count, wrong
+
+
+def wrong_fills(lines):
+    return read_fills(lines)[1]
 
 
 def sources(mwse):
@@ -69,7 +76,7 @@ def self_test():
         "\t\ttargetIsRequiredType = ConvertThisCall<decltype(targetIsRequiredType)>(&CopyTransformController::targetIsRequiredType);",
         "\t\tupdate = &NI::CopyTransformController::update;",
     ]
-    assert wrong_fills(head + good + tail) == [], "the slots of their own names and the known pair pass"
+    assert read_fills(head + good + tail) == (3, []), "the slots of their own names and the known pair pass, all 3 read"
 
     # The plant: line 129 of NICopyTransformController.cpp as it was before W93.
     planted = "\t\ttargetIsRequiredType = ConvertThisCall<decltype(targetIsRequiredType)>(&CopyTransformController::getRunTimeTypeInformation);"
@@ -82,8 +89,55 @@ def self_test():
     assert wrong_fills(outside + head + good + tail + outside) == [], "a line outside a vtable constructor is no fill"
     assert wrong_fills(head + ["\t\tif (x) {", "\t\t}", planted] + tail) == [(5, "targetIsRequiredType", "getRunTimeTypeInformation")], \
         "an inner block does not end the body"
+
+    # The scan of a tree: MWSE's only vtable constructor is in SharedSE, so each folder of FOLDERS must be read.
+    import tempfile
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as mwse:
+        for folder in FOLDERS:
+            os.makedirs(os.path.join(mwse, folder))
+        source = os.path.join(mwse, "SharedSE", "NICopyTransformController.cpp")
+        with open(source, "w", newline="\r\n") as out:
+            out.write("\n".join(head + good + tail) + "\n")
+        assert scan(mwse) == (1, 3, []), "the fills of SharedSE are read"
+        with open(source, "w", newline="\r\n") as out:
+            out.write("\n".join(head + [planted] + tail) + "\n")
+        files, fills, problems = scan(mwse)
+        assert fills == 1 and len(problems) == 1 and ":3: the slot targetIsRequiredType" in problems[0], "the W93 line fails"
+        os.remove(source)
+        files, fills, problems = check(mwse)
+        assert fills == 0 and len(problems) == 1 and "the scan reads nothing" in problems[0], "a tree with no fill fails"
     print("mwse vtable fills self-test: ok")
     return 0
+
+
+def scan(mwse):
+    """The count of the files and of the fills of the tree `mwse`, and a line for each fill that breaks the rule."""
+    files, fills, problems = 0, 0, []
+    for path in sources(mwse):
+        files += 1
+        count, wrong = read_fills(open(path, encoding="utf-8", errors="replace").read().splitlines())
+        fills += count
+        for number, slot, member in wrong:
+            problems.append("%s:%d: the slot %s gets the member %s" % (os.path.relpath(path, mwse), number, slot, member))
+    return files, fills, problems
+
+
+def check(mwse):
+    """`scan`, with a problem when the scan reads no fill: a folder or a pattern that misses MWSE's vtables."""
+    files, fills, problems = scan(mwse)
+    if fills == 0:
+        problems.append("no vtable fill in %d files of %s in %s: the scan reads nothing" % (files, "/".join(FOLDERS), mwse))
+    return files, fills, problems
+
+
+def main_with(mwse):
+    files, fills, problems = check(mwse)
+    for problem in problems:
+        print("FAIL: " + problem)
+    if not problems:
+        print("mwse vtable fills ok: %d fills in %d files of %s" % (fills, files, mwse))
+    return 1 if problems else 0
 
 
 def main():
@@ -93,21 +147,7 @@ def main():
     args = parser.parse_args()
     if args.self_test:
         return self_test()
-
-    files = list(sources(args.mwse))
-    if not files:
-        print("FAIL: no source files of %s in %s" % ("/".join(FOLDERS), args.mwse))
-        return 1
-    problems = []
-    for path in files:
-        lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
-        for number, slot, member in wrong_fills(lines):
-            problems.append("%s:%d: the slot %s gets the member %s" % (os.path.relpath(path, args.mwse), number, slot, member))
-    for problem in problems:
-        print("FAIL: " + problem)
-    if not problems:
-        print("mwse vtable fills ok: %d files of %s" % (len(files), args.mwse))
-    return 1 if problems else 0
+    return main_with(args.mwse)
 
 
 if __name__ == "__main__":
