@@ -467,7 +467,7 @@ class GamePlace:
             return
         if reply.code == self.slots.DONE:
             self.held = True
-            say("the game slot is free for this run before the build side: %s" % reply.text.splitlines()[0])
+            say("game held for the merge check, waiting for the build side since %s: %s" % (time.strftime("%H:%M"), reply.text.splitlines()[0]))
 
     def take(self, no_wait):
         """Takes the game slot for the whole check (the owner's D161): the stages write logs to E:, and a game that starts in
@@ -1052,7 +1052,8 @@ def self_test():
         GamePlace.ask_in_queue = ask_then_let_others_act
         globals()["WAIT_SECONDS"] = 0.05
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            waiting_output = io.StringIO()
+            with contextlib.redirect_stdout(waiting_output):
                 waiting_round = run_round(slots, [("both held", root, both_held)], "merge_step: x ffffffffff", round_log, False)
         finally:
             GamePlace.ask_in_queue = real_ask_in_queue
@@ -1061,6 +1062,7 @@ def self_test():
         assert seen, "the round did not wait for the build side: the test does not test the wait"
         assert seen[0] is True, "the check does not hold the free game slot while it waits for the build side"
         assert seen[1] != slots.DONE, "another session got the game slot before the check"
+        assert "game held for the merge check, waiting for the build side since " in waiting_output.getvalue(), waiting_output.getvalue()
         assert waiting_round is not None and waiting_round[0] == [True], waiting_round
         assert holders() == [], holders()
 
