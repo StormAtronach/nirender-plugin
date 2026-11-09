@@ -25,6 +25,12 @@ mge --mge <repo>. The diff from <tip> to <commit> adds these:
 - the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
   helper's renderer, the shaders of the assets (the source of the shaders in a build), or a manifest or a lock of the
   build. The path decides: a stream or a table change can move a picture too. The gate does not run when its build failed;
+- with the gate, the A/B stages of tools/instance_ab.py: `base build` keeps the build of the current tips of the target
+  branches of BOTH repos in E:\\nirender-keep\\merge-step\\base-<branch> (key: both commits and the profile; a tip that
+  moved builds again), and `instance A/B grass` replays a capture of Outlander-test with the base, the build under test and
+  the base again, on the same data, and compares the pictures and the hash lines of the grass calls. NOT RUN is not a PASS:
+  it counts as a stage that did not pass (exit code 5 of the tool). The base is built at <tip> for the tree's repo and at
+  the HEAD of the sibling, which the build under test has too, so that the A/B shows the change of the tree's repo;
 - the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
   of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these.
 
@@ -61,12 +67,17 @@ import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
+from common import git_env  # noqa: E402
 from make_play_set import BASELINE, WAIT_SECONDS, load_slots, say  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
 SLOT_MINUTES = 60
 LOG_FOLDER = "E:\\nirender-keep\\merge-step"
+# The stages that replay the build of the gate or the kept base build.
+INSTANCE_STAGE = "instance A/B grass"
+BASE_STAGE = "base build"
 # What a change must touch for the gate, as paths from the root of each repo: a file, or a folder with its slash.
 GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
                          "host/.cargo/config.toml"),
@@ -95,8 +106,10 @@ def sibling_of(kind, repo):
     return os.path.join(os.path.dirname(repo), MGE_NAME if kind == "plugin" else PLUGIN_NAME)
 
 
-def stages_for(kind, repo, paths, baseline=BASELINE):
-    """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling."""
+def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None):
+    """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `tips` are the
+    commits of the base build, {"plugin": sha, "mge": sha}, and `base_folder` holds it: with both, the gate is followed by
+    the A/B stages."""
     python = sys.executable
     plugin = repo if kind == "plugin" else sibling_of(kind, repo)
     mge = repo if kind == "mge" else sibling_of(kind, repo)
@@ -117,7 +130,11 @@ def stages_for(kind, repo, paths, baseline=BASELINE):
         stages.append(("contract", plugin, tool("check_contract.py", "--mge", mge)))
     if touches(paths, GATE_PATHS[kind]):
         stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
-        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", os.path.join(mge, "target", "dist-staging"), "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
+        staging = os.path.join(mge, "target", "dist-staging")
+        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", staging, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
+        if tips and base_folder:
+            stages.append((BASE_STAGE, plugin, tool("instance_ab.py", "base-build", "--plugin-repo", plugin, "--mge-repo", mge, "--plugin-tip", tips["plugin"], "--mge-tip", tips["mge"], "--out", base_folder)))
+            stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", os.path.join(base_folder, "build"), "--now-build", staging, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
     elif touches(paths, DIST_PATHS[kind]):
         stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
@@ -202,6 +219,15 @@ def output_since(log, start):
         return file.read().decode("utf-8", "replace")
 
 
+def not_run_reason(output):
+    """The reason in the last "NOT RUN" line of a stage's output, or a plain text."""
+    reason = "the stage could not judge"
+    for line in output.splitlines():
+        if line.startswith("NOT RUN"):
+            reason = line.partition(": ")[2] or line
+    return reason
+
+
 def run_stage(name, folder, command, log):
     began = time.time()
     log.write("\n== %s: %s in %s\n" % (name, " ".join(command), folder))
@@ -209,6 +235,9 @@ def run_stage(name, folder, command, log):
     start = log.tell()
     code = subprocess.run(command, cwd=folder, env=stage_env(os.environ), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
     failure = ""
+    if code == NOT_RUN_CODE:
+        verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, not_run_reason(output_since(log, start))))
+        return False
     if code != 0:
         refusal = slot_refusal_in(output_since(log, start))
         failure = ": exit code %d%s" % (code, "; refused by the slot check: %s" % refusal if refusal else "")
@@ -237,8 +266,12 @@ def run_stages(stages, log, note_stage=lambda: None):
     no compile seen, and a round can pass that with a stage that does not compile."""
     results = {}
     for name, folder, command in stages:
-        if name == "replay gate" and not results.get("build for the gate", True):
+        if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
             verdict(log, "NOT RUN %s: its build failed" % name)
+            results[name] = False
+            continue
+        if name == INSTANCE_STAGE and not results.get(BASE_STAGE, True):
+            verdict(log, "NOT RUN %s: the base build failed" % name)
             results[name] = False
             continue
         if name == "replay gate":
@@ -259,7 +292,7 @@ def moves_the_ref(baseline):
 
 def resolve(repo, name):
     """The commit of a name, or None."""
-    return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", name], capture_output=True, text=True).stdout.strip() or None
+    return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", name], capture_output=True, text=True, env=git_env()).stdout.strip() or None
 
 
 def branch_of(repo):
@@ -274,7 +307,7 @@ def is_ancestor(repo, older, newer):
 def take_options(slots, stages):
     """The options of the take: the whole build side (both places) when a stage replays, as a replay needs it (the
     owner's D139). A slot.py from before D139 has one place, and its take has no such option."""
-    replays = any(name == "replay gate" for name, _, _ in stages)
+    replays = any(name in ("replay gate", INSTANCE_STAGE) for name, _, _ in stages)
     if replays and "whole" in inspect.signature(slots.take).parameters:
         return {"whole": True}
     return {}
@@ -332,6 +365,28 @@ def git(repo, *args):
     if done.returncode != 0:
         raise SystemExit("git %s in %s: %s" % (" ".join(args), repo, done.stderr.strip()))
     return done.stdout.strip()
+
+
+def base_folder_of(branch):
+    """The folder of the kept base build of a target branch: one for each branch, replaced at each pass."""
+    return os.path.join(LOG_FOLDER, "base-" + branch.replace("/", "-"))
+
+
+def tips_for(kind, repo, base):
+    """The commits of the base build: `base` for the tree's repo, and for the sibling the HEAD of its tree, which the build
+    under test has too: the two builds differ in the tree's repo only. (tips, None), or (None, why not)."""
+    other = "mge" if kind == "plugin" else "plugin"
+    sibling = sibling_of(kind, repo)
+    if not os.path.isdir(sibling):
+        return None, "no sibling %s for the base build" % sibling
+    sibling_head = resolve(sibling, "HEAD")
+    if sibling_head is None:
+        return None, "the sibling %s has no HEAD for the base build" % sibling
+    return {kind: base, other: sibling_head}, None
+
+
+def two_places_take_for_ab(slot, who, *, minutes=None, timing=False, whole=False):
+    pass
 
 
 def self_test():
@@ -482,6 +537,59 @@ def self_test():
             run_stages([("a", root, good), ("build for the gate", root, bad), gate_stage], log, lambda: notes.append(1))
         assert len(notes) == 2
 
+        # The A/B stages follow the gate, with the tips of both repos, and only with them.
+        tips = {"plugin": "p" * 40, "mge": "m" * 40}
+        kept = os.path.join(root, "kept")
+        with_tips = stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips, kept)
+        assert [name for name, _, _ in with_tips][-4:] == ["build for the gate", "replay gate", BASE_STAGE, INSTANCE_STAGE]
+        by_name = {name: (folder, command) for name, folder, command in with_tips}
+        build = by_name[BASE_STAGE][1]
+        assert build[build.index("--plugin-tip") + 1] == "p" * 40 and build[build.index("--mge-tip") + 1] == "m" * 40 and build[build.index("--out") + 1] == kept
+        run = by_name[INSTANCE_STAGE][1]
+        assert run[run.index("--base-build") + 1] == os.path.join(kept, "build") and run[run.index("--now-build") + 1] == os.path.join(mge, "target", "dist-staging")
+        assert run[run.index("--baseline") + 1] == BASELINE and not run[run.index("--out") + 1].startswith(BASELINE)
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, kept)] == base, "no gate, no A/B stage"
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips)][-1] == "replay gate", "no folder, no A/B stage"
+        assert base_folder_of("feature/wgpu-renderer") == os.path.join(LOG_FOLDER, "base-feature-wgpu-renderer") and base_folder_of("master").endswith("base-master")
+        assert tips_for("plugin", os.path.join(root, "alone", PLUGIN_NAME), "b")[0] is None
+        # The sibling's side of the base is its HEAD, also when HEAD is behind its branch.
+        pair = os.path.join(root, "pair")
+        sibling_tree = os.path.join(pair, MGE_NAME)
+        os.makedirs(sibling_tree)
+        author = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+        for command in (["init", "-q"], author + ["commit", "-q", "--allow-empty", "-m", "one"], author + ["commit", "-q", "--allow-empty", "-m", "two"]):
+            subprocess.run(["git", "-C", sibling_tree, *command], check=True, env=git_env())
+        second = resolve(sibling_tree, "HEAD")
+        subprocess.run(["git", "-C", sibling_tree, "checkout", "-q", "--detach", "HEAD~1"], check=True, env=git_env())
+        first = resolve(sibling_tree, "HEAD")
+        assert first != second
+        assert tips_for("plugin", os.path.join(pair, PLUGIN_NAME), "base") == ({"plugin": "base", "mge": first}, None)
+        assert tips_for("mge", sibling_tree, "base")[1].startswith("no sibling")
+        # Both A/B stages replay, so they take the whole build side.
+        two = types.SimpleNamespace(take=two_places_take_for_ab)
+        assert take_options(two, [("a", root, good), (INSTANCE_STAGE, root, good)]) == {"whole": True}
+
+        # The exit code 5 of a stage is NOT RUN, with its reason, and the stage does not count as passed.
+        not_run = [sys.executable, "-c", "print('replay base: exit code 0'); print('NOT RUN grass: the game slot is held by a run on Outlander-test: x'); raise SystemExit(%d)" % NOT_RUN_CODE]
+        with open(os.path.join(root, "log6.txt"), "w", encoding="utf-8") as log:
+            assert not run_stage("instance A/B grass", root, not_run, log)
+        with open(os.path.join(root, "log6.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert "== NOT RUN instance A/B grass (" in text and "): the game slot is held by a run on Outlander-test: x\n" in text and "== FAIL" not in text and "== PASS" not in text, text
+        assert not_run_reason("a\nb") == "the stage could not judge"
+
+        # The A/B stage does not run on a failed build of the gate or of the base; a failed stage stops no other.
+        with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([("build for the gate", root, bad), gate_stage, (BASE_STAGE, root, good), (INSTANCE_STAGE, root, good)], log) == [False, False, True, False]
+        with open(os.path.join(root, "log7.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert "== NOT RUN instance A/B grass: its build failed" in text and "== PASS base build (" in text, text
+        with open(os.path.join(root, "log8.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([("build for the gate", root, good), gate_stage, (BASE_STAGE, root, bad), (INSTANCE_STAGE, root, good)], log) == [True, True, False, False]
+        with open(os.path.join(root, "log8.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert "== NOT RUN instance A/B grass: the base build failed" in text, text
+
         # A pass against a named folder does not move the ref.
         assert moves_the_ref(BASELINE) and not moves_the_ref(os.path.join(root, "copy"))
 
@@ -605,6 +713,12 @@ def main():
     paths = git(repo, "diff", "--name-only", base, commit).splitlines()
     baseline = os.path.abspath(args.baseline)
     stages = stages_for(kind, repo, paths, baseline) if kind else []
+    if kind and any(name == "replay gate" for name, _, _ in stages):
+        tips, why = tips_for(kind, repo, base) if branch else (None, "the tree is on no branch, and the kept base build is one for each branch")
+        if why:
+            say("FAIL the tree: %s" % why)
+            return 1
+        stages = stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch))
     sibling = sibling_of(kind, repo) if kind else ""
     has_sibling = os.path.isdir(sibling)
     sibling_changed = has_sibling and bool(git(sibling, "status", "--porcelain", "--untracked-files=no"))

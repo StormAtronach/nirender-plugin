@@ -236,6 +236,8 @@ switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 - `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
   guard of the device's limit.
 - `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
+- `MGE_XE_GRASS_HASH=1`: the helper prints one line for each grass call with the hash of its records (MGE XE's
+  RENDERER.md has the form). `tools/instance_ab.py` sets it for its replays.
 - `MGE_XE_RUNS_DUMP=1`: the runs of the table of each frame.
 - `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of each draw of that geometry.
 - `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the

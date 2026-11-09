@@ -89,6 +89,7 @@ CHECKS = {
     "the close of a game": (PLUGIN / "tools" / "play.py", PLUGIN, ["--self-test"]),
     "the play set": (PLUGIN / "tools" / "make_play_set.py", PLUGIN, ["--self-test"]),
     "the merge step": (PLUGIN / "tools" / "merge_step.py", PLUGIN, ["--self-test"]),
+    "the instance A/B": (PLUGIN / "tools" / "instance_ab.py", PLUGIN, ["--self-test"]),
     "clippy arguments": (PLUGIN / "tools" / "clippy_baseline.py", PLUGIN, ["--self-test"]),
     # The adapter record of the replay gate.
     "gate": (PLUGIN / "tools" / "validate_retained.py", PLUGIN, ["--self-test"]),
@@ -102,7 +103,7 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "clippy arguments", "gate", "clean worktrees", "clean results", "hooks", "check places", "fuzz"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "mwse native", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "clean worktrees", "clean results", "hooks", "check places", "fuzz"],
     "mge": ["mge readme", "mge handshake", "mge contract", "mwse native", "module headers", "skill names"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
