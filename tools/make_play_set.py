@@ -70,7 +70,7 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import SIBLINGS, find_sibling, local, main_checkout  # noqa: E402
-from validate_tour import NOT_RUN  # noqa: E402
+from validate_tour import NOT_RUN, NOT_RUN_CODE  # noqa: E402
 
 REPOS = local("repos", SIBLINGS)
 PLUGIN_REPO = os.path.join(REPOS, "nirender-plugin")
@@ -237,9 +237,12 @@ def live_faults(progress):
 
 
 def tour_faults(output, code):
-    """What is wrong with the output of validate_tour.py, as a list of texts."""
+    """What is wrong with the output of validate_tour.py, as a list of texts. Its exit code NOT_RUN_CODE says that
+    no picture failed and a replay was not run: that is no fault here, and neither is the lack of pairs it
+    leaves. The pictures that were made are still checked."""
+    not_run = code == NOT_RUN_CODE
     faults = []
-    if code != 0:
+    if code not in (0, NOT_RUN_CODE):
         faults.append("validate_tour.py gave exit code %d" % code)
     pictures = re.search(r"(\d+) pictures, (\d+) failed", output)
     if not pictures:
@@ -256,10 +259,20 @@ def tour_faults(output, code):
         faults.append("%d pairs have no numbers, first %s" % (len(unmeasured), unmeasured[0]))
     means = [(float(mean), name) for name, mean in re.findall(r"^\s+(\S+\.png)\s+([\d.]+) mean", output, re.MULTILINE)]
     if not means:
-        faults.append("validate_tour.py has no differences of mode gpu against mode off")
+        if not not_run:
+            faults.append("validate_tour.py has no differences of mode gpu against mode off")
     elif max(means)[0] > MEAN_LIMIT:
         faults.append("mode gpu against mode off differs by %.3f at %s, over the limit %.3f" % (*max(means), MEAN_LIMIT))
     return faults
+
+
+def gate_not_run(output, code):
+    """Whether the gate did not run rather than fail: each FAIL line of validate_retained.py is a replay that the
+    slot check refused. A failure of any other kind, or a failed tool with no FAIL line, is a failure."""
+    if code == 0:
+        return False
+    fails = re.findall(r"^\s*FAIL (.*)$", output, re.MULTILINE)
+    return bool(fails) and all(text.startswith(NOT_RUN) for text in fails)
 
 
 def closing_crash(mwse_log):
@@ -614,7 +627,8 @@ def smoke_gate(tree, folder, slots, no_wait):
     os.makedirs(os.path.dirname(keep), exist_ok=True)
     with open(keep, "w", encoding="utf-8") as file:
         file.write(done.stdout + done.stderr)
-    if NOT_RUN in done.stdout:
+    # A failure first: a NOT RUN must not hide it.
+    if gate_not_run(done.stdout, done.returncode):
         raise SmokeNotRun("the gate's replays, see %s" % keep)
     if done.returncode != 0:
         raise SmokeFailed("the gate gave exit code %d, see %s: %s" % (done.returncode, keep, (done.stdout + done.stderr).strip()[-200:]))
@@ -631,11 +645,12 @@ def smoke_tour(tree, folder, plugin_dll, notes, slots, no_wait):
     with open(os.path.join(run, "validate.txt"), "w", encoding="utf-8") as file:
         file.write(done.stdout + done.stderr)
     keep_run(run)
-    if NOT_RUN in done.stdout:
-        raise SmokeNotRun("the tour's replays, see %s" % os.path.join(run, "validate.txt"))
+    # A failure first: a NOT RUN must not hide it.
     faults = tour_faults(done.stdout, done.returncode)
     if faults:
         raise SmokeFailed("%s: %s" % (run, "; ".join(faults)))
+    if done.returncode == NOT_RUN_CODE:
+        raise SmokeNotRun("the tour's replays, see %s" % os.path.join(run, "validate.txt"))
     return run
 
 
@@ -718,6 +733,106 @@ def current_set_commits(owner_local_bat):
 
 
 # --- the tests of the pure parts ------------------------------------------------------------
+
+def smoke_wiring_test(fake_slots):
+    """The wiring of the smoke (the f220 fault was there), with a fake runner, fake tools and fake slots: each
+    replay stage holds the whole build side and releases it, each game stage after it takes the game again, and
+    a failure wins over a NOT RUN, in the gate and in the tour."""
+    import io
+
+    events = []
+
+    class Slots(fake_slots):
+        holders = {}
+
+        @classmethod
+        def take(cls, slot, who, **kind):
+            events.append("take %s%s" % (slot, " whole" if kind.get("whole") else ""))
+            return types.SimpleNamespace(code=cls.DONE, text="taken")
+
+        @classmethod
+        def release(cls, slot, who=None):
+            events.append("release %s" % slot)
+            return types.SimpleNamespace(code=cls.DONE, text="released")
+
+    refused = "Refused by the slot check: replay.py: the build slot is held by rob (place 1); a replay needs the whole build side."
+    row = "  %s                                       0.000 mean, 0.00 %% different, 0.00 %% over 8, largest 0\n"
+    head = "103 stops to replay, gpu and off at each\n"
+    pairs = "mode gpu against mode off at each stop, the largest differences first:\n" + row % "2-01-b.png"
+    tours = {
+        "passed": (0, head + "206 pictures, 0 failed\n" + pairs + "pairs: 103 of 103 equal\n"),
+        "not run": (NOT_RUN_CODE, head + "%s: replay of tour-1.nircap: 84 pictures not made: %s\n122 pictures, 0 failed\n%s: 84 pictures not made, and not checked\n" % (NOT_RUN, refused, NOT_RUN)
+                    + pairs + "pairs: 61 of 61 equal; 42 pairs %s, not compared\n" % NOT_RUN),
+        # f220 with this fix: every replay refused, so no pair has numbers.
+        "all not run": (NOT_RUN_CODE, head + "".join("%s: replay of tour-%d.nircap: 68 pictures not made: %s\n" % (NOT_RUN, cell, refused) for cell in (1, 2, 3))
+                        + "0 pictures, 0 failed\n%s: 206 pictures not made, and not checked\n" % NOT_RUN
+                        + "mode gpu against mode off at each stop, the largest differences first:\npairs: 0 of 0 equal; 103 pairs %s, not compared\n" % NOT_RUN),
+        "failed": (1, head + "%s: replay of tour-1.nircap: 84 pictures not made: %s\nFAILED 2-02-c.png: gpu error\n120 pictures, 2 failed\n" % (NOT_RUN, refused)
+                   + pairs + "pairs: 60 of 60 equal; 42 pairs %s, not compared\n" % NOT_RUN),
+    }
+    gates = {
+        "passed": (0, "  ok   12 of 12 pictures equal to the accepted ones in x\n"),
+        "not run": (1, "       %s\n  FAIL %s: replay.py: %s\n" % (refused, NOT_RUN, refused)),
+        "failed": (1, "       %s: replay of tour-1.nircap: 84 pictures not made: %s\n       120 pictures, 2 failed\n  FAIL validate_tour.py ended with the code 1\n" % (NOT_RUN, refused)),
+    }
+    outcome = {}
+
+    def tool_run(command, **_):
+        tool = next(os.path.basename(part) for part in command if str(part).endswith(".py"))
+        events.append(tool)
+        code, output = (gates if tool == "validate_retained.py" else tours)[outcome[tool]]
+        return subprocess.CompletedProcess(command, code, output, "")
+
+    with tempfile.TemporaryDirectory() as tree:
+        def a_run(label):
+            events.append("game " + label)
+            path = os.path.join(tree, label)
+            os.makedirs(path, exist_ok=True)
+            return path
+
+        fakes = {
+            "smoke_live": lambda *_: a_run("playset-live"),
+            "run_runner": lambda _tree, label, *_: a_run(label),
+            "check_run_files": lambda *_: None,
+            "keep_run": lambda run: run,
+            "smoke_owner_bats": lambda *_: events.append("bats") or 2,
+            "KEPT_RUNS": os.path.join(tree, "runs-%s"),
+        }
+        real = {name: globals()[name] for name in fakes}
+        real_run = subprocess.run
+        globals().update(fakes)
+        subprocess.run = tool_run
+
+        def smoke(gate, tour):
+            """The result of run_smoke, or the class of its stop."""
+            events.clear()
+            outcome.update({"validate_retained.py": gate, "validate_tour.py": tour})
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    return run_smoke(tree, "f999", "plugin.dll", "local.bat", [], Slots, False)
+            except (SmokeFailed, SmokeNotRun) as stop:
+                return type(stop)
+
+        try:
+            result = smoke("passed", "passed")
+            assert result.startswith("passed") and events == [
+                "game playset-live",
+                "take build whole", "validate_retained.py", "release build",
+                "take game", "game playset-tour",
+                "take build whole", "validate_tour.py", "release build",
+                "take game", "bats"], events
+            assert smoke("not run", "passed") is SmokeNotRun and events[-1] == "release build", "the gate refused: NOT RUN, and the side is free"
+            assert smoke("failed", "passed") is SmokeFailed, "the gate failed, and a NOT RUN beside it does not hide it"
+            assert smoke("passed", "not run") is SmokeNotRun, "the tour's replays refused: NOT RUN"
+            assert smoke("passed", "all not run") is SmokeNotRun, "all the tour's replays refused, no pair: NOT RUN"
+            assert smoke("passed", "failed") is SmokeFailed, "the tour failed, and a NOT RUN beside it does not hide it"
+        finally:
+            globals().update(real)
+            subprocess.run = real_run
+    assert gate_not_run(gates["not run"][1], 1) and not gate_not_run(gates["failed"][1], 1) and not gate_not_run("", 1)
+    assert not gate_not_run(gates["not run"][1], 0)
+    assert tour_faults(tours["not run"][1], NOT_RUN_CODE) == [] and tour_faults(tours["failed"][1], 1)
+
 
 def self_test():
     global WAIT_SECONDS
@@ -856,6 +971,7 @@ def self_test():
     import validate_tour
     with contextlib.redirect_stdout(io.StringIO()):
         validate_tour.self_test()
+    smoke_wiring_test(Side)
 
     assert next_set_number(["f99", "f100", "f7", "other", "f12x"]) == 101
     assert next_set_number([]) == 1

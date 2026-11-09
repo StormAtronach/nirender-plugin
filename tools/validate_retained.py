@@ -179,7 +179,9 @@ def ran(result, tool, accepting=False):
     for line in output.strip().split("\n")[-6:]:
         print("       " + line[:200], flush=True)
     refused = refusal_of(output)
-    if refused:
+    # A failed picture first: validate_tour.py prints its count, and a NOT RUN must not hide it.
+    failed = re.search(r"\d+ pictures, [1-9]\d* failed", output)
+    if refused and not failed:
         return check(False, "%s: %s: %s" % (NOT_RUN, tool, refused[refused.index("Refused"):]))
     return check(False, "%s ended with the code %d%s" % (tool, code, ": the accepted folder holds a mix now, accept again" if accepting else ""))
 
@@ -291,6 +293,11 @@ def self_test():
     with contextlib.redirect_stdout(io.StringIO()) as printed:
         assert not ran((1, "Refused by the slot check: replay.py: the build slot is held by rob (place 1); a replay needs the whole build side.\nTo pass anyway: ..."), "replay.py")
     assert "FAIL %s: replay.py: Refused by the slot check" % NOT_RUN in printed.getvalue() and "ended with the code" not in printed.getvalue(), printed.getvalue()
+    # A tour with failed pictures and one refused capture failed: the NOT RUN does not hide it.
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        assert not ran((1, "NOT RUN: slot refused: replay of tour-3.nircap: 54 pictures not made: Refused by the slot check: x\n"
+                           "FAILED 1-01-a.png: gpu error\n150 pictures, 2 failed\n"), "validate_tour.py")
+    assert "FAIL validate_tour.py ended with the code 1" in printed.getvalue() and "FAIL " + NOT_RUN not in printed.getvalue(), printed.getvalue()
     # A build folder with the helper only (a cargo target folder) lacks the Data Files.
     with tempfile.TemporaryDirectory() as build:
         open(os.path.join(build, "numidium.exe"), "wb").close()

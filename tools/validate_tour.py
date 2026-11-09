@@ -257,6 +257,40 @@ def self_test():
                 failures, not_run = replay_all(work[:2], 2)
             assert sorted(failures) == sorted(name for *_, name in work[:2]) and not_run == [], (failures, not_run)
             assert len(calls) == 3, "one run of the capture, and a second try of each picture: %d runs" % len(calls)
+
+            # A first run with no picture, then a refused second try (the hold ended between them): not run.
+            def refused_after_first(command, **kind):
+                return (ran_without_picture if len(calls) == 0 else refused)(command, **kind)
+
+            calls.clear()
+            run_tool = refused_after_first
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                failures, not_run = replay_all(work[:2], 2)
+            assert failures == [] and sorted(not_run) == sorted(name for *_, name in work[:2]), (failures, not_run)
+            assert "FAILED" not in printed.getvalue(), printed.getvalue()
+
+            # main(): a failed picture wins over a refused replay (exit code 1), and with only refused
+            # replays the exit code is NOT_RUN_CODE, with no failed picture.
+            run = os.path.join(folder, "run")
+            os.makedirs(run)
+            with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
+                file.write("tour: dual\ntour: cell 1 stop 1 a\ntour: cell 2 stop 1 b\n")
+            for cell in (1, 2):
+                open(os.path.join(run, "tour-%d.nircap" % cell), "wb").close()
+
+            def first_refused(command, **kind):
+                return (refused if "tour-1" in os.path.basename(command[2]) else ran_without_picture)(command, **kind)
+
+            real_argv = sys.argv
+            try:
+                sys.argv = ["validate_tour.py", run, "--jobs", "1"]
+                for tool, code, text in ((first_refused, 1, "0 pictures, 2 failed"), (refused, NOT_RUN_CODE, "0 pictures, 0 failed")):
+                    run_tool = tool
+                    with contextlib.redirect_stdout(io.StringIO()) as printed:
+                        assert main() == code, (tool.__name__, printed.getvalue())
+                    assert text in printed.getvalue() and NOT_RUN in printed.getvalue(), printed.getvalue()
+            finally:
+                sys.argv = real_argv
         finally:
             run_tool = subprocess.run
     assert refusal_of("a\n" + refusal + "\nb") == refusal and refusal_of("replay of x: 3 pictures missing") == ""
