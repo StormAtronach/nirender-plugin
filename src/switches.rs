@@ -78,6 +78,13 @@ fn bad_value_line(name: &str, value: &str, expected: &str, taken: &str) -> Strin
     format!("switch {name}={value}: not {expected}; {taken}")
 }
 
+/// The log line of a Lua call of the `nirender` table given a mode it does not take, in the
+/// form of `bad_value_line`: the call, the text, the modes it takes and what happens instead.
+/// Here and not in `lua`, which the test build leaves out.
+pub fn bad_mode_line(call: &str, text: &str, expected: &str, instead: &str) -> String {
+    format!("nirender.{call}(\"{text}\"): not {expected}; {instead}")
+}
+
 /// One log line with every switch that is set, for the start of the log. A name or a value
 /// that is not Unicode is shown lossily (`vars` would panic on it).
 pub fn log_set() {
@@ -140,6 +147,35 @@ mod tests {
         std::env::set_var(&large, "5000");
         assert_eq!(number_from_to(&large, 64u32, 1, 512), 64);
         assert_eq!(bad_value_line(&test_switch("X"), "many", "1 or 0", "not set"), format!("switch {}: not 1 or 0; not set", format!("{}=many", test_switch("X"))));
+    }
+
+    #[test]
+    fn a_bad_mode_of_a_lua_call_gives_a_line() {
+        use crate::instance_stream::Mode as Retained;
+        use crate::shadow::Mode as Port;
+
+        let retained = bad_mode_line("retained", "dual", Retained::EXPECTED, "the mode stays gpu");
+        assert_eq!(retained, "nirender.retained(\"dual\"): not off or gpu; the mode stays gpu");
+        let set_mode = bad_mode_line("setMode", "", Port::EXPECTED, "no port changed");
+        let expected = format!("nirender.setMode(\"\"): not {}; no port changed", Port::EXPECTED);
+        assert_eq!(set_mode, expected);
+    }
+
+    /// The modes a line names are exactly the modes that `parse` takes.
+    #[test]
+    fn the_expected_modes_are_the_parsed_ones() {
+        use crate::instance_stream::Mode as Retained;
+        use crate::shadow::Mode as Port;
+
+        fn named(expected: &str) -> Vec<&str> {
+            expected.split(", ").flat_map(|part| part.split(" or ")).collect()
+        }
+        for mode in ["off", "gpu", "dual", "on", "live", "shadow"] {
+            let retained = (named(Retained::EXPECTED).contains(&mode), Retained::parse(mode).is_some());
+            let port = (named(Port::EXPECTED).contains(&mode), Port::parse(mode).is_some());
+            assert_eq!(retained.0, retained.1, "retained {mode}");
+            assert_eq!(port.0, port.1, "setMode {mode}");
+        }
     }
 
     #[test]

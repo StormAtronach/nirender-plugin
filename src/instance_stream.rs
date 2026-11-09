@@ -107,6 +107,9 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// The modes that `parse` takes, for a log line about a mode it does not take.
+    pub const EXPECTED: &str = "off or gpu";
+
     pub fn parse(text: &str) -> Option<Mode> {
         match text {
             "off" => Some(Mode::Off),
@@ -497,7 +500,7 @@ impl Instance {
 impl Tables {
     /// The mode, from `NIRENDER_RETAINED` at the first call.
     fn mode(&mut self) -> Mode {
-        *self.mode.get_or_insert_with(|| crate::switches::parsed("NIRENDER_RETAINED", "off or gpu", Mode::parse).unwrap_or(Mode::Gpu))
+        *self.mode.get_or_insert_with(|| crate::switches::parsed("NIRENDER_RETAINED", Mode::EXPECTED, Mode::parse).unwrap_or(Mode::Gpu))
     }
 }
 
