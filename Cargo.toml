@@ -18,6 +18,11 @@ crate-type = ["cdylib", "rlib"]
 # never a player's build. `cargo build --release --features rig`.
 rig = []
 
+# Only the tests link it: the decode of MWSE.dll's code in the check of its patch sites
+# (src/mwse_sites.rs, which is #[cfg(test)]). The cdylib does not change.
+[dev-dependencies]
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder", "instr_info"] }
+
 # A link in a doc comment that rustdoc cannot resolve fails the doc build (`tools/docs.py`).
 [lints.rustdoc]
 broken_intra_doc_links = "deny"
