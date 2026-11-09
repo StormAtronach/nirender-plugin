@@ -394,6 +394,35 @@ mod tests {
         assert!(pipe.drain(Duration::from_secs(2)));
     }
 
+    /// The second look of `idle`: the pipe can be empty while the writer still holds bytes in
+    /// its buffer and waits in a write to the disk. The drain must not end then. The lines go
+    /// into the pipe before the writer starts, so that its first read takes all of them (they
+    /// fit its buffer), and the held sink stops that write after its first bytes.
+    #[test]
+    fn the_drain_waits_for_the_bytes_that_the_writer_holds() {
+        let sink = HeldSink::new(4096);
+        let pipe = LogPipe::new(sink.write, PIPE_BYTES).expect("the pipe");
+        let text = lines(1700);
+        assert!(text.len() < 64 * 1024 && text.len() > 32 * 1024, "the lines fit one read of the writer");
+        write_all(pipe.write, &text);
+        assert!(pipe.spawn_writer());
+
+        // The writer reads the pipe empty, then waits in its write to the held sink.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pipe.waiting() != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let emptied = pipe.waiting() == 0;
+        let drained_early = emptied && pipe.drain(Duration::from_millis(50));
+
+        // The disk lets go: every byte arrives, and the drain ends.
+        let got = sink.read_all(text.len(), Duration::from_secs(10));
+        assert!(emptied, "the writer did not take the lines out of the pipe");
+        assert!(!drained_early, "the drain ended while the writer held bytes");
+        assert!(got == text, "{} of {} bytes arrived, or out of order", got.len(), text.len());
+        assert!(pipe.drain(Duration::from_secs(2)));
+    }
+
     /// The drain of an idle pipe ends at once, also while the writer waits in its read for the
     /// next line. With an anonymous pipe, this drain waited for ever: the test runs in a child
     /// process, which is ended after a limit.
