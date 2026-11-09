@@ -89,8 +89,9 @@ impl Plan {
     }
 
     /// The start of a scene whose view has the kind `view` (from its camera and its target). At
-    /// the user interface scene of the game the world views are done and the post-processing is
-    /// due. The table's blends that still wait for the flush of the queue go first, at the
+    /// the user interface scene of the game, in the back buffer, the world views are done and the
+    /// post-processing is due; an interface scene in a texture ([`ViewKind::Picture`]) is not
+    /// that scene. The table's blends that still wait for the flush of the queue go first, at the
     /// first-person or the user interface scene: the engine flushes the queue in its water
     /// scene, so this is for a frame without one. The classes that no draw of the world camera
     /// brought go before them, as the engine draws its water before it flushes the queue.
@@ -111,7 +112,8 @@ impl Plan {
         if self.queue_open && (kind == scene::SCENE_FIRST_PERSON || kind == scene::SCENE_UI) {
             steps.push(self.sorted_blends());
         }
-        if kind == scene::SCENE_UI {
+        // The interface scene of the picture is in the back buffer: one into a texture is not it.
+        if kind == scene::SCENE_UI && view != ViewKind::Picture {
             steps.push(Step::Post);
         }
         // The world scene after a main view with a root of its own: the world began there and
@@ -610,7 +612,7 @@ mod tests {
         target.scene_end(true, false, true, false, false);
         main.scene_begin(SCENE_FIRST_PERSON);
         main.scene_end(true, true, true, false, false);
-        assert_eq!(main.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
+        assert_eq!(main.scene_begin(SCENE_UI), vec![Step::Post]);
         assert!(main.take_post(true, true));
         assert!(!main.take_post(true, true));
     }
