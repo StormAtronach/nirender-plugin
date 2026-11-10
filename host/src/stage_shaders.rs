@@ -14,11 +14,12 @@
 //! of the uber-shader and not a hitch [I: wgpu's own locks can still hold the frame]. A
 //! replay makes them at once, so that its frames are the same from the first. The pipelines
 //! of a live session go to a list in the user's folder (`%LOCALAPPDATA%\MGE XE`, never the
-//! game folder), and the next start makes them before they are needed. A list that cannot be
-//! read, that a build with another world shader wrote, or that cannot be written, leaves each
-//! key to its first use, with a line in the log.
+//! game folder), one file for each world shader. The next start makes them in its first
+//! frames, behind the keys of first use, and the list's keys take at most half of the cap. A
+//! list that cannot be read, that a build with another world shader wrote, or that cannot be
+//! written, leaves each key to its first use, with a line in the log.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -32,6 +33,11 @@ const STAGES: usize = 6;
 const LIST_HEADER: &str = "numidium stage pipelines 1";
 /// The frames between two writes of a changed list.
 const SAVE_FRAMES: u32 = 600;
+/// The list's pipelines go to the thread while it has fewer jobs than this, so that a key of
+/// first use waits behind at most this many of them.
+const LIST_BATCH: usize = 4;
+/// The stage keys that the list may take; the rest of the cap is for the keys of first use.
+const LIST_KEYS: usize = MAX_KEYS / 2;
 
 /// The codes that `fs` switches on for a draw. Only the stages below `count` are kept; the
 /// rest are 0, so that two draws that differ only in an unused stage share a key.
@@ -117,14 +123,11 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
         source.replace_range(at..end, &format!("    texels[{stage}] = vec4f(1.0);"));
     }
 
-    // The stage loop.
-    let head = "    for (var i = 0u; i < draws[record].counts.y; i++) {\n        let stage = draws[record].stages[i];\n        let texel = texels[i];\n";
-    let tail = "\n    }\n\n    if draws[record].more.z != 0u";
-    if source.matches(head).count() != 1 {
+    // The stage loop: its code must be the code that the steps copy.
+    let (start, end) = stage_loop_range(&source)?;
+    if without_comments(&source[start..end]) != STAGE_LOOP {
         return None;
     }
-    let start = source.find(head)?;
-    let end = start + source[start..].find(tail)? + "\n    }\n".len();
     let mut steps = String::new();
     for stage in 0..key.count as usize {
         let [op, a1, a2, a0] = key.color[stage];
@@ -155,6 +158,44 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
         function => format!("    if !compare({function}u, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n        discard;\n    }}\n"),
     };
     Some(source.replacen(test, &fixed_test, 1))
+}
+
+/// The code of the stage loop of the world shader's `fs` without its comments, as the steps of
+/// [`fragment_source`] copy it. An edit of the loop's code no longer matches: the rewrite then
+/// refuses the text (the uber-shader draws every key), and the test of each key fails until the
+/// steps follow the edit.
+const STAGE_LOOP: &str = r#"    for (var i = 0u; i < draws[record].counts.y; i++) {
+        let stage = draws[record].stages[i];
+        let texel = texels[i];
+        let color = operation(stage.color.x, argument(stage.color.y, diffuse, current, texel),
+            argument(stage.color.z, diffuse, current, texel), argument(stage.color.w, diffuse, current, texel), diffuse, current, texel);
+        var alpha = current;
+        if stage.alpha.x != 1u && stage.color.x != 22u && stage.color.x != 23u {
+            alpha = operation(stage.alpha.x, argument(stage.alpha.y, diffuse, current, texel),
+                argument(stage.alpha.z, diffuse, current, texel), vec4f(0.0), diffuse, current, texel);
+        }
+        current = vec4f(color.rgb, alpha.a);
+        if (draw_counts_w() & 128u) == 0u {
+            current = clamp(current, vec4f(0.0), vec4f(1.0));
+        }
+    }
+"#;
+
+/// Where the stage loop of `fs` is in the world shader's text: from its head to its closing
+/// line, before the alpha test.
+fn stage_loop_range(source: &str) -> Option<(usize, usize)> {
+    let head = "    for (var i = 0u; i < draws[record].counts.y; i++) {\n";
+    if source.matches(head).count() != 1 {
+        return None;
+    }
+    let start = source.find(head)?;
+    let end = start + source[start..].find("\n    }\n\n    if draws[record].more.z != 0u")? + "\n    }\n".len();
+    Some((start, end))
+}
+
+/// The lines of a text that are not comments, each with its line end.
+fn without_comments(text: &str) -> String {
+    text.lines().filter(|line| !line.trim_start().starts_with("//")).flat_map(|line| [line, "\n"]).collect()
 }
 
 /// The hash of a text, for the list's check that it was written for this world shader.
@@ -222,11 +263,15 @@ pub(crate) struct StageShaders {
     modules: HashMap<u32, Option<wgpu::ShaderModule>>,
     /// The ids whose module the thread has.
     sent_modules: HashSet<u32>,
+    /// The ids whose text the rewrite cannot make.
+    failed_sources: HashSet<u32>,
     pending: HashSet<PipelineKey>,
     failed: HashSet<PipelineKey>,
     jobs: Option<mpsc::Sender<Job>>,
     done: Option<mpsc::Receiver<Done>>,
     list: Option<PathBuf>,
+    /// The pipelines of the list not yet sent to the thread (`stages` 0), with their stage keys.
+    queued: VecDeque<(PipelineKey, StageKey)>,
     /// The pipelines made in this session, with their stage keys, for the list.
     made: HashSet<(PipelineKey, StageKey)>,
     changed: bool,
@@ -234,6 +279,8 @@ pub(crate) struct StageShaders {
     // Counts for the report.
     pub(crate) made_count: u32,
     pub(crate) from_list: u32,
+    /// The list's pipelines left out: their stage key is past the list's share of the cap.
+    pub(crate) list_left_out: u32,
     pub(crate) failed_count: u32,
     pub(crate) uber_draws: u64,
     pub(crate) past_cap: u64,
@@ -251,16 +298,19 @@ impl StageShaders {
             keys: vec![StageKey::default()],
             modules: HashMap::new(),
             sent_modules: HashSet::new(),
+            failed_sources: HashSet::new(),
             pending: HashSet::new(),
             failed: HashSet::new(),
             jobs: None,
             done: None,
             list: None,
+            queued: VecDeque::new(),
             made: HashSet::new(),
             changed: false,
             frames_since_save: 0,
             made_count: 0,
             from_list: 0,
+            list_left_out: 0,
             failed_count: 0,
             uber_draws: 0,
             past_cap: 0,
@@ -323,7 +373,7 @@ impl StageShaders {
         self.jobs = Some(jobs);
         self.done = Some(done);
         self.sync = false;
-        self.list = list_path();
+        self.list = list_path(self.world_hash);
         self.load_list();
     }
 
@@ -349,24 +399,39 @@ impl StageShaders {
         for line in lines {
             let words: Option<Vec<u32>> = line.split_whitespace().map(|word| word.parse().ok()).collect();
             let parsed = words.as_deref().filter(|words| words.len() == 21 + 2 + STAGES * 7).and_then(|words| Some((pipeline_from_words(&words[..21])?, StageKey::from_words(&words[21..])?)));
-            let Some((pipeline, stage)) = parsed else {
+            let Some(entry) = parsed else {
                 dropped += 1;
                 continue;
             };
-            let id = self.intern(stage);
-            if id == 0 {
-                continue;
-            }
-            let key = PipelineKey { stages: id, ..pipeline };
-            self.made.insert((pipeline, stage));
-            if self.send(key) {
-                self.from_list += 1;
-            }
+            self.queued.push_back(entry);
         }
         if dropped != 0 {
             println!("stage shaders: {dropped} lines of the list at {} not read", path.display());
         }
-        println!("stage shaders: {} pipelines of the list at {} are being made", self.from_list, path.display());
+        println!("stage shaders: {} pipelines of the list at {} are made behind the keys of first use", self.queued.len(), path.display());
+    }
+
+    /// Sends the list's pipelines to the thread while it has fewer than [`LIST_BATCH`] jobs. A
+    /// pipeline whose stage key would pass [`LIST_KEYS`] is left out, and the next save drops it.
+    fn send_queued(&mut self) {
+        while self.pending.len() < LIST_BATCH {
+            let Some((pipeline, stage)) = self.queued.pop_front() else { return };
+            if self.made.contains(&(pipeline, stage)) {
+                continue;
+            }
+            let id = match self.ids.get(&stage) {
+                Some(&id) => id,
+                None if self.keys.len() <= LIST_KEYS => self.intern(stage),
+                None => {
+                    self.list_left_out += 1;
+                    continue;
+                }
+            };
+            let key = PipelineKey { stages: id, ..pipeline };
+            if id != 0 && !self.pending.contains(&key) && self.send(key) {
+                self.from_list += 1;
+            }
+        }
     }
 
     /// Sends a pipeline to the thread; false when the thread is gone.
@@ -375,10 +440,16 @@ impl StageShaders {
         // rewrite cannot make is not sent.
         let source = if self.sent_modules.contains(&key.stages) {
             None
+        } else if self.failed_sources.contains(&key.stages) {
+            return false;
         } else {
             match self.source_of(key.stages) {
                 Some(source) => Some(source),
-                None => return false,
+                None => {
+                    self.failed_sources.insert(key.stages);
+                    println!("stage shaders: the rewrite of stage key {} failed; the uber-shader draws it", key.stages);
+                    return false;
+                }
             }
         };
         let Some(jobs) = &self.jobs else { return false };
@@ -412,6 +483,7 @@ impl StageShaders {
                 }
             }
         }
+        self.send_queued();
     }
 
     /// The pipeline of a key with a stage key, or None: then the caller draws with the uber-shader.
@@ -442,6 +514,7 @@ impl StageShaders {
         }
         if !self.pending.contains(&key) && !self.send(key) {
             self.failed.insert(key);
+            self.failed_count += 1;
         }
         self.uber_draws += 1;
         None
@@ -463,7 +536,8 @@ impl StageShaders {
         self.changed = false;
         let Some(path) = &self.list else { return };
         let mut text = format!("{LIST_HEADER} {:016x}\n", self.world_hash);
-        for (pipeline, stage) in &self.made {
+        let entries: HashSet<&(PipelineKey, StageKey)> = self.made.iter().chain(self.queued.iter()).collect();
+        for (pipeline, stage) in entries {
             let words: Vec<String> = pipeline_words(pipeline).into_iter().chain([0]).chain(stage.words()).map(|w| w.to_string()).collect();
             text.push_str(&words.join(" "));
             text.push('\n');
@@ -477,13 +551,14 @@ impl StageShaders {
 
     pub(crate) fn report(&self) -> String {
         format!(
-            "stage shaders: {} ({}), {} stage keys (cap {MAX_KEYS}, {} draws past it), {} pipelines made ({} sent from the list), {} failed, {} draws on the uber-shader while their pipeline was not made",
+            "stage shaders: {} ({}), {} stage keys (cap {MAX_KEYS}, {} draws past it), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap), {} failed, {} draws on the uber-shader while their pipeline was not made",
             if self.on { "on" } else { "off" },
             if self.sync { "made at the first use" } else { "made on a thread" },
             self.keys.len() - 1,
             self.past_cap,
             self.made_count,
             self.from_list,
+            self.list_left_out,
             self.failed_count,
             self.uber_draws
         )
@@ -497,12 +572,14 @@ impl Drop for StageShaders {
     }
 }
 
-/// The list: `MGE_XE_PIPELINE_LIST` when set, else `%LOCALAPPDATA%\MGE XE\numidium-stage-pipelines.txt`.
-fn list_path() -> Option<PathBuf> {
+/// The list: `MGE_XE_PIPELINE_LIST` when set, else
+/// `%LOCALAPPDATA%\MGE XE\numidium-stage-pipelines-<hash>.txt` with the hash of the world
+/// shader, so that two installs or two texture tiers do not write over each other's list.
+fn list_path(world_hash: u64) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MGE_XE_PIPELINE_LIST") {
         return Some(PathBuf::from(path));
     }
-    std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE").join("numidium-stage-pipelines.txt"))
+    std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE").join(format!("numidium-stage-pipelines-{world_hash:016x}.txt")))
 }
 
 #[cfg(test)]
@@ -543,6 +620,34 @@ mod tests {
         assert!(source.contains("    texels[2] = vec4f(1.0);"));
         assert!(source.contains("    texels[1] = bump_light("));
         assert!(!source.contains("draws[record].more.z != 0u && !compare"));
+    }
+
+    #[test]
+    fn the_stage_loop_is_the_code_that_the_steps_copy() {
+        let world = world();
+        let (start, end) = stage_loop_range(&world).expect("the loop of fs");
+        assert_eq!(without_comments(&world[start..end]), STAGE_LOOP, "fs changed its stage loop: change the steps of fragment_source and STAGE_LOOP with it");
+        // A new line in the loop body is refused.
+        let planted = world.replacen("        var alpha = current;\n", "        var alpha = current;\n        current = current * 0.5;\n", 1);
+        assert!(fragment_source(&planted, &key(2, 0)).is_none());
+        // A new comment is not a change of the code.
+        let commented = world.replacen("        var alpha = current;\n", "        var alpha = current;\n        // A note.\n", 1);
+        assert!(fragment_source(&commented, &key(2, 0)).is_some());
+    }
+
+    #[test]
+    fn fs_reads_the_texels_only_in_the_reads_and_the_stage_loop() {
+        let shader = include_str!("shader.wgsl");
+        let fs_start = shader.find("@fragment\nfn fs(").expect("fs");
+        let fs = &shader[fs_start..fs_start + shader[fs_start..].find("\n}\n").expect("the end of fs")];
+        let (start, end) = stage_loop_range(fs).expect("the loop of fs");
+        let outside = format!("{}{}", &fs[..start], &fs[end..]);
+        let uses: Vec<&str> = outside.lines().filter(|line| line.contains("texels[")).collect();
+        let reads: Vec<String> = (0..STAGES).map(|stage| format!("    texels[{stage}] = ")).collect();
+        assert_eq!(uses.len(), STAGES, "fs uses the texels outside the reads and the loop: {uses:?}");
+        for (line, read) in uses.iter().zip(&reads) {
+            assert!(line.starts_with(read.as_str()), "a use of the texels that is not a read: {line}");
+        }
     }
 
     #[test]
