@@ -60,8 +60,12 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
   keeps a copy as the next E:\\nirender-keep\\mgebuilds\\f<N> with a WHAT.txt. It runs only when every stage before it
   passed, and the gate's result does not stop it: a build that the gate rejects is deployed too. It never copies a pdb, an
   esp, mgeXE.toml or d3d9.dll, backs up each replaced file once for each tag, compares each copy by MD5, and prints the MD5
-  of d3d8.dll, numidium.exe and akulakhan.dll. While Morrowind, numidium or Mod Organizer runs, the stage FAILs with a
-  line "refused: ..." and does not wait. The round holds the game slot (the gate is one of its stages), so that the write
+  of d3d8.dll, numidium.exe and akulakhan.dll. While Morrowind, numidium or Mod Organizer runs, the tool writes nothing
+  and does not wait, and the stage prints "NOT DEPLOYED: <why>. To deploy this build alone, run in <folder>: <command>"
+  (in the log, and again after the summary). That refusal does not fail the round: the stage counts as passed, so a
+  merge whose other stages passed still moves refs/merge-step. Any other failure of the tool is a FAIL. The stage
+  runs also when the replay gate or the A/B stages fail: only the stages before it decide (the gate is red until the owner
+  accepts a new baseline, and the owner tests the latest build, D193). The round holds the game slot (the gate is one of its stages), so that the write
   to E: is allowed (evidence_problem);
 
 These stages also need a sibling with no tracked change. The first line gives the hash of the sibling.
@@ -113,6 +117,7 @@ import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from deploy_rest import REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
 from common import git_env, local  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
@@ -145,6 +150,12 @@ BASE_STAGE = "base build"
 # The stage that puts the build of the gate into both test installs (tools/deploy_rest.py, the owner's D193). It stands after
 # the build and before the replay gate, and it runs only when every stage before it passed: the gate's result does not stop it.
 DEPLOY_STAGE = "deploy rest"
+# The exit code of deploy_rest.py when a game or Mod Organizer runs. That refusal does not fail the round: the stage counts as
+# passed, and the round prints one "NOT DEPLOYED" line for it, in the log and again after the summary. Any other failure of
+# the stage (a fault of the copy, a missing source) is a FAIL.
+DEPLOY_REFUSED_CODE = REFUSED_EXIT
+# The "NOT DEPLOYED" lines of the last run_stages.
+NOT_DEPLOYED = []
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
 GPU_STAGE = "helper GPU tests"
@@ -393,6 +404,13 @@ def run_stage(name, folder, command, log):
     if code != 0:
         output = output_since(log, start)
         refusal, deploy_refusal = slot_refusal_in(output), deploy_refusal_in(output)
+        if name == DEPLOY_STAGE and code == DEPLOY_REFUSED_CODE and deploy_refusal:
+            # A game or Mod Organizer runs: nothing was written. The merge is no worse for it, so the stage does not fail the
+            # round (D193); the line names the command that deploys the same build later, when nothing runs.
+            not_deployed = "NOT DEPLOYED (%d s): %s. To deploy this build alone, run in %s: %s" % (time.time() - began, deploy_refusal, folder, " ".join(command))
+            verdict(log, not_deployed)
+            NOT_DEPLOYED.append(not_deployed)
+            return True
         failure = ": exit code %d%s" % (code, "; refused by the slot check: %s" % refusal if refusal else "; refused: %s" % deploy_refusal if deploy_refusal else "")
     verdict(log, "%s %s (%d s)%s" % ("PASS" if code == 0 else "FAIL", name, time.time() - began, failure))
     return code == 0
@@ -427,6 +445,7 @@ def run_stages(stages, log, note_stage=lambda: None):
     no compile seen, and a round can pass that with a stage that does not compile. It returns False when the holds could
     not be taken again: the stage is then NOT RUN, and counts as not passed."""
     results = {}
+    del NOT_DEPLOYED[:]
     for name, folder, command in stages:
         if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
             verdict(log, "NOT RUN %s: its build failed" % name)
@@ -1130,6 +1149,28 @@ def self_test():
         with open(os.path.join(root, "log5.txt"), encoding="utf-8") as log:
             text = log.read()
         assert "== NOT RUN deploy rest: a did not pass" in text and "== NOT RUN deploy rest: build for the gate did not pass" in text, text
+        # The results of the gate and of the A/B stages come after the deploy and do not stop it (the Coordinator's rule: the
+        # code stages decide; the gate is red until the owner's baseline swap, and the owner still tests the latest build).
+        gate_bad = ("replay gate", root, bad + ["--now", now])
+        with open(os.path.join(root, "log6.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([("a", root, good), ("build for the gate", root, good), deploy_stage, gate_bad, (BASE_STAGE, root, bad), (INSTANCE_STAGE, root, good)], log) == [True, True, True, False, False, False]
+        with open(os.path.join(root, "log6.txt"), encoding="utf-8") as log:
+            assert "PASS deploy rest" in log.read(), "the deploy did not run beside a red gate"
+
+        # A refused deploy (a game or Mod Organizer runs) is no failure of the round: the line "NOT DEPLOYED" names the command
+        # that deploys alone. A fault of the deploy, and the exit code of the refusal with no "REFUSED" line, still fail.
+        refused = [sys.executable, "-c", "print('REFUSED: Morrowind.exe runs, and the deploy does not wait: end it'); raise SystemExit(%d)" % DEPLOY_REFUSED_CODE]
+        with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([("a", root, good), ("build for the gate", root, good), (DEPLOY_STAGE, root, refused), gate_stage], log) == [True, True, True, True]
+            assert len(NOT_DEPLOYED) == 1 and "Morrowind.exe runs" in NOT_DEPLOYED[0] and "To deploy this build alone, run in %s: " % root in NOT_DEPLOYED[0] and " ".join(refused) in NOT_DEPLOYED[0], NOT_DEPLOYED
+            assert run_stages([("a", root, good), (DEPLOY_STAGE, root, [sys.executable, "-c", "print('REFUSED: x'); raise SystemExit(1)"])], log) == [True, False], "another code is a fault"
+            assert NOT_DEPLOYED == [], "run_stages starts a new list"
+            assert run_stages([("a", root, good), (DEPLOY_STAGE, root, [sys.executable, "-c", "print('FAIL: x'); raise SystemExit(%d)" % DEPLOY_REFUSED_CODE])], log) == [True, False], "the code with no REFUSED line is a fault"
+            assert run_stages([("a", root, good), ("docs", root, refused)], log) == [True, False], "another stage is not excused by the refusal"
+        with open(os.path.join(root, "log7.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert "== NOT DEPLOYED (" in text and "PASS replay gate" in text, text
+
         gate_names = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"])]
         assert gate_names.index("build for the gate") + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index("replay gate") - 1
         assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/main.lua"])], "a build of the dist alone is not deployed"
@@ -1989,6 +2030,8 @@ def main():
         return 3
     results, summary = done
     say(summary)
+    for line in NOT_DEPLOYED:
+        say(line)
     # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
     # of merges with one check closes the item of each merge on the first-parent path (D183).
     when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
