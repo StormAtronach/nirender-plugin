@@ -7,16 +7,17 @@
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
-When a stage needs the game slot (the replay gate, the instance A/B: GAME_STAGES), it also takes the game slot (a lease of 4
-hours) for the whole check (the owner's D161, D183). A check with no such stage leaves the game slot free, so a game can run
+When a stage needs the game slot (the replay gate, the instance A/B: GAME_STAGES), the check takes the game slot and the whole
+build side in one take, slot.py's `take both` (a lease of 4 hours), for the whole check (the owner's D161, D183). It never
+holds one of them while it waits for the other (the owner's D208, after the deadlock of 14:37 on 2026-11-10): it waits in
+both queues and holds nothing until both are free. A check with no such stage leaves the game slot free, so a game can run
 beside it: none of its stages may then name a path on E: (a base build, a copy to E:\\nirender-keep), and the tool refuses
-such a stage list (only its own log and closes.tsv, small appends, go to E: then). It asks for it at
-each wait for the build slot, so that the check keeps its place in the game queue (it holds the game slot when that is free
-first). The label is the build label plus " (game slot)". Both
-slots are released on every exit path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes
-the game slot's work each minute, as no game runs and the slot lapses after 15 idle minutes. --dry-run and --self-test take
-no slot (the self-test uses slot.py on a scratch state folder). A hold of the game slot by another session, or by an earlier
-run of this session, makes this run wait in the queue; with --no-wait it stops with exit code 3 and releases the build slot.
+such a stage list (only its own log and closes.tsv, small appends, go to E: then). The slots are released on every exit
+path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes the game slot's work each
+minute, as no game runs and the slot lapses after 15 idle minutes; a hold that lapses all the same is taken again before
+the next stage only when it is free. --dry-run and --self-test take no slot (the self-test uses slot.py on a scratch state
+folder). A hold by another session, or by an earlier run of this session, makes this run wait in the queues; with
+--no-wait it stops with exit code 3 and holds nothing.
 
 <tip> is the tip of the shared branch before the merge. It is required: the parents of <commit> do not tell the change, as
 the first parent misses a fast-forward and a branch that merged the shared branch. The tool refuses a <tip> that is newer
@@ -26,7 +27,12 @@ gives the same answer.
 
 After a later commit, <branch>@{1} moves past a merge that failed or had no run. So the ref refs/merge-step/<branch> keeps
 the last commit that passed all stages, and the tool also refuses a <tip> newer than it. A branch with no such ref has only
-the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch.
+the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch. One more round moves
+the ref: every stage passed but the instance A/B, which is NOT RUN only because the base build reads an older format than
+the capture (the replay of the base names CAPTURE FORMAT and "older than the capture"). Without it the base stays, and no
+later A/B can replay the capture (59a357f, 2026-11-10). Every NOT RUN line of the stage must have that reason. The log
+names the move and the reason in an "OPEN A/B GAP" line: the round's own change has no A/B. The round still exits with
+code 1 and closes no item: NOT RUN is no pass.
 
 The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
 GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin. The
@@ -103,7 +109,6 @@ import argparse
 import contextlib
 import datetime
 import importlib.util
-import inspect
 import io
 import itertools
 import os
@@ -119,7 +124,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deploy_rest import REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import git_env, local  # noqa: E402
+from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, git_env, local  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
@@ -128,8 +133,6 @@ SLOT_MINUTES = 60
 # The lease of the game slot: the stages of a round run for up to an hour on a slow day (the longest of 2026-11-09 ran 38
 # minutes), and the lease does not renew while they run.
 GAME_SLOT_MINUTES = 240
-# The label of this tool's hold of the game slot, from the label of its hold of the build slot.
-GAME_LABEL = "%s (game slot)"
 # How often a round notes the work of the game slot while its stages run (the slot's idle limit is 15 minutes).
 GAME_NOTE_SECONDS = 60
 LOG_FOLDER = "E:\\nirender-keep\\merge-step"
@@ -156,6 +159,8 @@ DEPLOY_STAGE = "deploy rest"
 DEPLOY_REFUSED_CODE = REFUSED_EXIT
 # The "NOT DEPLOYED" lines of the last run_stages.
 NOT_DEPLOYED = []
+# The reasons of the NOT RUN lines of each stage of the last run_stages that ended NOT RUN, by the stage's name.
+NOT_RUN_REASONS = {}
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
 GPU_STAGE = "helper GPU tests"
@@ -393,13 +398,14 @@ def output_since(log, start):
         return file.read().decode("utf-8", "replace")
 
 
+def not_run_reasons(output):
+    """The reason of each "NOT RUN" line of a stage's output, in order."""
+    return [line.partition(": ")[2] or line for line in output.splitlines() if line.startswith("NOT RUN")]
+
+
 def not_run_reason(output):
     """The reason in the last "NOT RUN" line of a stage's output, or a plain text."""
-    reason = "the stage could not judge"
-    for line in output.splitlines():
-        if line.startswith("NOT RUN"):
-            reason = line.partition(": ")[2] or line
-    return reason
+    return (not_run_reasons(output) or ["the stage could not judge"])[-1]
 
 
 def run_stage(name, folder, command, log):
@@ -410,7 +416,10 @@ def run_stage(name, folder, command, log):
     code = subprocess.run(command, cwd=folder, env=stage_env(os.environ), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
     failure = ""
     if code == NOT_RUN_CODE:
-        verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, not_run_reason(output_since(log, start))))
+        output = output_since(log, start)
+        reason = not_run_reason(output)
+        NOT_RUN_REASONS[name] = not_run_reasons(output)
+        verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, reason))
         return False
     if code != 0:
         output = output_since(log, start)
@@ -459,6 +468,7 @@ def run_stages(stages, log, note_stage=lambda: None):
     not be taken again: the stage is then NOT RUN, and counts as not passed."""
     results = {}
     del NOT_DEPLOYED[:]
+    NOT_RUN_REASONS.clear()
     for name, folder, command in stages:
         if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
             verdict(log, "NOT RUN %s: its build failed" % name)
@@ -489,6 +499,22 @@ def summary_line(results, log_path):
 def moves_the_ref(baseline):
     """Only a pass against the accepted folder is a pass of the merge."""
     return os.path.normcase(os.path.abspath(baseline)) == os.path.normcase(os.path.abspath(BASELINE))
+
+
+def base_older_than_capture(names, results, reasons):
+    """The reason to keep the round's commit as the base of the next A/B, or None. That is so when every stage passed but the
+    instance A/B, and the A/B is NOT RUN only because the base build reads an older format than its capture. Without this
+    the base stays at the last pass, and no later A/B can replay the capture (2026-11-10, 59a357f: the base a76fd14 reads
+    the stream format 8, and the W225 capture has the format 9). The replay gate passed, so the build under test reads the
+    format of the accepted captures. Every NOT RUN line of the stage must have that reason: a NOT RUN of the replay of the
+    build under test, or of any other kind, keeps the base."""
+    failed = [name for name, passed in zip(names, results) if not passed]
+    if failed != [INSTANCE_STAGE]:
+        return None
+    lines = reasons.get(INSTANCE_STAGE, [])
+    if not lines or not all(line.startswith("the replay of the base: " + CAPTURE_FORMAT) and line.endswith(OLDER_THAN_CAPTURE) for line in lines):
+        return None
+    return lines[-1]
 
 
 def items_of(subject):
@@ -599,15 +625,6 @@ def is_ancestor(repo, older, newer):
     return subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", older, newer], env=git_env()).returncode == 0
 
 
-def take_options(slots, stages):
-    """The options of the take: the whole build side (both places) when a stage replays, as a replay needs it (the
-    owner's D139). A slot.py from before D139 has one place, and its take has no such option."""
-    replays = any(name in GAME_STAGES for name, _, _ in stages)
-    if replays and "whole" in inspect.signature(slots.take).parameters:
-        return {"whole": True}
-    return {}
-
-
 # The stages that need the game slot (the owner's D183): the replay gate replays on the GPU, and the instance A/B replays
 # a capture of the game with three builds. A new stage that starts the game or times the GPU belongs here. A check with
 # none of them leaves the game slot to the game runs; before D183 every check held it (D161), and the workers waited.
@@ -638,42 +655,21 @@ def evidence_problem(stages):
     return None
 
 
-class NoGame:
-    """The game place of a round whose stages need no game slot (D183): it asks for nothing, holds nothing and releases
-    nothing, so that the holds of the build side work as with a `GamePlace`."""
-    held = False
-    retakes = 0
-
-    def ask_in_queue(self):
-        pass
-
-    def take(self, no_wait):
-        return True
-
-    def keep(self, no_wait, log):
-        return True
-
-    def release(self):
-        pass
-
-
 # The refusal of slot.py when this session already holds the build slot under another label: another run of this
 # session, usually an earlier merge_step that still runs. The first form is slot.py's until 2026-11-09, the second its
 # plainer form after it.
 OWN_HOLD = ("this session holds it as", "your session already holds the build slot as")
 
 
-def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES, ask=None, while_waiting=None):
-    """Takes a slot ("build" or "game"), and asks again in its queue, so that the place stays. A hold of another run of
-    this session (an earlier merge_step) cannot overlap this run: it waits for that release too. False, with a "NOT RUN"
-    line, with --no-wait when it must wait, on the end of the wait after a `leave` of its place, and on any other
-    refusal, as waiting cannot pass that. A Ctrl-C in the wait leaves the queue. `ask` is an asker of the caller (see
-    `slot_asker`), which keeps its place across takes. `while_waiting()` runs at each wait of a take that waits."""
+def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES):
+    """Takes a slot ("build", "game", or "both": the game and the whole build side together), and asks again in its
+    queue, so that the place stays. A hold of another run of this session (an earlier merge_step) cannot overlap this run:
+    it waits for that release too. False, with a "NOT RUN" line, with --no-wait when it must wait, on the end of the wait
+    after a `leave` of its place, and on any other refusal, as waiting cannot pass that. A Ctrl-C in the wait leaves the
+    queue."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
     waiting_for_own = False
-    with contextlib.ExitStack() as stack:
-        if ask is None:
-            ask = stack.enter_context(slot_asker(slots, slot))
+    with slot_asker(slots, slot) as ask:
         while True:
             try:
                 reply = ask(what, minutes=minutes, **(options or {}))
@@ -706,93 +702,29 @@ def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES, as
             elif not own:
                 say(first)
             waiting_for_own = own
-            if while_waiting:
-                while_waiting()
             time.sleep(WAIT_SECONDS)
 
 
-def take_build(slots, what, no_wait, options=None, while_waiting=None):
-    return take_slot(slots, "build", what, no_wait, options, while_waiting=while_waiting)
+def take_build(slots, what, no_wait, options=None):
+    return take_slot(slots, "build", what, no_wait, options)
 
 
-class GamePlace:
-    """The game slot of one round, asked for from the start of the round. A check that waits for the build side keeps its
-    place in the game queue meanwhile: with no ask, another session's game take comes first, and this check then waits
-    for that game as well (2026-11-09, a merge check behind a timing take of 50 minutes). When the game is free for the
-    check before the build side is, it holds the game and notes its work, as no game runs and the slot lapses after 15 idle
-    minutes. The label is this run's own, so that its release names it."""
-
-    def __init__(self, slots, label, ask):
-        self.slots = slots
-        self.label = label
-        self.ask = ask
-        self.held = False
-        self.closed = False
-        self.retakes = 0
-
-    def ask_in_queue(self):
-        """One ask while the build take waits: a place in the queue, or the hold, and then the note of its work."""
-        if self.held:
-            self.slots.note_active("game", time.time())
-            return
-        try:
-            reply = self.ask(self.label, minutes=GAME_SLOT_MINUTES)
-        except self.slots.StateBusy:
-            return
-        if reply.code == self.slots.DONE:
-            self.held = True
-            say("game held for the merge check, waiting for the build side since %s: %s" % (time.strftime("%H:%M"), reply.text.splitlines()[0]))
-
-    def take(self, no_wait):
-        """Takes the game slot for the whole check, when a stage needs it (the owner's D161, D183): such a stage replays on
-        the GPU, and a game that starts in that time competes with it."""
-        if self.held:
-            return True
-        self.held = take_slot(self.slots, "game", self.label, no_wait, minutes=GAME_SLOT_MINUTES, ask=self.ask)
-        return self.held
-
-    def keep(self, no_wait, log):
-        """True when the run still holds the game slot, or took it again: the hold lapses after 15 minutes with no game seen,
-        and the notes of its work (`ask_in_queue`, `game_hold_noted`) can stop for as long as a take of the build side waits.
-        A run that held the game slot holds it for the whole check, so a lapsed hold is taken again, in the queue. A hold
-        that the state cannot show now counts as kept."""
-        if not self.held or places_held(self.slots, "game", self.label) != 0:
-            return True
-        self.held = False
-        verdict(log, "the game slot hold of this run ended (it lapsed); taking it again")
-        if not self.take(no_wait):
-            return False
-        self.retakes += 1
-        verdict(log, "re-took the game slot at %s" % time.strftime("%H:%M"))
-        return True
-
-    def release(self):
-        """Releases the hold, or leaves the queue when the run holds nothing. Prints every line of the reply."""
-        if self.closed:
-            return
-        self.closed = True
-        if self.held:
-            self.held = False
-            say(self.slots.release("game", self.label).text)
-        else:
-            self.slots.leave("game", self.label)
+# The slots of a take of both (slot.py, D208).
+SLOTS_OF_BOTH = ("game", "build")
 
 
-def take_game(slots, label, no_wait):
-    """Takes the game slot at once, for a caller with no wait before it (the self-test)."""
-    return take_slot(slots, "game", label, no_wait, minutes=GAME_SLOT_MINUTES)
+def round_slot(stages):
+    """The take of a round: "both" (the game and the whole build side in one take) when a stage needs the game, else
+    "build". A round that needs both never holds one while it waits for the other (the owner's D208; the deadlock of
+    14:37 on 2026-11-10: this tool held the build side and waited for the game, and a quiet window the other way)."""
+    return "both" if needs_game(stages) else "build"
 
 
-def release_build(slots):
-    """Releases the build slot and prints all lines of the reply: after a build, slot.py names the free space on C and
-    warns when the cleaning is due (the owner's D138 and D141)."""
-    say(slots.release("build").text)
-
-
-def release_game(slots, label):
-    """Releases the game hold of this run by its label: from a terminal with no session, slot.py owns a hold only by its
-    label. Prints every line of the reply."""
-    say(slots.release("game", label).text)
+def release_slot(slots, slot, what):
+    """Releases the round's hold by its label and prints every line of the reply: after a build, slot.py names the free
+    space on C and warns when the cleaning is due (the owner's D138 and D141). From a terminal with no session, slot.py
+    owns a hold only by its label."""
+    say(slots.release(slot, what).text)
 
 
 @contextlib.contextmanager
@@ -833,69 +765,47 @@ def places_held(slots, slot, who):
     return count
 
 
-# How often `keep_holds` looks at both slots again after a take that waited: a wait for one can lapse the other.
-KEEP_ROUNDS = 5
-
-
-def keep_holds(slots, what, game, options, no_wait, log):
-    """Before a stage: the run still holds the build side and the game slot, and takes again one that lapsed. A wait does
-    not stop the idle lapse of the hold that the waiting run already has (slot.py): a take of the game that waited 34
-    minutes lost the build side after 15 (2026-11-09, the W206 render-link check), and the replay gate and the instance
-    A/B were then refused by the slot check. The take again waits in the queue like the first take, keeps the run's place
-    in the game queue meanwhile, and logs one line for each take. False when a take again did not give the slot."""
-    needed = len(slots.units_of("build")) if options.get("whole") else 1
+def keep_holds(slots, what, slot, log):
+    """Before a stage: the run still holds the slots of its take (`round_slot`), and takes again one that lapsed when it
+    is free at once. A wait for it while the run holds the other slot is a hold and wait (D208): slot.py refuses it, and
+    the stage is then NOT RUN. The notes of the work (`game_hold_noted`, and here the build work) keep the holds while the
+    stages run. False when a hold is lost."""
     owner = slots.owner_of(slots.session_id(), what)
-    for _ in range(KEEP_ROUNDS):
-        # The build work of the places of this run, as the hook and the tool checks of slot.py note it: a hold of another run
-        # gets no note.
-        slots.note_holder_build(owner, time.time())
-        lost = False
-        held = places_held(slots, "build", what)
-        if held is not None and held < needed:
-            lost = True
-            verdict(log, "the build hold of this run ended (it lapsed; %d of %d place(s) held); taking it again" % (held, needed))
-            if not take_build(slots, what, no_wait, options, while_waiting=game.ask_in_queue):
-                return False
-            verdict(log, "re-took the build side at %s" % time.strftime("%H:%M"))
-        game_takes = game.retakes
-        if not game.keep(no_wait, log):
+    # The build work of the places of this run, as the hook and the tool checks of slot.py note it: a hold of another run
+    # gets no note.
+    slots.note_holder_build(owner, time.time())
+    wanted = [("game", 1), ("build", len(slots.units_of("build")))] if slot == "both" else [("build", 1)]
+    for part, needed in wanted:
+        held = places_held(slots, part, what)
+        if held is None or held >= needed:
+            continue
+        verdict(log, "the %s hold of this run ended (it lapsed; %d of %d place(s) held); taking it again if it is free" % (part, held, needed))
+        options = {"whole": True} if part == "build" and needed > 1 else {}
+        if not take_slot(slots, part, what, True, options, minutes=GAME_SLOT_MINUTES if part == "game" else SLOT_MINUTES):
             return False
-        # A take that waited can have lapsed the other hold: look at both again.
-        if not lost and game.retakes == game_takes:
-            break
+        verdict(log, "re-took the %s at %s" % ("game slot" if part == "game" else "build side", time.strftime("%H:%M")))
     return True
 
 
 def run_round(slots, stages, what, log_path, no_wait):
-    """The stages of one round with the build slot held, and the game slot when a stage needs it (`needs_game`), both
-    released on every exit path: a failing stage, an exception and Ctrl-C. (results, summary), or None when a take did not
-    give a slot. A run that needs the game asks for it at each wait for the build side (see `GamePlace`), so that it keeps
-    its place in the game queue."""
+    """The stages of one round with the slots of `round_slot` held, released on every exit path: a failing stage, an
+    exception and Ctrl-C. (results, summary), or None when the take did not give the slots."""
     problem = evidence_problem(stages)
     if problem:
         raise ValueError("merge_step refuses the round: %s" % problem)
-    game_needed = needs_game(stages)
-    if not game_needed:
+    slot = round_slot(stages)
+    if slot == "build":
         say("the stages need no game slot: the game stays free for the game runs (D183)")
-    with slot_asker(slots, "game") if game_needed else contextlib.nullcontext() as game_ask:
-        game = GamePlace(slots, GAME_LABEL % what, game_ask) if game_needed else NoGame()
-        try:
-            options = take_options(slots, stages)
-            if not take_build(slots, what, no_wait, options, while_waiting=game.ask_in_queue):
-                return None
-            try:
-                if not game.take(no_wait):
-                    return None
-                with game_hold_noted(slots) if game_needed else contextlib.nullcontext(), open(log_path, "w", encoding="utf-8", errors="replace") as log:
-                    results = run_stages(stages, log, lambda: keep_holds(slots, what, game, options, no_wait, log))
-                    # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
-                    summary = summary_line(results, log_path)
-                    log.write("\n== %s\n" % summary)
-            finally:
-                game.release()
-                release_build(slots)
-        finally:
-            game.release()
+    if not take_slot(slots, slot, what, no_wait, minutes=GAME_SLOT_MINUTES if slot == "both" else SLOT_MINUTES):
+        return None
+    try:
+        with game_hold_noted(slots) if slot == "both" else contextlib.nullcontext(), open(log_path, "w", encoding="utf-8", errors="replace") as log:
+            results = run_stages(stages, log, lambda: keep_holds(slots, what, slot, log))
+            # In the log before it closes: the last line of a kept log is the round's verdict. The console gets it after the slot's line.
+            summary = summary_line(results, log_path)
+            log.write("\n== %s\n" % summary)
+    finally:
+        release_slot(slots, slot, what)
     return results, summary
 
 
@@ -925,6 +835,17 @@ def keep_pair(kind, sibling, commit, sibling_commit):
     git(sibling, "update-ref", pair_ref(kind, commit), sibling_commit)
 
 
+def keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head):
+    """Moves refs/merge-step/<branch> to the commit, and keeps the pair of the round in the sibling: the base pair of the
+    next check (tips_for). No pair when the sibling's HEAD moved during the round."""
+    git(repo, "update-ref", passed_ref, commit)
+    if sibling_head and resolve(sibling, "HEAD") == sibling_head:
+        keep_pair(kind, sibling, commit, sibling_head)
+        say("%s in the sibling: %s" % (pair_ref(kind, commit), sibling_head[:10]))
+    elif sibling_head:
+        say("no pair kept: the HEAD of the sibling moved during the round (%s at the start)" % sibling_head[:10])
+
+
 def tips_for(kind, repo, base, sibling_base=None):
     """The commits of the base build: `base` for the tree's repo, and for the sibling the commit that passed with `base`,
     which the pass kept in pair_ref(kind, base). The sibling's HEAD is not the base: it can hold code that `base` lacks
@@ -952,10 +873,6 @@ def tips_for(kind, repo, base, sibling_base=None):
     if not is_ancestor(sibling, sibling_commit, sibling_head):
         return None, "%s is not an ancestor of the HEAD of the sibling %s (%s)" % (source, sibling, sibling_head[:10])
     return {kind: base, other: sibling_commit}, None
-
-
-def two_places_take_for_ab(slot, who, *, minutes=None, timing=False, whole=False):
-    pass
 
 
 def scratch_slots(state):
@@ -1126,12 +1043,12 @@ def self_test():
         # The release prints every line of the reply: the free space on C and the warning follow the first line.
         class Released:
             @staticmethod
-            def release(slot):
+            def release(slot, who):
                 return types.SimpleNamespace(code=0, text="%s: released: x\ndisk C: 29.0 GB free\nWARNING: below 30 GB" % slot)
 
         shown = io.StringIO()
         with contextlib.redirect_stdout(shown):
-            release_build(Released)
+            release_slot(Released, "build", "x")
         assert shown.getvalue() == "build: released: x\ndisk C: 29.0 GB free\nWARNING: below 30 GB\n", shown.getvalue()
 
         # The gate does not run on a failed build, and a failure stops no other stage.
@@ -1259,6 +1176,14 @@ def self_test():
         assert tips_for("plugin", plugin_of_pair, "base", second)[1].endswith("(%s)" % first[:10]) and "not an ancestor" in tips_for("plugin", plugin_of_pair, "base", second)[1], "a commit ahead of HEAD"
         keep_pair("plugin", sibling_tree, "later", second)
         assert tips_for("plugin", plugin_of_pair, "later")[1].startswith("the kept pair %s is not an ancestor" % pair_ref("plugin", "later")), "a kept pair ahead of HEAD"
+        # keep_pass, which a pass and a round with the A/B base older than its capture share: the ref of the branch moves to
+        # the commit, and the pair is kept when the sibling's HEAD did not move; else no pair.
+        with contextlib.redirect_stdout(io.StringIO()):
+            keep_pass("plugin", sibling_tree, "refs/merge-step/test", second, sibling_tree, first)
+        assert resolve(sibling_tree, "refs/merge-step/test") == second and resolve(sibling_tree, pair_ref("plugin", second)) == first
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            keep_pass("plugin", sibling_tree, "refs/merge-step/test", third, sibling_tree, second)
+        assert resolve(sibling_tree, "refs/merge-step/test") == third and resolve(sibling_tree, pair_ref("plugin", third)) is None and "no pair kept" in said.getvalue()
         assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", "no-such-name")[1], "an unknown name"
         # resolve gives a commit: a tree is none, and an annotated tag gives the commit it points to.
         tree_of_head = subprocess.run(["git", "-C", sibling_tree, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True, env=git_env()).stdout.strip()
@@ -1281,9 +1206,8 @@ def self_test():
         finally:
             del os.environ["GIT_DIR"]
         assert tips_for("mge", sibling_tree, "base", first)[1].startswith("no sibling"), "no sibling tree"
-        # Both A/B stages replay, so they take the whole build side.
-        two = types.SimpleNamespace(take=two_places_take_for_ab)
-        assert take_options(two, [("a", root, good), (INSTANCE_STAGE, root, good)]) == {"whole": True}
+        # The A/B stages replay with the game slot held: their round takes both (D208).
+        assert round_slot([("a", root, good), (INSTANCE_STAGE, root, good)]) == "both"
 
         # The exit code 5 of a stage is NOT RUN, with its reason, and the stage does not count as passed.
         not_run = [sys.executable, "-c", "print('replay base: exit code 0'); print('NOT RUN grass: the game slot is held by a run on Outlander-test: x'); raise SystemExit(%d)" % NOT_RUN_CODE]
@@ -1293,6 +1217,34 @@ def self_test():
             text = log.read()
         assert "== NOT RUN instance A/B grass (" in text and "): the game slot is held by a run on Outlander-test: x\n" in text and "== FAIL" not in text and "== PASS" not in text, text
         assert not_run_reason("a\nb") == "the stage could not judge"
+
+        # The base of the A/B after a format change (59a357f, 2026-11-10): when the A/B is NOT RUN only because the base reads
+        # an older format than the capture, and every other stage passed, the round's commit becomes the base of the next A/B.
+        # The reasons come from the real stage path (run_stages and instance_ab's NOT RUN line).
+        older = ("CAPTURE FORMAT: outlander-pelagiad.nircap was made by akulakhan.dll (nirender v0.3.6 79c752d), which writes the stream "
+                 "format 9; the build under test reads the stream format 8: " + OLDER_THAN_CAPTURE)
+
+        def ab_round(tag, line, others=good, before=""):
+            printed = (before + "\n" if before else "") + "NOT RUN grass: the replay of the %s: %s" % (tag, line)
+            stage = [sys.executable, "-c", "print(%r); raise SystemExit(%d)" % (printed, NOT_RUN_CODE)]
+            stages = [("a", root, others), ("b", root, good), (INSTANCE_STAGE, root, stage)]
+            with open(os.path.join(root, "log-ab-base.txt"), "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
+                results = run_stages(stages, log)
+            return base_older_than_capture([name for name, _, _ in stages], results, NOT_RUN_REASONS)
+
+        assert ab_round("base", older) == "the replay of the base: " + older, NOT_RUN_REASONS
+        # The build under test cannot read the capture: no move.
+        assert ab_round("now", older) is None
+        # The capture is older than the base: a new capture is the fix, not a new base.
+        assert ab_round("base", older.replace(OLDER_THAN_CAPTURE, "make the capture again with this build, if the format change of this build is intended")) is None
+        # Another NOT RUN (the game slot), or a failure of another stage: no move.
+        assert ab_round("base", "the game slot is held by a run on Outlander-test: x") is None
+        assert ab_round("base", older, others=bad) is None
+        # Every NOT RUN line of the stage must have the format reason, not only the last one (verdict 135).
+        assert ab_round("base", older, before="NOT RUN grass: the game slot is held by a run on Outlander-test: x") is None
+        assert ab_round("base", older, before="NOT RUN grass: the replay of the base: " + older) == "the replay of the base: " + older
+        # A full pass is a plain pass, not this case.
+        assert base_older_than_capture(["a", INSTANCE_STAGE], [True, True], {}) is None
 
         # The A/B stage does not run on a failed build of the gate or of the base; a failed stage stops no other.
         with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
@@ -1387,24 +1339,15 @@ def self_test():
         finally:
             time.sleep = real_sleep
 
-        # A round with the replay gate takes the whole build side (D139); one without takes a place; a slot.py from
-        # before D139 has no such option, and its take gets none.
-        def two_places_take(slot, who, *, minutes=None, timing=False, whole=False):
-            pass
-
-        def one_place_take(slot, who, *, minutes=None, timing=False):
-            pass
-
+        # A round with the replay gate takes the game and the whole build side in one take (D208); one without takes a place.
         gate = [("plugin tests", root, good), ("replay gate", root, good)]
-        assert take_options(types.SimpleNamespace(take=two_places_take), gate) == {"whole": True}
-        assert take_options(types.SimpleNamespace(take=two_places_take), gate[:1]) == {}
-        assert take_options(types.SimpleNamespace(take=one_place_take), gate) == {}
+        assert round_slot(gate) == "both" and round_slot(gate[:1]) == "build"
         asked = []
-        Slots.take = classmethod(lambda cls, *args, **options: asked.append(options) or types.SimpleNamespace(code=cls.DONE, text="a reply"))
-        assert take_build(Slots, "x", False, {"whole": True}) is True and asked == [{"minutes": SLOT_MINUTES, "whole": True}], asked
-        # The game slot's lease is longer than the build slot's.
+        Slots.take = classmethod(lambda cls, *args, **options: asked.append((args, options)) or types.SimpleNamespace(code=cls.DONE, text="a reply"))
+        assert take_build(Slots, "x", False) is True and asked == [(("build", "x"), {"minutes": SLOT_MINUTES})], asked
+        # The lease of a take of both is the game slot's, longer than the build slot's.
         asked.clear()
-        assert take_game(Slots, "x (game slot)", False) is True and asked == [{"minutes": GAME_SLOT_MINUTES}], asked
+        assert take_slot(Slots, "both", "x", False, minutes=GAME_SLOT_MINUTES) is True and asked == [(("both", "x"), {"minutes": GAME_SLOT_MINUTES})], asked
         assert GAME_SLOT_MINUTES > SLOT_MINUTES
 
         # With slot.py's LoopWaiter, a leave of the place ends the wait: the next ask returns WAIT_ENDED, and the run is
@@ -1462,8 +1405,9 @@ def self_test():
             text = log.read()
         assert "== PASS with a test (" in text and "== FAIL with none (" in text and "no test ran" in text, text
 
-        # The game slot (the owner's D161): a round holds the build slot and the game slot for all its stages, and releases
-        # both on every exit path. This uses the real slot.py on a scratch state folder, so that no slot of the day is touched.
+        # The slots of a round (the owner's D161, D208): a round that needs the game takes the game and the whole build side in
+        # one take, holds them for all its stages, and releases both on every exit path. This uses the real slot.py on a
+        # scratch state folder, so that no slot of the day is touched.
         slots = scratch_slots(os.path.join(root, "slot-state"))
         state = slots.STATE_DIR
         assert state.startswith(root)
@@ -1471,19 +1415,25 @@ def self_test():
         # GAME_STAGES does not hold. The part of D183 below uses the real rule.
         real_needs_game = globals()["needs_game"]
         globals()["needs_game"] = lambda stages: True
+        own_session = os.environ["CLAUDE_CODE_SESSION_ID"]
+        other_session = "merge-step-self-test-other"
+
+        def as_session(name):
+            os.environ["CLAUDE_CODE_SESSION_ID"] = name
 
         def holders():
             return sorted(name for name in os.listdir(state) if name.endswith(".holder"))
 
-        both_held = [sys.executable, "-c", "import os, sys; sys.exit(0 if os.path.exists(%r) and os.path.exists(%r) else 7)" % (slots.holder_path("game"), slots.holder_path("build"))]
+        all_held = [sys.executable, "-c", "import os, sys; sys.exit(0 if all(os.path.exists(p) for p in %r) else 7)" % (
+            [slots.holder_path(unit) for unit in ("game",) + tuple(slots.units_of("build"))],)]
         round_log = os.path.join(root, "round.log")
         shown = io.StringIO()
         with contextlib.redirect_stdout(shown):
-            # The take: both slots are held while the stage runs, and the stage checks it.
-            assert run_round(slots, [("both held", root, both_held)], "merge_step: x aaaaaaaaaa", round_log, True)[0] == [True]
+            # The take: the game and both build places are held while the stage runs, and the stage checks it.
+            assert run_round(slots, [("all held", root, all_held)], "merge_step: x aaaaaaaaaa", round_log, True)[0] == [True]
             assert holders() == [], "a pass releases both"
             # A failing stage.
-            assert run_round(slots, [("bad", root, bad), ("both held", root, both_held)], "merge_step: x bbbbbbbbbb", round_log, True)[0] == [False, True]
+            assert run_round(slots, [("bad", root, bad), ("all held", root, all_held)], "merge_step: x bbbbbbbbbb", round_log, True)[0] == [False, True]
             assert holders() == [], "a failing stage releases both"
             # An exception in a stage (no such folder), and a Ctrl-C.
             try:
@@ -1506,142 +1456,68 @@ def self_test():
             finally:
                 globals()["run_stages"] = real_run_stages
             assert holders() == [], "a Ctrl-C releases both"
-            # Another session holds the game slot, and the run does not wait (--no-wait): it takes nothing, and the build
-            # slot that it took stays no longer than the take of the game.
-            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test-other"
-            assert slots.take("game", "other: a game", minutes=5).code == slots.DONE
-            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
-            assert run_round(slots, [("a", root, good)], "merge_step: x eeeeeeeeee", round_log, True) is None
-            assert holders() == ["game.holder"], holders()
-            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test-other"
-            assert slots.release("game", "other: a game").code == slots.DONE
-            os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
-        assert "merge_step: x aaaaaaaaaa (game slot)" in shown.getvalue(), shown.getvalue()
-        assert "NOT RUN: --no-wait, and the game slot is not free" in shown.getvalue(), shown.getvalue()
+            # Another session holds the game slot, or a place of the build side, and the run does not wait (--no-wait): it
+            # takes nothing at all, not the free slot either.
+            for part in ("game", "build"):
+                as_session(other_session)
+                assert slots.take(part, "other: " + part, minutes=5).code == slots.DONE
+                as_session(own_session)
+                assert run_round(slots, [("a", root, good)], "merge_step: x eeeeeeeeee", round_log, True) is None
+                assert holders() == [part + ".holder"], holders()
+                as_session(other_session)
+                assert slots.release(part, "other: " + part).code == slots.DONE
+                as_session(own_session)
+        assert "NOT RUN: --no-wait, and the both slot is not free" in shown.getvalue(), shown.getvalue()
 
-        # A check that waits for the build side keeps its place in the game queue (2026-11-09: the check waited for the build
-        # side with no ask for the game, and a timing take got the game slot first). Two other sessions hold both build places
-        # and free them from inside the wait, at the wait that each case names. A case has a bound: a fault that keeps the
-        # build side held ends the case with an assert and not with a wait with no end.
-        own_session = os.environ["CLAUDE_CODE_SESSION_ID"]
-        builders = ("builder-1", "builder-2")
-        real_ask_in_queue = GamePlace.ask_in_queue
-        real_note_active = slots.note_active
+        # D208: a round that waits holds nothing meanwhile, so that no other session can wait for it (the deadlock of 14:37 on
+        # 2026-11-10). Another session holds a place; the round waits in a thread with a deadline; it has a place in both
+        # queues and no hold; after the release it takes both and runs.
+        as_session(other_session)
+        assert slots.take("build", "other: build", minutes=5).code == slots.DONE
+        as_session(own_session)
         real_wait_seconds = globals()["WAIT_SECONDS"]
-        DEADLINE_SECONDS = 30
+        globals()["WAIT_SECONDS"] = 0.05
+        outcome = {}
 
-        def as_session(name):
-            os.environ["CLAUDE_CODE_SESSION_ID"] = name
-
-        def free_build_side():
-            for other in builders:
-                as_session("merge-step-self-test-" + other)
-                assert slots.release("build", "other: " + other).code == slots.DONE
-            as_session(own_session)
-
-        def round_that_waits(what, on_wait):
-            """The output and the game notes of a round that waits for the build side. `on_wait(count, place)` runs at
-            each wait of the build take, after the round's own ask for the game. An exception of `on_wait` ends the round
-            and reaches the caller."""
-            for other in builders:
-                as_session("merge-step-self-test-" + other)
-                assert slots.take("build", "other: " + other, minutes=5).code == slots.DONE
-            as_session(own_session)
-            waits = []
-            game_notes = []
-
-            def asked(place):
-                real_ask_in_queue(place)
-                waits.append(place)
-                on_wait(len(waits), place, game_notes)
-
-            def noted(slot, now):
-                if slot == "game":
-                    game_notes.append(now)
-                return real_note_active(slot, now)
-
-            outcome = {}
-
-            def run():
-                try:
-                    outcome["round"] = run_round(slots, [("both held", root, both_held)], what, round_log, False)
-                except BaseException as error:  # a KeyboardInterrupt of `on_wait` too
-                    outcome["error"] = error
-
-            # The round runs in a thread that the case gives a deadline: a fault that keeps the build side held (the ask for
-            # the game removed, so that nothing frees it) ends the case with an assert and not with a wait with no end.
-            GamePlace.ask_in_queue = asked
-            slots.note_active = noted
-            globals()["WAIT_SECONDS"] = 0.05
-            output = io.StringIO()
+        def waiting_round():
             try:
-                with contextlib.redirect_stdout(output):
-                    thread = threading.Thread(target=run, daemon=True)
-                    thread.start()
-                    thread.join(DEADLINE_SECONDS)
-                    stuck = thread.is_alive()
-                    if stuck:
-                        # Free the build side, so that the round ends: a thread that waits on holds a file of the temporary folder,
-                        # and the cleanup of the folder fails with a PermissionError that hides the assert below.
-                        free_build_side()
-                        thread.join(DEADLINE_SECONDS)
-            finally:
-                GamePlace.ask_in_queue = real_ask_in_queue
-                slots.note_active = real_note_active
-                globals()["WAIT_SECONDS"] = real_wait_seconds
-                as_session(own_session)
-            assert not stuck, "the round still waited for the build side after %d s (%d waits): nothing freed it" % (DEADLINE_SECONDS, len(waits))
-            assert not thread.is_alive(), "the round did not end after the build side was freed"
-            if "error" in outcome:
-                raise outcome["error"]
-            return outcome["round"], output.getvalue()
+                outcome["round"] = run_round(slots, [("all held", root, all_held)], "merge_step: x ffffffffff", round_log, False)
+            except BaseException as error:  # noqa: BLE001 - the case reports it
+                outcome["error"] = error
 
-        # Case 1: the check holds the free game slot at its first wait, notes its work at the next wait, and another session
-        # that asks for the game meanwhile gets no place before it.
-        seen = {}
+        def own_places():
+            return [part for part in SLOTS_OF_BOTH if any(ticket.session == own_session for ticket in slots.read_tickets(part))]
 
-        def let_others_act(count, place, game_notes):
-            if count == 1:
-                seen["held at the first wait"] = place.held
-                as_session("merge-step-self-test-gamer")
-                seen["game take of another session"] = slots.take("game", "other: a game", minutes=5).code
-                # A take that got the slot (the fault under test) is released, so that the round ends and the asserts below fail.
-                slots.release("game", "other: a game")
-                slots.leave("game", "other: a game")
-                as_session(own_session)
-            elif count == 2:
-                seen["game notes at the second wait"] = len(game_notes)
-                free_build_side()
-
-        waiting_round, waiting_output = round_that_waits("merge_step: x ffffffffff", let_others_act)
-        assert seen.get("held at the first wait") is True, "the check does not hold the free game slot while it waits for the build side: %s" % seen
-        assert seen.get("game take of another session") != slots.DONE, "another session got the game slot before the check: %s" % seen
-        assert seen.get("game notes at the second wait", 0) >= 1, "the check does not note the work of the game slot it holds while it waits: %s" % seen
-        assert "game held for the merge check, waiting for the build side since " in waiting_output, waiting_output
-        assert waiting_round is not None and waiting_round[0] == [True], waiting_round
-        assert holders() == [], holders()
-
-        # Case 2: a Ctrl-C in the wait, after the early hold, releases the game slot (else it stays held for its whole lease).
-        def interrupt_at_the_second_wait(count, place, game_notes):
-            if count == 2:
-                raise KeyboardInterrupt
-
+        output = io.StringIO()
         try:
-            round_that_waits("merge_step: x gggggggggg", interrupt_at_the_second_wait)
-            raise AssertionError("the interrupt did not reach the caller")
-        except KeyboardInterrupt:
-            pass
-        assert "game.holder" not in holders(), "a Ctrl-C in the wait leaves the game slot held: %s" % holders()
-        free_build_side()
+            with contextlib.redirect_stdout(output):
+                thread = threading.Thread(target=waiting_round, daemon=True)
+                thread.start()
+                deadline = time.monotonic() + 30
+                while own_places() != list(SLOTS_OF_BOTH) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                places_while_waiting, holds_while_waiting = own_places(), holders()
+                # The other session releases in a process of its own: a change of the session variable here would also
+                # change the session of the waiting round's next ask, which then ends its own wait.
+                released = subprocess.run([sys.executable, "-B", os.path.join(HARNESS, "slot.py"), "release", "build", "other: build"],
+                                          env=dict(os.environ, CLAUDE_CODE_SESSION_ID=other_session), capture_output=True, text=True)
+                assert released.returncode == slots.DONE, released.stdout + released.stderr
+                thread.join(30)
+        finally:
+            globals()["WAIT_SECONDS"] = real_wait_seconds
+            as_session(own_session)
+        assert places_while_waiting == list(SLOTS_OF_BOTH), "the waiting round has no place in both queues: %s" % places_while_waiting
+        assert holds_while_waiting == ["build.holder"], "the waiting round holds a slot: %s" % holds_while_waiting
+        assert not thread.is_alive() and "error" not in outcome, outcome
+        assert outcome["round"] is not None and outcome["round"][0] == [True], (outcome, output.getvalue())
         assert holders() == [], holders()
 
-        # The holds of the run lapse while it waits (2026-11-09, the W206 render-link check: a take of the game that waited 34
-        # minutes lost the build side after 15 minutes, and the replay gate and the instance A/B were refused by the slot check).
-        # Before each stage the run looks at its holds, and takes a lapsed one again.
+        # A hold of the round lapses (a stall: the notes of the work stop): before the next stage the run takes it again when it
+        # is free.
         def lapse_now():
             slots.lapse_idle_holds(time.time() + 20 * 60)
 
-        # Case 3: both holds lapse before the second stage. The stage checks that it holds both, and passes.
+        real_note_active = slots.note_active
         build_notes = []
 
         def note_then_lapse_before_the_second_stage(slot, now):
@@ -1655,7 +1531,7 @@ def self_test():
         shown = io.StringIO()
         try:
             with contextlib.redirect_stdout(shown):
-                lapsed_round = run_round(slots, [("first", root, both_held), ("second", root, both_held), ("third", root, both_held)],
+                lapsed_round = run_round(slots, [("first", root, all_held), ("second", root, all_held), ("third", root, all_held)],
                                          "merge_step: x iiiiiiiiii", round_log, True)
         finally:
             slots.note_active = real_note_active
@@ -1666,104 +1542,33 @@ def self_test():
         assert "== re-took the build side at " in kept and "== re-took the game slot at " in kept, "the kept log names each take again: " + kept
         assert holders() == [], holders()
 
-        # Case 4: the whole side lapsed, and another session took a place meanwhile (the case of the incident): the run waits
-        # in the queue for it, with its ask for the game, and then holds both places.
+        # A lapsed hold that another session took meanwhile is not waited for: the run holds the game, and a wait for the build
+        # side would be a hold and wait (D208). The stage is NOT RUN; a hold that is intact is left alone.
         what = "merge_step: x jjjjjjjjjj"
-        assert slots.take("build", what, minutes=5, whole=True).code == slots.DONE
-        lapse_now()
-        assert holders() == [], holders()
-        as_session("merge-step-self-test-" + builders[0])
-        assert slots.take("build", "other: " + builders[0], minutes=5).code == slots.DONE
-        as_session(own_session)
-        log = io.StringIO()
-        waits_for_the_place = []
-        sleeps_of_the_take = []
-
-        def bounded_sleep(seconds):
-            # A fault that does not ask for the game at the wait leaves nothing to free the place: the case ends with an assert.
-            sleeps_of_the_take.append(seconds)
-            assert len(sleeps_of_the_take) < 40, "the run waits for a place that nothing frees"
-
-        real_sleep, time.sleep = time.sleep, bounded_sleep
-        try:
-            with slot_asker(slots, "game") as game_ask, contextlib.redirect_stdout(io.StringIO()):
-                game = GamePlace(slots, GAME_LABEL % what, game_ask)
-
-                def free_the_place():
-                    waits_for_the_place.append(1)
-                    if len(waits_for_the_place) == 2:
-                        as_session("merge-step-self-test-" + builders[0])
-                        assert slots.release("build", "other: " + builders[0]).code == slots.DONE
-                        as_session(own_session)
-
-                game.ask_in_queue = free_the_place
-                assert keep_holds(slots, what, game, {"whole": True}, False, log) is True
-        finally:
-            time.sleep = real_sleep
-            as_session(own_session)
-        assert places_held(slots, "build", what) == 2, "the run holds both places again"
-        assert places_held(slots, "build", "merge_step: x some-other-run") == 0, "a hold of another label is no hold of the run"
-        assert len(waits_for_the_place) >= 2 and "== the build hold of this run ended" in log.getvalue() and "== re-took the build side at " in log.getvalue(), log.getvalue()
-        assert slots.release("build", what).code == slots.DONE
-        assert holders() == [], holders()
-
-        # Case 5: with --no-wait a lapsed hold is not waited for: the stage is NOT RUN. A hold that is intact is left alone.
-        assert slots.take("build", what, minutes=5).code == slots.DONE
+        assert slots.take("both", what, minutes=5).code == slots.DONE
         intact = io.StringIO()
-        with slot_asker(slots, "game") as game_ask, contextlib.redirect_stdout(io.StringIO()):
-            game = GamePlace(slots, GAME_LABEL % what, game_ask)
-            assert keep_holds(slots, what, game, {}, True, intact) is True and intact.getvalue() == "", intact.getvalue()
-            slots.release("build", what)
-            as_session("merge-step-self-test-" + builders[0])
-            assert slots.take("build", "other: " + builders[0], minutes=5, whole=True).code == slots.DONE
-            as_session(own_session)
-            refused = io.StringIO()
-            seen_before = [slots.last_active(unit) for unit in slots.units_of("build")]
-            assert keep_holds(slots, what, game, {}, True, refused) is False, "no wait: nothing is taken again"
-            assert [slots.last_active(unit) for unit in slots.units_of("build")] == seen_before, "the run notes build work for a hold of another session"
-        assert "taking it again" in refused.getvalue()
-        as_session("merge-step-self-test-" + builders[0])
-        assert slots.release("build", "other: " + builders[0]).code == slots.DONE
+        assert keep_holds(slots, what, "both", intact) is True and intact.getvalue() == "", intact.getvalue()
+        assert slots.release("build", what).code == slots.DONE
+        as_session(other_session)
+        assert slots.take("build", "other: build", minutes=5).code == slots.DONE
         as_session(own_session)
+        refused = io.StringIO()
+        seen_before = [slots.last_active(unit) for unit in slots.units_of("build")]
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert keep_holds(slots, what, "both", refused) is False, "the run waited for the build side with the game held"
+        assert [slots.last_active(unit) for unit in slots.units_of("build")] == seen_before, "the run notes build work for a hold of another session"
+        assert "taking it again if it is free" in refused.getvalue() and "NOT RUN" in said.getvalue(), (refused.getvalue(), said.getvalue())
+        assert places_held(slots, "build", "merge_step: x some-other-run") == 0, "a hold of another label is no hold of the run"
+        assert not any(ticket.session == own_session for ticket in slots.read_tickets("build")), "the run waits in the build queue"
+        as_session(other_session)
+        assert slots.release("build", "other: build").code == slots.DONE
+        as_session(own_session)
+        assert slots.release("game", what).code == slots.DONE
         assert holders() == [], holders()
         with open(os.path.join(root, "stopped.log"), "w+", encoding="utf-8") as stopped:
             assert run_stages([("a", root, good), ("b", root, good)], stopped, lambda: False) == [False, False]
             stopped.seek(0)
             assert "== NOT RUN a: the slot hold of this run ended and was not taken again" in stopped.read()
-
-        # Case 6: both holds lapse, the game is taken by another session, and the build side lapses again while the run waits for
-        # the game. The run takes the game, then looks again, and takes the build side a second time.
-        what = "merge_step: x kkkkkkkkkk"
-        with slot_asker(slots, "game") as game_ask, contextlib.redirect_stdout(io.StringIO()):
-            game = GamePlace(slots, GAME_LABEL % what, game_ask)
-            assert slots.take("build", what, minutes=5).code == slots.DONE and game.take(False)
-            lapse_now()
-            assert holders() == [], holders()
-            as_session("merge-step-self-test-gamer")
-            assert slots.take("game", "other: a game", minutes=5).code == slots.DONE
-            as_session(own_session)
-            lapsed_while_waiting = []
-            sleeps_for_the_game = []
-
-            def lapse_while_waiting(seconds):
-                # The first wait for the game: the build side of the run lapses, and so does the hold of the other session.
-                sleeps_for_the_game.append(seconds)
-                assert len(sleeps_for_the_game) < 40, "the run waits for a game that nothing frees"
-                if not lapsed_while_waiting:
-                    lapsed_while_waiting.append(1)
-                    lapse_now()
-
-            twice = io.StringIO()
-            real_sleep, time.sleep = time.sleep, lapse_while_waiting
-            try:
-                assert keep_holds(slots, what, game, {}, False, twice) is True
-            finally:
-                time.sleep = real_sleep
-            assert places_held(slots, "build", what) == 1 and places_held(slots, "game", game.label) == 1, "both holds are the run's after the second look: " + twice.getvalue()
-            assert twice.getvalue().count("re-took the build side") == 2 and game.retakes == 1, twice.getvalue()
-            game.release()
-            slots.release("build", what)
-        assert holders() == [], holders()
         globals()["needs_game"] = real_needs_game
 
         # D183: the game slot only for a stage that needs it. The stage lists of the tool first.
@@ -1798,8 +1603,8 @@ def self_test():
             os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test-other"
             assert slots.release("game", "other: a game").code == slots.DONE
             os.environ["CLAUDE_CODE_SESSION_ID"] = "merge-step-self-test"
-            # With the game free, it holds both while the stage runs, and releases both.
-            assert run_round(slots, [(INSTANCE_STAGE, root, both_held)], "merge_step: x 3333333333", round_log, True)[0] == [True]
+            # With the game free, it holds the game and the whole build side while the stage runs, and releases them.
+            assert run_round(slots, [(INSTANCE_STAGE, root, all_held)], "merge_step: x 3333333333", round_log, True)[0] == [True]
             assert holders() == [], holders()
 
         # The notes of the game slot's work: one at once, then one each period, and none after the round.
@@ -2068,15 +1873,17 @@ def main():
     elif written == []:
         say("closes: nothing to write (no new item in the subjects of %d merge(s): %s)" % (len(merges), "; ".join(subject for _, subject in merges)))
     if not all(results):
+        older = base_older_than_capture([name for name, _, _ in stages], results, NOT_RUN_REASONS) if moves_the_ref(baseline) else None
+        if older:
+            # The change of this round against the old base is never A/B'd: an open gap, not a pass (the Coordinator).
+            with open(log_path, "a", encoding="utf-8") as log:
+                verdict(log, "OPEN A/B GAP: the change from %s to %s has no grass A/B. The base of the next A/B moves to %s (%s), as the "
+                             "round passed but for the A/B, which is NOT RUN only because the base is older than the capture: %s"
+                        % (base[:10], commit[:10], commit[:10], passed_ref, older))
+            keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
         return 1
     if moves_the_ref(baseline):
-        git(repo, "update-ref", passed_ref, commit)
-        # The pair of the pass is the base pair of the next check (tips_for).
-        if sibling_head and resolve(sibling, "HEAD") == sibling_head:
-            keep_pair(kind, sibling, commit, sibling_head)
-            say("%s in the sibling: %s" % (pair_ref(kind, commit), sibling_head[:10]))
-        elif sibling_head:
-            say("no pair kept: the HEAD of the sibling moved during the round (%s at the start)" % sibling_head[:10])
+        keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
     else:
         say("%s stays: this pass is against %s, not the accepted folder" % (passed_ref, baseline))
     return 0

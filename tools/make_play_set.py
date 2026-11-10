@@ -23,7 +23,8 @@ testing instance:
   its numbers, and no pair of mode gpu against mode off may differ by more than MEAN_LIMIT.
 
 A replay needs the whole build side (the owner's D139), and the game slot does not give it. So the gate and the
-tour's replays each take the whole side, wait in its queue with the game slot held, and release it after. The game
+tour's replays each give the game back and take the game and the whole side together (`take both`): no session
+waits for one slot while it holds the other (the owner's D208). They release the build side after. The game
 stage after each takes the game slot again, as a hold of the game lapses with no game seen. A refusal there, or a
 replay that the slot check refused, is "NOT RUN: slot refused" with exit code 3: no picture was checked, so the
 set did not fail, and it does not become the play set.
@@ -355,17 +356,16 @@ def slot_asker(slots, slot):
         yield waiter.take
 
 
-def ask_slot(slots, slot, what, no_wait, whole=False):
-    """Takes a slot, and waits in its queue. It asks again at each wait, so that it keeps its place. `whole` asks
-    for both places of the build side. Returns "" when it holds the slot, else the first line of the reply that
+def ask_slot(slots, slot, what, no_wait):
+    """Takes a slot ("both": the game and the whole build side together), and waits in its queue. It asks again at
+    each wait, so that it keeps its place. Returns "" when it holds the slot, else the first line of the reply that
     ends the wait: a refusal, the end of the wait after a `leave` of its place, or a place in the queue with
     `no_wait`."""
     os.makedirs(slots.STATE_DIR, exist_ok=True)
-    kind = {"whole": True} if whole else {}
     with slot_asker(slots, slot) as ask:
         while True:
             try:
-                reply = ask(slot_label(what), minutes=SLOT_MINUTES, **kind)
+                reply = ask(slot_label(what), minutes=SLOT_MINUTES)
             except slots.StateBusy as error:
                 say("the state of the slots is busy, and I ask again: %s" % error)
                 time.sleep(WAIT_SECONDS)
@@ -411,14 +411,18 @@ def game_again(slots, stage, no_wait):
 @contextlib.contextmanager
 def whole_build_side(slots, what, no_wait):
     """Holds the whole build side for the replays of a stage: a replay needs both places (the owner's D139), and the
-    game slot does not give them. It waits in the queue of the build side with the game slot held (f220: a place
-    taken between the live run and the tour's replays refused all of them). A refusal raises SmokeNotRun: also when
-    this session holds a place with another label, as slot.py refuses that take (a second run). The hold ends with
-    the stage."""
-    label = slot_label(what)
-    stop = ask_slot(slots, "build", what, no_wait, whole=True)
+    game slot does not give them (f220: a place taken between the live run and the tour's replays refused all of
+    them). A wait for the build side with the game held is a hold and wait, which slot.py refuses (the owner's D208).
+    So the smoke gives its game hold back and takes the game and the whole build side together (`take both`) under the
+    label of the set's game hold (SMOKE_GAME); after the stage it releases the build side and keeps the game. A
+    refusal raises SmokeNotRun: also when this session holds a slot with another label, as slot.py refuses that take
+    (a second run). `what` names the stage in the message."""
+    label = slot_label(SMOKE_GAME)
+    say(release_game(slots, SMOKE_GAME).splitlines()[0])
+    stop = ask_slot(slots, "both", SMOKE_GAME, no_wait)
     if stop:
-        raise SmokeNotRun("the whole build side for %s: %s" % (what, stop))
+        raise SmokeNotRun("the game and the whole build side for %s: %s. The set holds no game slot now: it gave it back "
+                          "for the take of both (D208)" % (what, stop))
     try:
         yield
     finally:
@@ -799,12 +803,16 @@ def smoke_wiring_test(fake_slots):
 
         @classmethod
         def take(cls, slot, who, **kind):
-            events.append("take %s%s" % (slot, " whole" if kind.get("whole") else ""))
-            if cls.held.get(slot, who) != who:
-                events.append("refused %s" % slot)
-                return types.SimpleNamespace(code=cls.REFUSED, text="%s: refused: your session already holds the %s slot as \"%s\"; a take with another label is a second run" % (
-                    slot, slot, cls.held[slot]))
-            cls.held[slot] = who
+            events.append("take %s" % slot)
+            # A take of both holds the game and the build side (slot.py, D208).
+            parts = ("game", "build") if slot == "both" else (slot,)
+            for part in parts:
+                if cls.held.get(part, who) != who:
+                    events.append("refused %s" % slot)
+                    return types.SimpleNamespace(code=cls.REFUSED, text="%s: refused: your session already holds the %s slot as \"%s\"; a take with another label is a second run" % (
+                        part, part, cls.held[part]))
+            for part in parts:
+                cls.held[part] = who
             return types.SimpleNamespace(code=cls.DONE, text="taken")
 
         @classmethod
@@ -885,9 +893,9 @@ def smoke_wiring_test(fake_slots):
             result = smoke("passed", "passed")
             assert isinstance(result, str) and result.startswith("passed") and events == [
                 "take game", "game playset-live",
-                "take build whole", "validate_retained.py", "release build",
+                "release game", "take both", "validate_retained.py", "release build",
                 "take game", "game playset-tour",
-                "take build whole", "validate_tour.py", "release build",
+                "release game", "take both", "validate_tour.py", "release build",
                 "take game", "bats"], events
             # Each take of the game was a renewal of the set's hold (f221: another label was refused), and the build
             # side is free after the smoke.
@@ -986,13 +994,14 @@ def self_test():
     assert ends_with_three(wait_for_build, Slots, True), "--no-wait"
 
     # The replays of a stage hold the whole build side (f220: a place taken between the live run and the tour's
-    # replays refused all of them). They wait in its queue and release the side after. A refusal is NOT RUN.
+    # replays refused all of them). With no hold and wait (D208) the smoke gives the game back, waits in both queues with
+    # `take both`, and after the stage releases the build side and keeps the game. A refusal is NOT RUN.
     class Side(Slots):
         asked, released = [], []
 
         @classmethod
         def take(cls, slot, who, **kind):
-            cls.asked.append((slot, kind.get("whole", False)))
+            cls.asked.append(slot)
             return types.SimpleNamespace(code=cls.replies.pop(0), text="a reply\nmore")
 
         @classmethod
@@ -1015,28 +1024,30 @@ def self_test():
 
     wait_seconds, WAIT_SECONDS = WAIT_SECONDS, 0
     try:
+        smoke = slot_label(SMOKE_GAME)
         Side.replies = [Slots.QUEUED, Slots.QUEUED, Slots.DONE]
-        assert stage() is True and Side.asked == [("build", True)] * 3, Side.asked
-        assert Side.released == [("build", "make_play_set: x")], Side.released
+        assert stage() is True and Side.asked == ["both"] * 3, Side.asked
+        assert Side.released == [("game", smoke), ("build", smoke)], Side.released
         Side.replies = [Slots.REFUSED]
         stop = stage()
-        assert isinstance(stop, str) and "the whole build side for x: a reply" in stop and Side.released == [], (stop, Side.released)
+        assert isinstance(stop, str) and "the game and the whole build side for x: a reply" in stop and Side.released == [("game", smoke)], (stop, Side.released)
+        assert "The set holds no game slot now" in stop, stop
         Side.replies = [Slots.QUEUED]
-        assert isinstance(stage(no_wait=True), str) and Side.asked == [("build", True)], "--no-wait: one ask, then NOT RUN"
-        # A fault of the stage releases the side too.
+        assert isinstance(stage(no_wait=True), str) and Side.asked == ["both"], "--no-wait: one ask, then NOT RUN"
+        # A fault of the stage releases the build side too, and keeps the game.
         Side.replies = [Slots.DONE]
         try:
             stage(fault=SmokeFailed("a picture"))
         except SmokeFailed:
             pass
-        assert Side.released == [("build", "make_play_set: x")], Side.released
+        assert Side.released == [("game", smoke), ("build", smoke)], Side.released
         # The game again after a replay stage: a renewal, a wait after a lapse, or NOT RUN.
         Side.asked, Side.replies = [], [Slots.DONE]
         with contextlib.redirect_stdout(io.StringIO()):
             game_again(Side, "x", False)
             Side.replies = [Slots.QUEUED, Slots.DONE]
             game_again(Side, "x", False)
-        assert Side.asked == [("game", False)] * 3, Side.asked
+        assert Side.asked == ["game"] * 3, Side.asked
         Side.replies = [Slots.REFUSED]
         try:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1064,14 +1075,14 @@ def self_test():
                     pass
 
                 def take(self, who, **kind):
-                    Waiting.waiter_asks.append((self.slot, who, kind.get("whole", False)))
-                    return types.SimpleNamespace(code=Waiting.replies.pop(0), text="build: this wait ended without the slot: the place was left\nmore")
+                    Waiting.waiter_asks.append((self.slot, who))
+                    return types.SimpleNamespace(code=Waiting.replies.pop(0), text="both: this wait ended without the slot: the place was left\nmore")
 
         Waiting.replies = [Slots.QUEUED, Waiting.WAIT_ENDED]
         with contextlib.redirect_stdout(io.StringIO()):
-            stop = ask_slot(Waiting, "build", "x", False, whole=True)
-        assert stop.startswith("build: this wait ended") and Waiting.replies == [], stop
-        assert Waiting.asked == [] and Waiting.waiter_asks == [("build", "make_play_set: x", True)] * 2, (Waiting.asked, Waiting.waiter_asks)
+            stop = ask_slot(Waiting, "both", "x", False)
+        assert stop.startswith("both: this wait ended") and Waiting.replies == [], stop
+        assert Waiting.asked == [] and Waiting.waiter_asks == [("both", "make_play_set: x")] * 2, (Waiting.asked, Waiting.waiter_asks)
         Waiting.replies = [Waiting.WAIT_ENDED]
         try:
             with contextlib.redirect_stdout(io.StringIO()), whole_build_side(Waiting, "x", False):
