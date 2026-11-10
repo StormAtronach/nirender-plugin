@@ -56,20 +56,65 @@ return function(nirender, spec, name)
     -- The movement collision of the player before the first move of a tour; nil outside a tour.
     local collision_before = nil
 
-    -- The move of a tour to `ref`: the player south of it, with the view to the north, at it,
-    -- and with movement collision off. Returns the place. `scenario.tourEnd` gives movement
-    -- collision the value it had before the first move.
+    -- The fronts of the NIF test level (D176): the camera place of each stop that the owner set
+    -- with tools/nif_fronts.lua, the accepted ones by cell and id. The copy in the mod
+    -- (tour_fronts.json) is the tour's data; the tool writes MWSE/config/nif_fronts.json.
+    local fronts = nil
+    local function frontOf(ref)
+        if fronts == nil then
+            fronts = {}
+            local data = json.loadfile("mods\\nirender\\tour_fronts")
+            for _, entry in pairs(data and data.fronts or {}) do
+                if entry.status == "accepted" then
+                    fronts[(entry.cell .. "|" .. entry.id):lower()] = entry
+                end
+            end
+        end
+        return fronts[(ref.cell.editorName .. "|" .. ref.object.id):lower()]
+    end
+
+    local function v3(t)
+        return tes3vector3.new(t[1], t[2], t[3])
+    end
+
+    -- The place of the player and its orientation for a front, as the tool sets them: the camera
+    -- from the front's values in the exhibit's frame (so that it follows the exhibit), and the
+    -- player under the camera by the eye of the front.
+    local function frontPlace(ref, front)
+        local camera, yaw = v3(front.camera.position), front.camera.yaw
+        local rotation = ref.sceneNode and ref.sceneNode.worldTransform.rotation
+        if front["local"] and rotation then
+            camera = ref.position + rotation * v3(front["local"].offset)
+            yaw = ref.orientation.z + front["local"].yaw
+        end
+        local eye = v3(front.camera.position) - v3(front.player.position)
+        return camera - eye, tes3vector3.new(front.camera.pitch, 0, yaw)
+    end
+
+    -- The move of a tour to `ref`, with movement collision off: to the front of the stop when
+    -- it has one, else the player south of it, with the view to the north, at it. Returns the
+    -- place and "front" or "default". `scenario.tourEnd` gives movement collision the value it
+    -- had before the first move.
     function scenario.tourMove(ref)
         if collision_before == nil then
             collision_before = tes3.mobilePlayer.movementCollision
             scenario.say("tour: movement collision %s, off for the tour", tostring(collision_before))
         end
         tes3.mobilePlayer.movementCollision = false
-        local at = ref.position
-        local target = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
+        local front = frontOf(ref)
+        local target, orientation, kind
+        if front then
+            target, orientation = frontPlace(ref, front)
+            kind = "front"
+        else
+            local at = ref.position
+            target = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
+            orientation = tes3vector3.new(0, 0, 0)
+            kind = "default"
+        end
         tes3.player.position = target
-        tes3.player.orientation = tes3vector3.new(0, 0, 0)
-        return target
+        tes3.player.orientation = orientation
+        return target, kind
     end
 
     function scenario.tourEnd()
@@ -103,11 +148,11 @@ return function(nirender, spec, name)
                 scenario.tourEnd()
                 return done()
             end
-            local target = scenario.tourMove(ref)
+            local target, kind = scenario.tourMove(ref)
             scenario.after(spec.tourSeconds or 1.5, function()
                 -- The player is still at the place of this stop (a step of up to 5 units is allowed).
                 local place = tes3.player.position
-                scenario.say("tour: stop %d %s: move held %s, at %.0f %.0f %.0f, target %.0f %.0f %.0f", index, ref.object.id,
+                scenario.say("tour: stop %d %s (%s): move held %s, at %.0f %.0f %.0f, target %.0f %.0f %.0f", index, ref.object.id, kind,
                     place:distance(target) <= 5 and "yes" or "NO", place.x, place.y, place.z, target.x, target.y, target.z)
                 if each then
                     each(index, ref, function() stop(index + 1) end)

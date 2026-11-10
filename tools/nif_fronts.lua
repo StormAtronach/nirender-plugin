@@ -33,6 +33,9 @@
     each accept, skip and undo, and at no other time. At each start the tool copies the file as it is to
     nif_fronts-before.json in the same folder. If the file is there but is not a front file, the tool does not
     start. The tool never saves the game.
+
+    The tour reads the copy in the repo, mod/MWSE/mods/nirender/tour_fronts.json, not this file. After a session,
+    copy the file there (with LF line ends) and commit it.
 ]]
 
 local FILE = "Data Files\\MWSE\\config\\nif_fronts.json"
