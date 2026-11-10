@@ -279,9 +279,10 @@ def weather_warning(args):
     return "warning: the run has timing steps and the weather is the game's, which can change in the run and move the frame rate: --weather 0 pins it to clear"
 
 
-# The game's registry key (HKLM, the 32-bit view), and its copy in the user's VirtualStore. The
-# game is a 32-bit program with no manifest and runs non-elevated, so its access to HKLM is
-# virtualized: a value in the VirtualStore wins on a read.
+# The game's registry key (HKLM, the 32-bit view), and the copy of it in the user's VirtualStore.
+# The game reads and writes the HKLM key: on 2026-11-10 the VirtualStore had Shadows 0 and HKLM 6,
+# and the game's capture had shadow scenes (kind 5), so it read 6 from HKLM; its exit at 07:11:42
+# wrote HKLM, not the VirtualStore.
 GAME_REGISTRY_KEY = r"SOFTWARE\Bethesda Softworks\Morrowind"
 VIRTUAL_STORE_KEY = r"Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Bethesda Softworks\Morrowind"
 
@@ -297,17 +298,17 @@ def read_registry_dword(root, path, view, name="Shadows"):
 
 
 def registry_shadows(read=read_registry_dword):
-    """The value "Shadows" that the game reads, and where it is: (value, source). The VirtualStore
-    copy first, HKLM when the VirtualStore has no such value; the source names the HKLM value too,
-    as a difference of the two is a fault of its own. value is None when both are missing. The game
-    writes the value back (`NiDX8Application::writeRegistrySettings` 0x4293A0), to the VirtualStore
-    when HKLM is closed to it [I: virtualization]: one value for every instance and for the owner's
-    play. A run reads it and never writes it."""
-    stored = read(winreg.HKEY_CURRENT_USER, VIRTUAL_STORE_KEY, 0)
+    """The value "Shadows" that the game reads, and where it is: (value, source). The HKLM value
+    first; the source names the VirtualStore value too, as a difference of the two shows a stale
+    copy. The VirtualStore value only when HKLM has none [I: a virtualized read; not seen]. value is
+    None when both are missing. The game writes the value back at its exit
+    (`NiDX8Application::writeRegistrySettings` 0x4293A0): one value for every instance and for the
+    owner's play. A run reads it and never writes it."""
     machine = read(winreg.HKEY_LOCAL_MACHINE, GAME_REGISTRY_KEY, winreg.KEY_WOW64_32KEY)
-    if stored is not None:
-        return stored, "VirtualStore; HKLM %s" % ("missing" if machine is None else machine)
-    return machine, "HKLM"
+    stored = read(winreg.HKEY_CURRENT_USER, VIRTUAL_STORE_KEY, 0)
+    if machine is not None:
+        return machine, "HKLM; VirtualStore %s" % ("missing" if stored is None else stored)
+    return stored, "VirtualStore"
 
 
 def ini_shadows(ini_bytes):
@@ -1134,7 +1135,8 @@ def self_test_shadows():
     assert ini_shadows(None) is None, "no file: unknown, not 0"
     assert ini_shadows(b"[General]\nNumber of Shadows=-1\n") == 0, "GetPrivateProfileIntA gives 0 for a negative value"
 
-    # The registry: the VirtualStore copy first, HKLM when it has no such value (verdict 73).
+    # The registry: HKLM first, the VirtualStore copy only when HKLM has no such value. The case of
+    # 2026-11-10: the VirtualStore 0, HKLM 6, and the game's capture had shadow scenes.
     def reader(stored, machine):
         def read(root, path, view):
             if root == winreg.HKEY_CURRENT_USER:
@@ -1144,14 +1146,14 @@ def self_test_shadows():
             return machine
         return read
 
-    assert registry_shadows(reader(0, 6)) == (0, "VirtualStore; HKLM 6"), "the VirtualStore wins, and the line shows the HKLM value"
-    assert registry_shadows(reader(6, 0)) == (6, "VirtualStore; HKLM 0")
-    assert registry_shadows(reader(6, None)) == (6, "VirtualStore; HKLM missing")
-    assert registry_shadows(reader(None, 3)) == (3, "HKLM"), "no VirtualStore value: HKLM"
-    assert registry_shadows(reader(None, None)) == (None, "HKLM")
+    assert registry_shadows(reader(0, 6)) == (6, "HKLM; VirtualStore 0"), "HKLM wins, and the line shows the VirtualStore value"
+    assert registry_shadows(reader(6, 0)) == (0, "HKLM; VirtualStore 6")
+    assert registry_shadows(reader(None, 0)) == (0, "HKLM; VirtualStore missing")
+    assert registry_shadows(reader(3, None)) == (3, "VirtualStore"), "no HKLM value: the VirtualStore"
+    assert registry_shadows(reader(None, None)) == (None, "VirtualStore")
 
-    line, level = shadow_level_line(0, 6, "VirtualStore; HKLM 6")
-    assert level == 0 and line == "shadows: registry Shadows 0 (VirtualStore; HKLM 6), Morrowind.ini Number of Shadows 6: the game's level 0", line
+    line, level = shadow_level_line(0, 6, "HKLM; VirtualStore 6")
+    assert level == 0 and line == "shadows: registry Shadows 0 (HKLM; VirtualStore 6), Morrowind.ini Number of Shadows 6: the game's level 0", line
     assert shadow_level_line(6, 6)[1] == 6 and shadow_level_line(8, 3)[1] == 3
     assert shadow_level_line(None, 6) == ("shadows: registry Shadows missing (HKLM), Morrowind.ini Number of Shadows 6: the game's level missing", None)
     assert shadow_level_line(6, None)[1] is None
