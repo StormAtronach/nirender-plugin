@@ -53,6 +53,95 @@ return function(nirender, spec, name)
         tes3.runLegacyScript({ command = string.format('CenterOnCell "%s"', cell) })
     end
 
+    -- The movement collision and the flying of the player before the first move of a tour; nil outside a tour.
+    local before = nil
+
+    -- The fronts of the NIF test level (D176): the camera place of each stop that the owner set
+    -- with tools/nif_fronts.lua, the accepted ones by cell and id. The copy in the mod
+    -- (tour_fronts.json) is the tour's data; the tool writes MWSE/config/nif_fronts.json.
+    local fronts = nil
+    local function frontOf(ref)
+        if fronts == nil then
+            fronts = {}
+            local data = json.loadfile("mods\\nirender\\tour_fronts")
+            for _, entry in pairs(data and data.fronts or {}) do
+                if entry.status == "accepted" then
+                    fronts[(entry.cell .. "|" .. entry.id):lower()] = entry
+                end
+            end
+        end
+        return fronts[(ref.cell.id .. "|" .. ref.object.id):lower()]
+    end
+
+    local function v3(t)
+        return tes3vector3.new(t[1], t[2], t[3])
+    end
+
+    -- The place of the player and its orientation for a front, as the tool sets them: the camera
+    -- from the front's values in the exhibit's frame (so that it follows the exhibit), and the
+    -- player under the camera by the eye of the front.
+    local function frontPlace(ref, front)
+        local camera, yaw = v3(front.camera.position), front.camera.yaw
+        local rotation = ref.sceneNode and ref.sceneNode.worldTransform.rotation
+        if front["local"] and rotation then
+            camera = ref.position + rotation * v3(front["local"].offset)
+            yaw = ref.orientation.z + front["local"].yaw
+        end
+        local eye = v3(front.camera.position) - v3(front.player.position)
+        return camera - eye, yaw, front.camera.pitch
+    end
+
+    -- The look pitch of the view (radians, positive down), as tools/nif_fronts.lua sets it: the x angle of
+    -- the animation controller's verticalRotation. The player's orientation.x does not move the view.
+    local function setLookPitch(pitch)
+        local controller = tes3.mobilePlayer.animationController
+        if not controller then return end
+        local rotation = tes3matrix33.new()
+        rotation:fromEulerXYZ(pitch, 0, 0)
+        controller.verticalRotation = rotation
+    end
+
+    -- The move of a tour to `ref`, with movement collision off and the player flying, so that
+    -- the player stays at the height of the move: to the front of the stop when it has one,
+    -- else the player south of it, with a level view to the north, at it. Returns the place and
+    -- "front" or "default". `scenario.tourEnd` gives movement collision and flying the values
+    -- they had before the first move.
+    function scenario.tourMove(ref)
+        local mobile = tes3.mobilePlayer
+        if before == nil then
+            before = { collision = mobile.movementCollision, flying = mobile.isFlying }
+            scenario.say("tour: movement collision %s, flying %s; off and on for the tour",
+                tostring(before.collision), tostring(before.flying))
+        end
+        mobile.movementCollision = false
+        mobile.isFlying = true
+        local front = frontOf(ref)
+        local target, yaw, pitch, kind
+        if front then
+            target, yaw, pitch = frontPlace(ref, front)
+            kind = "front"
+        else
+            local at = ref.position
+            target = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
+            yaw, pitch = 0, 0
+            kind = "default"
+        end
+        tes3.player.position = target
+        tes3.player.orientation = tes3vector3.new(0, 0, yaw)
+        setLookPitch(pitch)
+        return target, kind
+    end
+
+    function scenario.tourEnd()
+        if before == nil then return end
+        local mobile = tes3.mobilePlayer
+        mobile.movementCollision = before.collision
+        mobile.isFlying = before.flying == true
+        before = nil
+        scenario.say("tour: movement collision %s, flying %s again", tostring(mobile.movementCollision),
+            tostring(mobile.isFlying))
+    end
+
     -- Puts the player in front of each object of the cell whose id starts with spec.tour, for
     -- spec.tourSeconds each, then calls `done`. A test level shows some effects only from
     -- near: its meshes have level-of-detail nodes. Without spec.tour, or in a cell that has
@@ -73,12 +162,16 @@ return function(nirender, spec, name)
         scenario.say("tour of %d objects in '%s'", #stops, tes3.player.cell.editorName)
         local function stop(index)
             local ref = stops[index]
-            if not ref then return done() end
-            -- South of the object, with the view to the north, at it.
-            local at = ref.position
-            tes3.player.position = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
-            tes3.player.orientation = tes3vector3.new(0, 0, 0)
+            if not ref then
+                scenario.tourEnd()
+                return done()
+            end
+            local target, kind = scenario.tourMove(ref)
             scenario.after(spec.tourSeconds or 1.5, function()
+                -- The player is still at the place of this stop (a step of up to 5 units is allowed).
+                local place = tes3.player.position
+                scenario.say("tour: stop %d %s (%s): move held %s, at %.0f %.0f %.0f, target %.0f %.0f %.0f", index, ref.object.id, kind,
+                    place:distance(target) <= 5 and "yes" or "NO", place.x, place.y, place.z, target.x, target.y, target.z)
                 if each then
                     each(index, ref, function() stop(index + 1) end)
                 else

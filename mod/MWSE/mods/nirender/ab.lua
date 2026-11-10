@@ -133,14 +133,7 @@ return function(nirender, spec)
             for ref in tes3.player.cell:iterateReferences() do
                 local id = ref.object.id:lower()
                 if id:sub(1, #prefix) == prefix and not id:find("tile", 1, true) and not ref.disabled then
-                    local at = ref.position
-                    list[#list + 1] = {
-                        label = ref.object.id,
-                        go = function()
-                            tes3.player.position = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
-                            tes3.player.orientation = tes3vector3.new(0, 0, 0)
-                        end,
-                    }
+                    list[#list + 1] = { label = ref.object.id, go = function() scenario.tourMove(ref) end }
                 end
             end
         else
@@ -169,7 +162,10 @@ return function(nirender, spec)
             say("place '%s': %d views", where, #views)
             local function next_view(i)
                 local view = views[i]
-                if not view then return one_place(index + 1) end
+                if not view then
+                    scenario.tourEnd()
+                    return one_place(index + 1)
+                end
                 view.go()
                 -- The game must draw the new view, and a level-of-detail node must switch.
                 after(1.0, function()
