@@ -279,26 +279,41 @@ def weather_warning(args):
     return "warning: the run has timing steps and the weather is the game's, which can change in the run and move the frame rate: --weather 0 pins it to clear"
 
 
-# The game's registry key (the 32-bit view, where Morrowind.exe reads it).
+# The game's registry key (HKLM, the 32-bit view), and its copy in the user's VirtualStore. The
+# game is a 32-bit program with no manifest and runs non-elevated, so its access to HKLM is
+# virtualized: a value in the VirtualStore wins on a read.
 GAME_REGISTRY_KEY = r"SOFTWARE\Bethesda Softworks\Morrowind"
+VIRTUAL_STORE_KEY = r"Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Bethesda Softworks\Morrowind"
 
 
-def registry_shadows():
-    """The value "Shadows" of the game's registry key, or None when the key or the value is
-    missing. The game writes it back at each exit, so it is one value for every instance on the
-    machine and for the owner's play: a run reads it and never writes it."""
+def read_registry_dword(root, path, view, name="Shadows"):
+    """A REG_DWORD value of a registry key, or None when the key or the value is missing."""
     try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, GAME_REGISTRY_KEY, 0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY) as key:
-            value, kind = winreg.QueryValueEx(key, "Shadows")
+        with winreg.OpenKey(root, path, 0, winreg.KEY_READ | view) as key:
+            value, kind = winreg.QueryValueEx(key, name)
     except OSError:
         return None
     return value if kind == winreg.REG_DWORD else None
 
 
+def registry_shadows(read=read_registry_dword):
+    """The value "Shadows" that the game reads, and where it is: (value, source). The VirtualStore
+    copy first, HKLM when the VirtualStore has no such value; the source names the HKLM value too,
+    as a difference of the two is a fault of its own. value is None when both are missing. The game
+    writes the value back (`NiDX8Application::writeRegistrySettings` 0x4293A0), to the VirtualStore
+    when HKLM is closed to it [I: virtualization]: one value for every instance and for the owner's
+    play. A run reads it and never writes it."""
+    stored = read(winreg.HKEY_CURRENT_USER, VIRTUAL_STORE_KEY, 0)
+    machine = read(winreg.HKEY_LOCAL_MACHINE, GAME_REGISTRY_KEY, winreg.KEY_WOW64_32KEY)
+    if stored is not None:
+        return stored, "VirtualStore; HKLM %s" % ("missing" if machine is None else machine)
+    return machine, "HKLM"
+
+
 def ini_shadows(ini_bytes):
     """"Number of Shadows" of [General] in the bytes of a Morrowind.ini, as GetPrivateProfileIntA
-    reads it: the first such key, the digits at the start of its value, 0 when the key is missing.
-    None when the file cannot be read."""
+    reads it: the first such key, the digits at the start of its value, 0 for a negative value and
+    when the key is missing. None when the file cannot be read."""
     if ini_bytes is None:
         return None
     section = None
@@ -310,11 +325,11 @@ def ini_shadows(ini_bytes):
             name, value = line.split("=", 1)
             if name.strip().lower() == "number of shadows":
                 digits = re.match(r"\s*(-?\d+)", value)
-                return int(digits.group(1)) if digits else 0
+                return max(int(digits.group(1)), 0) if digits else 0
     return 0
 
 
-def shadow_level_line(registry, ini):
+def shadow_level_line(registry, ini, source="HKLM"):
     """The line of a run's start that names the game's real-time shadow level, and the level. The
     game takes the smaller of the registry's "Shadows" and the ini's "Number of Shadows"
     (`NiDX8Application::readRegistrySettingsAndGetProcAddress`, 0x428E92-0x428EC1); with the level 0
@@ -325,7 +340,7 @@ def shadow_level_line(registry, ini):
     def shown(value):
         return "missing" if value is None else str(value)
 
-    return "shadows: registry Shadows %s, Morrowind.ini Number of Shadows %s: the game's level %s" % (shown(registry), shown(ini), shown(level)), level
+    return "shadows: registry Shadows %s (%s), Morrowind.ini Number of Shadows %s: the game's level %s" % (shown(registry), source, shown(ini), shown(level)), level
 
 
 def shadow_problem(args, level, line):
@@ -1103,7 +1118,7 @@ def self_test_check_command():
         # A capture run with the level 0 is refused. The level is the smaller value, so the ini's 0 is
         # enough; without the registry value on this machine the level is unknown and nothing refuses.
         code, text = check("--steps", "exterior,capture")
-        if registry_shadows() is None:
+        if registry_shadows()[0] is None:
             assert code == 0 and "the game's level missing" in text, text
         else:
             assert code != 0 and "real-time shadows off" in text and "Number of Shadows 0" in text, text
@@ -1117,11 +1132,28 @@ def self_test_shadows():
     assert ini_shadows(b"[General]\nMaximum Shadows Per Object=1\n") == 0, "no key: the game's default 0"
     assert ini_shadows(b"[General]\nNumber of Shadows=x\n") == 0
     assert ini_shadows(None) is None, "no file: unknown, not 0"
+    assert ini_shadows(b"[General]\nNumber of Shadows=-1\n") == 0, "GetPrivateProfileIntA gives 0 for a negative value"
 
-    line, level = shadow_level_line(0, 6)
-    assert level == 0 and line == "shadows: registry Shadows 0, Morrowind.ini Number of Shadows 6: the game's level 0", line
+    # The registry: the VirtualStore copy first, HKLM when it has no such value (verdict 73).
+    def reader(stored, machine):
+        def read(root, path, view):
+            if root == winreg.HKEY_CURRENT_USER:
+                assert path == VIRTUAL_STORE_KEY and view == 0, (path, view)
+                return stored
+            assert root == winreg.HKEY_LOCAL_MACHINE and path == GAME_REGISTRY_KEY and view == winreg.KEY_WOW64_32KEY, (root, path, view)
+            return machine
+        return read
+
+    assert registry_shadows(reader(0, 6)) == (0, "VirtualStore; HKLM 6"), "the VirtualStore wins, and the line shows the HKLM value"
+    assert registry_shadows(reader(6, 0)) == (6, "VirtualStore; HKLM 0")
+    assert registry_shadows(reader(6, None)) == (6, "VirtualStore; HKLM missing")
+    assert registry_shadows(reader(None, 3)) == (3, "HKLM"), "no VirtualStore value: HKLM"
+    assert registry_shadows(reader(None, None)) == (None, "HKLM")
+
+    line, level = shadow_level_line(0, 6, "VirtualStore; HKLM 6")
+    assert level == 0 and line == "shadows: registry Shadows 0 (VirtualStore; HKLM 6), Morrowind.ini Number of Shadows 6: the game's level 0", line
     assert shadow_level_line(6, 6)[1] == 6 and shadow_level_line(8, 3)[1] == 3
-    assert shadow_level_line(None, 6) == ("shadows: registry Shadows missing, Morrowind.ini Number of Shadows 6: the game's level missing", None)
+    assert shadow_level_line(None, 6) == ("shadows: registry Shadows missing (HKLM), Morrowind.ini Number of Shadows 6: the game's level missing", None)
     assert shadow_level_line(6, None)[1] is None
 
     def namespace(steps):
@@ -1131,13 +1163,13 @@ def self_test_shadows():
     line, level = shadow_level_line(0, 6)
     for steps in ("exterior,capture", "capture", None, ""):
         problem = shadow_problem(namespace(steps), level, line)
-        assert problem and "registry Shadows 0, Morrowind.ini Number of Shadows 6" in problem and "ask the owner" in problem, (steps, problem)
+        assert problem and "registry Shadows 0 (HKLM), Morrowind.ini Number of Shadows 6" in problem and "ask the owner" in problem, (steps, problem)
     assert shadow_problem(namespace("exterior,shaders"), level, line) is None, "no capture step: no refusal"
     for good in (6, None):
         assert shadow_problem(namespace("exterior,capture"), good, line) is None, good
 
-    registry = registry_shadows()
-    assert registry is None or isinstance(registry, int), registry
+    value, source = registry_shadows()
+    assert (value is None or isinstance(value, int)) and source.startswith(("VirtualStore", "HKLM")), (value, source)
 
 
 def self_test_weather():
@@ -1906,7 +1938,8 @@ def main():
             problem = "the command has faults; nothing started:\n  " + "\n  ".join(enable_faults)
         if not problem:
             problem = config_problem(args, session.harness.MO2_ROOT)
-        shadows, level = shadow_level_line(registry_shadows(), ini_shadows(read_profile_ini()))
+        registry, source = registry_shadows()
+        shadows, level = shadow_level_line(registry, ini_shadows(read_profile_ini()), source)
         if not problem:
             problem = shadow_problem(args, level, shadows)
         if problem:
@@ -1954,7 +1987,8 @@ def main():
         raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(enable_faults))
     for note in enable_notes:
         print("run_own_device: " + note, flush=True)
-    shadows, level = shadow_level_line(registry_shadows(), ini_shadows(read_profile_ini()))
+    registry, source = registry_shadows()
+    shadows, level = shadow_level_line(registry, ini_shadows(read_profile_ini()), source)
     print("run_own_device: " + shadows, flush=True)
     problem = shadow_problem(args, level, shadows)
     if problem:
