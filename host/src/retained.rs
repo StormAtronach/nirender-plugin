@@ -2703,7 +2703,6 @@ impl Player {
         for id in ids {
             let before = entries.len();
             self.retained.view_entries(*id, &mut entries);
-            self.renderer.counts.view_places += 1;
             if entries.len() == before {
                 self.renderer.counts.view_places_empty += 1;
             }
@@ -2713,7 +2712,14 @@ impl Player {
         if entries.is_empty() {
             return;
         }
-        let Some(slot) = self.view_slot(group) else { return };
+        let Some(slot) = self.view_slot(group) else {
+            // Not drawn: the scene has no view, or the slots were full (counted as a view).
+            if self.views.group(group).is_some_and(|g| g.facts.is_none()) {
+                self.renderer.counts.view_places_no_view += ids.len() as u64;
+            }
+            return;
+        };
+        self.renderer.counts.view_places += ids.len() as u64;
         let view = RetainedView {
             scene_slot: slot,
             classes: !0,

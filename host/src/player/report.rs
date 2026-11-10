@@ -84,8 +84,8 @@ impl Player {
             c.walk_places, c.walk_unknown, c.walk_outside, c.walk_late, self.retained.counts.walk_without_place, self.retained.counts.walk_reordered, self.retained.walk.in_two_views
         );
         println!(
-            "views of their own: {} views drawn (a save's picture, a mod's camera), {} places drawn in them, {} of an instance with no slot to draw, {} of an instance not known; {} views not drawn because the scene slots were full; {} views of another camera with the last frame's shade",
-            c.views, c.view_places, c.view_places_empty, c.view_unknown, c.views_dropped, c.view_shade_late
+            "views of their own: {} views drawn (a save's picture, a mod's camera), {} places drawn in them, {} of an instance with no slot to draw, {} not drawn because their scene has no view, {} of an instance not known; {} views not drawn because the scene slots were full; {} views of another camera with the last frame's shade",
+            c.views, c.view_places, c.view_places_empty, c.view_places_no_view, c.view_unknown, c.views_dropped, c.view_shade_late
         );
         println!(
             "view kinds: of the views drawn, {} main (the world camera on a root of its own), {} pictures (a texture), {} of another screen; {} of them have the shade in their additions",
