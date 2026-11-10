@@ -289,6 +289,12 @@ local function setLookPitch(pitch)
     controller.verticalRotation = rotation
 end
 
+-- The yaw of the view in radians: the z angle of the player's scene node, which the camera follows.
+-- tes3.player.orientation.z can differ from it after a placement.
+local function viewYaw()
+    return tes3.player.sceneNode.rotation:toEulerXYZ().z
+end
+
 local function placeCamera(camera, yaw, pitch)
     local eye = eyeHeight()
     tes3.player.position = tes3vector3.new(camera.x, camera.y, camera.z - eye)
@@ -346,7 +352,7 @@ end
 -- The camera now, as an entry of the file.
 local function entryOfNow(ref, status, note)
     local camera = cameraNow()
-    local o = tes3.player.orientation
+    local yaw = viewYaw()
     local rotation = ref.sceneNode and ref.sceneNode.worldTransform.rotation
     local entry = {
         status = status,
@@ -355,12 +361,12 @@ local function entryOfNow(ref, status, note)
         id = ref.object.id,
         cell = ref.cell.id,
         exhibit = { position = vec(ref.position), orientation = vec(ref.orientation), scale = ref.scale },
-        camera = { position = vec(camera), yaw = o.z, pitch = lookPitch(), look = true },
+        camera = { position = vec(camera), yaw = yaw, pitch = lookPitch(), look = true },
         player = { position = vec(tes3.player.position) },
         fov = mge.camera.fov,
     }
     if rotation then
-        entry["local"] = { offset = vec(rotation:transpose() * (camera - ref.position)), yaw = o.z - ref.orientation.z }
+        entry["local"] = { offset = vec(rotation:transpose() * (camera - ref.position)), yaw = yaw - ref.orientation.z }
     end
     return entry
 end
@@ -442,7 +448,7 @@ local function stepMove(kind, sign, small)
     if not ref then return end
     local size = STEP[kind][small and 2 or 1] * sign
     local camera = cameraNow()
-    local yaw, pitch = tes3.player.orientation.z, lookPitch()
+    local yaw, pitch = viewYaw(), lookPitch()
     local c = centre(ref)
     if kind == "distance" then
         local dx, dy = camera.x - c.x, camera.y - c.y
@@ -511,11 +517,10 @@ local function hudText()
             local margin = math.asin(math.min(1, radius / distance))
             seen = (angle - margin) < math.rad(mge.camera.fov / 2) and "in view" or "OUT OF VIEW"
         end
-        local o = tes3.player.orientation
         lines[#lines + 1] = string.format("exhibit at %.0f %.0f %.0f yaw %.0f   bound radius %.0f   distance %.0f   %s",
             ref.position.x, ref.position.y, ref.position.z, math.deg(ref.orientation.z) % 360, radius, distance, seen)
         lines[#lines + 1] = string.format("camera at %.0f %.0f %.0f yaw %.1f pitch %.1f   FOV %.2f", camera.x, camera.y, camera.z,
-            math.deg(o.z) % 360, math.deg(lookPitch()), mge.camera.fov)
+            math.deg(viewYaw()) % 360, math.deg(lookPitch()), mge.camera.fov)
     else
         lines[#lines + 1] = "the exhibit is not loaded here (Num6/Num4 go to it)"
     end
