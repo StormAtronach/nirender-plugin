@@ -53,8 +53,8 @@ return function(nirender, spec, name)
         tes3.runLegacyScript({ command = string.format('CenterOnCell "%s"', cell) })
     end
 
-    -- The movement collision of the player before the first move of a tour; nil outside a tour.
-    local collision_before = nil
+    -- The movement collision and the flying of the player before the first move of a tour; nil outside a tour.
+    local before = nil
 
     -- The fronts of the NIF test level (D176): the camera place of each stop that the owner set
     -- with tools/nif_fronts.lua, the accepted ones by cell and id. The copy in the mod
@@ -101,16 +101,20 @@ return function(nirender, spec, name)
         controller.verticalRotation = rotation
     end
 
-    -- The move of a tour to `ref`, with movement collision off: to the front of the stop when
-    -- it has one, else the player south of it, with a level view to the north, at it. Returns
-    -- the place and "front" or "default". `scenario.tourEnd` gives movement collision the value
-    -- it had before the first move.
+    -- The move of a tour to `ref`, with movement collision off and the player flying, so that
+    -- the player stays at the height of the move: to the front of the stop when it has one,
+    -- else the player south of it, with a level view to the north, at it. Returns the place and
+    -- "front" or "default". `scenario.tourEnd` gives movement collision and flying the values
+    -- they had before the first move.
     function scenario.tourMove(ref)
-        if collision_before == nil then
-            collision_before = tes3.mobilePlayer.movementCollision
-            scenario.say("tour: movement collision %s, off for the tour", tostring(collision_before))
+        local mobile = tes3.mobilePlayer
+        if before == nil then
+            before = { collision = mobile.movementCollision, flying = mobile.isFlying }
+            scenario.say("tour: movement collision %s, flying %s; off and on for the tour",
+                tostring(before.collision), tostring(before.flying))
         end
-        tes3.mobilePlayer.movementCollision = false
+        mobile.movementCollision = false
+        mobile.isFlying = true
         local front = frontOf(ref)
         local target, yaw, pitch, kind
         if front then
@@ -129,10 +133,13 @@ return function(nirender, spec, name)
     end
 
     function scenario.tourEnd()
-        if collision_before == nil then return end
-        tes3.mobilePlayer.movementCollision = collision_before
-        collision_before = nil
-        scenario.say("tour: movement collision %s again", tostring(tes3.mobilePlayer.movementCollision))
+        if before == nil then return end
+        local mobile = tes3.mobilePlayer
+        mobile.movementCollision = before.collision
+        mobile.isFlying = before.flying == true
+        before = nil
+        scenario.say("tour: movement collision %s, flying %s again", tostring(mobile.movementCollision),
+            tostring(mobile.isFlying))
     end
 
     -- Puts the player in front of each object of the cell whose id starts with spec.tour, for
