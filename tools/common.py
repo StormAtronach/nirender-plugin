@@ -88,19 +88,25 @@ def same_commit(one, other):
     return bool(one) and bool(other) and (one.startswith(other) or other.startswith(one))
 
 
-def parts_problems(build, plugin_head, mge_head):
-    """Why the parts of `build` are not one build of the two repositories at `plugin_head` and `mge_head`, as texts; an
-    empty list when they are. The plugin and the host crate come from nirender-plugin, numidium and d3d8.dll from
-    render-link. A "-dirty" part does not name its commit, so it is a problem too."""
+def parts_problems(build, plugin_commit=None, mge_commit=None):
+    """The commits of nirender-plugin and render-link that the parts of `build` are one build of, as (plugin, mge), and why
+    they are not, as texts (an empty list when they are). The plugin and the host crate in numidium.exe must name one
+    commit of nirender-plugin, numidium and d3d8.dll one of render-link. A "-dirty" part names no commit. With
+    `plugin_commit` or `mge_commit` (the commits that a merge step checks), the parts must name those; not a HEAD, which
+    a merge can move while a build waits."""
     commits, problems = part_ids(build)
-    for programs, head, repo in ((("nirender", "nirender-host"), plugin_head, "nirender-plugin"), (("numidium", "MGE-XE G7 Fork"), mge_head, "render-link")):
-        for program in programs:
-            commit = commits.get(program)
-            if commit is None:
-                continue
-            if commit.endswith("-dirty") or not same_commit(commit, head):
-                problems.append("%s is %s, but %s is at %s" % (program, commit, repo, head))
-    return problems
+    found = []
+    for programs, wanted, repo in ((("nirender", "nirender-host"), plugin_commit, "nirender-plugin"), (("numidium", "MGE-XE G7 Fork"), mge_commit, "render-link")):
+        named = [(program, commits[program]) for program in programs if program in commits]
+        for program, commit in named:
+            if commit.endswith("-dirty"):
+                problems.append("%s is %s: a build of a work tree with changes names no commit" % (program, commit))
+        if len(named) == 2 and not same_commit(named[0][1], named[1][1]):
+            problems.append("%s is %s, but %s is %s: two commits of %s" % (named[0] + named[1] + (repo,)))
+        elif wanted and named and not same_commit(named[0][1], wanted):
+            problems.append("%s is %s, but the commit of %s under test is %s" % (named[0] + (repo, wanted)))
+        found.append(named[0][1] if named else None)
+    return tuple(found), problems
 
 
 # The exit codes of a helper that refuses a stream: 10 the stream format of the plugin, 11 the extension format of
@@ -126,7 +132,7 @@ def capture_format_line(capture, code, output):
         return "%s: %s is refused by the helper of the build under test (exit code %d); its parts may match: the capture is from another build" % (CAPTURE_FORMAT, capture, code)
     wrote = "the %s format %s" % (writer.group(2), writer.group(3)) if writer.group(3) else "no format number"
     newer = writer.group(3) is not None and int(writer.group(3)) > int(reader.group(2))
-    advice = "the build under test is older than the capture" if newer else "make the capture again with a build of this format; the build under test is not at fault"
+    advice = "the build under test is older than the capture" if newer else "make the capture again with this build, if the format change of this build is intended"
     return "%s: %s was made by %s, which writes %s; the build under test reads the %s format %s: %s" % (
         CAPTURE_FORMAT, capture, writer.group(1), wrote, reader.group(1), reader.group(2), advice)
 
@@ -326,21 +332,26 @@ def parts_test():
         # One build of both repositories: the parts of f243.
         fake_parts(root)
         assert part_ids(root) == ({"nirender": "79c752d", "nirender-host": "79c752d", "numidium": "c610f3b", "MGE-XE G7 Fork": "c610f3b"}, []), part_ids(root)
-        assert parts_problems(root, "79c752d", "c610f3b") == []
-        assert parts_problems(root, "79c752d1234", "c610f3b") == [], "a longer hash of the same commit"
-        # A plugin of an older commit, as the brief of 79c752d feared.
+        assert parts_problems(root) == (("79c752d", "c610f3b"), [])
+        assert parts_problems(root, "79c752d", "c610f3b") == (("79c752d", "c610f3b"), [])
+        assert parts_problems(root, "79c752d1234", "c610f3b")[1] == [], "a longer hash of the same commit"
+        # The commits under test, not a HEAD: master moved on to 319e3c6 while this build of 79c752d waited.
+        assert parts_problems(root, "319e3c6", "c610f3b")[1] == ["nirender is 79c752d, but the commit of nirender-plugin under test is 319e3c6"]
+        # A plugin of an older commit than its helper, as the brief of 79c752d feared: refused also with no commits given.
         fake_parts(root, plugin="87f7049")
-        problems = parts_problems(root, "79c752d", "c610f3b")
-        assert problems == ["nirender is 87f7049, but nirender-plugin is at 79c752d"], problems
-        # A d3d8.dll of another commit, and a dirty one.
-        fake_parts(root, d3d8="99c8b62-dirty")
-        problems = parts_problems(root, "79c752d", "c610f3b")
-        assert problems == ["MGE-XE G7 Fork is 99c8b62-dirty, but render-link is at c610f3b"], problems
+        assert parts_problems(root)[1] == ["nirender is 87f7049, but nirender-host is 79c752d: two commits of nirender-plugin"], parts_problems(root)
+        # A d3d8.dll of another commit than numidium, and a dirty one.
+        fake_parts(root, d3d8="99c8b62")
+        assert parts_problems(root)[1] == ["numidium is c610f3b, but MGE-XE G7 Fork is 99c8b62: two commits of render-link"], parts_problems(root)
+        fake_parts(root, mge="c610f3b-dirty")
+        assert parts_problems(root)[1] == ["numidium is c610f3b-dirty: a build of a work tree with changes names no commit",
+                                           "MGE-XE G7 Fork is c610f3b-dirty: a build of a work tree with changes names no commit"], parts_problems(root)
         # A part with no build id, and a missing part.
+        fake_parts(root)
         with open(os.path.join(root, "d3d8.dll"), "wb") as file:
             file.write(b"MZ no id")
         os.remove(os.path.join(root, "numidium.exe"))
-        problems = parts_problems(root, "79c752d", "c610f3b")
+        problems = parts_problems(root, "79c752d", "c610f3b")[1]
         assert problems == ["numidium.exe is not in the build", "d3d8.dll holds no build id of MGE-XE G7 Fork"], problems
     # The refusal of a replay of narsis.nircap (format 8) by the helper of 79c752d (format 9): merge step of 79c752d.
     output = ("The parts of the wgpu renderer of MGE XE do not match.\n"
@@ -349,7 +360,7 @@ def parts_test():
               "Install akulakhan.dll, numidium.exe and d3d8.dll from one archive.\n" + CAPTURE_AGAIN + "\n")
     line = capture_format_line("narsis.nircap", 10, output)
     assert line.startswith(CAPTURE_FORMAT + ": narsis.nircap was made by akulakhan.dll (nirender v0.3.6 87f7049), which writes the stream format 8;"), line
-    assert "reads the stream format 9: make the capture again" in line and "not at fault" in line, line
+    assert "reads the stream format 9: make the capture again with this build, if the format change of this build is intended" in line, line
     assert capture_format_in("x\n  " + line + "\ny") == line
     # The grass capture of instance_ab: d3d8.dll of extension format 1, the base helper reads 2.
     output = ("d3d8.dll (MGE-XE G7 Fork v0.21.0 99c8b62-dirty) writes the extension format 1.\n"

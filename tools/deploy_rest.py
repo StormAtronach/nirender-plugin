@@ -1,6 +1,6 @@
 """The resting build: puts a build of `cargo xtask dist` into both test installs, and keeps a copy of it.
 
-    python -I tools/deploy_rest.py --build <dist-staging> --plugin-repo DIR --mge-repo DIR [--tag NAME] [--no-keep] [--dry-run]
+    python -I tools/deploy_rest.py --build <dist-staging> [--plugin-commit SHA] [--mge-commit SHA] [--tag NAME] [--no-keep] [--dry-run]
     python -I tools/deploy_rest.py --self-test    # the tests: scratch installs, no game, nothing of the real installs
 
 The merge step runs this as the stage "deploy rest" (the owner's D193: the test installs always hold the latest build).
@@ -22,7 +22,9 @@ shows up.
 It refuses, and writes nothing, while Morrowind, numidium or Mod Organizer runs, and it does not wait: exit code 3 and a line
 that starts with "REFUSED". Any other fault is exit code 1. Before the first write it also checks that every source
 exists, that each install has both mod folders (it makes no mod folder), and that the build ids in akulakhan.dll,
-numidium.exe and d3d8.dll name the HEADs of --plugin-repo and --mge-repo, with no "-dirty" (the dry run too).
+numidium.exe and d3d8.dll are one build (the dry run too): the plugin and the host crate of one commit of nirender-plugin,
+numidium and d3d8.dll of one commit of render-link, no "-dirty", and the commits of --plugin-commit and --mge-commit
+when given (the merge step gives the commits it checks). WHAT.txt names the commits of the parts.
 
 Unless --no-keep, it keeps the build as the next set folder f<N> of SETS (E:\\nirender-keep\\mgebuilds) with no pdb, the
 plugin beside it as akulakhan-<commit>.dll, and a one-line WHAT.txt: the same shape as the play sets of make_play_set.py.
@@ -254,13 +256,6 @@ def new_set_folder(sets):
         return name
 
 
-def commit_of(repo):
-    done = subprocess.run(["git", "-C", repo, "rev-parse", "--short=7", "HEAD"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
-    if done.returncode != 0:
-        raise DeployError("git rev-parse HEAD in %s: %s" % (repo, done.stderr.strip()))
-    return done.stdout.strip()
-
-
 def what_line(name, plugin_commit, mge_commit, digests, installs, stamp=None):
     """The one line of WHAT.txt."""
     stamp = stamp or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -284,21 +279,21 @@ def keep_build(build, folder, plugin_commit):
         raise DeployError("the kept copy holds a pdb: %s" % pdbs[0])
 
 
-def check_parts(build, plugin_commit, mge_commit):
-    """The plugin, the helper and d3d8.dll must be one build of the two repositories: a mismatched pair in an install shows
-    only as the helper's refusal at the next game start."""
-    problems = parts_problems(build, plugin_commit, mge_commit)
+def check_parts(build, plugin_commit=None, mge_commit=None):
+    """The plugin, the helper and d3d8.dll must be one build: a mismatched pair in an install shows only as the helper's
+    refusal at the next game start. Returns the commits of the parts, (plugin, mge)."""
+    commits, problems = parts_problems(build, plugin_commit, mge_commit)
     if problems:
-        raise DeployError("the parts of the build are not one build of nirender-plugin %s and render-link %s: %s" % (plugin_commit, mge_commit, "; ".join(problems)))
+        raise DeployError("the parts are not one build: %s" % "; ".join(problems))
+    return commits
 
 
-def run(build, installs, plugin_repo, mge_repo, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile, commit=commit_of):
+def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile):
     """The whole deploy. Returns the exit code."""
     items, left_out = plan_of(files_below(build))
     check_sources(build, items)
     check_installs(installs)
-    plugin_commit, mge_commit = commit(plugin_repo), commit(mge_repo)
-    check_parts(build, plugin_commit, mge_commit)
+    plugin_commit, mge_commit = check_parts(build, plugin_commit, mge_commit)
     say("parts: one build of nirender-plugin %s and render-link %s" % (plugin_commit, mge_commit))
     digests = [(label, md5_of(os.path.join(build, *path.split("/")))) for label, path in NAMED_DIGESTS]
     if dry_run:
@@ -361,7 +356,7 @@ def fake_build(folder, text="v1"):
     write(os.path.join(folder, *NIRENDER_PLUGIN.split("/")), text + " nirender v0.3.6 %s" % FAKE_HEADS["plugin"])
 
 
-# The heads of the two repositories in the tests: `run(..., "plugin", "mge", commit=FAKE_HEADS.get)`.
+# The commits under test in the tests: `run(build, installs, FAKE_HEADS["plugin"], FAKE_HEADS["mge"], ...)`.
 FAKE_HEADS = {"plugin": "79c752d", "mge": "c610f3b"}
 
 
@@ -460,14 +455,14 @@ def self_test():
         fresh = {"C": fake_install(os.path.join(root, "C"), "MGE C", old="old")}
         before = tree_of(fresh["C"]["root"])
         try:
-            run(build, fresh, "plugin", "mge", tag="r", keep=False, tasklist=lambda: listing, commit=FAKE_HEADS.get)
+            run(build, fresh, FAKE_HEADS["plugin"], FAKE_HEADS["mge"], tag="r", keep=False, tasklist=lambda: listing)
             raise AssertionError("a running game did not stop the deploy")
         except Refused as error:
             assert str(error).startswith("REFUSED: ") and "Morrowind.exe" in str(error), error
         assert tree_of(fresh["C"]["root"]) == before, "a refused deploy wrote"
         os.remove(os.path.join(build, "numidium.exe"))
         try:
-            run(build, fresh, "plugin", "mge", tag="r", keep=False, tasklist=quiet, commit=FAKE_HEADS.get)
+            run(build, fresh, FAKE_HEADS["plugin"], FAKE_HEADS["mge"], tag="r", keep=False, tasklist=quiet)
             raise AssertionError("a build without numidium.exe was deployed")
         except DeployError as error:
             assert "numidium.exe" in str(error), error
@@ -478,12 +473,18 @@ def self_test():
         write(os.path.join(build, *NIRENDER_PLUGIN.split("/")), "v6 nirender v0.3.6 87f7049")
         for dry in (False, True):
             try:
-                run(build, fresh, "plugin", "mge", tag="r", keep=False, dry_run=dry, tasklist=quiet, commit=FAKE_HEADS.get)
+                run(build, fresh, FAKE_HEADS["plugin"], FAKE_HEADS["mge"], tag="r", keep=False, dry_run=dry, tasklist=quiet)
                 raise AssertionError("a build of mismatched parts was deployed (dry run %s)" % dry)
             except DeployError as error:
-                assert "not one build" in str(error) and "nirender is 87f7049, but nirender-plugin is at 79c752d" in str(error), error
+                assert "not one build" in str(error) and "nirender is 87f7049, but nirender-host is 79c752d" in str(error), error
         assert tree_of(fresh["C"]["root"]) == before, "a mismatched build wrote"
         fake_build(build, "v6")
+        # Parts of one build, but not of the commit under test (a merge step of 319e3c6 with a build of 79c752d): refused.
+        try:
+            run(build, fresh, "319e3c6", FAKE_HEADS["mge"], tag="r", keep=False, dry_run=True, tasklist=quiet)
+            raise AssertionError("a build of another commit than the one under test passed")
+        except DeployError as error:
+            assert "the commit of nirender-plugin under test is 319e3c6" in str(error), error
         no_mod ={"D": {"root": os.path.join(root, "D"), "mge_mod": "MGE D", "nirender_mod": "nirender"}}
         try:
             check_installs(no_mod)
@@ -494,14 +495,15 @@ def self_test():
 
         # The dry run writes nothing.
         before = tree_of(root)
-        assert run(build, fresh, "plugin", "mge", tag="r", keep=False, dry_run=True, tasklist=quiet, commit=FAKE_HEADS.get) == 0
+        assert run(build, fresh, FAKE_HEADS["plugin"], FAKE_HEADS["mge"], tag="r", keep=False, dry_run=True, tasklist=quiet) == 0
         assert tree_of(root) == before, "the dry run wrote"
 
         # A whole deploy with a kept set, into two installs: WHAT.txt goes into the set folder, not into a folder named
         # after the last install (the merge step of 79c752d: 'mgebuilds\\Outlander-test\\WHAT.txt').
         whole_sets = os.path.join(root, "whole-sets")
         two = {"E": fake_install(os.path.join(root, "E"), "MGE E"), "F": fake_install(os.path.join(root, "F"), "MGE F")}
-        assert run(build, two, "plugin", "mge", keep=True, sets=whole_sets, tasklist=quiet, commit=FAKE_HEADS.get) == 0
+        # With no commits given, the parts' own commits name the build.
+        assert run(build, two, keep=True, sets=whole_sets, tasklist=quiet) == 0
         assert sorted(os.listdir(whole_sets)) == ["f1"], os.listdir(whole_sets)
         what = open(os.path.join(whole_sets, "f1", "WHAT.txt"), encoding="ascii").read()
         assert what.startswith("f1 ") and "nirender 79c752d, render-link c610f3b" in what and "deployed to E, F" in what, what
@@ -526,8 +528,8 @@ def self_test():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--build", help="the folder target/dist-staging of render-link")
-    parser.add_argument("--plugin-repo", help="the tree of nirender-plugin: its HEAD names the plugin in WHAT.txt")
-    parser.add_argument("--mge-repo", help="the tree of render-link: its HEAD names the helper in WHAT.txt")
+    parser.add_argument("--plugin-commit", help="the commit of nirender-plugin that the plugin and the host crate must be (the merge step's)")
+    parser.add_argument("--mge-commit", help="the commit of render-link that numidium and d3d8.dll must be (the merge step's)")
     parser.add_argument("--tag", help="the tag of the backups; by default the name of the kept set, else a time stamp")
     parser.add_argument("--no-keep", action="store_true", help="keep no copy in %s" % SETS)
     parser.add_argument("--dry-run", action="store_true", help="print what a deploy would copy; write nothing")
@@ -537,10 +539,10 @@ def main():
     if args.self_test:
         self_test()
         return 0
-    if not args.build or not args.plugin_repo or not args.mge_repo:
-        parser.error("it needs --build, --plugin-repo and --mge-repo")
+    if not args.build:
+        parser.error("it needs --build")
     try:
-        return run(os.path.abspath(args.build), REST_INSTALLS, args.plugin_repo, args.mge_repo, args.tag, not args.no_keep, args.dry_run, args.sets)
+        return run(os.path.abspath(args.build), REST_INSTALLS, args.plugin_commit, args.mge_commit, args.tag, not args.no_keep, args.dry_run, args.sets)
     except Refused as error:
         say(str(error))
         return REFUSED_EXIT

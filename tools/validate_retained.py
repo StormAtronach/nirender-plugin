@@ -204,7 +204,8 @@ def ran(result, tool, accepting=False):
     other_format = capture_format_in(output)
     if other_format and not failed:
         CAPTURE_FORMATS.append(other_format)
-        return check(False, "%s: %s" % (tool, other_format))
+        print("  NOT RUN %s: %s" % (tool, other_format), flush=True)
+        return False
     return check(False, "%s ended with the code %d%s" % (tool, code, ": the accepted folder holds a mix now, accept again" if accepting else ""))
 
 
@@ -327,7 +328,7 @@ def self_test():
     with contextlib.redirect_stdout(io.StringIO()) as printed:
         assert not ran((10, "The parts of the wgpu renderer of MGE XE do not match.\nmake the capture again with this build\n" + stale + "\n"), "replay.py")
         assert baseline_failure_code() == NOT_RUN_EXIT
-    assert "FAIL replay.py: " + stale in printed.getvalue() and "ended with the code" not in printed.getvalue(), printed.getvalue()
+    assert "NOT RUN replay.py: " + stale in printed.getvalue() and "FAIL" not in printed.getvalue(), printed.getvalue()
     assert ("\nNOT RUN baseline: " + stale) in printed.getvalue(), printed.getvalue()
     del CAPTURE_FORMATS[:]
     # A build folder with the helper only (a cargo target folder) lacks the Data Files.

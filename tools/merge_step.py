@@ -220,10 +220,19 @@ def deployed_mwse_dlls(deploys=None):
     return list(deploys.items())
 
 
-def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None):
+def under_test(kind, commit, sibling_commit):
+    """The commits under test, {"plugin": sha, "mge": sha}, from the commit of the repo of `kind` and the sibling's commit
+    at the start of the round; None without a sibling commit."""
+    if not kind or not sibling_commit:
+        return None
+    return {kind: commit, "mge" if kind == "plugin" else "plugin": sibling_commit}
+
+
+def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None, commits=None):
     """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `tips` are the
     commits of the base build, {"plugin": sha, "mge": sha}, and `base_folder` holds it: with both, the gate is followed by
-    the A/B stages. `mwse_dlls` are the (instance, MWSE.dll) of the "mwse sites" stages, by default those deployed now."""
+    the A/B stages. `mwse_dlls` are the (instance, MWSE.dll) of the "mwse sites" stages, by default those deployed now.
+    `commits` are the commits under test, {"plugin": sha, "mge": sha}: the parts of the deployed build must be those."""
     python = sys.executable
     plugin = repo if kind == "plugin" else sibling_of(kind, repo)
     mge = repo if kind == "mge" else sibling_of(kind, repo)
@@ -250,7 +259,9 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     if touches(paths, GATE_PATHS[kind]):
         stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
         staging = os.path.join(mge, "target", "dist-staging")
-        stages.append((DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--build", staging, "--plugin-repo", plugin, "--mge-repo", mge)))
+        # The commits under test, not the HEADs at the time of the stage: a merge can move a HEAD during the round.
+        commit_args = ["--plugin-commit", commits["plugin"], "--mge-commit", commits["mge"]] if commits else []
+        stages.append((DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--build", staging, *commit_args)))
         stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", staging, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
         if tips and base_folder:
             stages.append((BASE_STAGE, plugin, tool("instance_ab.py", "base-build", "--plugin-repo", plugin, "--mge-repo", mge, "--plugin-tip", tips["plugin"], "--mge-tip", tips["mge"], "--out", base_folder)))
@@ -1206,6 +1217,13 @@ def self_test():
         assert run[run.index("--base-build") + 1] == os.path.join(kept, "build") and run[run.index("--now-build") + 1] == os.path.join(mge, "target", "dist-staging")
         assert run[run.index("--baseline") + 1] == BASELINE and not run[run.index("--out") + 1].startswith(BASELINE)
         assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, kept)] == base, "no gate, no A/B stage"
+        # deploy rest gets the commits under test (the tree's and the sibling's at the start of the round), not HEADs.
+        assert under_test("plugin", "a" * 40, "b" * 40) == {"plugin": "a" * 40, "mge": "b" * 40}
+        assert under_test("mge", "b" * 40, "a" * 40) == {"plugin": "a" * 40, "mge": "b" * 40}
+        assert under_test("plugin", "a" * 40, None) is None and under_test("", "a", "b") is None
+        deploy = {name: command for name, _, command in stages_for("plugin", plugin, ["host/src/retained.rs"], commits=under_test("plugin", "a" * 40, "b" * 40))}[DEPLOY_STAGE]
+        assert deploy[deploy.index("--plugin-commit") + 1] == "a" * 40 and deploy[deploy.index("--mge-commit") + 1] == "b" * 40, deploy
+        assert "--plugin-repo" not in deploy and "--plugin-commit" not in by_name[DEPLOY_STAGE][1], by_name[DEPLOY_STAGE][1]
         assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips)][-1] == "replay gate", "no folder, no A/B stage"
         assert base_folder_of("feature/wgpu-renderer") == os.path.join(LOG_FOLDER, "base-feature-wgpu-renderer") and base_folder_of("master").endswith("base-master")
         assert tips_for("plugin", os.path.join(root, "alone", PLUGIN_NAME), "b")[0] is None
@@ -1991,14 +2009,15 @@ def main():
         return 1
     paths = git(repo, "diff", "--name-only", base, commit).splitlines()
     baseline = os.path.abspath(args.baseline)
-    stages = stages_for(kind, repo, paths, baseline) if kind else []
+    commits = under_test(kind, commit, resolve(sibling_of(kind, repo), "HEAD") if kind and os.path.isdir(sibling_of(kind, repo)) else None)
+    stages = stages_for(kind, repo, paths, baseline, commits=commits) if kind else []
     tips = None
     if kind and any(name == "replay gate" for name, _, _ in stages):
         tips, why = tips_for(kind, repo, base, args.sibling_base) if branch else (None, "the tree is on no branch, and the kept base build is one for each branch")
         if why:
             say("FAIL the tree: %s" % why)
             return 1
-        stages = stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch))
+        stages = stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits)
     sibling = sibling_of(kind, repo) if kind else ""
     has_sibling = os.path.isdir(sibling)
     sibling_changed = has_sibling and bool(git(sibling, "status", "--porcelain", "--untracked-files=no"))
