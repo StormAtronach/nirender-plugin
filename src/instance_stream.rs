@@ -298,6 +298,8 @@ struct Tables {
     scratch_bones: Vec<u8>,
     bone_records: u64,
     bone_failures: u64,
+    /// The place records left out because the bones of the instance failed in that draw.
+    places_without_bones: u64,
     /// The displays of skinned instances whose own ambient light or fog differed from the
     /// scene's values (the table draws them with the scene's).
     skin_scene_mixed: u64,
@@ -474,6 +476,7 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         scratch_bones: Vec::new(),
         bone_records: 0,
         bone_failures: 0,
+        places_without_bones: 0,
         skin_scene_mixed: 0,
         light_noted: Vec::new(),
         scratch_entry: [0; E::SIZE / 4],
@@ -1544,22 +1547,13 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
             capture::instance_lights(id, lights, ambient);
             t.light_records += 1;
         }
-        // A skinned instance whose bones cannot be made does not join the main view's list
-        // (`send_bones`).
-        if !skinned || send_bones(mt, t, shape, id) {
+        // A skinned instance whose bones cannot be made joins no main view's list (`send_bones`)
+        // and writes no place: the helper draws it in no view of this frame.
+        let posed = !skinned || send_bones(mt, t, shape, id);
+        if posed {
             note_display(t, shape);
         }
-        // In a scene of `Route::Places` every displayed shape has its place, also at this draw
-        // (the first one, or one after a change), which does not go through `skipped_display`.
-        if t.scene_route == Route::Places {
-            if queued {
-                capture::instance_queued(id);
-                QUEUE_COUNTS.get(mt)[1] += 1;
-            } else {
-                capture::instance_walk(id);
-                *VIEW_PLACES.get(mt) += 1;
-            }
-        }
+        write_place(mt, t, id, posed, queued);
         return true;
     }
     capture::instance_draw(id, ambient, effects, fog, lights, bones, bone_count, queued);
@@ -1567,6 +1561,25 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         t.particle_draws += 1;
     }
     true
+}
+
+/// The place of a table draw in a scene of [`Route::Places`]: every displayed shape has its
+/// place, also at this draw (the first one, or one after a change), which does not go through
+/// `skipped_display`. A skinned instance whose bones failed (`posed` false) writes none, and is
+/// counted.
+unsafe fn write_place(mt: &MainThread, t: &mut Tables, id: u32, posed: bool, queued: bool) {
+    if t.scene_route != Route::Places {
+        return;
+    }
+    if !posed {
+        t.places_without_bones += 1;
+    } else if queued {
+        capture::instance_queued(id);
+        QUEUE_COUNTS.get(mt)[1] += 1;
+    } else {
+        capture::instance_walk(id);
+        *VIEW_PLACES.get(mt) += 1;
+    }
 }
 
 /// A move of a sent instance goes as `INSTANCE_MOVE`; with `NIRENDER_COMPACT_MOVES=check` also
@@ -2609,13 +2622,14 @@ pub unsafe fn report(mt: &MainThread) -> String {
     let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
     let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
     format!(
-        "instances: mode {}, {} retained ({} live, {} skinned, {} bone records, {} left out of the main view's list with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records",
+        "instances: mode {}, {} retained ({} live, {} skinned, {} bone records, {} left out of the main view's list with no bones, {} places left out with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records",
         t.mode().name(),
         t.instances.len(),
         t.instances.values().filter(|i| i.live).count(),
         t.instances.values().filter(|i| i.skinned).count(),
         t.bone_records,
         t.bone_failures,
+        t.places_without_bones,
         t.skin_scene_mixed,
         t.rejected.len(),
         rejected.join(", "),
@@ -3305,6 +3319,31 @@ mod tests {
             assert_ne!(rd::<u16>(a, FLAGS) & RETAINED_BIT, 0);
             assert!(listed_ids(&mt).is_empty());
             assert_eq!(take_shown_list(&mt), None);
+            test.end(&mt);
+            capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+        }
+    }
+
+    /// In a scene of [`Route::Places`] a draw whose bones failed writes no place and is counted;
+    /// a posed draw writes its place. (The bones themselves need the game's renderer.)
+    #[test]
+    fn a_draw_with_failed_bones_writes_no_place() {
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let test = ListTest::new(&mt, &[79]);
+            scene_begin(&mt, SCENE_WORLD, 0, Route::Places, 2);
+            let places = *VIEW_PLACES.get(&mt);
+            let left_out = tables(&mt).places_without_bones;
+            write_place(&mt, &mut tables(&mt), 79, false, false);
+            assert_eq!(*VIEW_PLACES.get(&mt), places);
+            assert_eq!(tables(&mt).places_without_bones, left_out + 1);
+            write_place(&mt, &mut tables(&mt), 79, true, false);
+            assert_eq!(*VIEW_PLACES.get(&mt), places + 1);
+            assert_eq!(tables(&mt).places_without_bones, left_out + 1);
             test.end(&mt);
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
