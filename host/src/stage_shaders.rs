@@ -2,9 +2,12 @@
 //! shader's `fs` interprets the Direct3D stages of a draw for each pixel: it loads the codes
 //! of each stage from the draw's record and switches on them. A stage key holds the codes that
 //! `fs` switches on (the stage count, the colour and alpha operations and their arguments, the
-//! alpha test function). For each key the helper makes a fragment shader from the world
-//! shader's own text, with those codes as constants and the reads of the stages past the count
-//! left out. The arithmetic is the same; the switches and the record loads go.
+//! alpha test function), and the facts of the draw that choose the branches of `fs` and of the
+//! extension's shade (the bits of `counts.w` in [`SHADE_BITS`], the lighting and normal flags,
+//! and whether the draw takes the scene's values). For each key the helper makes a fragment
+//! shader from the world shader's own text, with those codes and facts as constants and the
+//! reads of the stages past the count left out. The arithmetic is the same; the switches, the
+//! branches that the key's draws cannot take and the record loads go.
 //!
 //! The world shader stays as the uber-shader: it draws a key until that key's pipeline is made,
 //! when a pipeline fails, past the cap on the keys, and with `MGE_XE_STAGE_SHADERS=0`. It is
@@ -14,10 +17,10 @@
 //! of the uber-shader and not a hitch [I: wgpu's own locks can still hold the frame]. A
 //! replay makes them at once, so that its frames are the same from the first. The pipelines
 //! of a live session go to a list in the user's folder (`%LOCALAPPDATA%\MGE XE`, never the
-//! game folder), one file for each world shader. The next start makes them in its first
-//! frames, behind the keys of first use, and the list's keys take at most half of the cap. A
-//! list that cannot be read, that a build with another world shader wrote, or that cannot be
-//! written, leaves each key to its first use, with a line in the log.
+//! game folder), one file for each world shader and format of the list. The next start makes
+//! them in its first frames, behind the keys of first use, and the list's keys take at most half
+//! of the cap. A list that cannot be read, that a build with another world shader wrote, or that
+//! cannot be written, leaves each key to its first use, with a line in the log.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -29,8 +32,10 @@ use crate::data::{DrawData, PipelineKey};
 /// The most stage keys of a session; a draw of a key past them takes the uber-shader.
 pub(crate) const MAX_KEYS: usize = 256;
 const STAGES: usize = 6;
-/// The first line of the list, then the hash of the world shader's text.
-const LIST_HEADER: &str = "numidium stage pipelines 1";
+/// The first line of the list, then [`LIST_FORMAT`] and the hash of the world shader's text.
+const LIST_HEADER: &str = "numidium stage pipelines";
+/// The format of the list's lines; it is in the list's file name too ([`list_name`]).
+const LIST_FORMAT: u32 = 2;
 /// The frames between two writes of a changed list.
 const SAVE_FRAMES: u32 = 600;
 /// The list's pipelines go to the thread while it has fewer jobs than this, so that a key of
@@ -38,6 +43,13 @@ const SAVE_FRAMES: u32 = 600;
 const LIST_BATCH: usize = 4;
 /// The stage keys that the list may take; the rest of the cap is for the keys of first use.
 const LIST_KEYS: usize = MAX_KEYS / 2;
+/// The words of a stage key in the list.
+const KEY_WORDS: usize = 6 + STAGES * 7;
+/// The bits of `counts.w` in a stage key: each one chooses a branch of `fs` or of the
+/// extension's shade (1 the extension shades, 2, 16, 32 the sun's shadow, 128 the light for
+/// each pixel, 512). A draw of the retained table also takes the bits of its kind from the
+/// scene (`draw_counts_w`): those stay values of the frame.
+const SHADE_BITS: u32 = 1 | 2 | 16 | 32 | 128 | 512;
 
 /// The codes that `fs` switches on for a draw. Only the stages below `count` are kept; the
 /// rest are 0, so that two draws that differ only in an unused stage share a key.
@@ -50,6 +62,13 @@ pub(crate) struct StageKey {
     alpha: [[u8; 3]; STAGES],
     /// The alpha test function, 0 for none.
     alpha_test: u8,
+    /// The bits of [`SHADE_BITS`] in the record's `counts.w`.
+    shade: u16,
+    /// `flags.x` (the lighting) and `flags.y` (the vertex has a normal) of the record.
+    lit: u8,
+    normal: u8,
+    /// Bit 4 of `light_range.w`: the draw takes the scene's values (`from_scene`).
+    scene: bool,
 }
 
 impl StageKey {
@@ -60,7 +79,15 @@ impl StageKey {
             return None;
         }
         let small = |value: u32| u8::try_from(value).ok();
-        let mut key = StageKey { count: count as u8, alpha_test: small(data.more[2])?, ..Default::default() };
+        let mut key = StageKey {
+            count: count as u8,
+            alpha_test: small(data.more[2])?,
+            shade: (data.counts[3] & SHADE_BITS) as u16,
+            lit: small(data.flags[0])?,
+            normal: small(data.flags[1])?,
+            scene: data.light_range[3] & 4 != 0,
+            ..Default::default()
+        };
         for stage in 0..count as usize {
             let s = &data.stages[stage];
             for part in 0..4 {
@@ -75,7 +102,7 @@ impl StageKey {
 
     /// The key as a line of numbers for the list.
     fn words(&self) -> Vec<u32> {
-        let mut words = vec![self.count as u32, self.alpha_test as u32];
+        let mut words = vec![self.count as u32, self.alpha_test as u32, self.shade as u32, self.lit as u32, self.normal as u32, self.scene as u32];
         for stage in 0..STAGES {
             words.extend(self.color[stage].iter().map(|&v| v as u32));
             words.extend(self.alpha[stage].iter().map(|&v| v as u32));
@@ -84,16 +111,22 @@ impl StageKey {
     }
 
     fn from_words(words: &[u32]) -> Option<StageKey> {
-        if words.len() != 2 + STAGES * 7 {
+        if words.len() != KEY_WORDS {
             return None;
         }
         let small = |value: u32| u8::try_from(value).ok();
-        let mut key = StageKey { count: small(words[0])?, alpha_test: small(words[1])?, ..Default::default() };
+        let shade = u16::try_from(words[2]).ok().filter(|&shade| shade as u32 & !SHADE_BITS == 0)?;
+        let scene = match words[5] {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        let mut key = StageKey { count: small(words[0])?, alpha_test: small(words[1])?, shade, lit: small(words[3])?, normal: small(words[4])?, scene, ..Default::default() };
         if key.count as usize > STAGES {
             return None;
         }
         for stage in 0..STAGES {
-            let at = 2 + stage * 7;
+            let at = 6 + stage * 7;
             for part in 0..4 {
                 key.color[stage][part] = small(words[at + part])?;
             }
@@ -107,8 +140,9 @@ impl StageKey {
 
 /// The world shader's `fs` for one key, made from the world shader's text: the reads of the
 /// stages at and past the count give white, the stage loop becomes one step for each stage with
-/// its codes as constants, and the alpha test has its function as a constant. None when the
-/// text does not have the parts that this rewrite expects (then the uber-shader draws the key).
+/// its codes as constants, the alpha test has its function as a constant, and the draw's facts
+/// of the key are constants ([`fixed_facts`]). None when the text does not have the parts that
+/// this rewrite expects (then the uber-shader draws the key).
 pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
     let mut source = world.to_string();
     // The reads: each stage's line starts so; stage 0's read is kept (a draw with no stage has no
@@ -157,7 +191,47 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
         0 => String::new(),
         function => format!("    if !compare({function}u, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n        discard;\n    }}\n"),
     };
-    Some(source.replacen(test, &fixed_test, 1))
+    fixed_facts(&source.replacen(test, &fixed_test, 1), key)
+}
+
+/// The text with the draw's facts of the key as constants, so that the compiler leaves out the
+/// branches that the key's draws cannot take: `from_scene` returns the key's scene bit, a read
+/// of the record's `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits
+/// of a retained draw stay values of the frame), and the reads of `flags.x` and `flags.y` are the
+/// key's values. None when the text lacks one of these parts.
+fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
+    let scene_test = "fn from_scene() -> bool {\n    return (draws[record].light_range.w & 4u) != 0u;\n}\n";
+    if source.matches(scene_test).count() != 1 {
+        return None;
+    }
+    let source = source.replacen(scene_test, &format!("fn from_scene() -> bool {{\n    return {};\n}}\n", key.scene), 1);
+
+    let counts_w = "draws[record].counts.w";
+    if !source.contains(counts_w) {
+        return None;
+    }
+    let source = source.replace(counts_w, &format!("((draws[record].counts.w & {}u) | {}u)", !SHADE_BITS, key.shade));
+
+    let source = replace_field(&source, "draws[record].flags.x", &format!("{}u", key.lit))?;
+    replace_field(&source, "draws[record].flags.y", &format!("{}u", key.normal))
+}
+
+/// The text with each read of a field replaced (a read, not a longer name that starts with it,
+/// such as a swizzle); None when the text has no read of it.
+fn replace_field(source: &str, field: &str, value: &str) -> Option<String> {
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    let mut found = false;
+    while let Some(at) = rest.find(field) {
+        let after = &rest[at + field.len()..];
+        let whole = !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        out.push_str(&rest[..at]);
+        out.push_str(if whole { value } else { field });
+        found |= whole;
+        rest = after;
+    }
+    out.push_str(rest);
+    found.then_some(out)
 }
 
 /// The code of the stage loop of the world shader's `fs` without its comments, as the steps of
@@ -390,7 +464,7 @@ impl StageShaders {
             }
         };
         let mut lines = text.lines();
-        let header = format!("{LIST_HEADER} {:016x}", self.world_hash);
+        let header = format!("{LIST_HEADER} {LIST_FORMAT} {:016x}", self.world_hash);
         if lines.next() != Some(header.as_str()) {
             println!("stage shaders: the list at {} is of another world shader or format; it is not used", path.display());
             return;
@@ -398,7 +472,7 @@ impl StageShaders {
         let mut dropped = 0;
         for line in lines {
             let words: Option<Vec<u32>> = line.split_whitespace().map(|word| word.parse().ok()).collect();
-            let parsed = words.as_deref().filter(|words| words.len() == 21 + 2 + STAGES * 7).and_then(|words| Some((pipeline_from_words(&words[..21])?, StageKey::from_words(&words[21..])?)));
+            let parsed = words.as_deref().filter(|words| words.len() == 21 + KEY_WORDS).and_then(|words| Some((pipeline_from_words(&words[..21])?, StageKey::from_words(&words[21..])?)));
             let Some(entry) = parsed else {
                 dropped += 1;
                 continue;
@@ -535,7 +609,7 @@ impl StageShaders {
         }
         self.changed = false;
         let Some(path) = &self.list else { return };
-        let mut text = format!("{LIST_HEADER} {:016x}\n", self.world_hash);
+        let mut text = format!("{LIST_HEADER} {LIST_FORMAT} {:016x}\n", self.world_hash);
         let entries: HashSet<&(PipelineKey, StageKey)> = self.made.iter().chain(self.queued.iter()).collect();
         for (pipeline, stage) in entries {
             let words: Vec<String> = pipeline_words(pipeline).into_iter().chain([0]).chain(stage.words()).map(|w| w.to_string()).collect();
@@ -572,14 +646,19 @@ impl Drop for StageShaders {
     }
 }
 
-/// The list: `MGE_XE_PIPELINE_LIST` when set, else
-/// `%LOCALAPPDATA%\MGE XE\numidium-stage-pipelines-<hash>.txt` with the hash of the world
-/// shader, so that two installs or two texture tiers do not write over each other's list.
+/// The list: `MGE_XE_PIPELINE_LIST` when set, else [`list_name`] in `%LOCALAPPDATA%\MGE XE`.
 fn list_path(world_hash: u64) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MGE_XE_PIPELINE_LIST") {
         return Some(PathBuf::from(path));
     }
-    std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE").join(format!("numidium-stage-pipelines-{world_hash:016x}.txt")))
+    std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE").join(list_name(world_hash)))
+}
+
+/// The list's file name, with the list's format and the hash of the world shader: two installs,
+/// two texture tiers or two builds with another format of the key do not write over each other's
+/// list.
+fn list_name(world_hash: u64) -> String {
+    format!("numidium-stage-pipelines-{LIST_FORMAT}-{world_hash:016x}.txt")
 }
 
 #[cfg(test)]
@@ -592,7 +671,7 @@ mod tests {
     }
 
     fn key(count: u8, alpha_test: u8) -> StageKey {
-        let mut key = StageKey { count, alpha_test, ..Default::default() };
+        let mut key = StageKey { count, alpha_test, shade: 1 | 128, lit: 1, normal: 1, ..Default::default() };
         // Stage 0: MODULATE of the texture and the diffuse; stage 1: ADD of the texture and
         // the current colour (an environment map after the base map).
         key.color[0] = [4, 2, 0, 1];
@@ -611,6 +690,49 @@ mod tests {
             let source = fragment_source(&world, &key(count, test)).expect("the rewrite finds its parts");
             crate::assert_wgsl("stage shader", &source);
         }
+    }
+
+    #[test]
+    fn each_set_of_facts_gives_valid_wgsl() {
+        let world = world();
+        for (shade, lit, normal, scene) in [(0, 0, 0, false), (SHADE_BITS as u16, 1, 1, true), (1 | 32 | 128, 1, 0, false), (2 | 16 | 512, 0, 1, true)] {
+            let key = StageKey { shade, lit, normal, scene, ..key(1, 0) };
+            let source = fragment_source(&world, &key).expect("the rewrite finds its parts");
+            crate::assert_wgsl("stage shader", &source);
+        }
+    }
+
+    #[test]
+    fn the_facts_of_the_key_are_constants() {
+        let key = StageKey { shade: 1 | 32, lit: 1, normal: 0, scene: false, ..key(1, 0) };
+        let source = fragment_source(&world(), &key).unwrap();
+        assert!(source.contains("fn from_scene() -> bool {\n    return false;\n}\n"));
+        assert!(!source.contains("draws[record].flags.x"));
+        assert!(!source.contains("draws[record].flags.y"));
+        let masked = format!("((draws[record].counts.w & {}u) | 33u)", !SHADE_BITS);
+        assert!(source.contains(&masked));
+        assert_eq!(source.matches("draws[record].counts.w").count(), source.matches(&masked).count(), "a read of counts.w without the key's bits");
+    }
+
+    #[test]
+    fn a_field_read_is_replaced_and_a_longer_name_is_not() {
+        let text = "a = d.flags.x; b = d.flags.xy; c = d.flags.x_2; e = d.flags.x\n";
+        assert_eq!(replace_field(text, "d.flags.x", "1u").as_deref(), Some("a = 1u; b = d.flags.xy; c = d.flags.x_2; e = 1u\n"));
+        assert_eq!(replace_field("d.flags.xy", "d.flags.x", "1u"), None);
+    }
+
+    #[test]
+    fn the_key_takes_the_facts_of_the_record() {
+        let mut data = DrawData::zeroed();
+        data.counts[3] = 1 | 4 | 32 | 1024;
+        data.flags = [1, 1, 0, 0];
+        data.light_range[3] = 4 | 1;
+        let key = StageKey::of(&data).unwrap();
+        assert_eq!((key.shade, key.lit, key.normal, key.scene), (1 | 32, 1, 1, true));
+        // A bit outside SHADE_BITS (4 the sky, 1024) does not split a key.
+        let mut other = data;
+        other.counts[3] = 1 | 32;
+        assert_eq!(StageKey::of(&other), Some(key));
     }
 
     #[test]
@@ -658,12 +780,23 @@ mod tests {
 
     #[test]
     fn a_key_and_a_pipeline_go_through_the_list() {
-        let stage = key(2, 5);
+        let stage = StageKey { scene: true, ..key(2, 5) };
         assert_eq!(StageKey::from_words(&stage.words()), Some(stage));
+        // A bit outside SHADE_BITS is not a key of this build.
+        let mut words = stage.words();
+        words[2] |= 4;
+        assert_eq!(StageKey::from_words(&words), None);
         let pipeline = PipelineKey { fvf: 0x152, stride: 24, topology: 4, blend: [1, 5, 6], depth: [1, 0, 4], cull: 1, fill: 3, stencil: [0; 7], color_write: 7, samples: 1, stages: 0 };
         let mut words = pipeline_words(&pipeline);
         words.push(0);
         assert_eq!(pipeline_from_words(&words), Some(pipeline));
+    }
+
+    #[test]
+    fn the_list_of_another_format_is_another_file() {
+        assert_eq!(list_name(0x1234), format!("numidium-stage-pipelines-{LIST_FORMAT}-0000000000001234.txt"));
+        // The name of the list of the builds before the format was in the name.
+        assert_ne!(list_name(0x1234), "numidium-stage-pipelines-0000000000001234.txt");
     }
 
     #[test]
