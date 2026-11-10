@@ -12,6 +12,10 @@ For each NIF (NetImmerse 4.0.0.2, the Morrowind format) the row gives:
 - noSorter: of those, the ones with the "no sorter" bit (flag bit 0x2000);
 - zTestOff, zWriteOff: NiZBufferProperty blocks with the depth test (flag bit 0) or the depth write (flag bit 1) off;
 - particles: particle systems (NiAutoNormalParticles, NiRotatingParticles and the base type NiParticles);
+- lodNodes: NiLODNode blocks. With --all, a second list names each one: its name, its LOD centre, its children and its levels as
+  near-far ranges. The engine (NiLODNode::Display 0x7412B0 [V IDA]) takes the distance from the camera to the world LOD centre,
+  multiplies it by the camera's lodAdjust, and shows the LAST child whose range holds that distance (near <= distance < far); a
+  distance that no range holds leaves the switch index at -1;
 - read: "blocks" when nif40.py read every block of the file; "pattern: <why>" when it did not (a block of a type that nif40.py has no
   layout for, so the blocks are found by their type names in the bytes: the counts are those of the pattern, and a block that the
   pattern takes for a type name inside other data would be a false hit); "unreadable" when the flags or the mode could not be parsed.
@@ -32,6 +36,7 @@ import nif40  # noqa: E402
 SORT_NODE = "NiSortAdjustNode"
 ALPHA = "NiAlphaProperty"
 ZBUFFER = "NiZBufferProperty"
+LOD_NODE = "NiLODNode"
 PARTICLES = ("NiAutoNormalParticles", "NiRotatingParticles", "NiParticles")
 ALPHA_BLEND = 0x0001
 ALPHA_NO_SORTER = 0x2000
@@ -59,9 +64,14 @@ def tour_stops(folder):
 
 def counts_of(rows):
     """The counts of one file from (type, fields) pairs: fields is the dict of the block, or None when the block could not be parsed."""
-    counts = {"sort_modes": [], "blended": 0, "no_sorter": 0, "z_test_off": 0, "z_write_off": 0, "particles": 0, "unparsed": 0}
+    counts = {"sort_modes": [], "blended": 0, "no_sorter": 0, "z_test_off": 0, "z_write_off": 0, "particles": 0, "lod_nodes": [], "unparsed": 0}
     for kind, fields in rows:
-        if kind == SORT_NODE:
+        if kind == LOD_NODE:
+            if fields is None or fields.get("lod_levels") is None:
+                counts["unparsed"] += 1
+            else:
+                counts["lod_nodes"].append({"name": fields["name"], "centre": fields["lod_center"], "levels": fields["lod_levels"], "children": len(fields["children"])})
+        elif kind == SORT_NODE:
             mode = fields.get("sorting_mode") if fields else None
             counts["sort_modes"].append(mode)
             counts["unparsed"] += mode is None
@@ -90,13 +100,13 @@ def pattern_rows(data):
     rows = []
     for found in TYPE_NAME.finditer(data):
         kind = found.group(2).decode()
-        if int.from_bytes(found.group(1), "little") != len(found.group(2)) or kind not in (SORT_NODE, ALPHA, ZBUFFER, *PARTICLES):
+        if int.from_bytes(found.group(1), "little") != len(found.group(2)) or kind not in (SORT_NODE, ALPHA, ZBUFFER, LOD_NODE, *PARTICLES):
             continue
         fields = None
-        if kind in (SORT_NODE, ALPHA, ZBUFFER):
+        if kind in (SORT_NODE, ALPHA, ZBUFFER, LOD_NODE):
             reader = nif40.Reader(data)
             reader.at = found.end()
-            last = "sorting_mode" if kind == SORT_NODE else "flags"
+            last = {SORT_NODE: "sorting_mode", LOD_NODE: "lod_levels"}.get(kind, "flags")
             try:
                 fields = {}
                 for name, layout_kind in nif40.LAYOUTS[kind]:
@@ -151,12 +161,31 @@ def rows_of(meshes, stops=None, show_all=False):
     return rows
 
 
+def number_text(value):
+    return "%g" % value
+
+
+def levels_text(levels):
+    """The levels as near-far ranges: [[0, 400], [400, 600]] -> "0-400, 400-600"."""
+    return ", ".join("%s-%s" % (number_text(near), number_text(far)) for near, far in levels) or "none"
+
+
+def lod_lines(rows):
+    """One line for each NiLODNode of the rows: the stop, the file, the name, the LOD centre, the children and the level ranges."""
+    lines = ["LOD nodes (stop nif name centre children levels):"]
+    for stop, number, c, _ in rows:
+        for node in c["lod_nodes"]:
+            lines.append("%-5s %-4s '%s' centre (%s) children %d levels %s" % (
+                stop, number, node["name"], ", ".join(number_text(axis) for axis in node["centre"]), node["children"], levels_text(node["levels"])))
+    return lines
+
+
 def table(rows):
-    lines = ["stop  nif  sortAdjust  sortActive  modes  blended  noSorter  zTestOff  zWriteOff  particles  read"]
+    lines = ["stop  nif  sortAdjust  sortActive  modes  blended  noSorter  zTestOff  zWriteOff  particles  lodNodes  read"]
     for stop, number, c, read in rows:
-        lines.append("%-5s %-4s %10d %10d %6s %8d %9d %9d %10d %10d  %s" % (
+        lines.append("%-5s %-4s %10d %10d %6s %8d %9d %9d %10d %10d %9d  %s" % (
             stop, number, len(c["sort_modes"]), active_sorters(c["sort_modes"]), mode_text(c["sort_modes"]), c["blended"], c["no_sorter"],
-            c["z_test_off"], c["z_write_off"], c["particles"], read))
+            c["z_test_off"], c["z_write_off"], c["particles"], len(c["lod_nodes"]), read))
     lines.append("NIFs listed: %d. modes: 1 off, 2 subsort, any other word inherits (NiSortAdjustNode::Display 0x6DE030); ? = not parsed" % len(rows))
     return "\n".join(lines)
 
@@ -177,9 +206,20 @@ def self_test():
         blocks[0]["children"] = [1]
         return blocks
 
-    def sorted_file(modes, alpha_flags=(), z_flags=(), particles=0):
-        """A file with a NiSortAdjustNode of each mode (the shape under the first) and the given properties on the shape."""
+    def sorted_file(modes, alpha_flags=(), z_flags=(), particles=0, lods=()):
+        """A file with a NiSortAdjustNode of each mode (the shape under the first), the given properties on the shape and a
+        NiLODNode for each (name, centre, levels) of lods, with one child node for each level and one more (the count of the children
+        is not the count of the levels)."""
         blocks = blocks_of()
+        for name, centre, levels in lods:
+            children = []
+            for _ in range(len(levels) + 1):
+                children.append(len(blocks))
+                blocks.append(made.node("level"))
+            lod = made.node(name)
+            lod.update({"type": LOD_NODE, "index": 0, "lod_center": list(centre), "lod_levels": [tuple(level) for level in levels], "children": children})
+            blocks[0]["children"].append(len(blocks))
+            blocks.append(lod)
         for flags in alpha_flags:
             blocks[1]["properties"].append(len(blocks))
             blocks.append(made.one_flag(ALPHA, flags) | {"threshold": 0})
@@ -239,6 +279,30 @@ def self_test():
     counts, read = scan(cut)
     assert counts["sort_modes"] == [None] and read == "unreadable", (counts, read)
 
+    # The LOD nodes: the exact path gives the name, the centre, the children and the levels as near-far ranges (the order of the file).
+    groups = (("Group01", (1.0, 2.5, -3.0), [(0.0, 400.0), (400.0, 600.0), (600.0, 800.5)]), ("wide", (0.0, 0.0, 0.0), [(1000.0, 20000.0)]))
+    counts, read = scan(sorted_file([], lods=groups))
+    assert read == "blocks" and counts["unparsed"] == 0, (counts, read)
+    assert [(node["name"], node["children"]) for node in counts["lod_nodes"]] == [("Group01", 4), ("wide", 2)], counts["lod_nodes"]
+    assert list(counts["lod_nodes"][0]["centre"]) == [1.0, 2.5, -3.0], counts["lod_nodes"]
+    assert [list(level) for level in counts["lod_nodes"][0]["levels"]] == [[0.0, 400.0], [400.0, 600.0], [600.0, 800.5]], counts["lod_nodes"]
+    assert levels_text(counts["lod_nodes"][0]["levels"]) == "0-400, 400-600, 600-800.5" and levels_text([]) == "none"
+    assert not interesting(counts), "a LOD node alone is listed with --all only"
+    listing = lod_lines([("2-34", "049", counts, read)])
+    assert listing[1] == "2-34  049  'Group01' centre (1, 2.5, -3) children 4 levels 0-400, 400-600, 600-800.5", listing
+    assert listing[2].endswith("children 2 levels 1000-20000") and len(listing) == 3, listing
+    # The pattern path reads the same nodes by the type name.
+    other = bytearray(sorted_file([], lods=groups))
+    at = other.index(b"NiMaterialProperty")
+    other[at:at + len(b"NiMaterialProperty")] = b"NiMaterialPropertz"
+    counts, read = scan(bytes(other))
+    assert read.startswith("pattern") and [(node["name"], list(node["levels"][-1])) for node in counts["lod_nodes"]] == [("Group01", [600.0, 800.5]), ("wide", [1000.0, 20000.0])], (counts["lod_nodes"], read)
+    # A LOD node cut off inside its levels is "unreadable", not a node with no levels.
+    cut = sorted_file([], lods=groups[:1])
+    cut = cut[:cut.index(LOD_NODE.encode()) + len(LOD_NODE) + 40]
+    counts, read = scan(cut)
+    assert counts["lod_nodes"] == [] and read == "unreadable", (counts, read)
+
     # The folder: the stop from the picture names, the file order, --all, a name that is no number.
     with tempfile.TemporaryDirectory(prefix="nif-order-scan-test-") as root:
         meshes, tour = os.path.join(root, "meshes"), os.path.join(root, "tour")
@@ -270,7 +334,10 @@ def main():
         return 0
     if not args.meshes:
         parser.error("it needs the folder of the NIFs")
-    print(table(rows_of(args.meshes, tour_stops(args.tour) if args.tour else None, args.all)))
+    rows = rows_of(args.meshes, tour_stops(args.tour) if args.tour else None, args.all)
+    print(table(rows))
+    if args.all:
+        print("\n".join(lod_lines(rows)))
     return 0
 
 
