@@ -116,6 +116,8 @@ REFUSED_FORMAT_EXITS = (10, 11)
 CAPTURE_AGAIN = "make the capture again with this build"
 # The start of the line that replay.py adds to such a refusal.
 CAPTURE_FORMAT = "CAPTURE FORMAT"
+# The end of such a line when the capture has a newer format than the replaying build reads.
+OLDER_THAN_CAPTURE = "the build under test is older than the capture"
 WRITER_RE = re.compile(r"^((?:akulakhan|d3d8)\.dll \([^)]*\)) writes (?:the (stream|extension) format (\d+)|.*)", re.M)
 READER_RE = re.compile(r"reads the (stream|extension) format (\d+)")
 
@@ -132,7 +134,7 @@ def capture_format_line(capture, code, output):
         return "%s: %s is refused by the helper of the build under test (exit code %d); its parts may match: the capture is from another build" % (CAPTURE_FORMAT, capture, code)
     wrote = "the %s format %s" % (writer.group(2), writer.group(3)) if writer.group(3) else "no format number"
     newer = writer.group(3) is not None and int(writer.group(3)) > int(reader.group(2))
-    advice = "the build under test is older than the capture" if newer else "make the capture again with this build, if the format change of this build is intended"
+    advice = OLDER_THAN_CAPTURE if newer else "make the capture again with this build, if the format change of this build is intended"
     return "%s: %s was made by %s, which writes %s; the build under test reads the %s format %s: %s" % (
         CAPTURE_FORMAT, capture, writer.group(1), wrote, reader.group(1), reader.group(2), advice)
 

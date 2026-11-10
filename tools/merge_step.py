@@ -27,7 +27,11 @@ gives the same answer.
 
 After a later commit, <branch>@{1} moves past a merge that failed or had no run. So the ref refs/merge-step/<branch> keeps
 the last commit that passed all stages, and the tool also refuses a <tip> newer than it. A branch with no such ref has only
-the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch.
+the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch. One more round moves
+the ref: every stage passed but the instance A/B, which is NOT RUN only because the base build reads an older format than
+the capture (the replay of the base names CAPTURE FORMAT and "older than the capture"). Without it the base stays, and no
+later A/B can replay the capture (59a357f, 2026-11-10). The log names the move and the reason. The round still exits with
+code 1 and closes no item: NOT RUN is no pass.
 
 The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
 GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin. The
@@ -119,7 +123,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deploy_rest import REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import git_env, local  # noqa: E402
+from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, git_env, local  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
@@ -154,6 +158,8 @@ DEPLOY_STAGE = "deploy rest"
 DEPLOY_REFUSED_CODE = REFUSED_EXIT
 # The "NOT DEPLOYED" lines of the last run_stages.
 NOT_DEPLOYED = []
+# The reason of each stage of the last run_stages that printed NOT RUN, by the stage's name.
+NOT_RUN_REASONS = {}
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
 GPU_STAGE = "helper GPU tests"
@@ -408,7 +414,9 @@ def run_stage(name, folder, command, log):
     code = subprocess.run(command, cwd=folder, env=stage_env(os.environ), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
     failure = ""
     if code == NOT_RUN_CODE:
-        verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, not_run_reason(output_since(log, start))))
+        reason = not_run_reason(output_since(log, start))
+        NOT_RUN_REASONS[name] = reason
+        verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, reason))
         return False
     if code != 0:
         output = output_since(log, start)
@@ -457,6 +465,7 @@ def run_stages(stages, log, note_stage=lambda: None):
     not be taken again: the stage is then NOT RUN, and counts as not passed."""
     results = {}
     del NOT_DEPLOYED[:]
+    NOT_RUN_REASONS.clear()
     for name, folder, command in stages:
         if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
             verdict(log, "NOT RUN %s: its build failed" % name)
@@ -487,6 +496,21 @@ def summary_line(results, log_path):
 def moves_the_ref(baseline):
     """Only a pass against the accepted folder is a pass of the merge."""
     return os.path.normcase(os.path.abspath(baseline)) == os.path.normcase(os.path.abspath(BASELINE))
+
+
+def base_older_than_capture(names, results, reasons):
+    """The reason to keep the round's commit as the base of the next A/B, or None. That is so when every stage passed but the
+    instance A/B, and the A/B is NOT RUN only because the base build reads an older format than its capture. Without this
+    the base stays at the last pass, and no later A/B can replay the capture (2026-11-10, 59a357f: the base a76fd14 reads
+    the stream format 8, and the W225 capture has the format 9). The replay gate passed, so the build under test reads the
+    format of the accepted captures. A NOT RUN of the replay of the build under test, or of any other kind, keeps the base."""
+    failed = [name for name, passed in zip(names, results) if not passed]
+    if failed != [INSTANCE_STAGE]:
+        return None
+    reason = reasons.get(INSTANCE_STAGE, "")
+    if not reason.startswith("the replay of the base: " + CAPTURE_FORMAT) or not reason.endswith(OLDER_THAN_CAPTURE):
+        return None
+    return reason
 
 
 def items_of(subject):
@@ -805,6 +829,17 @@ def pair_ref(kind, commit):
 def keep_pair(kind, sibling, commit, sibling_commit):
     """Keeps the pair of a pass: pair_ref(kind, commit) in the sibling's repo names `sibling_commit`."""
     git(sibling, "update-ref", pair_ref(kind, commit), sibling_commit)
+
+
+def keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head):
+    """Moves refs/merge-step/<branch> to the commit, and keeps the pair of the round in the sibling: the base pair of the
+    next check (tips_for). No pair when the sibling's HEAD moved during the round."""
+    git(repo, "update-ref", passed_ref, commit)
+    if sibling_head and resolve(sibling, "HEAD") == sibling_head:
+        keep_pair(kind, sibling, commit, sibling_head)
+        say("%s in the sibling: %s" % (pair_ref(kind, commit), sibling_head[:10]))
+    elif sibling_head:
+        say("no pair kept: the HEAD of the sibling moved during the round (%s at the start)" % sibling_head[:10])
 
 
 def tips_for(kind, repo, base, sibling_base=None):
@@ -1137,6 +1172,14 @@ def self_test():
         assert tips_for("plugin", plugin_of_pair, "base", second)[1].endswith("(%s)" % first[:10]) and "not an ancestor" in tips_for("plugin", plugin_of_pair, "base", second)[1], "a commit ahead of HEAD"
         keep_pair("plugin", sibling_tree, "later", second)
         assert tips_for("plugin", plugin_of_pair, "later")[1].startswith("the kept pair %s is not an ancestor" % pair_ref("plugin", "later")), "a kept pair ahead of HEAD"
+        # keep_pass, which a pass and a round with the A/B base older than its capture share: the ref of the branch moves to
+        # the commit, and the pair is kept when the sibling's HEAD did not move; else no pair.
+        with contextlib.redirect_stdout(io.StringIO()):
+            keep_pass("plugin", sibling_tree, "refs/merge-step/test", second, sibling_tree, first)
+        assert resolve(sibling_tree, "refs/merge-step/test") == second and resolve(sibling_tree, pair_ref("plugin", second)) == first
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            keep_pass("plugin", sibling_tree, "refs/merge-step/test", third, sibling_tree, second)
+        assert resolve(sibling_tree, "refs/merge-step/test") == third and resolve(sibling_tree, pair_ref("plugin", third)) is None and "no pair kept" in said.getvalue()
         assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", "no-such-name")[1], "an unknown name"
         # resolve gives a commit: a tree is none, and an annotated tag gives the commit it points to.
         tree_of_head = subprocess.run(["git", "-C", sibling_tree, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True, env=git_env()).stdout.strip()
@@ -1170,6 +1213,30 @@ def self_test():
             text = log.read()
         assert "== NOT RUN instance A/B grass (" in text and "): the game slot is held by a run on Outlander-test: x\n" in text and "== FAIL" not in text and "== PASS" not in text, text
         assert not_run_reason("a\nb") == "the stage could not judge"
+
+        # The base of the A/B after a format change (59a357f, 2026-11-10): when the A/B is NOT RUN only because the base reads
+        # an older format than the capture, and every other stage passed, the round's commit becomes the base of the next A/B.
+        # The reasons come from the real stage path (run_stages and instance_ab's NOT RUN line).
+        older = ("CAPTURE FORMAT: outlander-pelagiad.nircap was made by akulakhan.dll (nirender v0.3.6 79c752d), which writes the stream "
+                 "format 9; the build under test reads the stream format 8: " + OLDER_THAN_CAPTURE)
+
+        def ab_round(tag, line, others=good):
+            stage = [sys.executable, "-c", "print(%r); raise SystemExit(%d)" % ("NOT RUN grass: the replay of the %s: %s" % (tag, line), NOT_RUN_CODE)]
+            stages = [("a", root, others), ("b", root, good), (INSTANCE_STAGE, root, stage)]
+            with open(os.path.join(root, "log-ab-base.txt"), "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
+                results = run_stages(stages, log)
+            return base_older_than_capture([name for name, _, _ in stages], results, NOT_RUN_REASONS)
+
+        assert ab_round("base", older) == "the replay of the base: " + older, NOT_RUN_REASONS
+        # The build under test cannot read the capture: no move.
+        assert ab_round("now", older) is None
+        # The capture is older than the base: a new capture is the fix, not a new base.
+        assert ab_round("base", older.replace(OLDER_THAN_CAPTURE, "make the capture again with this build, if the format change of this build is intended")) is None
+        # Another NOT RUN (the game slot), or a failure of another stage: no move.
+        assert ab_round("base", "the game slot is held by a run on Outlander-test: x") is None
+        assert ab_round("base", older, others=bad) is None
+        # A full pass is a plain pass, not this case.
+        assert base_older_than_capture(["a", INSTANCE_STAGE], [True, True], {}) is None
 
         # The A/B stage does not run on a failed build of the gate or of the base; a failed stage stops no other.
         with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
@@ -1798,15 +1865,15 @@ def main():
     elif written == []:
         say("closes: nothing to write (no new item in the subjects of %d merge(s): %s)" % (len(merges), "; ".join(subject for _, subject in merges)))
     if not all(results):
+        older = base_older_than_capture([name for name, _, _ in stages], results, NOT_RUN_REASONS) if moves_the_ref(baseline) else None
+        if older:
+            with open(log_path, "a", encoding="utf-8") as log:
+                verdict(log, "the base of the A/B moves to %s (%s), as the round passed but for the A/B, which is NOT RUN only "
+                             "because the base is older than the capture: %s" % (commit[:10], passed_ref, older))
+            keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
         return 1
     if moves_the_ref(baseline):
-        git(repo, "update-ref", passed_ref, commit)
-        # The pair of the pass is the base pair of the next check (tips_for).
-        if sibling_head and resolve(sibling, "HEAD") == sibling_head:
-            keep_pair(kind, sibling, commit, sibling_head)
-            say("%s in the sibling: %s" % (pair_ref(kind, commit), sibling_head[:10]))
-        elif sibling_head:
-            say("no pair kept: the HEAD of the sibling moved during the round (%s at the start)" % sibling_head[:10])
+        keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
     else:
         say("%s stays: this pass is against %s, not the accepted folder" % (passed_ref, baseline))
     return 0
