@@ -538,7 +538,7 @@ pub(crate) struct Counts {
     pub(crate) walk_late: u64,
     /// The views of their own (`engine::views`): the views drawn, the places drawn in them,
     /// the places of an instance with no slot to draw, the places not drawn because their
-    /// scene has no view (no walked place gave its facts), the places of an instance not known,
+    /// scene has no view (the scene did not set its camera), the places of an instance not known,
     /// the views not drawn because the scene slots were full, and the views of another camera
     /// that took the last frame's shade. `view_places` counts the places of a run only when the
     /// run draws; `view_places_empty` counts each empty place, so it is not a part of

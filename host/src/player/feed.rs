@@ -410,11 +410,18 @@ impl Player {
             // draws with their vertices, each with its own state; a command of another
             // kind does nothing.
             tag::COMMAND => match word(data, 0) {
-                COMMAND_TRANSFORM if data.len() >= 16 + 64 => match word(data, 4) {
-                    2 => self.stream.view = floats(data, 16),
-                    3 => self.stream.projection = floats(data, 16),
-                    _ => {}
-                },
+                COMMAND_TRANSFORM if data.len() >= 16 + 64 => {
+                    let state = word(data, 4);
+                    match state {
+                        2 => self.stream.view = floats(data, 16),
+                        3 => self.stream.projection = floats(data, 16),
+                        _ => {}
+                    }
+                    // A scene of a view of its own has its view once it set its camera.
+                    if self.views.camera_set(state) {
+                        self.note_view_facts();
+                    }
+                }
                 _ => {}
             },
             _ if !tag::is_known(tag) => {
@@ -853,7 +860,9 @@ impl Player {
         }
     }
 
-    /// The view of the open scene of a view of its own, at its first draw or place.
+    /// The view of the open scene of a view of its own, from the camera of its render
+    /// ([`engine::views::Views::camera_set`]): the scene's origin and target come with its
+    /// record, and its view and projection after it.
     fn note_view_facts(&mut self) {
         let (view, projection, origin, target_size) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target());
         self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
@@ -937,9 +946,8 @@ impl Player {
     }
 
     /// A place of a retained shape in a scene with a view of its own ([`engine::views`]): the
-    /// view of the scene at its first place, then the place in its run.
+    /// place in its run.
     pub(crate) fn view_place(&mut self, id: u32) {
-        self.note_view_facts();
         // The engine walks the sky root first, and the sky's instances have places too: a place of
         // an instance that is not of the sky is in the world.
         if crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class)) {

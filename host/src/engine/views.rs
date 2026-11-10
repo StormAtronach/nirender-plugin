@@ -17,7 +17,7 @@ use super::scene;
 use crate::stream_format::VIEW_SLOTS;
 use crate::{Additions, ViewKind};
 
-/// The view of a scene, at its first place.
+/// The view of a scene, from the camera of its render.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ViewFacts {
     pub(crate) view: [f32; 16],
@@ -126,6 +126,10 @@ const SCENE_REPEAT_MASK: u32 = 0xFF;
 /// The bit of that word that says the plugin walks the scene's root, so that the event
 /// `EVENT_WORLD_WALK` follows (the plugin's `link::SCENE_WALK_DUE`).
 const SCENE_WALK_DUE: u32 = 0x100;
+/// The bits of [`Views::camera_set`]: the scene in progress set the view of its camera, and
+/// its projection.
+const CAMERA_VIEW: u8 = 1;
+const CAMERA_PROJECTION: u8 = 2;
 
 /// The view slot of a scene record: the field holds the slot plus 1, 0 for a scene that is not
 /// a view. `None` for 0, or for a slot past the table.
@@ -180,6 +184,9 @@ pub(crate) struct Views {
     /// The scene in progress has the word and not the bit `SCENE_WALK_DUE`: the plugin does
     /// not walk its root, so no `EVENT_WORLD_WALK` follows. False before the first scene.
     scene_without_walk: bool,
+    /// The transforms of the camera that the scene in progress set: [`CAMERA_VIEW`] and
+    /// [`CAMERA_PROJECTION`] (`camera_set`).
+    scene_camera: u8,
     /// The slot of the first scene of the key of the scene in progress, when the scene repeats
     /// its key in the same flush (the low byte of the word less 1), for the scene's group.
     scene_first: Option<u8>,
@@ -281,6 +288,7 @@ impl Views {
     /// a view of its own.
     pub(crate) fn scene_begin(&mut self, kind: u32, in_target: bool, camera_is_world: bool) -> bool {
         self.open = None;
+        self.scene_camera = 0;
         let view_slot = self.scene_slot.take();
         let first_slot = self.scene_first.take();
         if kind == scene::SCENE_UI {
@@ -345,7 +353,22 @@ impl Views {
         self.groups.get_mut(group)
     }
 
-    /// The view of the open scene at its first place.
+    /// A transform of the camera in the scene in progress (`D3DTS_VIEW` 2, `D3DTS_PROJECTION`
+    /// 3). True when the scene has a view of its own and has now set both: the view of the
+    /// render is known, and its facts are due ([`Views::note_facts`]). A view does not wait
+    /// for a place: a save's picture of a room with only sorted blends walks none.
+    pub(crate) fn camera_set(&mut self, state: u32) -> bool {
+        let bit = match state {
+            2 => CAMERA_VIEW,
+            3 => CAMERA_PROJECTION,
+            _ => return false,
+        };
+        self.scene_camera |= bit;
+        self.open.is_some() && self.scene_camera == CAMERA_VIEW | CAMERA_PROJECTION
+    }
+
+    /// The view of the open scene, from the camera of its render: the first one stays, so a
+    /// later world scene that continues the group keeps the view of its world scene.
     pub(crate) fn note_facts(&mut self, facts: impl FnOnce() -> ViewFacts) {
         if let Some(group) = self.open.and_then(|open| self.groups.get_mut(open)) {
             if group.facts.is_none() {
@@ -516,6 +539,40 @@ mod tests {
         views.note_scene(Some(3), 0x70, 0x60, target);
         assert!(views.scene_begin(SCENE_WATER, true, true));
         assert_eq!(views.open(), Some(2));
+    }
+
+    /// The scenes of the 069 save seen from above (W295): the world scene into the save's
+    /// target walks no place, and its sorted blends flush in its water scene. The world scene's
+    /// camera gives the view, so the water scene's places draw.
+    #[test]
+    fn a_view_in_a_target_has_its_facts_from_its_camera_with_no_place() {
+        use crate::engine::scene::SCENE_WATER;
+        let (camera, target) = (0x10, 0x20);
+        let facts = |n: f32| ViewFacts { view: [n; 16], projection: [n; 16], origin: None, target_size: (128, 128) };
+        let mut views = Views::default();
+        // A scene with no view of its own (the back buffer's world) has no facts due.
+        assert!(!views.scene_begin(SCENE_WORLD, false, true));
+        assert!(!views.camera_set(2));
+        assert!(!views.camera_set(3));
+        views.note_scene(Some(1), camera, 0x30, target);
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        // The projection can come first; a world matrix is not of the camera.
+        assert!(!views.camera_set(3));
+        assert!(!views.camera_set(256));
+        assert!(views.camera_set(2));
+        views.note_facts(|| facts(1.0));
+        assert_eq!(views.scene_end(), None);
+        views.note_scene(Some(2), camera, 0x60, target);
+        assert!(views.scene_begin(SCENE_WATER, true, true));
+        assert_eq!(views.open(), Some(0));
+        // The water scene sets the camera again: the view of the world scene stays.
+        assert!(!views.camera_set(2));
+        assert!(views.camera_set(3));
+        views.note_facts(|| facts(2.0));
+        assert!(views.queued(20));
+        assert_eq!(views.scene_end(), Some(0));
+        assert_eq!(views.take_sorted(0), vec![20]);
+        assert_eq!(views.group(0).unwrap().facts, Some(facts(1.0)));
     }
 
     /// The shade is the world camera's: the save's world view makes it when it comes first;
