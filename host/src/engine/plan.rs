@@ -73,6 +73,11 @@ pub(crate) struct Plan {
     /// A read of the back buffer ended the picture: the next world scene starts a new one
     /// ([`Step::NewPicture`]).
     picture_ended: bool,
+    /// The user interface scene of this picture began in the back buffer ([`Step::Post`] given).
+    ui_given: bool,
+    /// The read that ended the picture came after its user interface scene, as the game's
+    /// screenshot reads: a main view with a root of its own then also starts a new picture.
+    read_after_ui: bool,
 }
 
 impl Plan {
@@ -105,9 +110,14 @@ impl Plan {
     /// brought go before them, as the engine draws its water before it flushes the queue.
     /// A world scene after a read of the back buffer starts a new picture: the game draws again
     /// after its clear (`renderMainScene` 0x41C535), and the world starts and ends again in it.
+    /// So does a main view with a root of its own (Isolate Subject) when the read came after the
+    /// picture's user interface scene, as the game's screenshot reads (`takeScreenshot`
+    /// 0x42E620). After a read between the world and the user interface, such a scene is part
+    /// of the same picture.
     pub(crate) fn scene_begin_view(&mut self, kind: u32, view: ViewKind, in_back_buffer: bool) -> Vec<Step> {
         let mut steps = Vec::new();
-        if self.picture_ended && kind == scene::SCENE_WORLD {
+        let own_root_main_view = kind == scene::SCENE_OTHER && view == ViewKind::Main;
+        if self.picture_ended && (kind == scene::SCENE_WORLD || (own_root_main_view && self.read_after_ui)) {
             self.frame_start();
             steps.push(Step::NewPicture);
         }
@@ -121,6 +131,7 @@ impl Plan {
             steps.push(self.sorted_blends());
         }
         if kind == scene::SCENE_UI && in_back_buffer {
+            self.ui_given = true;
             steps.push(Step::Post);
         }
         // The world scene after a main view with a root of its own: the world began there and
@@ -138,6 +149,7 @@ impl Plan {
     /// user interface keeps the picture's post-processing and its classes' calls.
     pub(crate) fn back_buffer_read(&mut self) {
         self.picture_ended = true;
+        self.read_after_ui = self.ui_given;
     }
 
     /// The post-processing item goes now: the world began, the frame is drawn, the extension
@@ -728,6 +740,56 @@ mod tests {
         // The next frame's start clears the mark: its world scene starts no second picture.
         plan.frame_start();
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
+    }
+
+    /// Brief 17 (W105), test 1: today's rule stays. A world scene after a read starts a new
+    /// picture.
+    #[test]
+    fn a_world_scene_after_a_read_starts_a_new_picture() {
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_WORLD);
+        plan.back_buffer_read();
+        assert_eq!(plan.scene_begin(SCENE_WORLD), vec![Step::NewPicture]);
+    }
+
+    /// Test 2: the game's screenshot with Isolate Subject. The picture is a main view with a
+    /// root of its own; the screenshot reads after its user interface scene; the frame's own
+    /// picture then starts with the same kind of view, and that view starts a new picture.
+    #[test]
+    fn a_main_view_with_its_own_root_after_a_read_after_the_ui_starts_a_new_picture() {
+        let mut plan = Plan::default();
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
+        assert_eq!(plan.scene_begin_view(SCENE_UI, ViewKind::Main, true), vec![Step::Post]);
+        plan.back_buffer_read();
+        assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true), vec![Step::NewPicture]);
+        // The new picture gets its own post.
+        assert_eq!(plan.scene_begin_view(SCENE_UI, ViewKind::Main, true), vec![Step::Post]);
+    }
+
+    /// Test 3 (the Reviewer's): a read between the world and the user interface, then a main
+    /// view with a root of its own before the user interface, is one picture: no reset in its
+    /// middle.
+    #[test]
+    fn a_main_view_with_its_own_root_after_a_read_before_the_ui_starts_no_picture() {
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_WORLD);
+        plan.back_buffer_read();
+        assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true), vec![]);
+        assert!(!plan.scene_begin_view(SCENE_UI, ViewKind::Main, true).contains(&Step::NewPicture));
+    }
+
+    /// Test 4: a read, then a user interface scene, starts no picture; nor do the water scene
+    /// and a scene of another view after a read after the user interface.
+    #[test]
+    fn a_ui_or_water_scene_or_another_view_after_a_read_starts_no_picture() {
+        let mut plan = Plan::default();
+        plan.back_buffer_read();
+        assert!(!plan.scene_begin(SCENE_UI).contains(&Step::NewPicture));
+        plan.frame_start();
+        plan.scene_begin(SCENE_UI);
+        plan.back_buffer_read();
+        assert!(!plan.scene_begin(SCENE_WATER).contains(&Step::NewPicture));
+        assert!(!plan.scene_begin_view(SCENE_OTHER, ViewKind::OtherScreen, true).contains(&Step::NewPicture));
     }
 
     #[test]
