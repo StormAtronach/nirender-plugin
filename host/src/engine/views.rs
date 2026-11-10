@@ -290,6 +290,21 @@ impl Views {
             return false;
         }
         let view = ViewKind::classify(in_target, camera_is_world);
+        // A later world scene of a view (its water, its sorted alpha) continues the group of its
+        // world scene, as the main view continues its world ([`scene::later_world_scene`]): the
+        // engine's sorted queue of the world flushes there, and the group has the view's facts.
+        // Other scenes of the view can come between (its shadow casters). The view is the camera
+        // and the target: the later scene has a root of its own, so the plugin gives it another
+        // slot ([`ViewSlot::same_key`]).
+        if scene::later_world_scene(kind) {
+            let key = |slot: Option<u8>| slot.and_then(|slot| self.slots[slot as usize]).map(|key| (key.camera, key.target));
+            let this = key(view_slot);
+            let world = self.groups.iter().rposition(|group| group.world_camera && group.kind == view && this.is_some() && key(group.view_slot) == this);
+            if world.is_some() {
+                self.open = world;
+                return true;
+            }
+        }
         // The full tier is for the views of a mod: the main view has every part already.
         // A scene that repeats its key in the flush has the place of the key's first slot.
         let grant = view_slot.filter(|_| view != ViewKind::Main).and_then(|slot| match first_slot {
@@ -468,6 +483,39 @@ mod tests {
         // The next frame starts empty.
         views.frame_start();
         assert!(views.group(0).is_none() && views.open().is_none());
+    }
+
+    /// A save's picture (the scenes of the 069 save, 2026-11-10): the engine's sorted queue of
+    /// the world flushes in the water scene, after the shadow casters. The water scene has the
+    /// world's camera and target and a root of its own, so the plugin gives it another slot. It
+    /// continues the world scene's group, which has the view's facts, so its sorted places draw
+    /// in that view. A water scene of another camera does not join it.
+    #[test]
+    fn a_later_world_scene_in_a_target_continues_the_world_group() {
+        use crate::engine::scene::SCENE_WATER;
+        // The plugin's `link::SCENE_SHADOW_CASTERS`.
+        const SCENE_SHADOW_CASTERS: u32 = 5;
+        let (camera, target) = (0x10, 0x20);
+        let mut views = Views::default();
+        views.note_scene(Some(1), camera, 0x30, target);
+        assert!(views.scene_begin(SCENE_WORLD, true, true));
+        views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [1.0; 16], origin: None, target_size: (128, 128) });
+        assert_eq!(views.place(10, true, false), Place::New(0, 0));
+        assert_eq!(views.scene_end(), None);
+        views.note_scene(None, 0x40, 0x50, target);
+        assert!(views.scene_begin(SCENE_SHADOW_CASTERS, true, false));
+        views.scene_end();
+        views.note_scene(Some(2), camera, 0x60, target);
+        assert!(views.scene_begin(SCENE_WATER, true, true));
+        assert_eq!(views.open(), Some(0));
+        assert!(views.queued(20));
+        assert_eq!(views.scene_end(), Some(0));
+        assert_eq!(views.take_sorted(0), vec![20]);
+        assert!(views.group(0).unwrap().facts.is_some());
+        // The water scene of another camera opens a group of its own.
+        views.note_scene(Some(3), 0x70, 0x60, target);
+        assert!(views.scene_begin(SCENE_WATER, true, true));
+        assert_eq!(views.open(), Some(2));
     }
 
     /// The shade is the world camera's: the save's world view makes it when it comes first;
