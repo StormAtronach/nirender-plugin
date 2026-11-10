@@ -264,19 +264,43 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
 
 TIMING_STEPS = ("rate", "walk")
 WEATHER_IN_LINE = re.compile(r'(?:current|next|from|to) (\d+) "([^"]*)"')
+# A change of the weather in a shader batch, with the text of its first argument.
+WEATHER_CHANGE = re.compile(r"\b(switchImmediate|switchTransition|changeWeather)\s*\(\s*([^),]*)")
 
 
-def weather_warning(args):
+def weather_warning(args, read=read_text):
     """The one line that warns about a run that times something and leaves the weather to the
     game: a storm moves the frame rate (the owner, 2026-11-03). None for any other run. Not a
     refusal. No --steps means all the steps, the timing steps among them. A shader-batch
-    run (a --shader-batch, or the step shaders) is a timing run too: its A/B compares frame times."""
+    run (a --shader-batch, or the step shaders) is a timing run too: its A/B compares frame times.
+    None also for a shader batch that changes the weather itself: there the pin of --weather would
+    override the batch (`weather_pin_warning`)."""
     if args.weather is not None:
         return None
     steps = [name for name in re.split(r"[,\s]+", args.steps or "") if name]
     if steps and not args.shader_batch and not any(name in TIMING_STEPS + ("shaders",) for name in steps):
         return None
+    if args.shader_batch and WEATHER_CHANGE.search(read(args.shader_batch) or ""):
+        return None
     return "warning: the run has timing steps and the weather is the game's, which can change in the run and move the frame rate: --weather 0 pins it to clear"
+
+
+def weather_pin_warning(args, read=read_text):
+    """The one line that warns about a run whose --weather pin overrides the shader batch's own
+    weather: the mod puts the pinned weather back after each change (2026-11-10: seven W270 starts
+    logged weather 0 in every set, though the batch switched to rain and fog). None when nothing
+    is pinned, when there is no batch, or when every change in the batch is to the pinned weather
+    as a literal number (the harness's boilerplate sets weather 0 again after each move). A change
+    to a variable or a table counts as another weather. Not a refusal."""
+    if args.weather is None or not args.shader_batch:
+        return None
+    text = read(args.shader_batch) or ""
+    others = sorted({"%s(%s)" % (call, argument.strip()) for call, argument in WEATHER_CHANGE.findall(text)
+                     if argument.strip() != str(args.weather)})
+    if not others:
+        return None
+    return ("warning: --weather %d pins the weather and puts it back over the shader batch's own changes (%s): "
+            "leave --weather out when the batch sets the weather" % (args.weather, ", ".join(others)))
 
 
 # The game's registry key (HKLM, the 32-bit view), and the copy of it in the user's VirtualStore.
@@ -1226,6 +1250,30 @@ def self_test_weather():
     assert weather_warning(namespace(steps="exterior,shaders", weather=0)) is None
     assert weather_warning(namespace(steps="exterior,shaders", shader_batch="E:/batch.lua", weather=0)) is None
 
+    # The pin over the batch's own weather: it warns only for a change to another weather.
+    batches = {
+        "E:/boilerplate.lua": "wc:switchImmediate(0)\nwc:updateVisuals()\n",
+        "E:/rain.lua": "wc:switchImmediate(4)\n",
+        "E:/variable.lua": "if x then wc:switchImmediate( hold.weather ) end\n",
+        "E:/transition.lua": "wc:switchTransition(2)\ntes3.changeWeather({ id = 6 })\n",
+        "E:/none.lua": "return {}\n",
+    }
+    def pin(path, weather=0):
+        return weather_pin_warning(namespace(shader_batch=path, weather=weather), batches.get)
+    assert pin("E:/boilerplate.lua") is None
+    assert pin("E:/none.lua") is None
+    assert pin("E:/rain.lua", weather=None) is None
+    assert weather_pin_warning(namespace(weather=0), batches.get) is None
+    assert pin("E:/boilerplate.lua", weather=4) and "switchImmediate(0)" in pin("E:/boilerplate.lua", weather=4)
+    assert "switchImmediate(4)" in pin("E:/rain.lua") and "leave --weather out" in pin("E:/rain.lua")
+    assert "switchImmediate(hold.weather)" in pin("E:/variable.lua"), pin("E:/variable.lua")
+    assert "switchTransition(2)" in pin("E:/transition.lua") and "changeWeather({ id = 6 }" in pin("E:/transition.lua"), pin("E:/transition.lua")
+    # A missing batch file is the argument check's problem, not this warning's.
+    assert pin("E:/missing.lua") is None
+    # A batch that sets its own weather, with no --weather: no advice to pin, which would override it.
+    assert weather_warning(namespace(steps="exterior,shaders", shader_batch="E:/rain.lua"), batches.get) is None
+    assert "--weather 0" in weather_warning(namespace(steps="exterior,shaders", shader_batch="E:/none.lua"), batches.get)
+
     # The note of the run folder: the summary line, then the weather lines and no others.
     note = weather_note(None, lines)
     assert note.splitlines()[0] == "weather: the game's: Overcast (3), Rain (6), Blizzard (9)", note
@@ -1956,6 +2004,8 @@ def main():
             print("run_own_device: " + note)
         if weather_warning(args):
             print("run_own_device: " + weather_warning(args))
+        if weather_pin_warning(args):
+            print("run_own_device: " + weather_pin_warning(args))
         if full_dump_note(args):
             print("run_own_device: " + full_dump_note(args))
         return 0
@@ -1978,6 +2028,8 @@ def main():
         print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
     if weather_warning(args):
         print("run_own_device: " + weather_warning(args), flush=True)
+    if weather_pin_warning(args):
+        print("run_own_device: " + weather_pin_warning(args), flush=True)
     extra_files = [entry.split("=", 1) for entry in args.add_file]
     if args.mwse_dll:
         extra_files.append((args.mwse_dll, "Root/MWSE.dll"))
