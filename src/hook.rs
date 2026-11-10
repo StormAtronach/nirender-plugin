@@ -15,6 +15,31 @@ const ARENA_SIZE: usize = 0x20000;
 static ARENA: AtomicUsize = AtomicUsize::new(0);
 static ARENA_USED: AtomicUsize = AtomicUsize::new(0);
 
+/// What a hook wrote at the entry of a function: the jump to its thunk with the fill of NOPs up
+/// to the stolen length, and the bytes that were there before it. The census of a recheck
+/// compares the function with `displaced` in place of `jump` (`census::compared`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnWrite {
+    pub jump: Vec<u8>,
+    pub displaced: Vec<u8>,
+}
+
+/// The entry writes of the hooks, with the entry address of each. No path removes a hook, so
+/// an entry stays for the session.
+static OWN_WRITES: std::sync::Mutex<Vec<(usize, OwnWrite)>> = std::sync::Mutex::new(Vec::new());
+
+/// The write of the hook whose entry is `ea`, if the plugin has a hook there.
+pub fn own_write(ea: usize) -> Option<OwnWrite> {
+    let writes = OWN_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    writes.iter().find(|(at, _)| *at == ea).map(|(_, write)| write.clone())
+}
+
+fn note_own_write(ea: usize, write: OwnWrite) {
+    let mut writes = OWN_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    writes.retain(|(at, _)| *at != ea);
+    writes.push((ea, write));
+}
+
 pub fn find(ea: usize) -> Option<&'static Func> {
     FUNCS.binary_search_by_key(&ea, |f| f.ea).ok().map(|i| &FUNCS[i])
 }
@@ -176,9 +201,11 @@ unsafe fn finish(ea: usize, trampoline: usize, steal: usize, detour: usize, stac
     let mut jump = vec![0xE9];
     jump.extend_from_slice(&rel32(ea + 5, thunk));
     jump.resize(steal, 0x90);
+    let displaced = core::slice::from_raw_parts(ea as *const u8, jump.len()).to_vec();
     if !win::patch(ea, &jump) {
         return Err("could not write the jump".into());
     }
+    note_own_write(ea, OwnWrite { jump, displaced });
     Ok(trampoline)
 }
 
@@ -251,6 +278,26 @@ mod tests {
             assert_eq!(crate::site::call_target(trampoline + 3), live_target);
             // The jump of the detour is at the entry now.
             assert_eq!(*(block as *const u8), 0xE9);
+        }
+    }
+
+    #[test]
+    fn the_hook_records_its_jump_and_the_bytes_it_displaced() {
+        unsafe {
+            let block = win::VirtualAlloc(core::ptr::null_mut(), 0x1000, win::MEM_COMMIT_RESERVE, win::PAGE_EXECUTE_READWRITE) as usize;
+            assert_ne!(block, 0);
+            // push ebp; mov ebp, esp; sub esp, 8: a head of 6 bytes, so the jump has one NOP of fill.
+            let head = [0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08];
+            let mut live = head.to_vec();
+            live.extend_from_slice(&[0xC3; 10]);
+            core::ptr::copy_nonoverlapping(live.as_ptr(), block as *mut u8, live.len());
+
+            install_raw(block, &head, &[], block + 0x300, 0, Cleanup::Callee).expect("the head matches");
+            let write = own_write(block).expect("a write at the entry");
+            assert_eq!(write.displaced, head);
+            assert_eq!(write.jump.as_slice(), core::slice::from_raw_parts(block as *const u8, 6));
+            assert_eq!((write.jump[0], write.jump[5]), (0xE9, 0x90));
+            assert!(own_write(block + 1).is_none());
         }
     }
 
