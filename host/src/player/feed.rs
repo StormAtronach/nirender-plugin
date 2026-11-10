@@ -7,6 +7,13 @@ use crate::stream_format::{
     HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
+/// The draws of the calls' target go somewhere: the target is a texture that this program made
+/// (`known_texture`), or the last `EVENT_SET_TARGET` asked for no texture (the back buffer). A
+/// rendered texture that is not known here takes the draws nowhere.
+fn calls_target_draws(known_texture: bool, wants_texture: bool) -> bool {
+    known_texture || !wants_texture
+}
+
 /// The cell of a scene from the flags of its record: (interior, like an exterior). The flag
 /// [`SCENE_LIKE_EXTERIOR`] is the one source of "like an exterior".
 fn cell_of_scene(flags: u32) -> (bool, bool) {
@@ -174,7 +181,11 @@ impl Player {
                 }
             }
             tag::SCENE_BEGIN => {
-                self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
+                // The camera's position is in the record for every camera; it is the origin of
+                // the relative matrices only with the flag.
+                self.stream.position = [double(data, 24), double(data, 32), double(data, 40)];
+                self.stream.origin = (word(data, 20) & 1 != 0).then_some(self.stream.position);
+                self.stream.frustum = core::array::from_fn(|i| f32::from_bits(word(data, SCENE_FRUSTUM_AT + i * 4)));
                 (self.stream.interior, self.stream.like_exterior) = cell_of_scene(word(data, 20));
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
                 self.stream.wireframe = word(data, 20) & SCENE_WIREFRAME != 0;
@@ -182,11 +193,7 @@ impl Player {
                 let kind = word(data, 4);
                 self.views.note_scene_record(data);
                 let in_target = self.target.is_some();
-                let camera = word(data, 8);
-                if !in_target && scene::world_camera(kind) {
-                    self.world_camera_id = camera;
-                }
-                let camera_is_world = self.views.camera_is_world(kind, camera, self.world_camera_id);
+                let camera_is_world = engine::views::Views::camera_is_world(kind, word(data, 20) & SCENE_WORLD_CAMERA != 0);
                 self.views.scene_begin(kind, in_target, camera_is_world);
                 self.view_world_begun = false;
                 self.view_sky_seen = false;
@@ -222,6 +229,9 @@ impl Player {
             tag::FRAME_EVENT => {
                 if word(data, 0) == EVENT_SET_TARGET {
                     self.wants_texture = word(data, 4) != 0;
+                    // The event comes after the device's call of the target (stream format
+                    // 10), so that call had the wish of the event before.
+                    self.stream.back_buffer = calls_target_draws(self.target.is_some(), self.wants_texture);
                 }
                 if word(data, 0) == EVENT_WORLD_WALK && self.stream.world_walk {
                     self.world_walk();
@@ -351,8 +361,7 @@ impl Player {
                         // that this program made is that texture; each other one is the
                         // back buffer.
                         let texture = self.renderer.surfaces.get(&word(arguments, 0)).copied().filter(|handle| self.renderer.targets.contains_key(handle));
-                        // A rendered texture that is not known here: its draws go nowhere.
-                        self.stream.back_buffer = texture.is_some() || !self.wants_texture;
+                        self.stream.back_buffer = calls_target_draws(texture.is_some(), self.wants_texture);
                         if texture != self.target {
                             self.target = texture;
                             // Back in the back buffer: the next target group has a plan state
@@ -864,8 +873,8 @@ impl Player {
     /// ([`engine::views::Views::camera_set`]): the scene's origin and target come with its
     /// record, and its view and projection after it.
     fn note_view_facts(&mut self) {
-        let (view, projection, origin, target_size) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target());
-        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
+        let (view, projection, origin, target_size, values) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target(), self.retained_values);
+        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size, values });
     }
 
     /// A draw comes in the open scene of a view of its own: the items of its world's start go
@@ -948,9 +957,11 @@ impl Player {
     /// A place of a retained shape in a scene with a view of its own ([`engine::views`]): the
     /// place in its run.
     pub(crate) fn view_place(&mut self, id: u32) {
-        // The engine walks the sky root first, and the sky's instances have places too: a place of
-        // an instance that is not of the sky is in the world.
-        if crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class)) {
+        // Without the walk marked, a place begins the world: the engine walks the sky root
+        // first, and the sky's instances have places too, so a place of an instance that is not
+        // of the sky is in the world.
+        let walk_marked = self.stream.world_walk && self.views.scene_walk_due();
+        if !walk_marked && crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class)) {
             self.begin_view_world();
         }
         self.view_world_items();
@@ -964,7 +975,7 @@ impl Player {
                 // A main view with a root of its own (the world camera on a mod's subject)
                 // starts the world of the frame at its first place.
                 let (extension, in_back_buffer) = (self.extension.is_some(), self.stream.back_buffer && self.target.is_none());
-                for step in self.plan_now().view_first_place(extension, in_back_buffer) {
+                for step in self.plan_now().view_first_place(extension, in_back_buffer, walk_marked) {
                     self.plan_step(step);
                 }
                 if self.drawing() {
@@ -1007,8 +1018,7 @@ impl Player {
         let mut effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
         // An effect that moves in the play takes its chain's value, as in the table.
         if let (Some(stages), Some(material)) = (effects.as_mut(), self.renderer.materials.get(&retained.material)) {
-            let location = crate::camera_place(self.stream.origin, &self.stream.view);
-            self.retained.chain_stages(material, &self.stream.view, location, stages);
+            self.retained.chain_stages(material, &self.stream.view, self.stream.position, stages);
         }
         self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
         if let Some(fog) = self.stream.shape_fog {
@@ -1242,8 +1252,22 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_of_scene, instance_lights, orphans_of, scene_record};
+    use super::{calls_target_draws, cell_of_scene, instance_lights, orphans_of, scene_record};
     use crate::SCENE_LIKE_EXTERIOR;
+
+    /// A return from a texture to the back buffer: the device's call comes first, with the wish
+    /// of the texture's event, and the event of the back buffer after it gives the draws back.
+    #[test]
+    fn the_back_buffer_takes_its_draws_again_at_its_event() {
+        // The texture's event, then its call: a rendered texture that is not known here.
+        assert!(!calls_target_draws(false, true));
+        // The call of the back buffer still has that wish; its event comes after it.
+        let at_call = calls_target_draws(false, true);
+        let at_event = calls_target_draws(false, false);
+        assert_eq!((at_call, at_event), (false, true));
+        // A known texture takes the draws whatever the wish.
+        assert!(calls_target_draws(true, true) && calls_target_draws(true, false));
+    }
 
     #[test]
     fn the_scene_flags_give_the_interior_and_like_an_exterior() {

@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn a_capture_plays_only_with_a_header_of_this_format_first() {
         let ours = header(stream_format::STREAM_FORMAT);
-        let scene = [0u8; 56];
+        let scene = [0u8; 88];
         let played = capture_header(&[(tag::HEADER, &ours), (tag::SCENE_BEGIN, &scene)], "test");
         assert_eq!(played, Ok(&ours[..]));
         let older = header(stream_format::STREAM_FORMAT - 1);

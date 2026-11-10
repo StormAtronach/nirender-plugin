@@ -125,6 +125,12 @@ struct WorldFacts {
     ambient: [f32; 3],
     /// The exact position of the camera, when the scene of the world is relative to it.
     origin: Option<[f64; 3]>,
+    /// The frustum of the scene's camera: left, right, top, bottom, near, far (the scene
+    /// record).
+    frustum: [f32; 6],
+    /// The ambient light and the fog of the scene's `RETAINED_SCENE` record, taken in the
+    /// scene: the items run at the frame's end, after the records of later scenes.
+    values: Option<(u32, Option<[u32; 4]>)>,
     /// The samples for each pixel of the targets of the frame ([`Renderer::samples`]).
     samples: u32,
     /// The format of the depth of the frame ([`Renderer::depth_format`]).
@@ -155,6 +161,12 @@ impl WorldFacts {
     /// The position of the camera ([`camera_place`]).
     fn eye(&self) -> [f64; 3] {
         camera_place(self.origin, &self.view)
+    }
+
+    /// The near and far planes of the camera, from its frustum: the projection that the frame
+    /// draws with can have an infinite far plane ([`depth::world_projection`]).
+    fn depth_range(&self) -> [f32; 2] {
+        [self.frustum[4], self.frustum[5]]
     }
 
     fn view<'a>(&self, device: &'a wgpu::Device, queue: &'a wgpu::Queue, commands: &'a FrameCommands, target_format: wgpu::TextureFormat) -> SceneView<'a> {
@@ -844,13 +856,6 @@ struct Player {
     /// frame alone (a clear of a mirror's depth after the world). It starts again at each
     /// return to the back buffer.
     target_plan: plan::Plan,
-    /// The camera of the last scene of the world camera that drew into the back buffer (the
-    /// camera word of its scene record; 0 before the first). A scene of the plugin's kind
-    /// `SCENE_OTHER` with this camera is a main view with a root of its own: the kind of a view
-    /// comes from its camera and its target ([`ViewKind::classify`]). It stays from frame to
-    /// frame, so a frame that has no world scene of the world root (a mod's subject on the world
-    /// camera) still knows the camera.
-    world_camera_id: u32,
     /// The frame in progress: its commands, its pass, and its two targets.
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,

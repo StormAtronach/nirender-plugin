@@ -9,7 +9,7 @@
 
 use core::ffi::c_void;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::engine::{vcall0, WORLD_CONTROLLER};
 use crate::d3d::{
@@ -1209,8 +1209,8 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     let route = crate::instance_stream::route_of(roots.scene_kind, back_buffer, crate::own_host::target_is_known());
     let (view, first_of_repeat) = crate::instance_stream::view_of_scene(t, &click, route);
     let walk_due = crate::world_walk::installed() && crate::world_walk::walk_due_for(roots.scene_kind, scene_root);
-    let scene = SceneV1 {
-        struct_size: size_of::<SceneV1>() as u32,
+    let mut scene = SceneV2 {
+        struct_size: size_of::<SceneV2>() as u32,
         kind: roots.scene_kind,
         camera: camera as u32,
         scene_root: scene_root as u32,
@@ -1219,19 +1219,49 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
             | cell_of_scene()
             | if sky_hidden(roots.sky_root) { SCENE_SKY_HIDDEN } else { 0 }
             | if back_buffer { SCENE_BACK_BUFFER } else { 0 }
-            | if game_wireframe() { SCENE_WIREFRAME } else { 0 },
-        camera_origin: origin.unwrap_or_default(),
+            | if game_wireframe() { SCENE_WIREFRAME } else { 0 }
+            | if click.world_camera { SCENE_WORLD_CAMERA } else { 0 },
+        camera_origin: origin.unwrap_or_else(|| camera_position(camera)),
         view,
         repeat_walk: first_of_repeat | if walk_due { SCENE_WALK_DUE } else { 0 },
+        frustum: [0.0; 6],
+        mge_fog_color: 0,
+        mge_flags: 0,
     };
+    // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`). It
+    // sets the camera's field of view, so the frustum is read after it, and it writes the fog
+    // colour that it gives the scene's draws.
+    let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
+    if function != 0 {
+        core::mem::transmute::<usize, unsafe extern "C" fn(*mut SceneV2)>(function)(&mut scene);
+    }
+    scene.frustum = camera_frustum(camera);
+    // Every read of the cell's fog colour in this scene takes MGE XE's colour.
+    crate::shape_stream::scene_fog_color((scene.mge_flags & SCENE_MGE_FOG_COLOR != 0).then_some(scene.mge_fog_color));
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
     crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route, view);
-    // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`).
-    let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
-    if function != 0 {
-        core::mem::transmute::<usize, unsafe extern "C" fn(*const SceneV1)>(function)(&scene);
+    // The values of the scene's world go at its start, before any draw of it (W298 fix C).
+    if crate::world_walk::has_world(roots.scene_kind) {
+        crate::instance_stream::world_scene(t, scene_root, &scene.frustum);
     }
+}
+
+/// The camera's own world translation, widened: the position of a camera that the plugin does
+/// not make relative.
+unsafe fn camera_position(camera: usize) -> [f64; 3] {
+    if camera == 0 {
+        return [0.0; 3];
+    }
+    core::array::from_fn(|i| f64::from(rd::<f32>(camera, AV_WORLD_TRANSLATION + i * 4)))
+}
+
+/// The camera's view frustum: left, right, top, bottom, near, far (`SceneV2::frustum`).
+unsafe fn camera_frustum(camera: usize) -> [f32; 6] {
+    if camera == 0 {
+        return [0.0; 6];
+    }
+    core::array::from_fn(|i| rd::<f32>(camera, CAM::kViewFrustum + i * 4))
 }
 
 /// The device's target is the renderer's back buffer.
@@ -1260,14 +1290,40 @@ unsafe fn clear_buffer(args: &[usize]) {
     }
 }
 
-/// `SetRenderTarget(this, texture)`
+/// The texture of the call of `SetRenderTarget` in progress, for its `after` function.
+static TARGET_ASKED: AtomicUsize = AtomicUsize::new(0);
+/// The calls of `SetRenderTarget` that left the renderer on another target: no event went.
+static TARGET_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// `SetRenderTarget(this, texture)`, before the port: the texture of the call.
 unsafe fn set_render_target(args: &[usize]) {
-    // A `before` function of a port: the main thread (`shadow::run_before`).
-    state(&MainThread::claim()).roots.render_target = args[1] as u32;
-    if let Some(host) = host() {
-        (host.frame_event)(EVENT_SET_TARGET, args[1] as u32, 0);
-        crate::capture::frame_event(EVENT_SET_TARGET, args[1] as u32, 0);
+    TARGET_ASKED.store(args[1], Ordering::Relaxed);
+}
+
+/// After the port of `SetRenderTarget`: the renderer is on the target of the call's texture,
+/// so the scene's target and the event name it. The port refuses a call while a scene is open,
+/// for a texture without renderer data, and on a failure of the device; the renderer then stays
+/// on its target, and the refusal is counted (W298 fix D).
+unsafe fn set_render_target_after() {
+    // An `after` function of a port: the main thread (`shadow::dispatch`).
+    let t = &MainThread::claim();
+    let texture = TARGET_ASKED.swap(0, Ordering::Relaxed);
+    let renderer = crate::engine::renderer();
+    let target = if renderer != 0 { crate::ports::renderer_frame::target_of(renderer, texture) } else { 0 };
+    if target == 0 || rd::<usize>(renderer, R::currentRenderTarget) != target {
+        TARGET_REFUSALS.fetch_add(1, Ordering::Relaxed);
+        return;
     }
+    state(t).roots.render_target = texture as u32;
+    if let Some(host) = host() {
+        (host.frame_event)(EVENT_SET_TARGET, texture as u32, 0);
+        crate::capture::frame_event(EVENT_SET_TARGET, texture as u32, 0);
+    }
+}
+
+/// The calls of `SetRenderTarget` that the port refused, for the report.
+pub fn target_refusals() -> u64 {
+    TARGET_REFUSALS.load(Ordering::Relaxed)
 }
 
 /// `SwapBuffers(this)`
@@ -1800,6 +1856,9 @@ pub unsafe fn connect() -> Result<String, String> {
         Some(port) => port.after.store(end_paint as *const () as usize, Ordering::Relaxed),
         None => missing.push(format!("{END_PAINT:#x}")),
     }
+    if let Some(port) = ports::all().find(|p| p.addr == SET_RENDER_TARGET && p.installed()) {
+        port.after.store(set_render_target_after as *const () as usize, Ordering::Relaxed);
+    }
     HOST.store(table as usize, Ordering::Relaxed);
     if own_d3d8() {
         find_stream_functions();
@@ -2086,7 +2145,7 @@ mod resync_tests {
     unsafe extern "C" fn use_facts_of_host(mask: u32) -> u32 {
         mask
     }
-    unsafe extern "C" fn scene_begin(_scene: *const SceneV1) {}
+    unsafe extern "C" fn scene_begin(_scene: *const SceneV2) {}
     unsafe extern "C" fn no_arguments() {}
     unsafe extern "C" fn frame_event(_kind: u32, _a: u32, _b: u32) {}
     unsafe extern "C" fn draw(_draw: *const DrawV1) {}

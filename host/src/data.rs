@@ -84,6 +84,11 @@ pub(crate) const SCENE_WIREFRAME: u32 = 0x10;
 /// A flag of the scene record: the scene's cell is like an exterior (an exterior, an interior
 /// cell with the game's flag "behaves like an exterior", or no cell).
 pub(crate) const SCENE_LIKE_EXTERIOR: u32 = 0x20;
+/// A flag of the scene record: the scene's camera is the world camera (stream format 10).
+pub(crate) const SCENE_WORLD_CAMERA: u32 = 0x40;
+/// The offset of the camera's frustum in the scene record: left, right, top, bottom, near and
+/// far, as f32 (stream format 10).
+pub(crate) const SCENE_FRUSTUM_AT: usize = 56;
 
 /// The value of a state that the game did not set.
 pub(crate) const UNKNOWN: u32 = 0x7FFF_FFFF;
@@ -524,6 +529,9 @@ pub(crate) struct Counts {
     pub(crate) sorted_without_place: u64,
     /// Of those, the ones in frames with no place at all (risk 34: a cause of the frame).
     pub(crate) sorted_without_place_no_places: u64,
+    /// The instances whose sort mark of the plugin differs from the helper's rule of the derived
+    /// material (`engine::alpha::sorted_by_engine`): the check of the mark.
+    pub(crate) sort_mark_differs: u64,
     /// The places that came after the frame's first sorted blends (a later generation).
     pub(crate) queued_late_places: u64,
     /// The items of the table's sorted blends that went before a depth clear after the world

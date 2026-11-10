@@ -289,10 +289,18 @@ pub unsafe fn set_camera_data(this: usize, location: usize, direction: usize, up
     if render_state != 0 {
         let far: u32 = rd(frustum, NiFrustum::far);
         let near: u32 = rd(frustum, NiFrustum::near);
+        let (frustum_far, frustum_distance) = fog_frustum(near, far);
         wr(render_state, RS::frustumNear, x87_pass(near));
-        wr(render_state, RS::frustumFar, x87_pass(far));
-        wr(render_state, RS::frustumDistance, f32::from_bits(far) - f32::from_bits(near));
+        wr(render_state, RS::frustumFar, frustum_far);
+        wr(render_state, RS::frustumDistance, frustum_distance);
     }
+}
+
+/// The values of the fog range that `SetCameraData` gives the render state from the camera's
+/// near and far planes (bits): `frustumFar` and `frustumDistance`. The render state has them
+/// only at the end of `SetCameraData`, so a reader at the scene's start takes them from here.
+pub fn fog_frustum(near: u32, far: u32) -> (u32, f32) {
+    (x87_pass(far), f32::from_bits(far) - f32::from_bits(near))
 }
 
 /// The call is never a skip.
@@ -599,27 +607,35 @@ pub unsafe fn set_render_target(this: usize, texture: usize) -> u8 {
     if rd::<u8>(this, R::bSceneOpen) != 0 {
         return 0;
     }
-    let target = if texture == 0 {
-        this + R::backbufferRenderTarget
-    } else {
-        let map = if ni::is_kind_of(texture, RTTI_NI_RENDERED_CUBE_MAP) {
-            this + R::hashmap_maybeRenderedCubemaps
-        } else {
-            this + R::hashmap_maybeRenderedTextures
-        };
-        let data = hash_map::find_value(map, texture as u32);
-        if data == 0 {
-            return 0;
-        }
-        // The virtual function at +0x28 of the renderer data of the texture gives its render target.
-        engine::vcall0(data, 0x28) as usize
-    };
+    let target = target_of(this, texture);
+    if target == 0 {
+        return 0;
+    }
     let result = d3d::device_set_render_target(rd(this, R::d3dDevice), rd(target, RT::d3dSurfaceBackBuffer), rd(target, RT::d3dSurfaceDepthStencil));
     if result != 0 {
         return 0;
     }
     wr(this, R::currentRenderTarget, target);
     1
+}
+
+/// The renderer's render target for `texture` (`SetRenderTarget`): the back buffer's for 0, else
+/// the one of the texture's renderer data; 0 when the renderer has no data for the texture.
+///
+/// # Safety
+///
+/// `this` points at the live `NiDX8Renderer`, and `texture` is 0 or a live `NiRenderedTexture`.
+pub unsafe fn target_of(this: usize, texture: usize) -> usize {
+    if texture == 0 {
+        return this + R::backbufferRenderTarget;
+    }
+    let map = if ni::is_kind_of(texture, RTTI_NI_RENDERED_CUBE_MAP) { this + R::hashmap_maybeRenderedCubemaps } else { this + R::hashmap_maybeRenderedTextures };
+    let data = hash_map::find_value(map, texture as u32);
+    if data == 0 {
+        return 0;
+    }
+    // The virtual function at +0x28 of the renderer data of the texture gives its render target.
+    engine::vcall0(data, 0x28) as usize
 }
 
 /// The call is never a skip. The dry device returns 0 for `SetRenderTarget`.
