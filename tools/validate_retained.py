@@ -622,7 +622,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
             early_captures.append(capture)
         if places_without_view(output):
             no_view_captures.append(capture)
-    tour =os.path.join(baseline, "tour")
+    tour = os.path.join(baseline, "tour")
     if os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
         return False
     adapter_path = os.path.join(accepted, ADAPTER_FILE)
