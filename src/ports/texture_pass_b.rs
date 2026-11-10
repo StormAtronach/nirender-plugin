@@ -685,7 +685,7 @@ pub unsafe fn effect_gives_stage(renderer: usize, effect: usize, stages_before: 
 /// The stage counts of the pass when [`set_texture_pipeline`] reaches the environment map and
 /// the fog map of an effect state, in its order of appends: the projected lights, the projected
 /// shadows, the environment map, the fog map. A projected effect with a plane adds two stages:
-/// one in [`configure_stage_from_texture_prop`] and one in [`projected_texture_matrix`].
+/// one in [`configure_stage_from_texture_prop`] and one in `projected_texture_matrix`.
 ///
 /// # Safety
 ///
