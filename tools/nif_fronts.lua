@@ -23,11 +23,20 @@
         Num0               the default place (300 south of the exhibit, facing north)
         Num.               undo the last accept or skip
         Num-               skip this stop ("no good view"), with a note
-        Num+               the next stop without a front or a skip
+        Num+               the next stop without a front or a skip, or with a front that has no look pitch
+                           (a front of before 2026-11-10 noon: the re-walk, see below)
         Home               this help
         End                hide or show all the UI (the HUD and the tool's text): as the gate's pictures
     Free flight: while the tool runs, the player flies and has no collision; move with the normal keys and
     the mouse, then press Num5. The view is first person while the tool runs.
+
+    The pitch: the look up and down of the mouse (and of Num/ and Num*) is the x angle of the player's
+    animation controller's verticalRotation, which the game's input handler turns (MACP::playerGameInputHandler
+    0x568910 calls ActorAnimController::setVerticalRotation 0x45E9B0). The player's orientation.x does not move
+    the view. An accept saves that angle as camera.pitch and marks the front with camera.look = true; a
+    front opens with its pitch. The fronts of the first walk (2026-11-10, 05:03 to 06:11Z) have pitch 0 and
+    no look mark. The re-walk: Num+ goes to the next of them, at its saved place and yaw; tilt with the
+    mouse, Num5, Num+.
 
     The file: Data Files/MWSE/config/nif_fronts.json (in Mod Organizer: overwrite/MWSE/config/), written after
     each accept, skip and undo, and at no other time. At each start the tool copies the file as it is to
@@ -263,10 +272,27 @@ local function cameraNow()
     return camera
 end
 
+-- The look pitch of the view in radians, positive down: the x angle of the animation controller's
+-- verticalRotation.
+local function lookPitch()
+    local controller = tes3.mobilePlayer.animationController
+    if not controller then return 0 end
+    return controller.verticalRotation:toEulerXYZ().x
+end
+
+local function setLookPitch(pitch)
+    local controller = tes3.mobilePlayer.animationController
+    if not controller then return end
+    local rotation = tes3matrix33.new()
+    rotation:fromEulerXYZ(pitch, 0, 0)
+    controller.verticalRotation = rotation
+end
+
 local function placeCamera(camera, yaw, pitch)
     local eye = eyeHeight()
     tes3.player.position = tes3vector3.new(camera.x, camera.y, camera.z - eye)
-    tes3.player.orientation = tes3vector3.new(pitch, 0, yaw)
+    tes3.player.orientation = tes3vector3.new(0, 0, yaw)
+    setLookPitch(pitch)
     tool.pending = camera:copy()
 end
 
@@ -275,6 +301,7 @@ local function placeDefault(ref)
     local at = ref.position
     tes3.player.position = tes3vector3.new(at.x, at.y - DEFAULT_DISTANCE, at.z)
     tes3.player.orientation = tes3vector3.new(0, 0, 0)
+    setLookPitch(0)
     tool.pending = tes3vector3.new(at.x, at.y - DEFAULT_DISTANCE, at.z + eye)
 end
 
@@ -327,7 +354,7 @@ local function entryOfNow(ref, status, note)
         id = ref.object.id,
         cell = ref.cell.id,
         exhibit = { position = vec(ref.position), orientation = vec(ref.orientation), scale = ref.scale },
-        camera = { position = vec(camera), yaw = o.z, pitch = o.x },
+        camera = { position = vec(camera), yaw = o.z, pitch = lookPitch(), look = true },
         player = { position = vec(tes3.player.position) },
         fov = mge.camera.fov,
     }
@@ -402,9 +429,10 @@ end
 local function nextOpen()
     for step = 1, #STOPS do
         local index = (tool.index + step - 1) % #STOPS + 1
-        if not tool.data.fronts[key(STOPS[index])] then return goTo(index) end
+        local entry = tool.data.fronts[key(STOPS[index])]
+        if not entry or (entry.status == "accepted" and not entry.camera.look) then return goTo(index) end
     end
-    tes3.messageBox("Nif fronts: every stop has a front or a skip")
+    tes3.messageBox("Nif fronts: every stop has a skip or a front with its look pitch")
 end
 
 -- The fine steps move the camera around the centre of the exhibit.
@@ -413,8 +441,7 @@ local function stepMove(kind, sign, small)
     if not ref then return end
     local size = STEP[kind][small and 2 or 1] * sign
     local camera = cameraNow()
-    local o = tes3.player.orientation
-    local yaw, pitch = o.z, o.x
+    local yaw, pitch = tes3.player.orientation.z, lookPitch()
     local c = centre(ref)
     if kind == "distance" then
         local dx, dy = camera.x - c.x, camera.y - c.y
@@ -441,7 +468,7 @@ end
 local HELP = table.concat({
     "Num6/Num4 next/previous   Num5 accept   Num0 default   Num. undo",
     "Num8/Num2 nearer/farther   Num9/Num7 around   Num1/Num3 down/up   Num//Num* look up/down",
-    "Shift or Ctrl: small steps   Num- skip with a note   Num+ next stop without a front",
+    "Shift or Ctrl: small steps   Num- skip with a note   Num+ next stop without a front or a look pitch",
     "Home this help   End hide all UI   Ctrl+Alt+F stop the tool",
     "Free flight: the normal movement keys and the mouse (no collision, flying)",
 }, "\n")
@@ -487,7 +514,7 @@ local function hudText()
         lines[#lines + 1] = string.format("exhibit at %.0f %.0f %.0f yaw %.0f   bound radius %.0f   distance %.0f   %s",
             ref.position.x, ref.position.y, ref.position.z, math.deg(ref.orientation.z) % 360, radius, distance, seen)
         lines[#lines + 1] = string.format("camera at %.0f %.0f %.0f yaw %.1f pitch %.1f   FOV %.2f", camera.x, camera.y, camera.z,
-            math.deg(o.z) % 360, math.deg(o.x), mge.camera.fov)
+            math.deg(o.z) % 360, math.deg(lookPitch()), mge.camera.fov)
     else
         lines[#lines + 1] = "the exhibit is not loaded here (Num6/Num4 go to it)"
     end

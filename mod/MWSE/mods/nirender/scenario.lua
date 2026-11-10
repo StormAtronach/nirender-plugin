@@ -88,13 +88,23 @@ return function(nirender, spec, name)
             yaw = ref.orientation.z + front["local"].yaw
         end
         local eye = v3(front.camera.position) - v3(front.player.position)
-        return camera - eye, tes3vector3.new(front.camera.pitch, 0, yaw)
+        return camera - eye, yaw, front.camera.pitch
+    end
+
+    -- The look pitch of the view (radians, positive down), as tools/nif_fronts.lua sets it: the x angle of
+    -- the animation controller's verticalRotation. The player's orientation.x does not move the view.
+    local function setLookPitch(pitch)
+        local controller = tes3.mobilePlayer.animationController
+        if not controller then return end
+        local rotation = tes3matrix33.new()
+        rotation:fromEulerXYZ(pitch, 0, 0)
+        controller.verticalRotation = rotation
     end
 
     -- The move of a tour to `ref`, with movement collision off: to the front of the stop when
-    -- it has one, else the player south of it, with the view to the north, at it. Returns the
-    -- place and "front" or "default". `scenario.tourEnd` gives movement collision the value it
-    -- had before the first move.
+    -- it has one, else the player south of it, with a level view to the north, at it. Returns
+    -- the place and "front" or "default". `scenario.tourEnd` gives movement collision the value
+    -- it had before the first move.
     function scenario.tourMove(ref)
         if collision_before == nil then
             collision_before = tes3.mobilePlayer.movementCollision
@@ -102,18 +112,19 @@ return function(nirender, spec, name)
         end
         tes3.mobilePlayer.movementCollision = false
         local front = frontOf(ref)
-        local target, orientation, kind
+        local target, yaw, pitch, kind
         if front then
-            target, orientation = frontPlace(ref, front)
+            target, yaw, pitch = frontPlace(ref, front)
             kind = "front"
         else
             local at = ref.position
             target = tes3vector3.new(at.x, at.y - (spec.tourDistance or 300), at.z)
-            orientation = tes3vector3.new(0, 0, 0)
+            yaw, pitch = 0, 0
             kind = "default"
         end
         tes3.player.position = target
-        tes3.player.orientation = orientation
+        tes3.player.orientation = tes3vector3.new(0, 0, yaw)
+        setLookPitch(pitch)
         return target, kind
     end
 
