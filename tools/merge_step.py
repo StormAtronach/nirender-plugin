@@ -30,7 +30,8 @@ the last commit that passed all stages, and the tool also refuses a <tip> newer 
 the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch. One more round moves
 the ref: every stage passed but the instance A/B, which is NOT RUN only because the base build reads an older format than
 the capture (the replay of the base names CAPTURE FORMAT and "older than the capture"). Without it the base stays, and no
-later A/B can replay the capture (59a357f, 2026-11-10). The log names the move and the reason. The round still exits with
+later A/B can replay the capture (59a357f, 2026-11-10). Every NOT RUN line of the stage must have that reason. The log
+names the move and the reason in an "OPEN A/B GAP" line: the round's own change has no A/B. The round still exits with
 code 1 and closes no item: NOT RUN is no pass.
 
 The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
@@ -158,7 +159,7 @@ DEPLOY_STAGE = "deploy rest"
 DEPLOY_REFUSED_CODE = REFUSED_EXIT
 # The "NOT DEPLOYED" lines of the last run_stages.
 NOT_DEPLOYED = []
-# The reason of each stage of the last run_stages that printed NOT RUN, by the stage's name.
+# The reasons of the NOT RUN lines of each stage of the last run_stages that ended NOT RUN, by the stage's name.
 NOT_RUN_REASONS = {}
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
@@ -397,13 +398,14 @@ def output_since(log, start):
         return file.read().decode("utf-8", "replace")
 
 
+def not_run_reasons(output):
+    """The reason of each "NOT RUN" line of a stage's output, in order."""
+    return [line.partition(": ")[2] or line for line in output.splitlines() if line.startswith("NOT RUN")]
+
+
 def not_run_reason(output):
     """The reason in the last "NOT RUN" line of a stage's output, or a plain text."""
-    reason = "the stage could not judge"
-    for line in output.splitlines():
-        if line.startswith("NOT RUN"):
-            reason = line.partition(": ")[2] or line
-    return reason
+    return (not_run_reasons(output) or ["the stage could not judge"])[-1]
 
 
 def run_stage(name, folder, command, log):
@@ -414,8 +416,9 @@ def run_stage(name, folder, command, log):
     code = subprocess.run(command, cwd=folder, env=stage_env(os.environ), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
     failure = ""
     if code == NOT_RUN_CODE:
-        reason = not_run_reason(output_since(log, start))
-        NOT_RUN_REASONS[name] = reason
+        output = output_since(log, start)
+        reason = not_run_reason(output)
+        NOT_RUN_REASONS[name] = not_run_reasons(output)
         verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, reason))
         return False
     if code != 0:
@@ -503,14 +506,15 @@ def base_older_than_capture(names, results, reasons):
     instance A/B, and the A/B is NOT RUN only because the base build reads an older format than its capture. Without this
     the base stays at the last pass, and no later A/B can replay the capture (2026-11-10, 59a357f: the base a76fd14 reads
     the stream format 8, and the W225 capture has the format 9). The replay gate passed, so the build under test reads the
-    format of the accepted captures. A NOT RUN of the replay of the build under test, or of any other kind, keeps the base."""
+    format of the accepted captures. Every NOT RUN line of the stage must have that reason: a NOT RUN of the replay of the
+    build under test, or of any other kind, keeps the base."""
     failed = [name for name, passed in zip(names, results) if not passed]
     if failed != [INSTANCE_STAGE]:
         return None
-    reason = reasons.get(INSTANCE_STAGE, "")
-    if not reason.startswith("the replay of the base: " + CAPTURE_FORMAT) or not reason.endswith(OLDER_THAN_CAPTURE):
+    lines = reasons.get(INSTANCE_STAGE, [])
+    if not lines or not all(line.startswith("the replay of the base: " + CAPTURE_FORMAT) and line.endswith(OLDER_THAN_CAPTURE) for line in lines):
         return None
-    return reason
+    return lines[-1]
 
 
 def items_of(subject):
@@ -1220,8 +1224,9 @@ def self_test():
         older = ("CAPTURE FORMAT: outlander-pelagiad.nircap was made by akulakhan.dll (nirender v0.3.6 79c752d), which writes the stream "
                  "format 9; the build under test reads the stream format 8: " + OLDER_THAN_CAPTURE)
 
-        def ab_round(tag, line, others=good):
-            stage = [sys.executable, "-c", "print(%r); raise SystemExit(%d)" % ("NOT RUN grass: the replay of the %s: %s" % (tag, line), NOT_RUN_CODE)]
+        def ab_round(tag, line, others=good, before=""):
+            printed = (before + "\n" if before else "") + "NOT RUN grass: the replay of the %s: %s" % (tag, line)
+            stage = [sys.executable, "-c", "print(%r); raise SystemExit(%d)" % (printed, NOT_RUN_CODE)]
             stages = [("a", root, others), ("b", root, good), (INSTANCE_STAGE, root, stage)]
             with open(os.path.join(root, "log-ab-base.txt"), "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
                 results = run_stages(stages, log)
@@ -1235,6 +1240,9 @@ def self_test():
         # Another NOT RUN (the game slot), or a failure of another stage: no move.
         assert ab_round("base", "the game slot is held by a run on Outlander-test: x") is None
         assert ab_round("base", older, others=bad) is None
+        # Every NOT RUN line of the stage must have the format reason, not only the last one (verdict 135).
+        assert ab_round("base", older, before="NOT RUN grass: the game slot is held by a run on Outlander-test: x") is None
+        assert ab_round("base", older, before="NOT RUN grass: the replay of the base: " + older) == "the replay of the base: " + older
         # A full pass is a plain pass, not this case.
         assert base_older_than_capture(["a", INSTANCE_STAGE], [True, True], {}) is None
 
@@ -1867,9 +1875,11 @@ def main():
     if not all(results):
         older = base_older_than_capture([name for name, _, _ in stages], results, NOT_RUN_REASONS) if moves_the_ref(baseline) else None
         if older:
+            # The change of this round against the old base is never A/B'd: an open gap, not a pass (the Coordinator).
             with open(log_path, "a", encoding="utf-8") as log:
-                verdict(log, "the base of the A/B moves to %s (%s), as the round passed but for the A/B, which is NOT RUN only "
-                             "because the base is older than the capture: %s" % (commit[:10], passed_ref, older))
+                verdict(log, "OPEN A/B GAP: the change from %s to %s has no grass A/B. The base of the next A/B moves to %s (%s), as the "
+                             "round passed but for the A/B, which is NOT RUN only because the base is older than the capture: %s"
+                        % (base[:10], commit[:10], commit[:10], passed_ref, older))
             keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
         return 1
     if moves_the_ref(baseline):

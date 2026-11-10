@@ -421,7 +421,8 @@ def whole_build_side(slots, what, no_wait):
     say(release_game(slots, SMOKE_GAME).splitlines()[0])
     stop = ask_slot(slots, "both", SMOKE_GAME, no_wait)
     if stop:
-        raise SmokeNotRun("the game and the whole build side for %s: %s" % (what, stop))
+        raise SmokeNotRun("the game and the whole build side for %s: %s. The set holds no game slot now: it gave it back "
+                          "for the take of both (D208)" % (what, stop))
     try:
         yield
     finally:
@@ -1030,6 +1031,7 @@ def self_test():
         Side.replies = [Slots.REFUSED]
         stop = stage()
         assert isinstance(stop, str) and "the game and the whole build side for x: a reply" in stop and Side.released == [("game", smoke)], (stop, Side.released)
+        assert "The set holds no game slot now" in stop, stop
         Side.replies = [Slots.QUEUED]
         assert isinstance(stage(no_wait=True), str) and Side.asked == ["both"], "--no-wait: one ask, then NOT RUN"
         # A fault of the stage releases the build side too, and keeps the game.
