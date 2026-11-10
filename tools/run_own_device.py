@@ -284,8 +284,9 @@ def weather_warning(args):
 # and the game's capture had shadow scenes (kind 5), so it read 6 from HKLM; its exit at 07:11:42
 # wrote HKLM, not the VirtualStore. The reason: the key gives BUILTIN\Users FullControl (an
 # explicit entry, not inherited). The game's process is virtualized, but its open of the real key
-# succeeds, so nothing is redirected. A reinstall that resets this ACL to the inherited ReadKey
-# would send the game's writes to the VirtualStore, and the VirtualStore would win the reads.
+# succeeds, so nothing is redirected. [I: not seen] A reinstall that resets this ACL to the
+# inherited ReadKey would send the game's writes to the VirtualStore, and the VirtualStore would
+# win the reads.
 GAME_REGISTRY_KEY = r"SOFTWARE\Bethesda Softworks\Morrowind"
 VIRTUAL_STORE_KEY = r"Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Bethesda Softworks\Morrowind"
 
