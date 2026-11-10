@@ -34,9 +34,10 @@
     animation controller's verticalRotation, which the game's input handler turns (MACP::playerGameInputHandler
     0x568910 calls ActorAnimController::setVerticalRotation 0x45E9B0). The player's orientation.x does not move
     the view. An accept saves that angle as camera.pitch and marks the front with camera.look = true; a
-    front opens with its pitch. The fronts of the first walk (2026-11-10, 05:03 to 06:11Z) have pitch 0 and
-    no look mark. The re-walk: Num+ goes to the next of them, at its saved place and yaw; tilt with the
-    mouse, Num5, Num+.
+    front opens with its pitch. A cell change (tes3.positionCell, game_cellChange 0x45CEF0) builds the pitch from
+    orientation.x, so a stop in another cell gets its pitch in the timer after the change. The fronts of the
+    first walk (2026-11-10, 05:03 to 06:11Z) have pitch 0 and no look mark. The re-walk: Num+ goes to the next
+    of them, at its saved place and yaw; tilt with the mouse, Num5, Num+.
 
     The file: Data Files/MWSE/config/nif_fronts.json (in Mod Organizer: overwrite/MWSE/config/), written after
     each accept, skip and undo, and at no other time. At each start the tool copies the file as it is to
