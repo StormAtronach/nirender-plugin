@@ -414,7 +414,7 @@ impl Player {
                 renderer.extension_lights.note(word(light, 0), (first + i) as u32, relative, self.stream.origin);
             }
         }
-        if masked {
+        if takes_clusters(masked, noted) {
             draw_data.light_range[3] |= 1;
         }
         // The lights of the world (`MGE_XE_LIGHTS=world`): a lit draw of the world, relative to
@@ -493,5 +493,25 @@ impl Player {
     /// Puts an entry in the queue of the sorted blends, after those that came before it.
     pub(crate) fn wait_for_sorted(&mut self, waiting: crate::Waiting) {
         self.frame_sorted.push((waiting, self.plan.defer()));
+    }
+}
+
+/// Whether a draw takes the lights of its pixel's cluster (bit 1 of `light_range[3]`): a shaded
+/// draw with the clusters on and at least one light noted in its mask. A draw with no light
+/// (an emissive-only draw, `Derived::no_lights`) has an empty mask: in the clusters its pixel
+/// walks every entry and takes none. Without the bit it walks its own list, which is empty.
+fn takes_clusters(masked: bool, noted: usize) -> bool {
+    masked && noted > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::takes_clusters;
+
+    #[test]
+    fn a_draw_without_a_light_does_not_take_the_clusters() {
+        assert!(!takes_clusters(true, 0));
+        assert!(takes_clusters(true, 3));
+        assert!(!takes_clusters(false, 3));
     }
 }
