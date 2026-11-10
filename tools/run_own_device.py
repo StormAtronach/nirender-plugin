@@ -264,23 +264,25 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
 
 TIMING_STEPS = ("rate", "walk")
 WEATHER_IN_LINE = re.compile(r'(?:current|next|from|to) (\d+) "([^"]*)"')
+# A change of the weather in a shader batch, with the text of its first argument.
+WEATHER_CHANGE = re.compile(r"\b(switchImmediate|switchTransition|changeWeather)\s*\(\s*([^),]*)")
 
 
-def weather_warning(args):
+def weather_warning(args, read=read_text):
     """The one line that warns about a run that times something and leaves the weather to the
     game: a storm moves the frame rate (the owner, 2026-11-03). None for any other run. Not a
     refusal. No --steps means all the steps, the timing steps among them. A shader-batch
-    run (a --shader-batch, or the step shaders) is a timing run too: its A/B compares frame times."""
+    run (a --shader-batch, or the step shaders) is a timing run too: its A/B compares frame times.
+    None also for a shader batch that changes the weather itself: there the pin of --weather would
+    override the batch (`weather_pin_warning`)."""
     if args.weather is not None:
         return None
     steps = [name for name in re.split(r"[,\s]+", args.steps or "") if name]
     if steps and not args.shader_batch and not any(name in TIMING_STEPS + ("shaders",) for name in steps):
         return None
+    if args.shader_batch and WEATHER_CHANGE.search(read(args.shader_batch) or ""):
+        return None
     return "warning: the run has timing steps and the weather is the game's, which can change in the run and move the frame rate: --weather 0 pins it to clear"
-
-
-# A change of the weather in a shader batch, with the text of its first argument.
-WEATHER_CHANGE = re.compile(r"\b(switchImmediate|switchTransition|changeWeather)\s*\(\s*([^),]*)")
 
 
 def weather_pin_warning(args, read=read_text):
@@ -1268,6 +1270,9 @@ def self_test_weather():
     assert "switchTransition(2)" in pin("E:/transition.lua") and "changeWeather({ id = 6 }" in pin("E:/transition.lua"), pin("E:/transition.lua")
     # A missing batch file is the argument check's problem, not this warning's.
     assert pin("E:/missing.lua") is None
+    # A batch that sets its own weather, with no --weather: no advice to pin, which would override it.
+    assert weather_warning(namespace(steps="exterior,shaders", shader_batch="E:/rain.lua"), batches.get) is None
+    assert "--weather 0" in weather_warning(namespace(steps="exterior,shaders", shader_batch="E:/none.lua"), batches.get)
 
     # The note of the run folder: the summary line, then the weather lines and no others.
     note = weather_note(None, lines)
