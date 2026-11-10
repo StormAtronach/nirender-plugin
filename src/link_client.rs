@@ -1397,10 +1397,18 @@ fn node_class(node: usize, roots: &Roots) -> Option<u32> {
 /// colour, where `game_dynamicLightTest` (0x4D3039) writes the attach radius it was given (0x4D3150
 /// and `game_getLightRadiusFromSpecular` 0x4D1B80 read it back). The light manager's device values
 /// carry the specular colour times the dimmer: they are not the radius.
+///
+/// Any other light gives 0, no fade. The engine makes only point lights
+/// (`EntityLight::createLightOnReference` 0x4D28FB, `MobileObject::createSceneLight` 0x56224D);
+/// a spot light comes from a NIF (`NiSpotLight_static::CreateFromStream` 0x6DFD00), and its
+/// specular colour is the colour of the NIF, not a radius.
 pub unsafe fn point_light_radius(light: usize) -> f32 {
+    // Several callers pass any light of a draw.
+    if vcall0(light, LIGHT_VTBL_GET_TYPE) != LIGHT_POINT {
+        return 0.0;
+    }
     let recovery = LIGHT_FADE_RADIUS.load(Ordering::Relaxed);
-    // Two callers pass any light of a draw, and only a point light has these words.
-    if recovery != 0 && vcall0(light, LIGHT_VTBL_GET_TYPE) == LIGHT_POINT {
+    if recovery != 0 {
         use crate::gen::layouts::NiPointLight as PL;
         let recovery: unsafe extern "C" fn(f32, f32, f32) -> f32 = core::mem::transmute(recovery);
         return recovery(rd(light, PL::constantAttenuation), rd(light, PL::linearAttenuation), rd(light, PL::quadraticAttenuation));
@@ -2015,6 +2023,47 @@ mod water_plane_tests {
             assert_eq!(object_class(of_a_mod.as_ptr() as usize, &roots), CLASS_UNKNOWN);
             assert_eq!(object_class(ripple.as_ptr() as usize, &roots), CLASS_WATER_RIPPLE);
         }
+    }
+}
+
+#[cfg(test)]
+mod light_radius_tests {
+    use super::*;
+    use crate::mem::wr;
+
+    extern "thiscall" fn type_directional(_light: usize) -> u32 {
+        LIGHT_DIRECTIONAL
+    }
+    extern "thiscall" fn type_point(_light: usize) -> u32 {
+        LIGHT_POINT
+    }
+    extern "thiscall" fn type_spot(_light: usize) -> u32 {
+        LIGHT_SPOT
+    }
+
+    /// The radius of a light with this type and this specular red, in memory that lives for the
+    /// test. No thread of a test is the main thread, and no MGE XE gives a recovery: a point
+    /// light takes its specular red.
+    fn radius_of(get_type: extern "thiscall" fn(usize) -> u32, specular_red: f32) -> f32 {
+        let vtable = vec![0usize; LIGHT_VTBL_GET_TYPE / 4 + 1];
+        let light = vec![0usize; L::specularColor_r / 4 + 1];
+        let at = |v: &Vec<usize>| v.as_ptr() as usize;
+        // SAFETY: each write is inside its buffer, and the buffers live for the call.
+        unsafe {
+            wr(at(&vtable), LIGHT_VTBL_GET_TYPE, get_type as *const () as usize);
+            wr(at(&light), 0, at(&vtable));
+            wr(at(&light), L::specularColor_r, specular_red);
+            point_light_radius(at(&light))
+        }
+    }
+
+    /// A spot light of a NIF has the colour of the NIF in its specular, not a radius: it has
+    /// no radius and so no fade. The red 1.0 is the spot light of the exhibit 030.
+    #[test]
+    fn only_a_point_light_has_a_radius() {
+        assert_eq!(radius_of(type_point, 512.0), 512.0);
+        assert_eq!(radius_of(type_spot, 1.0), 0.0);
+        assert_eq!(radius_of(type_directional, 1.0), 0.0);
     }
 }
 
