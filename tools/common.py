@@ -47,6 +47,101 @@ def build_missing(mge_build):
     return [part for part in BUILD_PARTS if not os.path.exists(os.path.join(mge_build, part))]
 
 
+# The exit code of a tool whose stage cannot judge: merge_step.py prints "NOT RUN" with the reason of the tool's last line
+# that starts with "NOT RUN".
+NOT_RUN_EXIT = 5
+
+# The build id that each part of the renderer carries as ASCII, "<program> v<version> <commit>[-dirty]"
+# (build_support/build_id.rs): the plugin (`BUILD_ID` of src/lib.rs), the host crate in numidium.exe (`BUILD_ID` of
+# host/src/lib.rs), and the two programs of render-link. By part: the file of a dist build and the programs it holds.
+PART_PROGRAMS = (
+    ("akulakhan.dll", os.path.join("Data Files", "mwse", "lib", "akulakhan.dll"), ("nirender",)),
+    ("numidium.exe", "numidium.exe", ("nirender-host", "numidium")),
+    ("d3d8.dll", "d3d8.dll", ("MGE-XE G7 Fork",)),
+)
+BUILD_ID_RE = re.compile(rb"(nirender-host|nirender|numidium|MGE-XE G7 Fork) v[0-9.]+ ([0-9a-f]{7,40}|unknown)(-dirty)?")
+
+
+def part_ids(build):
+    """The commit of each program in the parts of the build folder `build`, as {program: commit with its "-dirty"}, and
+    the problems as a list of texts: a missing part, a program with no build id, a program with two different ids."""
+    commits, problems = {}, []
+    for label, path, programs in PART_PROGRAMS:
+        full = os.path.join(build, path)
+        if not os.path.isfile(full):
+            problems.append("%s is not in the build" % label)
+            continue
+        with open(full, "rb") as file:
+            found = {(m.group(1).decode(), m.group(2).decode() + (m.group(3) or b"").decode()) for m in BUILD_ID_RE.finditer(file.read())}
+        for program in programs:
+            ids = sorted(commit for name, commit in found if name == program)
+            if len(ids) != 1:
+                problems.append("%s holds %s build id of %s%s" % (label, "no" if not ids else "%d different" % len(ids), program, ": " + ", ".join(ids) if ids else ""))
+            else:
+                commits[program] = ids[0]
+    return commits, problems
+
+
+def same_commit(one, other):
+    """True when two short hashes name one commit: the longer starts with the shorter (git may give more than 7 digits)."""
+    one, other = one.lower(), other.lower()
+    return bool(one) and bool(other) and (one.startswith(other) or other.startswith(one))
+
+
+def parts_problems(build, plugin_commit=None, mge_commit=None):
+    """The commits of nirender-plugin and render-link that the parts of `build` are one build of, as (plugin, mge), and why
+    they are not, as texts (an empty list when they are). The plugin and the host crate in numidium.exe must name one
+    commit of nirender-plugin, numidium and d3d8.dll one of render-link. A "-dirty" part names no commit. With
+    `plugin_commit` or `mge_commit` (the commits that a merge step checks), the parts must name those; not a HEAD, which
+    a merge can move while a build waits."""
+    commits, problems = part_ids(build)
+    found = []
+    for programs, wanted, repo in ((("nirender", "nirender-host"), plugin_commit, "nirender-plugin"), (("numidium", "MGE-XE G7 Fork"), mge_commit, "render-link")):
+        named = [(program, commits[program]) for program in programs if program in commits]
+        for program, commit in named:
+            if commit.endswith("-dirty"):
+                problems.append("%s is %s: a build of a work tree with changes names no commit" % (program, commit))
+        if len(named) == 2 and not same_commit(named[0][1], named[1][1]):
+            problems.append("%s is %s, but %s is %s: two commits of %s" % (named[0] + named[1] + (repo,)))
+        elif wanted and named and not same_commit(named[0][1], wanted):
+            problems.append("%s is %s, but the commit of %s under test is %s" % (named[0] + (repo, wanted)))
+        found.append(named[0][1] if named else None)
+    return tuple(found), problems
+
+
+# The exit codes of a helper that refuses a stream: 10 the stream format of the plugin, 11 the extension format of
+# d3d8.dll (EXIT_STREAM_FORMAT and EXIT_EXTENSION_FORMAT of src/stream_format.rs), and the last line of such a refusal
+# in a replay (host/src/cli.rs, renderer.rs of render-link).
+REFUSED_FORMAT_EXITS = (10, 11)
+CAPTURE_AGAIN = "make the capture again with this build"
+# The start of the line that replay.py adds to such a refusal.
+CAPTURE_FORMAT = "CAPTURE FORMAT"
+WRITER_RE = re.compile(r"^((?:akulakhan|d3d8)\.dll \([^)]*\)) writes (?:the (stream|extension) format (\d+)|.*)", re.M)
+READER_RE = re.compile(r"reads the (stream|extension) format (\d+)")
+
+
+def capture_format_line(capture, code, output):
+    """For a replay that the helper refused, the line that names the capture as the other part, or "". In a replay the
+    capture is the writer: the plugin and the d3d8.dll that made it wrote the stream, and the helper of the build under
+    test reads it. The helper's own text says to install the parts from one archive, which is the advice for a game;
+    in a replay the parts of the build may match, and the capture is from another build."""
+    if code not in REFUSED_FORMAT_EXITS or CAPTURE_AGAIN not in output:
+        return ""
+    writer, reader = WRITER_RE.search(output), READER_RE.search(output)
+    if not writer or not reader:
+        return "%s: %s is refused by the helper of the build under test (exit code %d); its parts may match: the capture is from another build" % (CAPTURE_FORMAT, capture, code)
+    wrote = "the %s format %s" % (writer.group(2), writer.group(3)) if writer.group(3) else "no format number"
+    newer = writer.group(3) is not None and int(writer.group(3)) > int(reader.group(2))
+    advice = "the build under test is older than the capture" if newer else "make the capture again with this build, if the format change of this build is intended"
+    return "%s: %s was made by %s, which writes %s; the build under test reads the %s format %s: %s" % (
+        CAPTURE_FORMAT, capture, writer.group(1), wrote, reader.group(1), reader.group(2), advice)
+
+
+def capture_format_in(output):
+    """The CAPTURE FORMAT line of replay.py in `output`, or ""."""
+    return next((line.strip() for line in output.splitlines() if line.strip().startswith(CAPTURE_FORMAT)), "")
+
+
 def git_env():
     """The environment for a git call about a folder of our choice: without the GIT_ names, with
     which a git hook points git at its own repository (GIT_DIR, GIT_INDEX_FILE and others). A hook
@@ -213,7 +308,71 @@ def self_test():
         assert find_sibling(os.path.join(root, "away"), main, ["docs"]) == os.path.join(root, "away", "docs")
     if real:
         assert bare(real) == real_bare, "core.bare of %s changed from %r to %r" % (real, real_bare, bare(real))
+    parts_test()
     print("common self-test: passed")
+
+
+def fake_parts(build, plugin="79c752d", host="79c752d", mge="c610f3b", d3d8=None):
+    """A build folder whose three parts carry these build ids, with other bytes around them."""
+    contents = {
+        os.path.join("Data Files", "mwse", "lib", "akulakhan.dll"): "MZ..nirender v0.3.6 %s\0.." % plugin,
+        "numidium.exe": "MZ..nirender-host v0.1.0 %s\0..numidium v0.21.0 %s\0.." % (host, mge),
+        "d3d8.dll": "MZ..MGE-XE G7 Fork v0.21.0 %s\0.." % (d3d8 or mge),
+    }
+    for path, text in contents.items():
+        os.makedirs(os.path.dirname(os.path.join(build, path)) or build, exist_ok=True)
+        with open(os.path.join(build, path), "wb") as file:
+            file.write(text.encode("ascii"))
+
+
+def parts_test():
+    """The tests of part_ids, parts_problems and capture_format_line."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as root:
+        # One build of both repositories: the parts of f243.
+        fake_parts(root)
+        assert part_ids(root) == ({"nirender": "79c752d", "nirender-host": "79c752d", "numidium": "c610f3b", "MGE-XE G7 Fork": "c610f3b"}, []), part_ids(root)
+        assert parts_problems(root) == (("79c752d", "c610f3b"), [])
+        assert parts_problems(root, "79c752d", "c610f3b") == (("79c752d", "c610f3b"), [])
+        assert parts_problems(root, "79c752d1234", "c610f3b")[1] == [], "a longer hash of the same commit"
+        # The commits under test, not a HEAD: master moved on to 319e3c6 while this build of 79c752d waited.
+        assert parts_problems(root, "319e3c6", "c610f3b")[1] == ["nirender is 79c752d, but the commit of nirender-plugin under test is 319e3c6"]
+        # A plugin of an older commit than its helper, as the brief of 79c752d feared: refused also with no commits given.
+        fake_parts(root, plugin="87f7049")
+        assert parts_problems(root)[1] == ["nirender is 87f7049, but nirender-host is 79c752d: two commits of nirender-plugin"], parts_problems(root)
+        # A d3d8.dll of another commit than numidium, and a dirty one.
+        fake_parts(root, d3d8="99c8b62")
+        assert parts_problems(root)[1] == ["numidium is c610f3b, but MGE-XE G7 Fork is 99c8b62: two commits of render-link"], parts_problems(root)
+        fake_parts(root, mge="c610f3b-dirty")
+        assert parts_problems(root)[1] == ["numidium is c610f3b-dirty: a build of a work tree with changes names no commit",
+                                           "MGE-XE G7 Fork is c610f3b-dirty: a build of a work tree with changes names no commit"], parts_problems(root)
+        # A part with no build id, and a missing part.
+        fake_parts(root)
+        with open(os.path.join(root, "d3d8.dll"), "wb") as file:
+            file.write(b"MZ no id")
+        os.remove(os.path.join(root, "numidium.exe"))
+        problems = parts_problems(root, "79c752d", "c610f3b")[1]
+        assert problems == ["numidium.exe is not in the build", "d3d8.dll holds no build id of MGE-XE G7 Fork"], problems
+    # The refusal of a replay of narsis.nircap (format 8) by the helper of 79c752d (format 9): merge step of 79c752d.
+    output = ("The parts of the wgpu renderer of MGE XE do not match.\n"
+              "akulakhan.dll (nirender v0.3.6 87f7049) writes the stream format 8.\n"
+              "numidium.exe (nirender-host v0.1.0 79c752d, numidium v0.21.0 c610f3b) reads the stream format 9.\n"
+              "Install akulakhan.dll, numidium.exe and d3d8.dll from one archive.\n" + CAPTURE_AGAIN + "\n")
+    line = capture_format_line("narsis.nircap", 10, output)
+    assert line.startswith(CAPTURE_FORMAT + ": narsis.nircap was made by akulakhan.dll (nirender v0.3.6 87f7049), which writes the stream format 8;"), line
+    assert "reads the stream format 9: make the capture again with this build, if the format change of this build is intended" in line, line
+    assert capture_format_in("x\n  " + line + "\ny") == line
+    # The grass capture of instance_ab: d3d8.dll of extension format 1, the base helper reads 2.
+    output = ("d3d8.dll (MGE-XE G7 Fork v0.21.0 99c8b62-dirty) writes the extension format 1.\n"
+              "numidium.exe (nirender-host v0.1.0 a76fd14, numidium v0.21.0 535bef1) reads the extension format 2.\n" + CAPTURE_AGAIN)
+    line = capture_format_line("grass.nircap", 11, output)
+    assert "d3d8.dll (MGE-XE G7 Fork v0.21.0 99c8b62-dirty), which writes the extension format 1" in line and "format 2" in line, line
+    # A capture newer than the build: the advice is the other way.
+    newer = output.replace("format 1.", "format 3.")
+    assert "older than the capture" in capture_format_line("grass.nircap", 11, newer), capture_format_line("grass.nircap", 11, newer)
+    # Another exit, or no "make the capture again": no line.
+    assert capture_format_line("x.nircap", 1, output) == "" and capture_format_line("x.nircap", 10, "panic") == ""
+    assert capture_format_in("no such line") == ""
 
 # The functions of the renderer subsystem, by their name in the IDA database.
 FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiPropertyState"
