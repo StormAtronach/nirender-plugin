@@ -2264,16 +2264,16 @@ impl Player {
     }
 
     /// The values of the world of the frame for the retained draws, at its start: the
-    /// ambient light and the fog from the `RETAINED_SCENE` record of the frame (the plugin
+    /// ambient light and the fog from the `RETAINED_SCENE` record of its scene (the plugin
     /// computes them for a retained shape as the engine would), else those of the stream.
     pub(super) fn retained_scene_main(&self, facts: &WorldFacts) -> SceneData {
-        self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size)
+        self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size, facts.values)
     }
 
-    /// The values of a view of the table: those of the world of the frame (see
-    /// `retained_scene_main`) with this view, projection, origin and target size.
-    fn retained_scene_of(&self, view: &[f32; 16], projection: &[f32; 16], origin: Option<[f64; 3]>, target_size: (u32, u32)) -> SceneData {
-        let (ambient, fog) = match self.retained_values {
+    /// The values of a view of the table: the ambient light and the fog of its scene's record
+    /// (`values`, see `retained_scene_main`) with this view, projection, origin and target size.
+    fn retained_scene_of(&self, view: &[f32; 16], projection: &[f32; 16], origin: Option<[f64; 3]>, target_size: (u32, u32), values: Option<(u32, Option<[u32; 4]>)>) -> SceneData {
+        let (ambient, fog) = match values {
             Some((ambient, fog)) => (color(known(ambient, 0)), fog.unwrap_or([0; 4])),
             None => ([self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0], self.stream.fog),
         };
@@ -2785,7 +2785,7 @@ impl Player {
             }
             engine::views::ShadeChoice::None => None,
         };
-        let mut scene = self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size);
+        let mut scene = self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size, facts.values);
         if let Some(shade) = shade {
             apply_shade(&mut scene, &shade);
         }

@@ -128,6 +128,9 @@ struct WorldFacts {
     /// The frustum of the scene's camera: left, right, top, bottom, near, far (the scene
     /// record).
     frustum: [f32; 6],
+    /// The ambient light and the fog of the scene's `RETAINED_SCENE` record, taken in the
+    /// scene: the items run at the frame's end, after the records of later scenes.
+    values: Option<(u32, Option<[u32; 4]>)>,
     /// The samples for each pixel of the targets of the frame ([`Renderer::samples`]).
     samples: u32,
     /// The format of the depth of the frame ([`Renderer::depth_format`]).

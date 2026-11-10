@@ -438,6 +438,7 @@ impl Player {
             depth_format: self.renderer.depth_format,
             origin: self.stream.origin,
             frustum: self.stream.frustum,
+            values: self.retained_values,
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,

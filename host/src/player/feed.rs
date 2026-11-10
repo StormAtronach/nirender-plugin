@@ -864,8 +864,8 @@ impl Player {
     /// ([`engine::views::Views::camera_set`]): the scene's origin and target come with its
     /// record, and its view and projection after it.
     fn note_view_facts(&mut self) {
-        let (view, projection, origin, target_size) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target());
-        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size });
+        let (view, projection, origin, target_size, values) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target(), self.retained_values);
+        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size, values });
     }
 
     /// A draw comes in the open scene of a view of its own: the items of its world's start go

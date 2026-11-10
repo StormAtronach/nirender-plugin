@@ -24,6 +24,9 @@ pub(crate) struct ViewFacts {
     pub(crate) projection: [f32; 16],
     pub(crate) origin: Option<[f64; 3]>,
     pub(crate) target_size: (u32, u32),
+    /// The ambient light and the fog of the scene's `RETAINED_SCENE` record: the plugin sends it
+    /// at the scene's start, before the camera's transforms.
+    pub(crate) values: Option<(u32, Option<[u32; 4]>)>,
 }
 
 /// The places of one scene.
@@ -489,8 +492,8 @@ mod tests {
     fn the_places_of_a_scene_draw_in_runs_and_its_sorted_places_at_the_flush() {
         let mut views = Views::default();
         views.scene_begin(SCENE_WORLD, true, true);
-        views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [2.0; 16], origin: None, target_size: (128, 128) });
-        views.note_facts(|| ViewFacts { view: [3.0; 16], projection: [3.0; 16], origin: None, target_size: (1, 1) });
+        views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [2.0; 16], origin: None, target_size: (128, 128), values: None });
+        views.note_facts(|| ViewFacts { view: [3.0; 16], projection: [3.0; 16], origin: None, target_size: (1, 1), values: None });
         assert_eq!(views.group(0).unwrap().facts.unwrap().target_size, (128, 128));
         assert_eq!(views.place(10, true, false), Place::New(0, 0));
         assert_eq!(views.place(11, true, true), Place::Joined);
@@ -524,7 +527,7 @@ mod tests {
         let mut views = Views::default();
         views.note_scene(Some(1), camera, 0x30, target);
         assert!(views.scene_begin(SCENE_WORLD, true, true));
-        views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [1.0; 16], origin: None, target_size: (128, 128) });
+        views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [1.0; 16], origin: None, target_size: (128, 128), values: None });
         assert_eq!(views.place(10, true, false), Place::New(0, 0));
         assert_eq!(views.scene_end(), None);
         views.note_scene(None, 0x40, 0x50, target);
@@ -550,7 +553,7 @@ mod tests {
     fn a_view_in_a_target_has_its_facts_from_its_camera_with_no_place() {
         use crate::engine::scene::SCENE_WATER;
         let (camera, target) = (0x10, 0x20);
-        let facts = |n: f32| ViewFacts { view: [n; 16], projection: [n; 16], origin: None, target_size: (128, 128) };
+        let facts = |n: f32| ViewFacts { view: [n; 16], projection: [n; 16], origin: None, target_size: (128, 128), values: None };
         let mut views = Views::default();
         // A scene with no view of its own (the back buffer's world) has no facts due.
         assert!(!views.scene_begin(SCENE_WORLD, false, true));
