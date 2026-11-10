@@ -308,6 +308,7 @@ impl Player {
     /// clears the target.
     pub(crate) fn begin_frame(&mut self, color: &wgpu::Texture, depth: Rc<wgpu::TextureView>, keep: bool) {
         self.frame_size = (color.width(), color.height());
+        self.renderer.begin_frame_stage_shaders();
         self.items.clear();
         self.frame_lights.clear();
         self.renderer.extension_lights.clear();

@@ -660,12 +660,14 @@ impl App {
             self.extension.as_ref().map_or(0, |extension| extension.texture_slots()),
             switches().samples.unwrap_or_else(|| self.extension.as_ref().map_or(1, |extension| extension.samples())),
         );
-        let (renderer, surface) = match made {
+        let (mut renderer, surface) = match made {
             Ok(made) => made,
             // No backend serves: the reason in the log and the box, then the exit code the
             // plugin knows (the failure-path page, the code 20).
             Err(refusals) => crate::request::refuse_live(&refusals),
         };
+        // A live session makes the stage pipelines on a thread, from the list of the last one.
+        renderer.start_stage_shaders();
         let surface = surface.expect("a surface");
         let vsync = self.extension.as_ref().is_some_and(|extension| extension.vsync());
         let present_mode = switches().present.unwrap_or_else(|| present_mode_of(vsync));

@@ -327,6 +327,7 @@ impl Player {
             // The samples of the targets that the draw goes into, known now: the pass that
             // draws it opens later, when the items run.
             samples: if in_back_buffer { renderer.samples } else { 1 },
+            stages: 0,
         };
         let stencil_reference = stencil[2];
         if self.stream.shape.geometry == crate::dump_wanted() {
@@ -446,6 +447,8 @@ impl Player {
         if self.target.is_some() {
             renderer.counts.target_draws += 1;
         }
+        // The stage key of the finished record: the fragment shader made for its stages.
+        let key = PipelineKey { stages: renderer.stage_shaders.id_of(&draw_data), ..key };
         // The record of the draw, and the instance that names it.
         let Some(record) = renderer.record(&draw_data) else { return };
         let instance = self.frame_instances.len() as u32;

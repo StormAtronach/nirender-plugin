@@ -301,7 +301,7 @@ impl Renderer {
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         let source = request::world_shader_source(&extension_shader);
         let source = if tier == request::TextureTier::C { request::tier_c_shader_source(&source) } else { source };
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.clone().into()) });
         let texture_entry = |binding: u32, count| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -470,7 +470,11 @@ impl Renderer {
         let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights, &first_retained_bones, &influences.buffer, &first_effect_entries));
         let timing = make_timing(&device, &queue);
         let stamps = timing.as_ref().map_or_else(|| Rc::new(crate::stamps::Stamps::off()), |timing| timing.stamps.clone());
+        let maker = PipelineMaker { device: device.clone(), layout: pipeline_layout.clone(), vertex: shader.clone(), target_format, depth_format, wireframe };
+        let stage_shaders = crate::stage_shaders::StageShaders::new(switches().stage_shaders, &source);
         let renderer = Renderer {
+            maker,
+            stage_shaders,
             frame_layout,
             frame_uniform,
             clusters,
@@ -498,7 +502,6 @@ impl Renderer {
             depth_format,
             multisample,
             depth_merge: None,
-            wireframe,
             queue,
             shader,
             runs_dump: switches().runs_dump,
@@ -536,7 +539,6 @@ impl Renderer {
             pinned_in_frame: 0,
             pinned_samplers: Vec::new(),
             pinned_samplers_in_frame: 0,
-            pipeline_layout,
             pipelines: FxHashMap::default(),
             textures: FxHashMap::default(),
             texture_objects: FxHashMap::default(),
@@ -1532,101 +1534,164 @@ impl Renderer {
     }
 
     pub(crate) fn pipeline(&mut self, key: PipelineKey) -> Option<Rc<wgpu::RenderPipeline>> {
+        // A stage key's own pipeline, or the uber-shader's while it is not made or when it failed.
+        if key.stages != 0 {
+            if let Some(pipeline) = self.stage_shaders.pipeline(key, &self.maker, &mut self.pipelines) {
+                return Some(pipeline);
+            }
+            return self.pipeline(PipelineKey { stages: 0, ..key });
+        }
         if let Some(pipeline) = self.pipelines.get(&key) {
             return Some(pipeline.clone());
         }
-        {
-            let present = attributes(key.fvf, key.stride)?;
-            let topology = match key.topology {
-                1 => wgpu::PrimitiveTopology::PointList,
-                2 => wgpu::PrimitiveTopology::LineList,
-                3 => wgpu::PrimitiveTopology::LineStrip,
-                4 => wgpu::PrimitiveTopology::TriangleList,
-                5 => wgpu::PrimitiveTopology::TriangleStrip,
-                _ => return None,
-            };
-            let from_vertex: Vec<wgpu::VertexAttribute> =
-                present.iter().map(|a| wgpu::VertexAttribute { format: a.format, offset: a.offset, shader_location: a.location }).collect();
-            // An input that the vertex does not have comes from a buffer of zeros.
-            let from_defaults: Vec<wgpu::VertexAttribute> = (0..INPUT_FORMATS.len() as u32)
-                .filter(|location| !present.iter().any(|a| a.location == *location))
-                .map(|location| wgpu::VertexAttribute { format: INPUT_FORMATS[location as usize], offset: 0, shader_location: location })
-                .collect();
-            // The world matrix of an instance: four columns at the locations 9 to 12; the
-            // record of the draw at 13.
-            let mut from_instances: Vec<wgpu::VertexAttribute> =
-                (0..4).map(|column| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: column as u64 * 16, shader_location: 9 + column }).collect();
-            from_instances.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32x2, offset: 64, shader_location: 13 });
-            let buffers = [
-                Some(wgpu::VertexBufferLayout { array_stride: key.stride as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &from_vertex }),
-                Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_defaults }),
-                Some(wgpu::VertexBufferLayout { array_stride: INSTANCE_SIZE as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_instances }),
-            ];
-            let blend = (key.blend[0] != 0).then(|| {
-                let component = wgpu::BlendComponent {
-                    src_factor: blend_factor(key.blend[1]),
-                    dst_factor: blend_factor(key.blend[2]),
-                    operation: wgpu::BlendOperation::Add,
-                };
-                wgpu::BlendState { color: component, alpha: component }
-            });
-            // Direct3D culls the faces with this winding. A front face of the game is clockwise
-            // [I: the cull values come from the cull table of the render state, ctor 0x6B7D70,
-            // by transcription].
-            let cull_mode = match key.cull {
-                2 => Some(wgpu::Face::Front),
-                3 => Some(wgpu::Face::Back),
-                _ => None,
-            };
-            let depth_on = key.depth[0] != 0;
-            let _long = crate::LongStep::begin();
-            let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("game draw"),
-                layout: Some(&self.pipeline_layout),
-                vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &buffers },
-                primitive: wgpu::PrimitiveState {
-                    topology,
-                    front_face: wgpu::FrontFace::Cw,
-                    cull_mode,
-                    polygon_mode: if key.fill == 2 && self.wireframe { wgpu::PolygonMode::Line } else { wgpu::PolygonMode::Fill },
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: self.depth_format,
-                    depth_write_enabled: Some(depth_on && key.depth[1] != 0),
-                    depth_compare: Some(if depth_on { depth::compare(compare(key.depth[2])) } else { wgpu::CompareFunction::Always }),
-                    stencil: if key.stencil[0] == 0 {
-                        Default::default()
-                    } else {
-                        // Direct3D 8 has one stencil rule for the two sides of a triangle.
-                        let face = wgpu::StencilFaceState {
-                            compare: compare(key.stencil[4]),
-                            fail_op: stencil_operation(key.stencil[1]),
-                            depth_fail_op: stencil_operation(key.stencil[2]),
-                            pass_op: stencil_operation(key.stencil[3]),
-                        };
-                        wgpu::StencilState { front: face, back: face, read_mask: key.stencil[5] & 0xFF, write_mask: key.stencil[6] & 0xFF }
-                    },
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState { count: key.samples, ..Default::default() },
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.shader,
-                    entry_point: Some("fs"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: self.target_format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::from_bits_truncate(key.color_write),
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            let pipeline = Rc::new(pipeline);
-            self.pipelines.insert(key, pipeline.clone());
-            Some(pipeline)
+        attributes(key.fvf, key.stride)?;
+        let _long = crate::LongStep::begin();
+        let pipeline = Rc::new(self.maker.build(key, &self.shader)?);
+        self.pipelines.insert(key, pipeline.clone());
+        Some(pipeline)
+    }
+
+    /// Starts the thread of the stage pipelines: a live session makes them away from the frame.
+    pub(crate) fn start_stage_shaders(&mut self) {
+        self.stage_shaders.start(self.maker.clone());
+    }
+
+    /// The start of a frame: the stage pipelines that the thread made, and the list's write.
+    pub(crate) fn begin_frame_stage_shaders(&mut self) {
+        self.stage_shaders.receive(&mut self.pipelines);
+        self.stage_shaders.after_frame();
+    }
+}
+
+/// What a pipeline of the world needs besides its key: the device, the layout, the vertex
+/// module and the formats of the targets. A clone goes to the thread of the stage shaders
+/// (`crate::stage_shaders`).
+#[derive(Clone)]
+pub(crate) struct PipelineMaker {
+    device: wgpu::Device,
+    layout: wgpu::PipelineLayout,
+    vertex: wgpu::ShaderModule,
+    target_format: wgpu::TextureFormat,
+    depth_format: wgpu::TextureFormat,
+    wireframe: bool,
+}
+
+impl PipelineMaker {
+    /// A fragment module of a stage key, or None when the device refuses it.
+    pub(crate) fn module(&self, source: &str) -> Option<wgpu::ShaderModule> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("stage shader"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        match pollster::block_on(scope.pop()) {
+            None => Some(module),
+            Some(error) => {
+                println!("stage shaders: a fragment module failed: {error}");
+                None
+            }
         }
+    }
+
+    /// The pipeline of a key with a fragment module of a stage key, or None when it fails.
+    pub(crate) fn make(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pipeline = self.build(key, fragment);
+        match pollster::block_on(scope.pop()) {
+            None => pipeline,
+            Some(error) => {
+                println!("stage shaders: a pipeline failed: {error}");
+                None
+            }
+        }
+    }
+
+    /// The pipeline of a key, with the world shader's `vs` and the `fs` of `fragment`.
+    fn build(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
+        let present = attributes(key.fvf, key.stride)?;
+        let topology = match key.topology {
+            1 => wgpu::PrimitiveTopology::PointList,
+            2 => wgpu::PrimitiveTopology::LineList,
+            3 => wgpu::PrimitiveTopology::LineStrip,
+            4 => wgpu::PrimitiveTopology::TriangleList,
+            5 => wgpu::PrimitiveTopology::TriangleStrip,
+            _ => return None,
+        };
+        let from_vertex: Vec<wgpu::VertexAttribute> =
+            present.iter().map(|a| wgpu::VertexAttribute { format: a.format, offset: a.offset, shader_location: a.location }).collect();
+        // An input that the vertex does not have comes from a buffer of zeros.
+        let from_defaults: Vec<wgpu::VertexAttribute> = (0..INPUT_FORMATS.len() as u32)
+            .filter(|location| !present.iter().any(|a| a.location == *location))
+            .map(|location| wgpu::VertexAttribute { format: INPUT_FORMATS[location as usize], offset: 0, shader_location: location })
+            .collect();
+        // The world matrix of an instance: four columns at the locations 9 to 12; the
+        // record of the draw at 13.
+        let mut from_instances: Vec<wgpu::VertexAttribute> =
+            (0..4).map(|column| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: column as u64 * 16, shader_location: 9 + column }).collect();
+        from_instances.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32x2, offset: 64, shader_location: 13 });
+        let buffers = [
+            Some(wgpu::VertexBufferLayout { array_stride: key.stride as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &from_vertex }),
+            Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_defaults }),
+            Some(wgpu::VertexBufferLayout { array_stride: INSTANCE_SIZE as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_instances }),
+        ];
+        let blend = (key.blend[0] != 0).then(|| {
+            let component = wgpu::BlendComponent {
+                src_factor: blend_factor(key.blend[1]),
+                dst_factor: blend_factor(key.blend[2]),
+                operation: wgpu::BlendOperation::Add,
+            };
+            wgpu::BlendState { color: component, alpha: component }
+        });
+        // Direct3D culls the faces with this winding. A front face of the game is clockwise
+        // [I: the cull values come from the cull table of the render state, ctor 0x6B7D70,
+        // by transcription].
+        let cull_mode = match key.cull {
+            2 => Some(wgpu::Face::Front),
+            3 => Some(wgpu::Face::Back),
+            _ => None,
+        };
+        let depth_on = key.depth[0] != 0;
+        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("game draw"),
+            layout: Some(&self.layout),
+            vertex: wgpu::VertexState { module: &self.vertex, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &buffers },
+            primitive: wgpu::PrimitiveState {
+                topology,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode,
+                polygon_mode: if key.fill == 2 && self.wireframe { wgpu::PolygonMode::Line } else { wgpu::PolygonMode::Fill },
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: self.depth_format,
+                depth_write_enabled: Some(depth_on && key.depth[1] != 0),
+                depth_compare: Some(if depth_on { depth::compare(compare(key.depth[2])) } else { wgpu::CompareFunction::Always }),
+                stencil: if key.stencil[0] == 0 {
+                    Default::default()
+                } else {
+                    // Direct3D 8 has one stencil rule for the two sides of a triangle.
+                    let face = wgpu::StencilFaceState {
+                        compare: compare(key.stencil[4]),
+                        fail_op: stencil_operation(key.stencil[1]),
+                        depth_fail_op: stencil_operation(key.stencil[2]),
+                        pass_op: stencil_operation(key.stencil[3]),
+                    };
+                    wgpu::StencilState { front: face, back: face, read_mask: key.stencil[5] & 0xFF, write_mask: key.stencil[6] & 0xFF }
+                },
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: key.samples, ..Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: fragment,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: self.target_format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::from_bits_truncate(key.color_write),
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        Some(pipeline)
     }
 }
 

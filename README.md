@@ -258,6 +258,13 @@ switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
 - `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
   guard of the device's limit.
 - `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
+- `MGE_XE_STAGE_SHADERS=0`: no fragment shader for each stage state of the draws
+  (`host/src/stage_shaders.rs`); the world shader's own `fs` (the uber-shader) draws every
+  draw. On by default; the A/B and the look test of W293 compare the two.
+- `MGE_XE_PIPELINE_LIST=<file>`: the list of the stage pipelines of a live session, in place of
+  `%LOCALAPPDATA%\MGE XE\numidium-stage-pipelines.txt`. The next start makes the pipelines of
+  the list on the helper's thread before they are needed; a list that is missing, of another
+  world shader, or that cannot be written leaves each pipeline to its first use.
 - `MGE_XE_GRASS_HASH=1`: the helper prints one line for each grass call with the hash of its records (MGE XE's
   RENDERER.md has the form). `tools/instance_ab.py` sets it for its replays.
 - `MGE_XE_RUNS_DUMP=1`: the runs of the table of each frame.
