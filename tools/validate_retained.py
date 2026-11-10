@@ -288,6 +288,18 @@ def early_world_scenes(output):
     return int(match.group(2)) if match else None
 
 
+NO_VIEW_LINE = re.compile(r"^views of their own: .*?, (\d+) not drawn because their scene has no view", re.M)
+
+
+def places_without_view(output):
+    """The places of a view of its own (a save's picture, a mod's camera) that the helper did
+    not draw because their scene got no view, from the report line `views of their own: ...`
+    (`Player::print_counts`); None when the output has no such line (a helper from before the
+    count). Each is a place lost from a picture: the gate wants 0."""
+    match = NO_VIEW_LINE.search(output)
+    return int(match.group(1)) if match else None
+
+
 def adapter_of(output):
     """The adapter line of the helper's output ("adapter: <GPU> (<backend>, driver ...)"),
     without the prefix; None when the output has none."""
@@ -318,6 +330,11 @@ def self_test():
     assert early_world_scenes("frame 1\n" + line % 0 + "retained: 3\n") == 0
     assert early_world_scenes(line % 2) == 2
     assert early_world_scenes("frame 1\n") is None
+    # The places of a view of its own not drawn because their scene has no view.
+    line = "views of their own: 2 views drawn (a save's picture, a mod's camera), 97 places drawn in them, 0 of an instance with no slot to draw, %d not drawn because their scene has no view, 0 of an instance not known; 0 views not drawn because the scene slots were full; 0 views of another camera with the last frame's shade\n"
+    assert places_without_view("frame 1\n" + line % 0) == 0
+    assert places_without_view(line % 68) == 68
+    assert places_without_view("frame 1\n") is None
     same = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_note(same, same) == "adapter: %s, as the accepted pictures" % same
     assert adapter_note(None, same).endswith("(accept again to record it)")
@@ -595,6 +612,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     os.makedirs(out, exist_ok=True)
     adapter = None
     early_captures = []
+    no_view_captures = []
     for capture in captures:
         code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
         if not ran((code, output), "replay.py", accept):
@@ -602,7 +620,9 @@ def stage_baseline(baseline, accept, mge_build, now=None):
         adapter = adapter or adapter_of(output)
         if early_world_scenes(output):
             early_captures.append(capture)
-    tour = os.path.join(baseline, "tour")
+        if places_without_view(output):
+            no_view_captures.append(capture)
+    tour =os.path.join(baseline, "tour")
     if os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
         return False
     adapter_path = os.path.join(accepted, ADAPTER_FILE)
@@ -620,6 +640,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     import picture_diff
 
     ok = check(not early_captures, "no replay had draws of its world in the target before the extension's parts" if not early_captures else "replays with draws of their world in the target before the extension's parts: %s" % ", ".join(early_captures))
+    ok &= check(not no_view_captures, "no replay had places of a view of its own without a view" if not no_view_captures else "replays with places of a view of its own not drawn because their scene has no view: %s" % ", ".join(no_view_captures))
     for a, b in [(accepted, out)] + ([(os.path.join(tour, "accepted"), tour_out)] if os.path.isdir(tour) else []):
         names = sorted(f for f in os.listdir(a) if f.endswith(".png")) if os.path.isdir(a) else []
         equal = 0
