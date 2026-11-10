@@ -176,24 +176,28 @@ pub fn scene_fog_line() -> String {
 /// `renderer` points at the live `NiDX8Renderer` with its render state, and `fog` is 0 or a live
 /// `NiFogProperty`.
 pub unsafe fn fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
-    fog_words(renderer, fog, fog_color)
+    fog_words(renderer, fog, fog_color, None)
 }
 
-/// [`fog_values_of`] at the start of a scene, before MGE XE's write: not counted.
+/// [`fog_values_of`] at the start of a scene, before MGE XE's write of the colour (not counted)
+/// and before the renderer has the range of the scene's camera: the range comes from the
+/// camera's `near` and `far` planes (bits) by the rule of `SetCameraData`
+/// ([`crate::ports::renderer_frame::fog_frustum`]).
 ///
 /// # Safety
 ///
 /// As [`fog_values_of`].
-pub unsafe fn scene_fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
-    fog_words(renderer, fog, scene_fog_color_of)
+pub unsafe fn scene_fog_values_of(renderer: usize, fog: usize, near: u32, far: u32) -> Option<[u32; 4]> {
+    fog_words(renderer, fog, scene_fog_color_of, Some(crate::ports::renderer_frame::fog_frustum(near, far)))
 }
 
-/// The fog words of `fog`, with its colour from `color_of`.
+/// The fog words of `fog`, with its colour from `color_of`, and the range from the render
+/// state, or from `frustum` (`frustumFar` bits, `frustumDistance`) when it is given.
 ///
 /// # Safety
 ///
 /// As [`fog_values_of`].
-unsafe fn fog_words(renderer: usize, fog: usize, color_of: unsafe fn(usize) -> u32) -> Option<[u32; 4]> {
+unsafe fn fog_words(renderer: usize, fog: usize, color_of: unsafe fn(usize) -> u32, frustum: Option<(u32, f32)>) -> Option<[u32; 4]> {
     use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiFogProperty};
     if fog == 0 {
         return None;
@@ -204,12 +208,11 @@ unsafe fn fog_words(renderer: usize, fog: usize, color_of: unsafe fn(usize) -> u
         return None;
     }
     let render_state: usize = rd(renderer, R::renderState);
-    let (start, end) = crate::x87::fog_range(
-        rd(fog, NiFogProperty::density),
-        rd(render_state, RS::frustumDistance),
-        rd(render_state, RS::frustumFar),
-        rd(render_state, RS::inverseMaxFogValue),
+    let (far, distance) = frustum.map_or_else(
+        || (rd(render_state, RS::frustumFar), rd(render_state, RS::frustumDistance)),
+        |(far, distance)| (f32::from_bits(far), distance),
     );
+    let (start, end) = crate::x87::fog_range(rd(fog, NiFogProperty::density), distance, far, rd(render_state, RS::inverseMaxFogValue));
     Some([color_of(fog), start, end, ((flags >> 3) & 3 == 1) as u32])
 }
 

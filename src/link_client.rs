@@ -1243,7 +1243,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route, view);
     // The values of the scene's world go at its start, before any draw of it (W298 fix C).
     if crate::world_walk::has_world(roots.scene_kind) {
-        crate::instance_stream::world_scene(t, scene_root);
+        crate::instance_stream::world_scene(t, scene_root, &scene.frustum);
     }
 }
 

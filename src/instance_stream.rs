@@ -2480,6 +2480,16 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     };
     if t.scene_frame == frame && t.scene_values != (ambient, fog) {
         t.scene_mixed += 1;
+        if t.scene_mixed <= 4 {
+            crate::log!(
+                "instances: the instance {id} (shape 0x{shape:x}) in the scene {} of the kind {} (frame {frame}, values of the scene {}) has other scene values: ambient {ambient:#x} fog {fog:?}, the scene's ambient {:#x} fog {:?}",
+                t.scene_serial,
+                t.scene_kind,
+                t.values_scene,
+                t.scene_values.0,
+                t.scene_values.1
+            );
+        }
     }
     // The lights of the effect state of the shape, their device values when they changed,
     // and the keys when the set changed.
@@ -2528,9 +2538,12 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
 /// is black unless a mod adds one. One record in a scene: a frame with a save picture has one
 /// for the picture's scene and one for the world scene in the back buffer, and the helper takes
 /// the latest. The table's shapes count only a difference (`scene_mixed`).
+///
 /// The fog colour is the scene's (`shape_stream::scene_fog_color_of`): MGE XE's for a scene
 /// that it gives one, which it writes into the cell's property only later, at the scene's view.
-pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
+/// The fog range is the one of the scene's camera, `frustum` (`SceneV2::frustum`): the renderer
+/// takes it only at the end of `SetCameraData`, so its render state has the camera before here.
+pub unsafe fn world_scene(mt: &MainThread, camera_root: usize, frustum: &[f32; 6]) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let frame = t.frame;
@@ -2545,7 +2558,9 @@ pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
     let world_root: usize = if game != 0 { rd(game, GAME_WORLD_ROOT) } else { 0 };
     let ambient = crate::ports::light_manager::ambient_of_effect_lists(&[camera_root, world_root]);
     let cell_fog = crate::engine::game_fog_property();
-    let fog = if cell_fog != 0 { crate::shape_stream::scene_fog_values_of(renderer, cell_fog) } else { None };
+    // `frustum`: left, right, top, bottom, near, far.
+    let (near, far) = (frustum[4].to_bits(), frustum[5].to_bits());
+    let fog = if cell_fog != 0 { crate::shape_stream::scene_fog_values_of(renderer, cell_fog, near, far) } else { None };
     let fog_color = (cell_fog != 0).then(|| crate::shape_stream::scene_fog_color_of(cell_fog));
     t.values_scene = t.scene_serial;
     t.scene_frame = frame;

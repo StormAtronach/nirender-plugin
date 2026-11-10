@@ -289,10 +289,18 @@ pub unsafe fn set_camera_data(this: usize, location: usize, direction: usize, up
     if render_state != 0 {
         let far: u32 = rd(frustum, NiFrustum::far);
         let near: u32 = rd(frustum, NiFrustum::near);
+        let (frustum_far, frustum_distance) = fog_frustum(near, far);
         wr(render_state, RS::frustumNear, x87_pass(near));
-        wr(render_state, RS::frustumFar, x87_pass(far));
-        wr(render_state, RS::frustumDistance, f32::from_bits(far) - f32::from_bits(near));
+        wr(render_state, RS::frustumFar, frustum_far);
+        wr(render_state, RS::frustumDistance, frustum_distance);
     }
+}
+
+/// The values of the fog range that `SetCameraData` gives the render state from the camera's
+/// near and far planes (bits): `frustumFar` and `frustumDistance`. The render state has them
+/// only at the end of `SetCameraData`, so a reader at the scene's start takes them from here.
+pub fn fog_frustum(near: u32, far: u32) -> (u32, f32) {
+    (x87_pass(far), f32::from_bits(far) - f32::from_bits(near))
 }
 
 /// The call is never a skip.
