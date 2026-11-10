@@ -2528,6 +2528,8 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
 /// is black unless a mod adds one. One record in a scene: a frame with a save picture has one
 /// for the picture's scene and one for the world scene in the back buffer, and the helper takes
 /// the latest. The table's shapes count only a difference (`scene_mixed`).
+/// The fog colour is the scene's (`shape_stream::scene_fog_color_of`): MGE XE's for a scene
+/// that it gives one, which it writes into the cell's property only later, at the scene's view.
 pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
@@ -2543,12 +2545,13 @@ pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
     let world_root: usize = if game != 0 { rd(game, GAME_WORLD_ROOT) } else { 0 };
     let ambient = crate::ports::light_manager::ambient_of_effect_lists(&[camera_root, world_root]);
     let cell_fog = crate::engine::game_fog_property();
-    let fog = if cell_fog != 0 { crate::shape_stream::fog_values_of(renderer, cell_fog) } else { None };
+    let fog = if cell_fog != 0 { crate::shape_stream::scene_fog_values_of(renderer, cell_fog) } else { None };
+    let fog_color = (cell_fog != 0).then(|| crate::shape_stream::scene_fog_color_of(cell_fog));
     t.values_scene = t.scene_serial;
     t.scene_frame = frame;
     t.scene_values = (ambient, fog);
     let sun = scene_sun(mt, t);
-    capture::retained_scene(ambient, fog, crate::shape_stream::fog_color_of(cell_fog), sun.as_ref());
+    capture::retained_scene(ambient, fog, fog_color, sun.as_ref());
 }
 
 /// The engine's sorter takes a shape with the alpha property `alpha` (0 for none):

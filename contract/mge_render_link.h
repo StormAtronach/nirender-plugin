@@ -217,6 +217,10 @@
 // the scene. Without the bit, no such event follows.
 #define MGE_LINK_SCENE_WALK_DUE 0x00000100u
 
+// Bits of `mgeFlags` of a scene (stream format 10).
+// MGE XE gives the scene's draws the fog colour `mgeFogColor` (the scattering of the sky).
+#define MGE_LINK_SCENE_MGE_FOG_COLOR 0x00000001u
+
 // Flags of a texture description.
 // The game can change the pixels of the texture later.
 #define MGE_LINK_TEXTURE_DYNAMIC 0x00000001u
@@ -393,6 +397,13 @@ typedef struct MgeLinkSceneV2 {
     // MGE_StreamSceneBegin (its field of view). The client fills it after that call: the host
     // reads it as 0 there.
     float frustum[6];
+    // MGE XE fills these two in MGE_StreamSceneBegin; the client sets them to 0 before it.
+    // With MGE_LINK_SCENE_MGE_FOG_COLOR in `mgeFlags`, `mgeFogColor` is the fog colour that MGE
+    // XE gives the scene's draws: it writes it into the game's fog property
+    // (`TES3::DataHandler::sgFogProperty`) at the scene's view transform, in the property's
+    // format. Without the bit, MGE XE does not change the fog colour of the scene.
+    uint32_t mgeFogColor;
+    uint32_t mgeFlags;
 } MgeLinkSceneV2;
 
 typedef struct MgeLinkLightV1 {
@@ -605,7 +616,7 @@ typedef struct MgeRenderLinkHostV1 {
 #ifdef __cplusplus
 static_assert(sizeof(void*) == 4, "the render link is for 32-bit code");
 static_assert(sizeof(MgeLinkSceneV1) == 56, "MgeLinkSceneV1 size");
-static_assert(sizeof(MgeLinkSceneV2) == 80, "MgeLinkSceneV2 size");
+static_assert(sizeof(MgeLinkSceneV2) == 88, "MgeLinkSceneV2 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
@@ -629,7 +640,8 @@ const MgeRenderLinkHostV1* __cdecl MGE_RenderLinkConnect(uint32_t clientVersion)
 // from patches of its own in the engine's code.
 // A camera's Click starts, before its view transform goes to the device. MGE XE reads the
 // camera object that `scene->camera` names (the same process); the eye is `cameraOrigin`.
-void __cdecl MGE_StreamSceneBegin(const MgeLinkSceneV2* scene);
+// MGE XE writes `mgeFogColor` and `mgeFlags`.
+void __cdecl MGE_StreamSceneBegin(MgeLinkSceneV2* scene);
 
 // The plugin's lines in MGE XE's log (mgeXE.log): d3d8.dll writes each line of `text` (a text
 // can have more than one, at its '\n') as "nirender: <line>", with no limit of length. Any

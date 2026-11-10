@@ -8,6 +8,8 @@
 //! draw. With a Direct3D device behind the link, the pipeline runs too, for the picture of
 //! the game.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use crate::capture;
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
@@ -107,13 +109,63 @@ pub unsafe fn fog_values(renderer: usize, property_state: usize) -> Option<[u32;
     fog_values_of(renderer, rd(property_state, PS::propFog))
 }
 
-/// The colour of one fog property, on or off; [`None`] without a property.
+/// MGE XE's fog colour of the scene in progress (`SceneV2::mge_fog_color`): bit 32 set and the
+/// colour in the low word, or 0 when MGE XE does not change the scene's fog colour.
+static SCENE_FOG_COLOR: AtomicU64 = AtomicU64::new(0);
+/// The reads of the cell's fog colour in a scene with MGE XE's colour ([`fog_color`]), and the
+/// ones of them while the property had another colour.
+static SCENE_FOG_READS: AtomicU64 = AtomicU64::new(0);
+static SCENE_FOG_OTHER: AtomicU64 = AtomicU64::new(0);
+
+/// A scene starts with MGE XE's fog colour `color` for its draws, or None when MGE XE does not
+/// change it (`link_client::send_scene`).
+pub fn scene_fog_color(color: Option<u32>) {
+    SCENE_FOG_COLOR.store(color.map_or(0, |color| 1 << 32 | u64::from(color)), Ordering::Relaxed);
+}
+
+/// The colour of the fog property `fog` for the scene in progress: for the cell's property
+/// (`TES3::DataHandler::sgFogProperty`) in a scene with MGE XE's colour, that colour, else the
+/// property's own. MGE XE writes its colour into the cell's property at the scene's view
+/// transform, so a read of the property before it has the weather's colour.
 ///
 /// # Safety
 ///
-/// `fog` is 0 or a live `NiFogProperty`.
-pub unsafe fn fog_color_of(fog: usize) -> Option<u32> {
-    (fog != 0).then(|| rd(fog, crate::gen::layouts::NiFogProperty::color))
+/// `fog` is a live `NiFogProperty`.
+pub unsafe fn scene_fog_color_of(fog: usize) -> u32 {
+    let own: u32 = rd(fog, crate::gen::layouts::NiFogProperty::color);
+    let scene = SCENE_FOG_COLOR.load(Ordering::Relaxed);
+    if scene == 0 || fog != crate::engine::game_fog_property() {
+        own
+    } else {
+        scene as u32
+    }
+}
+
+/// [`scene_fog_color_of`] at a draw, counted: a read where the property has another colour than
+/// MGE XE's would have given the draw the weather's colour.
+///
+/// # Safety
+///
+/// `fog` is a live `NiFogProperty`.
+pub unsafe fn fog_color(fog: usize) -> u32 {
+    let color = scene_fog_color_of(fog);
+    if SCENE_FOG_COLOR.load(Ordering::Relaxed) != 0 && fog == crate::engine::game_fog_property() {
+        SCENE_FOG_READS.fetch_add(1, Ordering::Relaxed);
+        if rd::<u32>(fog, crate::gen::layouts::NiFogProperty::color) != color {
+            SCENE_FOG_OTHER.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    color
+}
+
+/// The report of [`fog_color`]: the reads at the draws, and the ones where the property had
+/// another colour than MGE XE's.
+pub fn scene_fog_line() -> String {
+    format!(
+        "fog colour: {} reads of the cell's fog colour at the draws of scenes with MGE XE's colour, {} of them while the property had another colour",
+        SCENE_FOG_READS.load(Ordering::Relaxed),
+        SCENE_FOG_OTHER.load(Ordering::Relaxed)
+    )
 }
 
 /// The fog words of one fog property (the cell's, or a shape's own), with the render
@@ -124,6 +176,24 @@ pub unsafe fn fog_color_of(fog: usize) -> Option<u32> {
 /// `renderer` points at the live `NiDX8Renderer` with its render state, and `fog` is 0 or a live
 /// `NiFogProperty`.
 pub unsafe fn fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
+    fog_words(renderer, fog, fog_color)
+}
+
+/// [`fog_values_of`] at the start of a scene, before MGE XE's write: not counted.
+///
+/// # Safety
+///
+/// As [`fog_values_of`].
+pub unsafe fn scene_fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
+    fog_words(renderer, fog, scene_fog_color_of)
+}
+
+/// The fog words of `fog`, with its colour from `color_of`.
+///
+/// # Safety
+///
+/// As [`fog_values_of`].
+unsafe fn fog_words(renderer: usize, fog: usize, color_of: unsafe fn(usize) -> u32) -> Option<[u32; 4]> {
     use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiFogProperty};
     if fog == 0 {
         return None;
@@ -140,7 +210,7 @@ pub unsafe fn fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
         rd(render_state, RS::frustumFar),
         rd(render_state, RS::inverseMaxFogValue),
     );
-    Some([rd(fog, NiFogProperty::color), start, end, ((flags >> 3) & 3 == 1) as u32])
+    Some([color_of(fog), start, end, ((flags >> 3) & 3 == 1) as u32])
 }
 
 /// The handles of the object of the draw in progress, from the object record.

@@ -1225,14 +1225,19 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         view,
         repeat_walk: first_of_repeat | if walk_due { SCENE_WALK_DUE } else { 0 },
         frustum: [0.0; 6],
+        mge_fog_color: 0,
+        mge_flags: 0,
     };
     // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`). It
-    // sets the camera's field of view, so the frustum is read after it.
+    // sets the camera's field of view, so the frustum is read after it, and it writes the fog
+    // colour that it gives the scene's draws.
     let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
     if function != 0 {
-        core::mem::transmute::<usize, unsafe extern "C" fn(*const SceneV2)>(function)(&scene);
+        core::mem::transmute::<usize, unsafe extern "C" fn(*mut SceneV2)>(function)(&mut scene);
     }
     scene.frustum = camera_frustum(camera);
+    // Every read of the cell's fog colour in this scene takes MGE XE's colour.
+    crate::shape_stream::scene_fog_color((scene.mge_flags & SCENE_MGE_FOG_COLOR != 0).then_some(scene.mge_fog_color));
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
     crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route, view);

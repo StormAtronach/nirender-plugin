@@ -273,7 +273,16 @@ pub struct SceneV2 {
     /// far, as the renderer takes them for the projection (after MGE XE's change of the field of
     /// view). The engine's projection of a camera is always a perspective.
     pub frustum: [f32; 6],
+    /// The fog colour that MGE XE gives the scene's draws, with [`SCENE_MGE_FOG_COLOR`] in
+    /// `mge_flags`: MGE XE fills both in `MGE_StreamSceneBegin` (the scattering of the sky),
+    /// in the format of the fog property's colour.
+    pub mge_fog_color: u32,
+    pub mge_flags: u32,
 }
+
+/// The bit of `SceneV2::mge_flags`: MGE XE gives the scene's draws the fog colour
+/// `SceneV2::mge_fog_color`.
+pub const SCENE_MGE_FOG_COLOR: u32 = 0x1;
 
 /// The bits of `SceneV1::repeat_walk` that hold the first slot of a repeat plus 1.
 pub const SCENE_REPEAT_MASK: u32 = 0xFF;
@@ -430,12 +439,14 @@ const _: () = {
     // A reader of an older packet (48 bytes) has no view: the field starts at its end.
     assert!(core::mem::offset_of!(SceneV1, view) == 48);
     assert!(core::mem::offset_of!(SceneV1, repeat_walk) == 52);
-    assert!(size_of::<SceneV2>() == 80);
+    assert!(size_of::<SceneV2>() == 88);
     // The fields of V1 at their places in V2.
     assert!(core::mem::offset_of!(SceneV2, camera_origin) == core::mem::offset_of!(SceneV1, camera_origin));
     assert!(core::mem::offset_of!(SceneV2, view) == 48);
     assert!(core::mem::offset_of!(SceneV2, repeat_walk) == 52);
     assert!(core::mem::offset_of!(SceneV2, frustum) == 56);
+    assert!(core::mem::offset_of!(SceneV2, mge_fog_color) == 80);
+    assert!(core::mem::offset_of!(SceneV2, mge_flags) == 84);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);
