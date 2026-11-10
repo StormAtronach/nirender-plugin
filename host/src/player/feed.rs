@@ -7,6 +7,13 @@ use crate::stream_format::{
     HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
 
+/// The draws of the calls' target go somewhere: the target is a texture that this program made
+/// (`known_texture`), or the last `EVENT_SET_TARGET` asked for no texture (the back buffer). A
+/// rendered texture that is not known here takes the draws nowhere.
+fn calls_target_draws(known_texture: bool, wants_texture: bool) -> bool {
+    known_texture || !wants_texture
+}
+
 /// The cell of a scene from the flags of its record: (interior, like an exterior). The flag
 /// [`SCENE_LIKE_EXTERIOR`] is the one source of "like an exterior".
 fn cell_of_scene(flags: u32) -> (bool, bool) {
@@ -222,6 +229,9 @@ impl Player {
             tag::FRAME_EVENT => {
                 if word(data, 0) == EVENT_SET_TARGET {
                     self.wants_texture = word(data, 4) != 0;
+                    // The event comes after the device's call of the target (stream format
+                    // 10), so that call had the wish of the event before.
+                    self.stream.back_buffer = calls_target_draws(self.target.is_some(), self.wants_texture);
                 }
                 if word(data, 0) == EVENT_WORLD_WALK && self.stream.world_walk {
                     self.world_walk();
@@ -351,8 +361,7 @@ impl Player {
                         // that this program made is that texture; each other one is the
                         // back buffer.
                         let texture = self.renderer.surfaces.get(&word(arguments, 0)).copied().filter(|handle| self.renderer.targets.contains_key(handle));
-                        // A rendered texture that is not known here: its draws go nowhere.
-                        self.stream.back_buffer = texture.is_some() || !self.wants_texture;
+                        self.stream.back_buffer = calls_target_draws(texture.is_some(), self.wants_texture);
                         if texture != self.target {
                             self.target = texture;
                             // Back in the back buffer: the next target group has a plan state
@@ -1243,8 +1252,22 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_of_scene, instance_lights, orphans_of, scene_record};
+    use super::{calls_target_draws, cell_of_scene, instance_lights, orphans_of, scene_record};
     use crate::SCENE_LIKE_EXTERIOR;
+
+    /// A return from a texture to the back buffer: the device's call comes first, with the wish
+    /// of the texture's event, and the event of the back buffer after it gives the draws back.
+    #[test]
+    fn the_back_buffer_takes_its_draws_again_at_its_event() {
+        // The texture's event, then its call: a rendered texture that is not known here.
+        assert!(!calls_target_draws(false, true));
+        // The call of the back buffer still has that wish; its event comes after it.
+        let at_call = calls_target_draws(false, true);
+        let at_event = calls_target_draws(false, false);
+        assert_eq!((at_call, at_event), (false, true));
+        // A known texture takes the draws whatever the wish.
+        assert!(calls_target_draws(true, true) && calls_target_draws(true, false));
+    }
 
     #[test]
     fn the_scene_flags_give_the_interior_and_like_an_exterior() {
