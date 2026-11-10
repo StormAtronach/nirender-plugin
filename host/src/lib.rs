@@ -383,6 +383,26 @@ pub const NO_LIGHTS_BIT: u32 = 1 << 15;
 /// target before its world began, for the first ones only.
 pub(crate) const EARLY_DRAW_LINES: u64 = 16;
 
+/// Bit 64 of `light_range[3]` for a pass that adds to the picture ([`adds_to_picture`]): the
+/// fog makes the draw darker and adds no fog colour (`fogged` in the shader).
+pub(crate) const ADDS_BIT: u32 = 64;
+
+/// The blend of a pass (on, the source factor, the destination factor, as Direct3D 8 numbers
+/// them) adds to the picture: the blend is on and one of the two factors is D3DBLEND_ONE (2).
+/// This is the test of MGE XE's Direct3D 9 FFE (`ffeshader.cpp`) for its fog toward black.
+pub fn adds_to_picture(blend: [u32; 3]) -> bool {
+    blend[0] != 0 && (blend[1] == 2 || blend[2] == 2)
+}
+
+/// [`ADDS_BIT`] for a pass with this blend, or 0.
+pub(crate) fn adds_bit(blend: [u32; 3]) -> u32 {
+    if adds_to_picture(blend) {
+        ADDS_BIT
+    } else {
+        0
+    }
+}
+
 /// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
 /// shader takes the lit colour and the normal of the first vertex of each triangle, as
 /// Direct3D 8 does. The plugin sends the shade of a shape only with
@@ -1188,7 +1208,22 @@ pub(crate) fn assert_wgsl(label: &str, source: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::VertexLayout;
+    use super::{adds_bit, adds_to_picture, VertexLayout, ADDS_BIT};
+
+    #[test]
+    fn a_blend_with_a_factor_of_one_adds_to_the_picture() {
+        // D3DBLEND_ZERO 1, ONE 2, SRCALPHA 5, INVSRCALPHA 6, SRCCOLOR 3.
+        assert!(!adds_to_picture([0, 2, 2]), "a pass without the blend adds nothing");
+        assert!(!adds_to_picture([1, 5, 6]), "the blend by the alpha");
+        assert!(!adds_to_picture([1, 1, 3]), "no factor of ONE");
+        assert!(adds_to_picture([1, 2, 6]), "a source of ONE");
+        assert!(adds_to_picture([1, 3, 2]), "a destination of ONE (NIF 069's SRC_COLOR, ONE)");
+        assert!(adds_to_picture([1, 5, 2]), "a destination of ONE (NIF 092's SRC_ALPHA, ONE)");
+        assert!(adds_to_picture([1, 2, 2]), "both factors ONE");
+        assert!(adds_to_picture([1, 2, 1]), "a source of ONE, a destination of ZERO");
+        assert_eq!(adds_bit([1, 5, 2]), ADDS_BIT);
+        assert_eq!(adds_bit([1, 5, 6]), 0);
+    }
 
     #[test]
     fn layout_of_a_format() {

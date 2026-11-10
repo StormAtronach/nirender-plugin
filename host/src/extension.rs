@@ -377,6 +377,14 @@ pub struct DrawFacts {
     pub emissive: [f32; 4],
 }
 
+impl DrawFacts {
+    /// The draw adds to the picture ([`crate::adds_to_picture`]): the fog makes it darker and
+    /// adds no fog colour.
+    pub fn adds_to_picture(&self) -> bool {
+        crate::adds_to_picture([self.blend_enable as u32, self.source_blend, self.destination_blend])
+    }
+}
+
 /// The kinds of a draw of the retained table for [`Extension::shade_table`]: the four blend
 /// forms (opaque, alpha, alpha that adds, colour that adds), each without and with a depth
 /// write. A slot of the table takes the shade of its kind (`retained::slot_kind`).
@@ -645,6 +653,9 @@ pub trait Extension {
     ///   `world_normal`) and the colour of the vertex.
     /// - `fn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f`: the pixel
     ///   after the stages and the alpha test; `clear` is 1 with no fog and 0 in full fog.
+    ///   The shader's `fn fogged(color: vec3f, clear: f32) -> vec3f` gives the fog of the
+    ///   draw: toward the fog colour, or darker with no fog colour for a draw that adds to
+    ///   the picture ([`DrawFacts::adds_to_picture`]).
     ///
     /// The functions read the uniform of the draw as `draw` (see [`DrawData`]); the colour of
     /// such a draw is not kept between 0 and 1 after the stages.
@@ -889,7 +900,7 @@ pub(crate) fn extension_shaders(extension: Option<&dyn Extension>) -> String {
         "fn extension_sky_position(position: vec3f) -> vec3f { return position; }\nfn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f { return vec3f(0.0); }\n".to_string()
     });
     let draw = extension.and_then(|extension| extension.draw_shader()).unwrap_or_else(|| {
-        "fn extension_shade(in: VertexOut) -> vec4f { return in.vertex_color; }\nfn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f { return vec4f(mix(draw.fog_color.rgb, color, clear), alpha); }\n".to_string()
+        "fn extension_shade(in: VertexOut) -> vec4f { return in.vertex_color; }\nfn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f { return vec4f(fogged(color, clear), alpha); }\n".to_string()
     });
     format!("{sky}\n{draw}\n")
 }
@@ -924,6 +935,20 @@ mod tests {
         assert_eq!(cluster_reach(&point(1.0, [1.0, 0.0, 0.0], 0.0)), LIGHT_REACH_MAX);
         // A black light reaches nothing.
         assert_eq!(cluster_reach(&point(0.0, [0.0, 0.0, 1e-5], 0.0)), 0.0);
+    }
+
+    #[test]
+    fn the_table_kinds_that_add_to_the_picture() {
+        // The forms alpha that adds (source ONE) and colour that adds (destination ONE), each
+        // without and with a depth write: the kinds 4 to 7 of `retained::slot_kind`.
+        let adds: Vec<bool> = TABLE_KINDS.iter().map(DrawFacts::adds_to_picture).collect();
+        assert_eq!(adds, [false, false, false, false, true, true, true, true]);
+    }
+
+    #[test]
+    fn the_default_finish_takes_the_fog_of_the_draw() {
+        let text = extension_shaders(None);
+        assert!(text.contains("fogged(color, clear)"), "{text}");
     }
 
     #[test]
