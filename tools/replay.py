@@ -21,7 +21,7 @@ import subprocess
 import sys
 
 import session
-from common import SIBLINGS, build_missing, local
+from common import SIBLINGS, build_missing, capture_format_line, local
 
 MGE_BUILD = local("mge_build", os.path.join(SIBLINGS, "MGE-XE-G7-render-link", "bin", "MSVC-Release"))
 CONFIG_ROOT = local("config_root", os.path.join(session.harness.MO2_ROOT, "mods", "Configuration", "Root"))
@@ -66,6 +66,10 @@ def main():
     result = subprocess.run(command, cwd=args.config_root, env=env, capture_output=True, text=True)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
+    # The helper's refusal names the parts of a game; in a replay the capture is the other part.
+    line = capture_format_line(os.path.basename(args.capture), result.returncode, result.stdout + result.stderr)
+    if line:
+        sys.stderr.write(line + "\n")
     return result.returncode
 
 

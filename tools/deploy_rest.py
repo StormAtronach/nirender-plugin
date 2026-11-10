@@ -21,7 +21,8 @@ shows up.
 
 It refuses, and writes nothing, while Morrowind, numidium or Mod Organizer runs, and it does not wait: exit code 3 and a line
 that starts with "REFUSED". Any other fault is exit code 1. Before the first write it also checks that every source
-exists and that each install has both mod folders (it makes no mod folder).
+exists, that each install has both mod folders (it makes no mod folder), and that the build ids in akulakhan.dll,
+numidium.exe and d3d8.dll name the HEADs of --plugin-repo and --mge-repo, with no "-dirty" (the dry run too).
 
 Unless --no-keep, it keeps the build as the next set folder f<N> of SETS (E:\\nirender-keep\\mgebuilds) with no pdb, the
 plugin beside it as akulakhan-<commit>.dll, and a one-line WHAT.txt: the same shape as the play sets of make_play_set.py.
@@ -41,7 +42,7 @@ import tempfile
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import local  # noqa: E402
+from common import local, parts_problems  # noqa: E402
 from make_play_set import SETS, next_set_number, say  # noqa: E402
 
 # The test installs, by name: the folder of the install (MO2 instance) and the names of its two mods. The key
@@ -283,11 +284,22 @@ def keep_build(build, folder, plugin_commit):
         raise DeployError("the kept copy holds a pdb: %s" % pdbs[0])
 
 
-def run(build, installs, plugin_repo, mge_repo, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile):
+def check_parts(build, plugin_commit, mge_commit):
+    """The plugin, the helper and d3d8.dll must be one build of the two repositories: a mismatched pair in an install shows
+    only as the helper's refusal at the next game start."""
+    problems = parts_problems(build, plugin_commit, mge_commit)
+    if problems:
+        raise DeployError("the parts of the build are not one build of nirender-plugin %s and render-link %s: %s" % (plugin_commit, mge_commit, "; ".join(problems)))
+
+
+def run(build, installs, plugin_repo, mge_repo, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile, commit=commit_of):
     """The whole deploy. Returns the exit code."""
     items, left_out = plan_of(files_below(build))
     check_sources(build, items)
     check_installs(installs)
+    plugin_commit, mge_commit = commit(plugin_repo), commit(mge_repo)
+    check_parts(build, plugin_commit, mge_commit)
+    say("parts: one build of nirender-plugin %s and render-link %s" % (plugin_commit, mge_commit))
     digests = [(label, md5_of(os.path.join(build, *path.split("/")))) for label, path in NAMED_DIGESTS]
     if dry_run:
         say("dry run: %d items for each of %d installs; nothing is written" % (len(items), len(installs)))
@@ -295,13 +307,12 @@ def run(build, installs, plugin_repo, mge_repo, tag=None, keep=True, dry_run=Fal
             first = ": " + ", ".join(changed[:5]) + (", ..." if len(changed) > 5 else "") if changed else ""
             say("  %s: would copy %d, unchanged %d%s" % (name, len(changed), len(items) - len(changed), first))
         say("left out of the plan: %s" % (left_out_summary(left_out) or "nothing"))
-        for name, install in installs.items():
-            say("  %s: shaders only in the mod: %s" % (name, ", ".join(only_in_mod(install, items)) or "none"))
+        for install_name, install in installs.items():
+            say("  %s: shaders only in the mod: %s" % (install_name, ", ".join(only_in_mod(install, items)) or "none"))
         for label, digest in digests:
             say("md5 %s %s" % (label, digest))
         return 0
     check_nothing_runs(tasklist)
-    plugin_commit, mge_commit = commit_of(plugin_repo), commit_of(mge_repo)
     name = new_set_folder(sets) if keep else None
     tag = tag or name or datetime.datetime.now().strftime("rest-%Y%m%d-%H%M")
     if keep:
@@ -311,8 +322,9 @@ def run(build, installs, plugin_repo, mge_repo, tag=None, keep=True, dry_run=Fal
     for install_name, (copied, unchanged) in counts.items():
         say("%s: copied %d, unchanged %d; backups in %s" % (install_name, copied, unchanged, os.path.join(installs[install_name]["root"], "mge-backup-" + tag)))
     say("left out of the plan: %s" % (left_out_summary(left_out) or "nothing"))
-    for name, install in installs.items():
-        say("%s: shaders only in the mod: %s" % (name, ", ".join(only_in_mod(install, items)) or "none"))
+    # Not `name`: that is the set folder, and WHAT.txt goes into it below.
+    for install_name, install in installs.items():
+        say("%s: shaders only in the mod: %s" % (install_name, ", ".join(only_in_mod(install, items)) or "none"))
     for label, digest in digests:
         say("md5 %s %s" % (label, digest))
     if keep:
@@ -343,6 +355,14 @@ def fake_build(folder, text="v1"):
     for path in ("numidium.pdb", "d3d8.pdb", "d3d9.dll", "mgeXE.toml", "mge3/mgeXE.toml", "Data Files/XE Sky Variations.esp",
                  "Data Files/meshes/f/b.pdb", "Data Files/docs/a.txt", "Data Files/docs/b.txt"):
         write(os.path.join(folder, *path.split("/")), "no " + path)
+    # The build ids of the three parts, as one build of FAKE_HEADS.
+    write(os.path.join(folder, "d3d8.dll"), text + " MGE-XE G7 Fork v0.21.0 %s" % FAKE_HEADS["mge"])
+    write(os.path.join(folder, "numidium.exe"), text + " nirender-host v0.1.0 %s numidium v0.21.0 %s" % (FAKE_HEADS["plugin"], FAKE_HEADS["mge"]))
+    write(os.path.join(folder, *NIRENDER_PLUGIN.split("/")), text + " nirender v0.3.6 %s" % FAKE_HEADS["plugin"])
+
+
+# The heads of the two repositories in the tests: `run(..., "plugin", "mge", commit=FAKE_HEADS.get)`.
+FAKE_HEADS = {"plugin": "79c752d", "mge": "c610f3b"}
 
 
 def fake_install(root, mge_mod="MGE X", old=None):
@@ -436,22 +456,34 @@ def self_test():
             assert "MD5 MISMATCH" in str(error), error
 
         # A refusal writes nothing, and a fault before the first write writes nothing.
+        fake_build(build, "v5")
         fresh = {"C": fake_install(os.path.join(root, "C"), "MGE C", old="old")}
         before = tree_of(fresh["C"]["root"])
         try:
-            run(build, fresh, root, root, tag="r", keep=False, tasklist=lambda: listing)
+            run(build, fresh, "plugin", "mge", tag="r", keep=False, tasklist=lambda: listing, commit=FAKE_HEADS.get)
             raise AssertionError("a running game did not stop the deploy")
         except Refused as error:
             assert str(error).startswith("REFUSED: ") and "Morrowind.exe" in str(error), error
         assert tree_of(fresh["C"]["root"]) == before, "a refused deploy wrote"
         os.remove(os.path.join(build, "numidium.exe"))
         try:
-            run(build, fresh, root, root, tag="r", keep=False, tasklist=quiet)
+            run(build, fresh, "plugin", "mge", tag="r", keep=False, tasklist=quiet, commit=FAKE_HEADS.get)
             raise AssertionError("a build without numidium.exe was deployed")
         except DeployError as error:
             assert "numidium.exe" in str(error), error
         assert tree_of(fresh["C"]["root"]) == before, "a fault wrote"
-        write(os.path.join(build, "numidium.exe"), "back")
+        fake_build(build, "v6")
+        # Parts of two builds: the plugin of an older commit (the fear of the merge step of 79c752d). The deploy and its dry
+        # run refuse before any write, and name the part.
+        write(os.path.join(build, *NIRENDER_PLUGIN.split("/")), "v6 nirender v0.3.6 87f7049")
+        for dry in (False, True):
+            try:
+                run(build, fresh, "plugin", "mge", tag="r", keep=False, dry_run=dry, tasklist=quiet, commit=FAKE_HEADS.get)
+                raise AssertionError("a build of mismatched parts was deployed (dry run %s)" % dry)
+            except DeployError as error:
+                assert "not one build" in str(error) and "nirender is 87f7049, but nirender-plugin is at 79c752d" in str(error), error
+        assert tree_of(fresh["C"]["root"]) == before, "a mismatched build wrote"
+        fake_build(build, "v6")
         no_mod ={"D": {"root": os.path.join(root, "D"), "mge_mod": "MGE D", "nirender_mod": "nirender"}}
         try:
             check_installs(no_mod)
@@ -462,8 +494,18 @@ def self_test():
 
         # The dry run writes nothing.
         before = tree_of(root)
-        assert run(build, fresh, root, root, tag="r", keep=False, dry_run=True, tasklist=quiet) == 0
+        assert run(build, fresh, "plugin", "mge", tag="r", keep=False, dry_run=True, tasklist=quiet, commit=FAKE_HEADS.get) == 0
         assert tree_of(root) == before, "the dry run wrote"
+
+        # A whole deploy with a kept set, into two installs: WHAT.txt goes into the set folder, not into a folder named
+        # after the last install (the merge step of 79c752d: 'mgebuilds\\Outlander-test\\WHAT.txt').
+        whole_sets = os.path.join(root, "whole-sets")
+        two = {"E": fake_install(os.path.join(root, "E"), "MGE E"), "F": fake_install(os.path.join(root, "F"), "MGE F")}
+        assert run(build, two, "plugin", "mge", keep=True, sets=whole_sets, tasklist=quiet, commit=FAKE_HEADS.get) == 0
+        assert sorted(os.listdir(whole_sets)) == ["f1"], os.listdir(whole_sets)
+        what = open(os.path.join(whole_sets, "f1", "WHAT.txt"), encoding="ascii").read()
+        assert what.startswith("f1 ") and "nirender 79c752d, render-link c610f3b" in what and "deployed to E, F" in what, what
+        assert os.path.isfile(os.path.join(whole_sets, "f1", "akulakhan-79c752d.dll"))
 
         # The kept copy: the next number as a number, no pdb, the plugin beside it, one ASCII line.
         sets = os.path.join(root, "sets")

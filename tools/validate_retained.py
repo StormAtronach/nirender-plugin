@@ -60,7 +60,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-from common import BUILD_PARTS, build_missing, plugin_lines  # noqa: E402
+from common import BUILD_PARTS, NOT_RUN_EXIT, build_missing, capture_format_in, plugin_lines  # noqa: E402
 from validate_tour import NOT_RUN, refusal_of  # noqa: E402
 import stream_rule  # noqa: E402
 PY = sys.executable
@@ -170,6 +170,19 @@ def check(condition, text):
     return condition
 
 
+# The CAPTURE FORMAT lines (common.py) of the replays of this process.
+CAPTURE_FORMATS = []
+
+
+def baseline_failure_code():
+    """The exit code of a failed baseline stage: NOT RUN when a capture of another format stopped it (the stage stops at
+    its first failure), with a "NOT RUN" line for merge_step.py; else 1."""
+    if not CAPTURE_FORMATS:
+        return 1
+    print("NOT RUN baseline: %s" % CAPTURE_FORMATS[-1], flush=True)
+    return NOT_RUN_EXIT
+
+
 def ran(result, tool, accepting=False):
     """True when a tool of this folder ended with the code 0. `result` comes from `run_code`. Else
     its last lines go to the console and the stage fails: a failed tool would only show later as
@@ -187,6 +200,11 @@ def ran(result, tool, accepting=False):
     failed = re.search(r"\d+ pictures, [1-9]\d* failed", output)
     if refused and not failed:
         return check(False, "%s: %s: %s" % (NOT_RUN, tool, refused[refused.index("Refused"):]))
+    # A capture of another format than the build under test: the gate cannot judge this build with it.
+    other_format = capture_format_in(output)
+    if other_format and not failed:
+        CAPTURE_FORMATS.append(other_format)
+        return check(False, "%s: %s" % (tool, other_format))
     return check(False, "%s ended with the code %d%s" % (tool, code, ": the accepted folder holds a mix now, accept again" if accepting else ""))
 
 
@@ -302,6 +320,16 @@ def self_test():
         assert not ran((1, "NOT RUN: slot refused: replay of tour-3.nircap: 54 pictures not made: Refused by the slot check: x\n"
                            "FAILED 1-01-a.png: gpu error\n150 pictures, 2 failed\n"), "validate_tour.py")
     assert "FAIL validate_tour.py ended with the code 1" in printed.getvalue() and "FAIL " + NOT_RUN not in printed.getvalue(), printed.getvalue()
+    assert baseline_failure_code() == 1, "a failure with no capture of another format"
+    # A capture of another stream format (narsis.nircap at the merge step of 79c752d): the stage is NOT RUN, and its line
+    # names the capture, not the parts of the build.
+    stale = "CAPTURE FORMAT: narsis.nircap was made by akulakhan.dll (nirender v0.3.6 87f7049), which writes the stream format 8; x"
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        assert not ran((10, "The parts of the wgpu renderer of MGE XE do not match.\nmake the capture again with this build\n" + stale + "\n"), "replay.py")
+        assert baseline_failure_code() == NOT_RUN_EXIT
+    assert "FAIL replay.py: " + stale in printed.getvalue() and "ended with the code" not in printed.getvalue(), printed.getvalue()
+    assert ("\nNOT RUN baseline: " + stale) in printed.getvalue(), printed.getvalue()
+    del CAPTURE_FORMATS[:]
     # A build folder with the helper only (a cargo target folder) lacks the Data Files.
     with tempfile.TemporaryDirectory() as build:
         open(os.path.join(build, "numidium.exe"), "wb").close()
@@ -704,7 +732,7 @@ def main():
                     return 1
         elif stage == "baseline":
             if not stage_baseline(args.baseline, args.accept, args.mge_build, args.now):
-                return 1
+                return baseline_failure_code()
         elif stage == "only":
             for place in places:
                 if not stage_only(place, args.mge_build):

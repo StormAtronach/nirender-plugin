@@ -47,9 +47,9 @@ from dataclasses import dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import BUILD_PARTS, REPO, build_missing, local, main_checkout  # noqa: E402
+from common import BUILD_PARTS, NOT_RUN_EXIT, REPO, build_missing, capture_format_in, local, main_checkout  # noqa: E402
 
-PASS, FAIL, NOT_RUN = 0, 1, 5
+PASS, FAIL, NOT_RUN = 0, 1, NOT_RUN_EXIT
 KEEP_FOLDER = "E:\\nirender-keep\\merge-step"
 BASE_WORK = os.path.join(KEEP_FOLDER, "base-work")
 PLUGIN_NAME = "nirender-plugin"
@@ -460,6 +460,13 @@ def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare
         began = time.time()
         code, output, pictures = replay(stage, folder, build, args.out, tag)
         out("replay %s: exit code %d, %d s, %d hash lines" % (tag, code, time.time() - began, len(hash_lines(output))))
+        other_format = capture_format_in(output)
+        if code != 0 and other_format:
+            # The capture is from a build of another format: this stage cannot judge the two builds with it.
+            for line in output.splitlines()[-6:]:
+                out("       " + line)
+            out("NOT RUN %s: the replay of the %s: %s" % (stage.name, tag, other_format))
+            return NOT_RUN
         if code != 0:
             out("FAIL %s: the replay of the %s exited with code %d" % (stage.name, tag, code))
             for line in output.splitlines()[-6:]:
@@ -637,6 +644,23 @@ def self_test():
             running = os.path.join(full.game_dir, "Morrowind.exe")
             assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: [running]) == NOT_RUN and any("a Morrowind.exe of the instance runs: %s" % running in line for line in said), said
             assert not any(line.startswith("replay ") for line in said), said
+
+            # A capture of another extension format (the grass capture at the merge step of 79c752d): NOT RUN, with the
+            # line of replay.py; another exit of the replay stays a FAIL.
+            global replay
+            real_replay = replay
+            stale = "CAPTURE FORMAT: c.nircap was made by d3d8.dll (MGE-XE G7 Fork v0.21.0 99c8b62-dirty), which writes the extension format 1; x"
+            try:
+                replay = lambda *_: (11, "make the capture again with this build\n" + stale + "\n", root)  # noqa: E731
+                said = []
+                assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == NOT_RUN, said
+                assert "NOT RUN g: the replay of the base: " + stale in said and not any(line.startswith("FAIL") for line in said), said
+                replay = lambda *_: (11, "a panic\n", root)  # noqa: E731
+                said = []
+                assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == FAIL, said
+                assert "FAIL g: the replay of the base exited with code 11" in said, said
+            finally:
+                replay = real_replay
         finally:
             del STAGES["g"]
     print("instance_ab self-test: ok")
