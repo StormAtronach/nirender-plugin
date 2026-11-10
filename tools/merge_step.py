@@ -407,7 +407,9 @@ def run_stage(name, folder, command, log):
         if name == DEPLOY_STAGE and code == DEPLOY_REFUSED_CODE and deploy_refusal:
             # A game or Mod Organizer runs: nothing was written. The merge is no worse for it, so the stage does not fail the
             # round (D193); the line names the command that deploys the same build later, when nothing runs.
-            not_deployed = "NOT DEPLOYED (%d s): %s. To deploy this build alone, run in %s: %s" % (time.time() - began, deploy_refusal, folder, " ".join(command))
+            # Quoted as the Windows command line takes it, so that a path with a space pastes into a shell.
+            not_deployed = "NOT DEPLOYED (%d s): %s. To deploy this build alone, run in %s: %s" % (
+                time.time() - began, deploy_refusal, subprocess.list2cmdline([folder]), subprocess.list2cmdline(command))
             verdict(log, not_deployed)
             NOT_DEPLOYED.append(not_deployed)
             return True
@@ -1162,7 +1164,12 @@ def self_test():
         refused = [sys.executable, "-c", "print('REFUSED: Morrowind.exe runs, and the deploy does not wait: end it'); raise SystemExit(%d)" % DEPLOY_REFUSED_CODE]
         with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
             assert run_stages([("a", root, good), ("build for the gate", root, good), (DEPLOY_STAGE, root, refused), gate_stage], log) == [True, True, True, True]
-            assert len(NOT_DEPLOYED) == 1 and "Morrowind.exe runs" in NOT_DEPLOYED[0] and "To deploy this build alone, run in %s: " % root in NOT_DEPLOYED[0] and " ".join(refused) in NOT_DEPLOYED[0], NOT_DEPLOYED
+            assert len(NOT_DEPLOYED) == 1 and "Morrowind.exe runs" in NOT_DEPLOYED[0] and "To deploy this build alone, run in %s: " % root in NOT_DEPLOYED[0] and subprocess.list2cmdline(refused) in NOT_DEPLOYED[0], NOT_DEPLOYED
+            # A folder and an argument with a space are quoted: the line pastes into a shell.
+            spaced = os.path.join(root, "a folder")
+            os.makedirs(spaced)
+            assert run_stages([("a", root, good), (DEPLOY_STAGE, spaced, refused)], log) == [True, True]
+            assert 'run in "%s": ' % spaced in NOT_DEPLOYED[0] and '"print(' in NOT_DEPLOYED[0], NOT_DEPLOYED
             assert run_stages([("a", root, good), (DEPLOY_STAGE, root, [sys.executable, "-c", "print('REFUSED: x'); raise SystemExit(1)"])], log) == [True, False], "another code is a fault"
             assert NOT_DEPLOYED == [], "run_stages starts a new list"
             assert run_stages([("a", root, good), (DEPLOY_STAGE, root, [sys.executable, "-c", "print('FAIL: x'); raise SystemExit(%d)" % DEPLOY_REFUSED_CODE])], log) == [True, False], "the code with no REFUSED line is a fault"
