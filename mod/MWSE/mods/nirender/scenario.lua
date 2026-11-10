@@ -70,7 +70,7 @@ return function(nirender, spec, name)
                 end
             end
         end
-        return fronts[(ref.cell.editorName .. "|" .. ref.object.id):lower()]
+        return fronts[(ref.cell.id .. "|" .. ref.object.id):lower()]
     end
 
     local function v3(t)
