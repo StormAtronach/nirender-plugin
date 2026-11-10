@@ -36,14 +36,15 @@ pub(crate) const GRID_WORLD_LIGHTS: u32 = 3;
 /// which is in each cluster) and its reach. `lists` has a list for each cluster. Returns the
 /// table (the first entry and the number for each cluster), the entries, and the values for
 /// the shader with `w` in the grid. An entry that finds its cluster full goes into `dropped`.
-pub(crate) fn bin_lights(lists: &mut [Vec<u32>], items: impl Iterator<Item = (u32, Option<[f32; 3]>, f32)>, projection: &[f32; 16], size: (u32, u32), w: u32, dropped: &mut u64) -> (Vec<[u32; 2]>, Vec<u32>, ClusterData) {
+pub(crate) fn bin_lights(lists: &mut [Vec<u32>], items: impl Iterator<Item = (u32, Option<[f32; 3]>, f32)>, projection: &[f32; 16], depth_range: [f32; 2], size: (u32, u32), w: u32, dropped: &mut u64) -> (Vec<[u32; 2]>, Vec<u32>, ClusterData) {
     for list in lists.iter_mut() {
         list.clear();
     }
     let (gx, gy, gz) = (CLUSTER_GRID[0] as usize, CLUSTER_GRID[1] as usize, CLUSTER_GRID[2] as usize);
-    // The near and far planes of a projection of Direct3D.
-    let near = if projection[10] != 0.0 { (-projection[14] / projection[10]).max(1.0) } else { 1.0 };
-    let far = if projection[10] != 1.0 { (projection[14] / (1.0 - projection[10])).max(near * 2.0) } else { near * 1000.0 };
+    // The near and far planes of the camera ([`crate::WorldFacts::depth_range`]); a frustum of
+    // no depth (a camera whose record has none) still gives slices.
+    let near = depth_range[0].max(f32::MIN_POSITIVE);
+    let far = depth_range[1].max(near * 2.0);
     let depth_scale = gz as f32 / (far / near).ln();
     let slice_of = |z: f32| ((z.max(near) / near).ln() * depth_scale).floor().clamp(0.0, gz as f32 - 1.0) as usize;
     let (sx, sy) = (projection[0], projection[5]);
@@ -187,13 +188,13 @@ impl Clusters {
     /// Bins the candidates into the grid for the view and the projection of the scene and
     /// writes the buffers. `size` is the size of the picture. Returns false when the
     /// clusters are off for the frame (no start of the world).
-    pub(crate) fn build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], view: Option<([f32; 16], [f32; 16])>, size: (u32, u32), counts: &mut Counts) -> bool {
+    pub(crate) fn build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], view: Option<([f32; 16], [f32; 16], [f32; 2])>, size: (u32, u32), counts: &mut Counts) -> bool {
         self.world_built = false;
         let overflow = core::mem::replace(&mut self.overflow, false);
         if overflow {
             counts.cluster_frames_many += 1;
         }
-        let Some((mut view, projection)) = view.filter(|_| self.on && !self.unique.is_empty() && !overflow) else {
+        let Some((mut view, projection, depth_range)) = view.filter(|_| self.on && !self.unique.is_empty() && !overflow) else {
             self.unique.clear();
             queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
             return false;
@@ -226,7 +227,7 @@ impl Clusters {
             // so a reach past the objects the game attached the light to lights nothing more.
             Some((index | slot << 16, centre, crate::extension::cluster_reach(light)))
         });
-        let (table, indexes, data) = bin_lights(&mut self.lists, items, &projection, size, 1, &mut counts.cluster_dropped);
+        let (table, indexes, data) = bin_lights(&mut self.lists, items, &projection, depth_range, size, 1, &mut counts.cluster_dropped);
         self.unique.clear();
         self.write(device, queue, &table, &indexes, &data, counts);
         true
@@ -240,11 +241,11 @@ impl Clusters {
     /// reads `lights_retained` and moves a light of a draw of the stream by `to_scene`.
     /// Returns false when the frame has no start of the world.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn build_world(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], slots: &[u32], view: Option<([f32; 16], [f32; 16])>, camera: Option<[f64; 3]>, to_scene: [f64; 3], size: (u32, u32), counts: &mut Counts) -> bool {
+    pub(crate) fn build_world(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lights: &[LightData], slots: &[u32], view: Option<([f32; 16], [f32; 16], [f32; 2])>, camera: Option<[f64; 3]>, to_scene: [f64; 3], size: (u32, u32), counts: &mut Counts) -> bool {
         self.unique.clear();
         self.overflow = false;
         self.world_built = false;
-        let Some((mut view, projection)) = view else {
+        let Some((mut view, projection, depth_range)) = view else {
             queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
             return false;
         };
@@ -261,7 +262,7 @@ impl Clusters {
             let centre = [(p[0] as f64 + to_scene[0]) as f32, (p[1] as f64 + to_scene[1]) as f32, (p[2] as f64 + to_scene[2]) as f32, p[3]];
             Some((slot, Some(view_point(&view, centre)), crate::extension::cluster_reach(light)))
         });
-        let (table, indexes, mut data) = bin_lights(&mut self.lists, items, &projection, size, GRID_WORLD_LIGHTS, &mut counts.cluster_dropped);
+        let (table, indexes, mut data) = bin_lights(&mut self.lists, items, &projection, depth_range, size, GRID_WORLD_LIGHTS, &mut counts.cluster_dropped);
         data.offset = [to_scene[0] as f32, to_scene[1] as f32, to_scene[2] as f32, 0.0];
         self.write(device, queue, &table, &indexes, &data, counts);
         true
@@ -348,7 +349,7 @@ impl ExtensionLights {
     /// Makes the lights of the frame for the extension, one copy of each relative to the
     /// origin of the scene, and bins them for the view and the projection that the extension
     /// gets (`SceneView`).
-    pub(crate) fn build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame_lights: &[LightData], view: [f32; 16], projection: [f32; 16], size: (u32, u32), counts: &mut Counts) {
+    pub(crate) fn build(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame_lights: &[LightData], view: [f32; 16], projection: [f32; 16], depth_range: [f32; 2], size: (u32, u32), counts: &mut Counts) {
         self.built = false;
         let noted = core::mem::take(&mut self.noted);
         if noted.is_empty() {
@@ -380,7 +381,7 @@ impl ExtensionLights {
             items.push((lights.len() as u32, centre, light_reach(&light)));
             lights.push(light);
         }
-        let (table, indexes, data) = bin_lights(&mut self.lists, items.into_iter(), &projection, size, 2, &mut counts.cluster_dropped);
+        let (table, indexes, data) = bin_lights(&mut self.lists, items.into_iter(), &projection, depth_range, size, 2, &mut counts.cluster_dropped);
         if lights.len() > self.light_capacity {
             self.light_capacity = lights.len().next_power_of_two();
             self.lights = storage_buffer(device, "extension lights", self.light_capacity, core::mem::size_of::<LightData>());
@@ -434,7 +435,7 @@ mod tests {
         let cells = (CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]) as usize;
         let mut lists: Vec<Vec<u32>> = (0..cells).map(|_| Vec::new()).collect();
         let mut dropped = 0;
-        let (_, indexes, _) = bin_lights(&mut lists, (0..lights).map(|entry| (entry, Some(centre), reach)), &projection(), (1024, 1024), 1, &mut dropped);
+        let (_, indexes, _) = bin_lights(&mut lists, (0..lights).map(|entry| (entry, Some(centre), reach)), &projection(), [1.0, 1000.0], (1024, 1024), 1, &mut dropped);
         (indexes.len(), dropped)
     }
 

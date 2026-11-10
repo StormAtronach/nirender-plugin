@@ -878,9 +878,10 @@ mod tests {
     /// An Isolate Subject frame (another screen with the world camera) is a main view.
     #[test]
     fn an_isolate_frame_is_a_main_view() {
-        let views = Views::default();
-        let kind = ViewKind::classify(false, views.camera_is_world(SCENE_OTHER, 7, 7));
+        let kind = ViewKind::classify(false, Views::camera_is_world(SCENE_OTHER, true));
         assert_eq!(kind, ViewKind::Main);
+        // Without the flag (a mod's camera), another screen.
+        assert_ne!(ViewKind::classify(false, Views::camera_is_world(SCENE_OTHER, false)), ViewKind::Main);
     }
 
     /// The additions of MGE XE are the main view's: another screen, a picture and a frame

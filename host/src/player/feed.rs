@@ -174,7 +174,11 @@ impl Player {
                 }
             }
             tag::SCENE_BEGIN => {
-                self.stream.origin = (word(data, 20) & 1 != 0).then(|| [double(data, 24), double(data, 32), double(data, 40)]);
+                // The camera's position is in the record for every camera; it is the origin of
+                // the relative matrices only with the flag.
+                self.stream.position = [double(data, 24), double(data, 32), double(data, 40)];
+                self.stream.origin = (word(data, 20) & 1 != 0).then_some(self.stream.position);
+                self.stream.frustum = core::array::from_fn(|i| f32::from_bits(word(data, SCENE_FRUSTUM_AT + i * 4)));
                 (self.stream.interior, self.stream.like_exterior) = cell_of_scene(word(data, 20));
                 self.stream.sky_hidden = word(data, 20) & 4 != 0;
                 self.stream.wireframe = word(data, 20) & SCENE_WIREFRAME != 0;
@@ -182,11 +186,7 @@ impl Player {
                 let kind = word(data, 4);
                 self.views.note_scene_record(data);
                 let in_target = self.target.is_some();
-                let camera = word(data, 8);
-                if !in_target && scene::world_camera(kind) {
-                    self.world_camera_id = camera;
-                }
-                let camera_is_world = self.views.camera_is_world(kind, camera, self.world_camera_id);
+                let camera_is_world = engine::views::Views::camera_is_world(kind, word(data, 20) & SCENE_WORLD_CAMERA != 0);
                 self.views.scene_begin(kind, in_target, camera_is_world);
                 self.view_world_begun = false;
                 self.view_sky_seen = false;
@@ -1007,8 +1007,7 @@ impl Player {
         let mut effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
         // An effect that moves in the play takes its chain's value, as in the table.
         if let (Some(stages), Some(material)) = (effects.as_mut(), self.renderer.materials.get(&retained.material)) {
-            let location = crate::camera_place(self.stream.origin, &self.stream.view);
-            self.retained.chain_stages(material, &self.stream.view, location, stages);
+            self.retained.chain_stages(material, &self.stream.view, self.stream.position, stages);
         }
         self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
         if let Some(fog) = self.stream.shape_fog {

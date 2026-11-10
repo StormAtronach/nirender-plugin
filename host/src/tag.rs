@@ -137,7 +137,7 @@ pub fn least_length(tag: u32) -> usize {
         TEXTURE_UPDATE => 24,
         // `SceneV1` of the link: 56 bytes, with the origin at 24, the view at 48 and the word
         // of the repeat and the walk at 52.
-        SCENE_BEGIN => 56,
+        SCENE_BEGIN => 80,
         // The flags (`SCENE_END_*` of the plugin's `link.rs`).
         SCENE_END => 4,
         FRAME_EVENT => 8,
@@ -511,7 +511,7 @@ mod tests {
     #[test]
     fn the_scene_record_is_the_packet_of_the_link() {
         // `SceneV1` of `src/link.rs` of the plugin is 56 bytes. The origin is read at 24.
-        assert_eq!(least_length(SCENE_BEGIN), 56);
+        assert_eq!(least_length(SCENE_BEGIN), 80);
     }
 
     #[test]

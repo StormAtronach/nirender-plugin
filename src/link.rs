@@ -68,6 +68,9 @@ pub const SCENE_WIREFRAME: u32 = 0x10;
 /// flag "behaves like an exterior" (`Cell::cellFlags` 0x80; `link_client::cell_of_scene`).
 /// With no cell (the main menu) the scene is like an exterior too.
 pub const SCENE_LIKE_EXTERIOR: u32 = 0x20;
+/// The scene's camera is the world camera (`Click::world_camera`): the helper takes it from
+/// here, not from the camera of an earlier scene. Stream format 10.
+pub const SCENE_WORLD_CAMERA: u32 = 0x40;
 
 /// The engine's sorted queue stays open after the scene: a later scene of the same camera
 /// flushes it (`ports::base::main_queue_open`).
@@ -231,6 +234,10 @@ pub struct SceneV1 {
     pub scene_root: u32,
     pub render_target: u32,
     pub flags: u32,
+    /// The position of the camera in the world, for every camera: exact for a camera that the
+    /// plugin makes relative (then also the origin of its relative matrices, with
+    /// [`SCENE_HAS_CAMERA_ORIGIN`]), else the camera's own world translation. Stream format 10;
+    /// before it, the position was there only with the flag.
     pub camera_origin: [f64; 3],
     /// The view slot of the scene plus 1 (`view_slots`), 0 for a scene that is not a view.
     /// Only the low byte is used. A packet with a `struct_size` of 48 has no view.
@@ -241,6 +248,10 @@ pub struct SceneV1 {
     /// the scene's root with the world walk. The rest is 0. Stream format 7; the stream
     /// format 6 wrote 0 in the whole word.
     pub repeat_walk: u32,
+    /// The camera's view frustum (`NiCamera::kViewFrustum`): left, right, top, bottom, near and
+    /// far, as the renderer takes them for the projection (after MGE XE's change of the field of
+    /// view). The engine's projection of a camera is always a perspective. Stream format 10.
+    pub frustum: [f32; 6],
 }
 
 /// The bits of `SceneV1::repeat_walk` that hold the first slot of a repeat plus 1.
@@ -394,10 +405,11 @@ pub struct HostV1 {
 // The sizes of the header. They are for the 32-bit target only.
 #[cfg(target_pointer_width = "32")]
 const _: () = {
-    assert!(size_of::<SceneV1>() == 56);
+    assert!(size_of::<SceneV1>() == 80);
     // A reader of an older packet (48 bytes) has no view: the field starts at its end.
     assert!(core::mem::offset_of!(SceneV1, view) == 48);
     assert!(core::mem::offset_of!(SceneV1, repeat_walk) == 52);
+    assert!(core::mem::offset_of!(SceneV1, frustum) == 56);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);

@@ -278,9 +278,11 @@ impl Views {
     }
 
     /// The camera of a scene is the world camera: the scene is one of the world camera's
-    /// scenes, or a [`scene::SCENE_OTHER`] with the world camera `world_camera`.
-    pub(crate) fn camera_is_world(&self, kind: u32, camera: u32, world_camera: u32) -> bool {
-        scene::world_camera(kind) || (kind == scene::SCENE_OTHER && camera != 0 && camera == world_camera)
+    /// scenes, or a [`scene::SCENE_OTHER`] whose record has the flag `SCENE_WORLD_CAMERA`
+    /// (`flagged`). The plugin knows the camera at the scene's start, also before the first
+    /// world scene after a start or a load.
+    pub(crate) fn camera_is_world(kind: u32, flagged: bool) -> bool {
+        scene::world_camera(kind) || (kind == scene::SCENE_OTHER && flagged)
     }
 
     /// The start of a scene. `in_target`: the game draws into a rendered texture of the helper;

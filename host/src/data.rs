@@ -84,6 +84,11 @@ pub(crate) const SCENE_WIREFRAME: u32 = 0x10;
 /// A flag of the scene record: the scene's cell is like an exterior (an exterior, an interior
 /// cell with the game's flag "behaves like an exterior", or no cell).
 pub(crate) const SCENE_LIKE_EXTERIOR: u32 = 0x20;
+/// A flag of the scene record: the scene's camera is the world camera (stream format 10).
+pub(crate) const SCENE_WORLD_CAMERA: u32 = 0x40;
+/// The offset of the camera's frustum in the scene record: left, right, top, bottom, near and
+/// far, as f32 (stream format 10).
+pub(crate) const SCENE_FRUSTUM_AT: usize = 56;
 
 /// The value of a state that the game did not set.
 pub(crate) const UNKNOWN: u32 = 0x7FFF_FFFF;

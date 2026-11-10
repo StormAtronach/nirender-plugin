@@ -354,9 +354,10 @@ typedef struct MgeLinkSceneV1 {
     uint32_t renderTarget;
     // MGE_LINK_SCENE_HAS_*
     uint32_t flags;
-    // The exact position of the camera in the world space of the game. A world matrix that
-    // is relative to the camera has its translation relative to this point. Valid with
-    // MGE_LINK_SCENE_HAS_CAMERA_ORIGIN.
+    // The position of the camera in the world space of the game, for every camera (nirender
+    // stream format 10). With MGE_LINK_SCENE_HAS_CAMERA_ORIGIN it is exact, and a world matrix
+    // that is relative to the camera has its translation relative to this point; without it,
+    // it is the camera's own world translation.
     double cameraOrigin[3];
     // The view slot of the scene plus 1, 0 for a scene that is not a view (nirender
     // src/view_slots.rs). Only the low byte is used. A packet with a structSize of 48 has no
@@ -364,6 +365,9 @@ typedef struct MgeLinkSceneV1 {
     uint32_t view;
     // MGE_LINK_SCENE_REPEAT_MASK and MGE_LINK_SCENE_WALK_DUE; the other bits are 0.
     uint32_t repeatWalk;
+    // The camera's view frustum: left, right, top, bottom, near, far, after the host's
+    // MGE_StreamSceneBegin (its field of view). A packet with a structSize of 56 has none.
+    float frustum[6];
 } MgeLinkSceneV1;
 
 typedef struct MgeLinkLightV1 {
@@ -575,7 +579,7 @@ typedef struct MgeRenderLinkHostV1 {
 
 #ifdef __cplusplus
 static_assert(sizeof(void*) == 4, "the render link is for 32-bit code");
-static_assert(sizeof(MgeLinkSceneV1) == 56, "MgeLinkSceneV1 size");
+static_assert(sizeof(MgeLinkSceneV1) == 80, "MgeLinkSceneV1 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");

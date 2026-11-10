@@ -110,7 +110,7 @@ impl Player {
         let renderer = &mut self.renderer;
         // The view and the projection of the scene: those of the start of the world, as the
         // lights of the extension have them.
-        let scene = world_start.map(|facts| (facts.view, facts.projection));
+        let scene = world_start.map(|facts| (facts.view, facts.projection, facts.depth_range()));
         match (world, self.table_shaded.as_ref()) {
             (Some((slots, to_scene, camera)), Some((lights, _))) => {
                 renderer.clusters.build_world(&renderer.device, &renderer.queue, lights, &slots, scene, camera, to_scene, self.frame_size, &mut renderer.counts);
@@ -437,6 +437,7 @@ impl Player {
             samples: self.renderer.samples,
             depth_format: self.renderer.depth_format,
             origin: self.stream.origin,
+            frustum: self.stream.frustum,
             view: self.stream.view,
             projection: self.stream.projection,
             interior: self.stream.interior,
@@ -864,7 +865,7 @@ impl Player {
     fn build_extension_lights(&mut self, facts: &WorldFacts) {
         let renderer = &mut self.renderer;
         if !renderer.extension_lights.built {
-            renderer.extension_lights.build(&renderer.device, &renderer.queue, &self.frame_lights, facts.view, facts.projection, self.frame_size, &mut renderer.counts);
+            renderer.extension_lights.build(&renderer.device, &renderer.queue, &self.frame_lights, facts.view, facts.projection, facts.depth_range(), self.frame_size, &mut renderer.counts);
         }
     }
 

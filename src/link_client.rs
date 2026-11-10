@@ -1209,7 +1209,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     let route = crate::instance_stream::route_of(roots.scene_kind, back_buffer, crate::own_host::target_is_known());
     let (view, first_of_repeat) = crate::instance_stream::view_of_scene(t, &click, route);
     let walk_due = crate::world_walk::installed() && crate::world_walk::walk_due_for(roots.scene_kind, scene_root);
-    let scene = SceneV1 {
+    let mut scene = SceneV1 {
         struct_size: size_of::<SceneV1>() as u32,
         kind: roots.scene_kind,
         camera: camera as u32,
@@ -1219,19 +1219,40 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
             | cell_of_scene()
             | if sky_hidden(roots.sky_root) { SCENE_SKY_HIDDEN } else { 0 }
             | if back_buffer { SCENE_BACK_BUFFER } else { 0 }
-            | if game_wireframe() { SCENE_WIREFRAME } else { 0 },
-        camera_origin: origin.unwrap_or_default(),
+            | if game_wireframe() { SCENE_WIREFRAME } else { 0 }
+            | if click.world_camera { SCENE_WORLD_CAMERA } else { 0 },
+        camera_origin: origin.unwrap_or_else(|| camera_position(camera)),
         view,
         repeat_walk: first_of_repeat | if walk_due { SCENE_WALK_DUE } else { 0 },
+        frustum: [0.0; 6],
     };
-    (host.scene_begin)(&scene);
-    crate::capture::scene_begin(&scene);
-    crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route, view);
-    // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`).
+    // MGE XE's frame logic takes the same packet (the contract's `MGE_StreamSceneBegin`). It
+    // sets the camera's field of view, so the frustum is read after it.
     let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
     if function != 0 {
         core::mem::transmute::<usize, unsafe extern "C" fn(*const SceneV1)>(function)(&scene);
     }
+    scene.frustum = camera_frustum(camera);
+    (host.scene_begin)(&scene);
+    crate::capture::scene_begin(&scene);
+    crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route, view);
+}
+
+/// The camera's own world translation, widened: the position of a camera that the plugin does
+/// not make relative.
+unsafe fn camera_position(camera: usize) -> [f64; 3] {
+    if camera == 0 {
+        return [0.0; 3];
+    }
+    core::array::from_fn(|i| f64::from(rd::<f32>(camera, AV_WORLD_TRANSLATION + i * 4)))
+}
+
+/// The camera's view frustum: left, right, top, bottom, near, far (`SceneV1::frustum`).
+unsafe fn camera_frustum(camera: usize) -> [f32; 6] {
+    if camera == 0 {
+        return [0.0; 6];
+    }
+    core::array::from_fn(|i| rd::<f32>(camera, CAM::kViewFrustum + i * 4))
 }
 
 /// The device's target is the renderer's back buffer.
