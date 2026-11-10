@@ -93,6 +93,7 @@ mod retained;
 pub use retained::view_planes;
 mod request;
 mod stage_groups;
+mod stage_shaders;
 use stage_groups::{StageGroups, StageKey};
 /// The request of the GPU and what a check of a shader without a GPU takes from it (the
 /// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
@@ -591,8 +592,6 @@ struct Renderer {
     /// The pipeline that merges the depth of the first person into the depth of the world,
     /// made at its first use.
     depth_merge: Option<depth_merge::DepthMerge>,
-    /// The device can draw the edges of triangles only.
-    wireframe: bool,
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
     /// The records of the draws of the frame ([`DrawData`] each; `draws` in the shader): the
@@ -679,7 +678,10 @@ struct Renderer {
     /// The named GPU stamps of the frame (`MGE_XE_GPU_TIME=1`), for the helper and the
     /// extension (`SceneView::stamps`).
     stamps: Rc<stamps::Stamps>,
-    pipeline_layout: wgpu::PipelineLayout,
+    /// What a pipeline of the world needs besides its key; its clone makes the stage pipelines.
+    maker: renderer::PipelineMaker,
+    /// The fragment shaders for each stage state of the draws (W293).
+    pub(crate) stage_shaders: stage_shaders::StageShaders,
     pipelines: FxHashMap<PipelineKey, Rc<wgpu::RenderPipeline>>,
     textures: FxHashMap<u32, Rc<wgpu::TextureView>>,
     /// The textures that the game draws into, by the handle of the texture, and the texture of

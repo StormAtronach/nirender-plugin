@@ -2126,6 +2126,7 @@ impl Player {
                 // A draw of the table goes into the pass of the game; a view in another pass
                 // sets the samples of that pass (`RetainedView::samples`).
                 samples: self.renderer.samples,
+                stages: 0,
             };
             let mut dummy = Vec::new();
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
@@ -2203,6 +2204,8 @@ impl Player {
                 data.stages[stage].slots[2] = entry + 1;
                 effect_entries.push(entry);
             }
+            // The stage key of the slot's record: the fragment shader made for its stages.
+            let key = PipelineKey { stages: self.renderer.stage_shaders.id_of(&data), ..key };
             let bucket_key = BucketKey { class: r.class, key, stencil: stencil[2], vertices: Rc::as_ptr(&vertex) as usize, indexes: Rc::as_ptr(&index) as usize, textures: handles, samplers: sampler_values };
             let world = self.retained.world_of(r);
             let exact = r.exact_translation();
@@ -3410,7 +3413,7 @@ mod join_tests {
     use super::*;
 
     fn key(pipeline: u32) -> PipelineKey {
-        PipelineKey { fvf: pipeline, stride: 0, topology: 0, blend: [0; 3], depth: [0; 3], cull: 0, fill: 0, stencil: [0; 7], color_write: 0, samples: 1 }
+        PipelineKey { fvf: pipeline, stride: 0, topology: 0, blend: [0; 3], depth: [0; 3], cull: 0, fill: 0, stencil: [0; 7], color_write: 0, samples: 1, stages: 0 }
     }
 
     fn state(pipeline: u32, stencil: u32) -> CallState {

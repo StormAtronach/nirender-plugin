@@ -32,6 +32,9 @@ pub(crate) struct Switches {
     pub(crate) draw_dump: u32,
     /// `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
     pub(crate) gpu_time: bool,
+    /// `MGE_XE_STAGE_SHADERS=0`: no fragment shader for each stage state of the draws
+    /// (`crate::stage_shaders`); the world shader's own `fs` draws every draw. On by default.
+    pub(crate) stage_shaders: bool,
     /// `MGE_XE_RUNS_DUMP=1`: the runs of the table of each frame.
     pub(crate) runs_dump: bool,
     /// `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules
@@ -109,6 +112,7 @@ impl Switches {
             world_lights: read.choice("MGE_XE_LIGHTS", &["world", "engine"]) == Some("world"),
             draw_dump: read.parsed("MGE_XE_DRAW_DUMP", "a geometry handle in hex", |v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0),
             gpu_time: read.on("MGE_XE_GPU_TIME") == Some(true),
+            stage_shaders: read.on("MGE_XE_STAGE_SHADERS") != Some(false),
             runs_dump: read.on("MGE_XE_RUNS_DUMP") == Some(true),
             indirect: read.on("MGE_XE_INDIRECT") != Some(false),
             array_cap: read.number::<u32>("MGE_XE_ARRAY_CAP"),

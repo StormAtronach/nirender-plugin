@@ -296,7 +296,7 @@ pub(crate) fn sum_except(times: &[u64; TIME_COUNT], skip: usize) -> u64 {
     times.iter().enumerate().filter(|(i, _)| *i != skip).map(|(_, t)| *t).sum()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct PipelineKey {
     pub(crate) fvf: u32,
     pub(crate) stride: u32,
@@ -313,6 +313,9 @@ pub(crate) struct PipelineKey {
     /// The samples for each pixel of the targets of the pass: [`Renderer::samples`] for the
     /// targets of the frame, 1 for a texture that the game or an extension draws into.
     pub(crate) samples: u32,
+    /// The id of the draw's stage key (`crate::stage_shaders`): the fragment shader made for
+    /// its stage state, or 0 for the world shader's own `fs` (the uber-shader).
+    pub(crate) stages: u32,
 }
 
 /// A texture that the game draws into.
