@@ -54,7 +54,15 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
   place of a kept pair. The sibling's commit must be an ancestor of the sibling's HEAD. The tool prints the option in the
   first line, and the key file of the base build names both commits;
 - the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
-  of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these.
+  of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these;
+- with the gate, `deploy rest` (tools/deploy_rest.py, the owner's D193: the test installs hold the latest build): after
+  the build and before the replay gate it puts the dist-staging folder into both test installs as their resting build, and
+  keeps a copy as the next E:\\nirender-keep\\mgebuilds\\f<N> with a WHAT.txt. It runs only when every stage before it
+  passed, and the gate's result does not stop it: a build that the gate rejects is deployed too. It never copies a pdb, an
+  esp, mgeXE.toml or d3d9.dll, backs up each replaced file once for each tag, compares each copy by MD5, and prints the MD5
+  of d3d8.dll, numidium.exe and akulakhan.dll. While Morrowind, numidium or Mod Organizer runs, the stage FAILs with a
+  line "refused: ..." and does not wait. The round holds the game slot (the gate is one of its stages), so that the write
+  to E: is allowed (evidence_problem);
 
 These stages also need a sibling with no tracked change. The first line gives the hash of the sibling.
 
@@ -134,6 +142,9 @@ CLOSE_WAIT_SECONDS = 0.5
 # The stages that replay the build of the gate or the kept base build.
 INSTANCE_STAGE = "instance A/B grass"
 BASE_STAGE = "base build"
+# The stage that puts the build of the gate into both test installs (tools/deploy_rest.py, the owner's D193). It stands after
+# the build and before the replay gate, and it runs only when every stage before it passed: the gate's result does not stop it.
+DEPLOY_STAGE = "deploy rest"
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
 GPU_STAGE = "helper GPU tests"
@@ -228,6 +239,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     if touches(paths, GATE_PATHS[kind]):
         stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
         staging = os.path.join(mge, "target", "dist-staging")
+        stages.append((DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--build", staging, "--plugin-repo", plugin, "--mge-repo", mge)))
         stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", staging, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
         if tips and base_folder:
             stages.append((BASE_STAGE, plugin, tool("instance_ab.py", "base-build", "--plugin-repo", plugin, "--mge-repo", mge, "--plugin-tip", tips["plugin"], "--mge-tip", tips["mge"], "--out", base_folder)))
@@ -343,6 +355,15 @@ def slot_refusal_in(output):
     return refusal.split(". ")[0].strip()
 
 
+def deploy_refusal_in(output):
+    """The text of the last line 'REFUSED: <why>' in a stage's output (tools/deploy_rest.py: a game or Mod Organizer runs), or None."""
+    refusal = None
+    for line in output.splitlines():
+        if line.startswith("REFUSED: "):
+            refusal = line[len("REFUSED: "):].strip()
+    return refusal
+
+
 def output_since(log, start):
     """What the log file holds after the byte `start`: the output of the stage that wrote there."""
     with open(log.name, "rb") as file:
@@ -370,8 +391,9 @@ def run_stage(name, folder, command, log):
         verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, not_run_reason(output_since(log, start))))
         return False
     if code != 0:
-        refusal = slot_refusal_in(output_since(log, start))
-        failure = ": exit code %d%s" % (code, "; refused by the slot check: %s" % refusal if refusal else "")
+        output = output_since(log, start)
+        refusal, deploy_refusal = slot_refusal_in(output), deploy_refusal_in(output)
+        failure = ": exit code %d%s" % (code, "; refused by the slot check: %s" % refusal if refusal else "; refused: %s" % deploy_refusal if deploy_refusal else "")
     verdict(log, "%s %s (%d s)%s" % ("PASS" if code == 0 else "FAIL", name, time.time() - began, failure))
     return code == 0
 
@@ -412,6 +434,10 @@ def run_stages(stages, log, note_stage=lambda: None):
             continue
         if name == INSTANCE_STAGE and not results.get(BASE_STAGE, True):
             verdict(log, "NOT RUN %s: the base build failed" % name)
+            results[name] = False
+            continue
+        if name == DEPLOY_STAGE and not all(results.values()):
+            verdict(log, "NOT RUN %s: %s did not pass, and a build is put into the test installs only when every stage before it passed" % (name, next(stage for stage, passed in results.items() if not passed)))
             results[name] = False
             continue
         if name == "replay gate":
@@ -933,9 +959,9 @@ def self_test():
 
         base = ["plugin tests", "host tests", HOST_GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("plugin", plugin, "tools/x.py", "src/lib.rs") == base
-        assert names("plugin", plugin, "host/src/shader.wgsl") == base + ["build for the gate", "replay gate"]
-        assert names("plugin", plugin, "host/src/material.rs") == base + ["build for the gate", "replay gate"]
-        assert names("plugin", plugin, "host/src/retained.rs") == base + ["build for the gate", "replay gate"]
+        assert names("plugin", plugin, "host/src/shader.wgsl") == base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        assert names("plugin", plugin, "host/src/material.rs") == base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        assert names("plugin", plugin, "host/src/retained.rs") == base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"]
         # A change of the ports, the hooks, the install or the table: the MWSE.dll of each test install against the ports.
@@ -961,15 +987,15 @@ def self_test():
                 raise AssertionError("a Harness copy was read: " + harness)
         # The mod's Lua: xtask dist checks it against its list of shipped files (7b7b72d broke the dist that way).
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + ["build of the dist"]
-        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == base + ["build for the gate", "replay gate"]
+        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
         assert needs_clean_sibling(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/noplugin.lua"]))
         for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
-            assert names("plugin", plugin, path) == base + ["build for the gate", "replay gate"], path
+            assert names("plugin", plugin, path) == base + ["build for the gate", DEPLOY_STAGE, "replay gate"], path
         mge_base = ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("mge", mge, "xtask/src/main.rs") == mge_base + ["build of the dist"]
         for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
-            assert names("mge", mge, path) == mge_base + ["build for the gate", "replay gate"], path
-        assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract", "build for the gate", "replay gate"]
+            assert names("mge", mge, path) == mge_base + ["build for the gate", DEPLOY_STAGE, "replay gate"], path
+        assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract", "build for the gate", DEPLOY_STAGE, "replay gate"]
         assert "mge-probe" in stages_for("mge", mge, [])[0][2]
         # The GPU tests run the ignored tests of the helper in its tree, through the wrapper that fails on 0 tests, and the
         # plugin's tests do not run them.
@@ -985,9 +1011,9 @@ def self_test():
         assert all(name != HOST_GPU_STAGE for name, _, _ in stages_for("mge", mge, []))
         assert stages_for("mge", mge, [])[2][2][-2:] == ["--mge", mge]
         assert names("mge", mge, "mge-config/src/lib.rs") == mge_base + ["d3d8 build", "contract"]
-        assert names("mge", mge, "mgeHost64/src/renderer/water.rs") == mge_base + ["build for the gate", "replay gate"]
-        assert names("mge", mge, "mgeHost64/src/renderer.rs") == mge_base + ["build for the gate", "replay gate"]
-        assert names("mge", mge, "assets/Data Files/shaders/core/x.fx") == mge_base + ["build for the gate", "replay gate"]
+        assert names("mge", mge, "mgeHost64/src/renderer/water.rs") == mge_base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        assert names("mge", mge, "mgeHost64/src/renderer.rs") == mge_base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        assert names("mge", mge, "assets/Data Files/shaders/core/x.fx") == mge_base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
         assert names("mge", mge, "assets/Data Files/other.txt") == mge_base
         assert names("mge", mge, "mgeHost64/src/other.rs") == mge_base
         assert names("mge", mge, "d3d8/cpp/mge/x.cpp") == mge_base + ["d3d8 build", "contract"]
@@ -1093,6 +1119,27 @@ def self_test():
             assert run_stages([("a", root, bad), ("build for the gate", root, good), gate_stage], log) == [False, True, True]
         assert os.listdir(now) == ["tour"] and os.listdir(os.path.join(now, "tour")) == []
 
+        # The deploy of the build (D193) stands between the build and the gate. It runs when every stage before it passed,
+        # whatever the gate says; it does not run after a failed code stage, and a failed deploy stops no other stage.
+        deploy_stage = (DEPLOY_STAGE, root, good)
+        with open(os.path.join(root, "log5.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([("a", root, good), ("build for the gate", root, good), deploy_stage, ("replay gate", root, bad + ["--now", now])], log) == [True, True, True, False]
+            assert run_stages([("a", root, good), ("build for the gate", root, good), (DEPLOY_STAGE, root, bad), gate_stage], log) == [True, True, False, True]
+            assert run_stages([("a", root, bad), ("build for the gate", root, good), deploy_stage, gate_stage], log) == [False, True, False, True]
+            assert run_stages([("a", root, good), ("build for the gate", root, bad), deploy_stage, gate_stage], log) == [True, False, False, False]
+        with open(os.path.join(root, "log5.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert "== NOT RUN deploy rest: a did not pass" in text and "== NOT RUN deploy rest: build for the gate did not pass" in text, text
+        gate_names = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"])]
+        assert gate_names.index("build for the gate") + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index("replay gate") - 1
+        assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/main.lua"])], "a build of the dist alone is not deployed"
+        assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"])]
+        deploy = next(stage for stage in stages_for("plugin", plugin, ["host/src/retained.rs"]) if stage[0] == DEPLOY_STAGE)
+        assert deploy[1] == plugin and "--build" in deploy[2] and "dist-staging" in deploy[2][deploy[2].index("--build") + 1], deploy
+        assert not any(EVIDENCE_PATH.search(str(text)) for text in deploy[2]), "the stage names no path on E: (the tool keeps its set folder itself)"
+        assert deploy_refusal_in("x\nREFUSED: Morrowind.exe runs, and the deploy does not wait: end it\nFAIL: y") == "Morrowind.exe runs, and the deploy does not wait: end it"
+        assert deploy_refusal_in("FAIL: x") is None
+
         # Each stage that runs notes the slot's work, and a gate that does not run does not.
         notes = []
         with open(os.path.join(root, "log4.txt"), "w", encoding="utf-8") as log:
@@ -1103,7 +1150,7 @@ def self_test():
         tips = {"plugin": "p" * 40, "mge": "m" * 40}
         kept = os.path.join(root, "kept")
         with_tips = stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips, kept)
-        assert [name for name, _, _ in with_tips][-4:] == ["build for the gate", "replay gate", BASE_STAGE, INSTANCE_STAGE]
+        assert [name for name, _, _ in with_tips][-5:] == ["build for the gate", DEPLOY_STAGE, "replay gate", BASE_STAGE, INSTANCE_STAGE]
         by_name = {name: (folder, command) for name, folder, command in with_tips}
         build = by_name[BASE_STAGE][1]
         assert build[build.index("--plugin-tip") + 1] == "p" * 40 and build[build.index("--mge-tip") + 1] == "m" * 40 and build[build.index("--out") + 1] == kept
