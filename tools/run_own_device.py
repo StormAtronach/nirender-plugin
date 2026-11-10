@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import winreg
 from ctypes import wintypes
 
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
@@ -278,6 +279,67 @@ def weather_warning(args):
     return "warning: the run has timing steps and the weather is the game's, which can change in the run and move the frame rate: --weather 0 pins it to clear"
 
 
+# The game's registry key (the 32-bit view, where Morrowind.exe reads it).
+GAME_REGISTRY_KEY = r"SOFTWARE\Bethesda Softworks\Morrowind"
+
+
+def registry_shadows():
+    """The value "Shadows" of the game's registry key, or None when the key or the value is
+    missing. The game writes it back at each exit, so it is one value for every instance on the
+    machine and for the owner's play: a run reads it and never writes it."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, GAME_REGISTRY_KEY, 0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY) as key:
+            value, kind = winreg.QueryValueEx(key, "Shadows")
+    except OSError:
+        return None
+    return value if kind == winreg.REG_DWORD else None
+
+
+def ini_shadows(ini_bytes):
+    """"Number of Shadows" of [General] in the bytes of a Morrowind.ini, as GetPrivateProfileIntA
+    reads it: the first such key, the digits at the start of its value, 0 when the key is missing.
+    None when the file cannot be read."""
+    if ini_bytes is None:
+        return None
+    section = None
+    for line in ini_bytes.decode("latin-1").splitlines():
+        line = line.strip()
+        if line.startswith("[") and "]" in line:
+            section = line[1:line.index("]")].strip().lower()
+        elif section == "general" and "=" in line:
+            name, value = line.split("=", 1)
+            if name.strip().lower() == "number of shadows":
+                digits = re.match(r"\s*(-?\d+)", value)
+                return int(digits.group(1)) if digits else 0
+    return 0
+
+
+def shadow_level_line(registry, ini):
+    """The line of a run's start that names the game's real-time shadow level, and the level. The
+    game takes the smaller of the registry's "Shadows" and the ini's "Number of Shadows"
+    (`NiDX8Application::readRegistrySettingsAndGetProcAddress`, 0x428E92-0x428EC1); with the level 0
+    the shadow manager adds no caster and the shadow camera draws no scene. The level is None when a
+    value is missing."""
+    level = None if registry is None or ini is None else min(registry, ini)
+
+    def shown(value):
+        return "missing" if value is None else str(value)
+
+    return "shadows: registry Shadows %s, Morrowind.ini Number of Shadows %s: the game's level %s" % (shown(registry), shown(ini), shown(level)), level
+
+
+def shadow_problem(args, level, line):
+    """The refusal of a capture run with the game's real-time shadows off: such a capture holds no
+    scene of kind 4 or 5, and the gate's stream rule needs a kind 5 scene (2026-11-10: the registry
+    had Shadows 0, and the Pelagiad captures had none). None for any other run. No --steps means
+    all the steps, the capture among them."""
+    steps = [name for name in re.split(r"[,\s]+", args.steps or "") if name]
+    if level != 0 or (steps and "capture" not in steps):
+        return None
+    return ("a capture with the game's real-time shadows off has no shadow scene (kinds 4 and 5): %s. The registry value is the "
+            "owner's game setting, shared by every instance: ask the owner; a run does not change it" % line)
+
+
 FULL_DUMP_SIZE = "0.8 GB"
 
 
@@ -368,11 +430,11 @@ def weather_note(pinned, lines):
     return "".join(line + "\n" for line in ["weather: " + weather_summary(pinned, lines)] + kept)
 
 
-def launch_run(run, spec, args, mods):
+def launch_run(run, spec, args, mods, facts=()):
     """Starts the run (`session.Run.launch`) with the options of the command line. A refusal of
     the renderer by the plugin ends the run at once, with its cause (`session.Run.refusal`), not at
-    the end of the budget."""
-    return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build)], full_dump=args.full_dump,
+    the end of the budget. `facts` are more lines for the record of the run, after the commits."""
+    return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build), *facts], full_dump=args.full_dump,
                       enable=args.enable_mod, plugins=args.enable_plugin, stop=run.refusal)
 
 
@@ -1034,8 +1096,48 @@ def self_test_check_command():
         assert code != 0 and "the profile has no Morrowind.ini" in text, text
         with open(os.path.join(instance, "profiles", "Default", "Morrowind.ini"), "wb") as fh:
             fh.write(b"[Game Files]\r\nGameFile0=Morrowind.esm\r\n")
-        code, text = check("--reference", "--reference-plugin", "--enable-mod", "Some mod", "--enable-plugin", "some.esp")
+        # The steps without a capture: the ini has no "Number of Shadows", so the game's level is 0.
+        code, text = check("--reference", "--reference-plugin", "--enable-mod", "Some mod", "--enable-plugin", "some.esp", "--steps", "exterior")
         assert code == 0 and "some.esp becomes GameFile1" in text and "Some mod is on for the run" in text, text
+        assert "shadows: registry Shadows " in text and "Morrowind.ini Number of Shadows 0" in text, text
+        # A capture run with the level 0 is refused. The level is the smaller value, so the ini's 0 is
+        # enough; without the registry value on this machine the level is unknown and nothing refuses.
+        code, text = check("--steps", "exterior,capture")
+        if registry_shadows() is None:
+            assert code == 0 and "the game's level missing" in text, text
+        else:
+            assert code != 0 and "real-time shadows off" in text and "Number of Shadows 0" in text, text
+
+
+def self_test_shadows():
+    """The shadow level of a run's start: the ini's value as GetPrivateProfileIntA reads it, the
+    smaller of the two values, and the refusal of a capture run with the level 0."""
+    ini = b"[Game Files]\nNumber of Shadows=9\n[General]\nnumber of shadows = 6 ; a comment\nNumber of Shadows=2\n[Other]\n"
+    assert ini_shadows(ini) == 6, "the key of [General] only, the first one, the digits at the start"
+    assert ini_shadows(b"[General]\nMaximum Shadows Per Object=1\n") == 0, "no key: the game's default 0"
+    assert ini_shadows(b"[General]\nNumber of Shadows=x\n") == 0
+    assert ini_shadows(None) is None, "no file: unknown, not 0"
+
+    line, level = shadow_level_line(0, 6)
+    assert level == 0 and line == "shadows: registry Shadows 0, Morrowind.ini Number of Shadows 6: the game's level 0", line
+    assert shadow_level_line(6, 6)[1] == 6 and shadow_level_line(8, 3)[1] == 3
+    assert shadow_level_line(None, 6) == ("shadows: registry Shadows missing, Morrowind.ini Number of Shadows 6: the game's level missing", None)
+    assert shadow_level_line(6, None)[1] is None
+
+    def namespace(steps):
+        return argparse.Namespace(steps=steps)
+
+    # The fault of 2026-11-10: a capture run with the registry's Shadows 0.
+    line, level = shadow_level_line(0, 6)
+    for steps in ("exterior,capture", "capture", None, ""):
+        problem = shadow_problem(namespace(steps), level, line)
+        assert problem and "registry Shadows 0, Morrowind.ini Number of Shadows 6" in problem and "ask the owner" in problem, (steps, problem)
+    assert shadow_problem(namespace("exterior,shaders"), level, line) is None, "no capture step: no refusal"
+    for good in (6, None):
+        assert shadow_problem(namespace("exterior,capture"), good, line) is None, good
+
+    registry = registry_shadows()
+    assert registry is None or isinstance(registry, int), registry
 
 
 def self_test_weather():
@@ -1603,6 +1705,7 @@ def self_test():
     self_test_refusal()
     self_test_ring_problem()
     self_test_weather()
+    self_test_shadows()
     self_test_checks()
     self_test_run_toml()
     self_test_check_command()
@@ -1803,9 +1906,13 @@ def main():
             problem = "the command has faults; nothing started:\n  " + "\n  ".join(enable_faults)
         if not problem:
             problem = config_problem(args, session.harness.MO2_ROOT)
+        shadows, level = shadow_level_line(registry_shadows(), ini_shadows(read_profile_ini()))
+        if not problem:
+            problem = shadow_problem(args, level, shadows)
         if problem:
             raise SystemExit("run_own_device: " + problem)
         print("run_own_device: the arguments are good; nothing started (--check)")
+        print("run_own_device: " + shadows)
         for note in enable_notes:
             print("run_own_device: " + note)
         if weather_warning(args):
@@ -1847,6 +1954,11 @@ def main():
         raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(enable_faults))
     for note in enable_notes:
         print("run_own_device: " + note, flush=True)
+    shadows, level = shadow_level_line(registry_shadows(), ini_shadows(read_profile_ini()))
+    print("run_own_device: " + shadows, flush=True)
+    problem = shadow_problem(args, level, shadows)
+    if problem:
+        raise SystemExit("run_own_device: " + problem)
     if not args.no_build:
         cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
         for folder in (HOST_DIR, D3D8_DIR):
@@ -1909,7 +2021,7 @@ def main():
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = launch_run(run, spec, args, mods)
+        done = launch_run(run, spec, args, mods, facts=[shadows])
 
     print()
     progress = run.progress_lines(TAG)
