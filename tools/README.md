@@ -98,6 +98,7 @@ default is next to the main checkout when it is not next to the worktree (`commo
 | `bc7.py` | A small encoder and decoder of BC7 mode 6, for the BC7 textures of `make_test_nifs.py` (no other BC7 tool is installed); `--self-test` tests the round trip. |
 | `nif_block_census.py` | Which NIF block types occur in the game's BSAs, a mod folder or a test level. |
 | `nif_flag_census.py` | How many NIFs carry a flat-shading, specular or dither property, and with which flag. |
+| `nif_order_scan.py` | The NIFs of a folder whose picture can depend on the order of the draws (the order-dependent exhibits of a test level): the NiSortAdjustNode count with the sorting mode of each (the engine reads 1 as off and 2 as subsort, any other word inherits), the blended NiAlphaProperty blocks and those with the no-sorter bit 0x2000, NiZBufferProperty blocks with the test or the write off, and the particle systems; with `--tour`, the tour stop of each NIF. It reads files only (`--self-test` makes small NIFs; a file with a block type that `nif40.py` lacks is scanned by its type names and says so). |
 
 ## `ports/`: writing a port
 

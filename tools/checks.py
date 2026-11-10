@@ -101,6 +101,8 @@ CHECKS = {
     "the close of a game": (PLUGIN / "tools" / "play.py", PLUGIN, ["--self-test"]),
     "the play set": (PLUGIN / "tools" / "make_play_set.py", PLUGIN, ["--self-test"]),
     "the merge step": (PLUGIN / "tools" / "merge_step.py", PLUGIN, ["--self-test"]),
+    # The scan of NIFs for the exhibits that depend on the order of the draws (small NIFs made by the test).
+    "the NIF order scan": (PLUGIN / "tools" / "nif_order_scan.py", PLUGIN, ["--self-test"]),
     # The deploy of the resting build into the test installs (scratch installs; the real ones are not touched).
     "the resting deploy": (PLUGIN / "tools" / "deploy_rest.py", PLUGIN, ["--self-test"]),
     "the instance A/B": (PLUGIN / "tools" / "instance_ab.py", PLUGIN, ["--self-test"]),
