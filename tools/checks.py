@@ -101,6 +101,8 @@ CHECKS = {
     "the close of a game": (PLUGIN / "tools" / "play.py", PLUGIN, ["--self-test"]),
     "the play set": (PLUGIN / "tools" / "make_play_set.py", PLUGIN, ["--self-test"]),
     "the merge step": (PLUGIN / "tools" / "merge_step.py", PLUGIN, ["--self-test"]),
+    # The deploy of the resting build into the test installs (scratch installs; the real ones are not touched).
+    "the resting deploy": (PLUGIN / "tools" / "deploy_rest.py", PLUGIN, ["--self-test"]),
     "the instance A/B": (PLUGIN / "tools" / "instance_ab.py", PLUGIN, ["--self-test"]),
     "clippy arguments": (PLUGIN / "tools" / "clippy_baseline.py", PLUGIN, ["--self-test"]),
     # The adapter record of the replay gate.
