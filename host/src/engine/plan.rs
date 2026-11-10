@@ -250,11 +250,11 @@ impl Plan {
         self.scene_kind == scene::SCENE_OTHER && self.view == ViewKind::Main
     }
 
-    /// The first place of a retained shape in a main view with a root of its own: the world
-    /// starts here, as at the first draw of a world scene. The world walk of the engine is
-    /// the walk of the world root, so no event marks this start.
-    pub(crate) fn view_first_place(&mut self, extension: bool, in_back_buffer: bool) -> Vec<Step> {
-        if extension && in_back_buffer && self.main_other_root() && !self.world_begun {
+    /// The first place of a retained shape in a main view with a root of its own, when the
+    /// stream does not mark the walk of its root (`walk_marked`; the root has a `Display` of a
+    /// mod): the world starts here, as at the first draw of a world scene.
+    pub(crate) fn view_first_place(&mut self, extension: bool, in_back_buffer: bool, walk_marked: bool) -> Vec<Step> {
+        if extension && in_back_buffer && !walk_marked && self.main_other_root() && !self.world_begun {
             self.world_begun = true;
             self.world_by_other = true;
             return vec![Step::StartWorld, Step::ReleaseHeld];
@@ -287,9 +287,9 @@ impl Plan {
             self.sky_seen = true;
         }
         let mut steps = Vec::new();
-        // A main view with a root of its own has no walk event and no sky: its world starts
-        // at its first draw.
-        let starts_here = extension && (!walk_marked || main_other) && world_scene && !sky && (self.sky_seen || sky_hidden || main_other);
+        // A scene with the walk marked starts its world at the event. Without it, a main view
+        // with a root of its own (no sky) starts its world at its first draw.
+        let starts_here = extension && !walk_marked && world_scene && !sky && (self.sky_seen || sky_hidden || main_other);
         if starts_here && !self.world_begun {
             self.world_begun = true;
             self.world_by_other = main_other;
@@ -303,14 +303,17 @@ impl Plan {
         (steps, hold)
     }
 
-    /// The walk of the world camera's root left the sky root (the plugin's event
-    /// `EVENT_WORLD_WALK`): the world starts here, in the world scene in the back buffer. The
-    /// engine walks the sky root first (`TES3Game::initGame` attaches it as the first child of
-    /// the world camera's root), so the sky's draws came before.
+    /// The walk of the scene's root left the sky root, or reached its first child when the root
+    /// has no sky (the plugin's event `EVENT_WORLD_WALK`): the world starts here, in the world
+    /// scene in the back buffer or in a main view with a root of its own. The engine walks the
+    /// sky root first (`TES3Game::initGame` attaches it as the first child of the world camera's
+    /// root), so the sky's draws came before.
     pub(crate) fn world_walk(&mut self, extension: bool, in_back_buffer: bool) -> Vec<Step> {
-        if extension && in_back_buffer && self.scene_kind == scene::SCENE_WORLD {
+        let main_other = self.main_other_root();
+        if extension && in_back_buffer && (self.scene_kind == scene::SCENE_WORLD || main_other) {
             if !self.world_begun {
                 self.world_begun = true;
+                self.world_by_other = main_other;
                 return vec![Step::StartWorld, Step::ReleaseHeld];
             }
             if self.main_view_due {
@@ -800,16 +803,30 @@ mod tests {
         assert_eq!(plan.scene_kind, 0);
     }
 
+    /// The same main view with its root walked (W298 fix B): the event starts its world; its
+    /// first place and its first draw do not.
+    #[test]
+    fn a_main_view_with_a_root_of_its_own_starts_the_world_at_the_walk_event() {
+        let mut plan = Plan::default();
+        plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
+        assert_eq!(plan.view_first_place(true, true, true), vec![]);
+        assert_eq!(plan.world_draw(true, true, false, true, true), (vec![], true));
+        assert_eq!(plan.world_walk(true, true), vec![Step::StartWorld, Step::ReleaseHeld]);
+        assert!(plan.world_by_other);
+        assert_eq!(plan.world_walk(true, true), vec![]);
+    }
+
     /// A mod's subject on the world camera (Isolate Subject): the scene has the plugin's kind
-    /// `SCENE_OTHER` and the main view's camera. Its world starts at its first place, with no
-    /// walk event and no sky, and the post after the user interface scene follows.
+    /// `SCENE_OTHER` and the main view's camera. In a stream that does not walk its root (a root
+    /// with a `Display` of a mod), its world starts at its first place, with no sky, and the post
+    /// after the user interface scene follows.
     #[test]
     fn a_main_view_with_a_root_of_its_own_starts_the_world_at_its_first_place() {
         let mut plan = Plan::default();
         assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true), vec![]);
         assert!(plan.main_other_root());
-        assert_eq!(plan.view_first_place(true, true), vec![Step::StartWorld, Step::ReleaseHeld]);
-        assert_eq!(plan.view_first_place(true, true), vec![]);
+        assert_eq!(plan.view_first_place(true, true, false), vec![Step::StartWorld, Step::ReleaseHeld]);
+        assert_eq!(plan.view_first_place(true, true, false), vec![]);
         // Its sorted blends belong to its view: no item of the plan, the world ends.
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ReleaseHeld, Step::EndWorld]);
         assert!(plan.world_begun && plan.world_ended);
@@ -820,9 +837,10 @@ mod tests {
     fn a_draw_of_the_engine_starts_the_world_of_a_main_view_with_a_root_of_its_own() {
         let mut plan = Plan::default();
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
-        // The walk is marked in the stream, but its event is of the world root.
-        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![Step::StartWorld, Step::ReleaseHeld], false));
-        assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
+        // The stream does not walk this root (its record has no SCENE_WALK_DUE: a root with a
+        // `Display` of a mod): its first draw starts the world.
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], false));
     }
 
     #[test]
@@ -838,7 +856,7 @@ mod tests {
     fn a_world_scene_after_a_main_view_with_a_root_of_its_own_still_draws_the_main_view() {
         let mut plan = Plan::default();
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
-        plan.view_first_place(true, true);
+        plan.view_first_place(true, true, false);
         plan.scene_end(true, true, true, false, false);
         // The step comes where the world would start: after the sky, at its first draw.
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
@@ -853,7 +871,7 @@ mod tests {
         // With the walk marked, it comes at the walk event.
         plan.frame_start();
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
-        plan.view_first_place(true, true);
+        plan.view_first_place(true, true, false);
         plan.scene_end(true, true, true, false, true);
         plan.scene_begin(SCENE_WORLD);
         assert_eq!(plan.world_draw(true, true, true, false, true), (vec![], false));
@@ -863,7 +881,7 @@ mod tests {
         // An empty world scene: at its end.
         plan.frame_start();
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
-        plan.view_first_place(true, true);
+        plan.view_first_place(true, true, false);
         plan.scene_end(true, true, true, false, false);
         plan.scene_begin(SCENE_WORLD);
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::MainView, Step::ReleaseHeld]);
@@ -891,14 +909,14 @@ mod tests {
         let mut plan = Plan::default();
         assert_eq!(plan.scene_begin(SCENE_OTHER), vec![]);
         assert!(!plan.main_other_root());
-        assert_eq!(plan.view_first_place(true, true), vec![]);
+        assert_eq!(plan.view_first_place(true, true, false), vec![]);
         assert_eq!(plan.world_draw(true, true, false, false, true), (vec![], false));
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
         assert!(!plan.world_begun);
         let mut plan = Plan::default();
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
-        assert_eq!(plan.view_first_place(false, true), vec![]);
-        assert_eq!(plan.view_first_place(true, false), vec![]);
+        assert_eq!(plan.view_first_place(false, true, false), vec![]);
+        assert_eq!(plan.view_first_place(true, false, false), vec![]);
         assert!(!plan.world_begun);
     }
 }

@@ -64,6 +64,9 @@ const WORLD_TRANSLATION: usize = NiAVObject::worldTransform_translation;
 const WORLD_BOUND: usize = NiAVObject::worldBound;
 /// The flag of an instance record of the mode gpu: the helper draws it from its table.
 const BLOCK: u32 = 0x100;
+/// The flag of an instance record: the engine's sorter takes the shape ([`alpha_sorts`]), so
+/// its places come at the flush of the queue (stream format 10).
+const SORTED_BLEND: u32 = 0x1000;
 /// `NiAVObject::flags` bit 12: the plugin's mark on a shape the helper draws from its table.
 pub const RETAINED_BIT: u16 = 0x1000;
 const FLAGS: usize = NiAVObject::flags;
@@ -277,6 +280,10 @@ struct Tables {
     /// The displays the engine skipped, and the device values of the lights of the frame
     /// (built once a frame for each light, as the light manager builds its entry).
     skipped: u64,
+    /// The scenes so far (`scene_begin`), and the one of the last `RETAINED_SCENE` record: one
+    /// record at the start of each scene with a world (`world_scene`).
+    scene_serial: u64,
+    values_scene: u64,
     /// The frame of the last `RETAINED_SCENE` record and its values; the skipped shapes
     /// whose own ambient light or fog differed from them.
     scene_frame: u32,
@@ -466,6 +473,8 @@ fn tables(mt: &MainThread) -> Open<'_, Tables> {
         shown: ShownList::new(),
         light_records: 0,
         skipped: 0,
+        scene_serial: 0,
+        values_scene: u64::MAX,
         scene_frame: u32::MAX,
         scene_values: (0, None),
         scene_mixed: 0,
@@ -626,6 +635,7 @@ pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize, route: Rout
     {
         let mut tables_open = tables(mt);
         let t = &mut *tables_open;
+        t.scene_serial += 1;
         t.world_camera = if kind == SCENE_WORLD { camera } else { 0 };
         t.scene_kind = kind;
         t.scene_route = route;
@@ -1515,7 +1525,14 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         // The flag as the shape record of the draw has it: the helper takes the translation
         // of the two the same way. In mode gpu the helper draws the instance from its table;
         // a skinned instance has the flag `SKINNED` and an identity world.
-        let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | if gpu { BLOCK } else { 0 } | if skinned { crate::shape_stream::SKINNED } else { 0 };
+        // The engine's own mark of the sorter, from the alpha property of the shape's state, as
+        // the display reads it.
+        let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+        let sorted = property_state != 0 && alpha_sorts(rd(property_state, PS::propAlpha));
+        let flags = if relative { crate::shape_stream::RELATIVE } else { 0 }
+            | if gpu { BLOCK } else { 0 }
+            | if skinned { crate::shape_stream::SKINNED } else { 0 }
+            | if sorted { SORTED_BLEND } else { 0 };
         let mut words = [0u32; 44];
         words[0] = id;
         words[1] = instance.class;
@@ -1607,7 +1624,12 @@ unsafe fn send_move(instance: &Instance, exact: [f64; 3]) {
 
 /// Sends the words of the `INSTANCE` record of an instance of the mode gpu.
 unsafe fn send_instance(mt: &MainThread, shape: usize, instance: &Instance, exact: [f64; 3], relative: bool) {
-    let flags = if relative { crate::shape_stream::RELATIVE } else { 0 } | BLOCK | if instance.skinned { crate::shape_stream::SKINNED } else { 0 };
+    let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
+    let sorted = property_state != 0 && alpha_sorts(rd(property_state, PS::propAlpha));
+    let flags = if relative { crate::shape_stream::RELATIVE } else { 0 }
+        | BLOCK
+        | if instance.skinned { crate::shape_stream::SKINNED } else { 0 }
+        | if sorted { SORTED_BLEND } else { 0 };
     let mut words = [0u32; 44];
     words[0] = instance.id;
     words[1] = instance.class;
@@ -2288,10 +2310,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             return false;
         }
         instance.properties = properties;
-        instance.sorted_blend = instance.properties[0] != 0 && {
-            let flags = rd::<u16>(instance.properties[0], PROPERTY_FLAGS);
-            flags & ALPHA_BLEND != 0 && flags & ALPHA_NO_SORTER == 0
-        };
+        instance.sorted_blend = alpha_sorts(instance.properties[0]);
         (frame, generation, instance.id, instance.live)
     };
     // The controllers of a live shape run before its draw, as the engine's display runs
@@ -2447,11 +2466,11 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             }
         }
     }
-    // The values of the frame for the retained draws: the ambient light of this shape's
-    // effect state, and the fog of the cell's property (`TES3::Game::fogProperty`, the
-    // weather's), as the light manager and the render state would set them. A shape with
-    // a fog property of its own carries that fog in its material record. One record in a
-    // frame; a shape whose values differ is counted.
+    // The ambient light of this shape's effect state, and the fog of the cell's property
+    // (`TES3::Game::fogProperty`, the weather's), as the light manager and the render state
+    // would set them, against the frame's values (`world_scene`): a shape whose values differ
+    // is counted. A shape with a fog property of its own carries that fog in its material
+    // record.
     let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
     let cell_fog = crate::engine::game_fog_property();
     let fog = if cell_fog != 0 {
@@ -2459,12 +2478,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     } else {
         crate::shape_stream::fog_values(renderer, property_state)
     };
-    if t.scene_frame != frame {
-        t.scene_frame = frame;
-        t.scene_values = (ambient, fog);
-        let sun = scene_sun(mt, t);
-        capture::retained_scene(ambient, fog, crate::shape_stream::fog_color_of(cell_fog), sun.as_ref());
-    } else if t.scene_frame == frame && t.scene_values != (ambient, fog) {
+    if t.scene_frame == frame && t.scene_values != (ambient, fog) {
         t.scene_mixed += 1;
     }
     // The lights of the effect state of the shape, their device values when they changed,
@@ -2505,18 +2519,20 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     true
 }
 
-/// The values of the frame for the world, at the start of the world (`world_walk`), in every
-/// mode: the ambient light of the lights on the world camera's root and on the game's world
-/// root (`TES3Game` +0x9C), the fog of the cell's property, and the weather's sky light. The
-/// sky light affects the node "worldRoot" (`WeatherController::initSkyLight` 0x43BB50); the
-/// engine's ambient lights affect the effects' root and the menu (`TES3Game::initGame`
-/// 0x4185E6, 0x418D6E), so the world's ambient is black unless a mod adds one. One record in a
-/// frame: the table's shapes then count only a difference (`scene_mixed`).
+/// The values of the world for a scene with a world, at the scene's start
+/// (`link_client::send_scene`), in every mode: the ambient light of the lights on the scene's
+/// root and on the game's world root (`TES3Game` +0x9C), the fog of the cell's property, and
+/// the weather's sky light. The sky light affects the node "worldRoot"
+/// (`WeatherController::initSkyLight` 0x43BB50); the engine's ambient lights affect the
+/// effects' root and the menu (`TES3Game::initGame` 0x4185E6, 0x418D6E), so the world's ambient
+/// is black unless a mod adds one. One record in a scene: a frame with a save picture has one
+/// for the picture's scene and one for the world scene in the back buffer, and the helper takes
+/// the latest. The table's shapes count only a difference (`scene_mixed`).
 pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let frame = t.frame;
-    if t.scene_frame == frame {
+    if t.values_scene == t.scene_serial {
         return;
     }
     let renderer = crate::engine::renderer();
@@ -2528,10 +2544,23 @@ pub unsafe fn world_scene(mt: &MainThread, camera_root: usize) {
     let ambient = crate::ports::light_manager::ambient_of_effect_lists(&[camera_root, world_root]);
     let cell_fog = crate::engine::game_fog_property();
     let fog = if cell_fog != 0 { crate::shape_stream::fog_values_of(renderer, cell_fog) } else { None };
+    t.values_scene = t.scene_serial;
     t.scene_frame = frame;
     t.scene_values = (ambient, fog);
     let sun = scene_sun(mt, t);
     capture::retained_scene(ambient, fog, crate::shape_stream::fog_color_of(cell_fog), sun.as_ref());
+}
+
+/// The engine's sorter takes a shape with the alpha property `alpha` (0 for none):
+/// `NiAlphaAccumulator::RegisterObject` reads its blend bit and its no-sorter bit.
+///
+/// # Safety
+/// `alpha` is 0 or points at a live `NiAlphaProperty`.
+unsafe fn alpha_sorts(alpha: usize) -> bool {
+    alpha != 0 && {
+        let flags = rd::<u16>(alpha, PROPERTY_FLAGS);
+        flags & ALPHA_BLEND != 0 && flags & ALPHA_NO_SORTER == 0
+    }
 }
 
 /// `TES3Game` and its world root (MWSE `TES3Game.h`).

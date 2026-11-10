@@ -948,9 +948,11 @@ impl Player {
     /// A place of a retained shape in a scene with a view of its own ([`engine::views`]): the
     /// place in its run.
     pub(crate) fn view_place(&mut self, id: u32) {
-        // The engine walks the sky root first, and the sky's instances have places too: a place of
-        // an instance that is not of the sky is in the world.
-        if crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class)) {
+        // Without the walk marked, a place begins the world: the engine walks the sky root
+        // first, and the sky's instances have places too, so a place of an instance that is not
+        // of the sky is in the world.
+        let walk_marked = self.stream.world_walk && self.views.scene_walk_due();
+        if !walk_marked && crate::retained::place_begins_world(self.instances.get(&id).map(|r| r.class)) {
             self.begin_view_world();
         }
         self.view_world_items();
@@ -964,7 +966,7 @@ impl Player {
                 // A main view with a root of its own (the world camera on a mod's subject)
                 // starts the world of the frame at its first place.
                 let (extension, in_back_buffer) = (self.extension.is_some(), self.stream.back_buffer && self.target.is_none());
-                for step in self.plan_now().view_first_place(extension, in_back_buffer) {
+                for step in self.plan_now().view_first_place(extension, in_back_buffer, walk_marked) {
                     self.plan_step(step);
                 }
                 if self.drawing() {

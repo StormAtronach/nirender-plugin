@@ -9,7 +9,7 @@
 
 use core::ffi::c_void;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::engine::{vcall0, WORLD_CONTROLLER};
 use crate::d3d::{
@@ -1236,6 +1236,10 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     (host.scene_begin)(&scene);
     crate::capture::scene_begin(&scene);
     crate::instance_stream::scene_begin(t, roots.scene_kind, camera, route, view);
+    // The values of the scene's world go at its start, before any draw of it (W298 fix C).
+    if crate::world_walk::has_world(roots.scene_kind) {
+        crate::instance_stream::world_scene(t, scene_root);
+    }
 }
 
 /// The camera's own world translation, widened: the position of a camera that the plugin does
@@ -1281,14 +1285,40 @@ unsafe fn clear_buffer(args: &[usize]) {
     }
 }
 
-/// `SetRenderTarget(this, texture)`
+/// The texture of the call of `SetRenderTarget` in progress, for its `after` function.
+static TARGET_ASKED: AtomicUsize = AtomicUsize::new(0);
+/// The calls of `SetRenderTarget` that left the renderer on another target: no event went.
+static TARGET_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// `SetRenderTarget(this, texture)`, before the port: the texture of the call.
 unsafe fn set_render_target(args: &[usize]) {
-    // A `before` function of a port: the main thread (`shadow::run_before`).
-    state(&MainThread::claim()).roots.render_target = args[1] as u32;
-    if let Some(host) = host() {
-        (host.frame_event)(EVENT_SET_TARGET, args[1] as u32, 0);
-        crate::capture::frame_event(EVENT_SET_TARGET, args[1] as u32, 0);
+    TARGET_ASKED.store(args[1], Ordering::Relaxed);
+}
+
+/// After the port of `SetRenderTarget`: the renderer is on the target of the call's texture,
+/// so the scene's target and the event name it. The port refuses a call while a scene is open,
+/// for a texture without renderer data, and on a failure of the device; the renderer then stays
+/// on its target, and the refusal is counted (W298 fix D).
+unsafe fn set_render_target_after() {
+    // An `after` function of a port: the main thread (`shadow::dispatch`).
+    let t = &MainThread::claim();
+    let texture = TARGET_ASKED.swap(0, Ordering::Relaxed);
+    let renderer = crate::engine::renderer();
+    let target = if renderer != 0 { crate::ports::renderer_frame::target_of(renderer, texture) } else { 0 };
+    if target == 0 || rd::<usize>(renderer, R::currentRenderTarget) != target {
+        TARGET_REFUSALS.fetch_add(1, Ordering::Relaxed);
+        return;
     }
+    state(t).roots.render_target = texture as u32;
+    if let Some(host) = host() {
+        (host.frame_event)(EVENT_SET_TARGET, texture as u32, 0);
+        crate::capture::frame_event(EVENT_SET_TARGET, texture as u32, 0);
+    }
+}
+
+/// The calls of `SetRenderTarget` that the port refused, for the report.
+pub fn target_refusals() -> u64 {
+    TARGET_REFUSALS.load(Ordering::Relaxed)
 }
 
 /// `SwapBuffers(this)`
@@ -1820,6 +1850,9 @@ pub unsafe fn connect() -> Result<String, String> {
     match ports::all().find(|p| p.addr == END_PAINT && p.installed()) {
         Some(port) => port.after.store(end_paint as *const () as usize, Ordering::Relaxed),
         None => missing.push(format!("{END_PAINT:#x}")),
+    }
+    if let Some(port) = ports::all().find(|p| p.addr == SET_RENDER_TARGET && p.installed()) {
+        port.after.store(set_render_target_after as *const () as usize, Ordering::Relaxed);
     }
     HOST.store(table as usize, Ordering::Relaxed);
     if own_d3d8() {

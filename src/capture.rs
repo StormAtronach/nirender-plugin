@@ -1546,6 +1546,7 @@ pub unsafe fn stop() {
                 crate::log!("stream: {}", crate::map_tiles::report());
                 crate::log!("stream: {}", crate::map_fog::report());
                 crate::log!("stream: {}", crate::world_walk::report());
+                crate::log!("stream: render targets: {} calls of SetRenderTarget refused by the port, with no event", crate::link_client::target_refusals());
                 crate::log!("stream: {}", crate::queue_flush::report());
                 tiles.close();
             }
