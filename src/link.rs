@@ -225,6 +225,8 @@ pub const FACT_NAMES: [&str; 32] = [
     "client camera space",
 ];
 
+/// The scene packet of the first contract (`MgeLinkSceneV1`), kept in the contract as it was.
+/// The plugin sends [`SceneV2`].
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct SceneV1 {
@@ -234,10 +236,6 @@ pub struct SceneV1 {
     pub scene_root: u32,
     pub render_target: u32,
     pub flags: u32,
-    /// The position of the camera in the world, for every camera: exact for a camera that the
-    /// plugin makes relative (then also the origin of its relative matrices, with
-    /// [`SCENE_HAS_CAMERA_ORIGIN`]), else the camera's own world translation. Stream format 10;
-    /// before it, the position was there only with the flag.
     pub camera_origin: [f64; 3],
     /// The view slot of the scene plus 1 (`view_slots`), 0 for a scene that is not a view.
     /// Only the low byte is used. A packet with a `struct_size` of 48 has no view.
@@ -248,9 +246,32 @@ pub struct SceneV1 {
     /// the scene's root with the world walk. The rest is 0. Stream format 7; the stream
     /// format 6 wrote 0 in the whole word.
     pub repeat_walk: u32,
+}
+
+/// The scene packet (`MgeLinkSceneV2`, W298, the owner's choice of a new struct): the fields of
+/// [`SceneV1`], the camera's position for every camera, and the camera's frustum. The plugin
+/// sends it to the host table and to MGE XE, and writes it as the scene record (stream format
+/// 10).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SceneV2 {
+    pub struct_size: u32,
+    pub kind: u32,
+    pub camera: u32,
+    pub scene_root: u32,
+    pub render_target: u32,
+    pub flags: u32,
+    /// The position of the camera in the world, for every camera: exact for a camera that the
+    /// plugin makes relative (then also the origin of its relative matrices, with
+    /// [`SCENE_HAS_CAMERA_ORIGIN`]), else the camera's own world translation.
+    pub camera_origin: [f64; 3],
+    /// As [`SceneV1::view`].
+    pub view: u32,
+    /// As [`SceneV1::repeat_walk`].
+    pub repeat_walk: u32,
     /// The camera's view frustum (`NiCamera::kViewFrustum`): left, right, top, bottom, near and
     /// far, as the renderer takes them for the projection (after MGE XE's change of the field of
-    /// view). The engine's projection of a camera is always a perspective. Stream format 10.
+    /// view). The engine's projection of a camera is always a perspective.
     pub frustum: [f32; 6],
 }
 
@@ -380,7 +401,7 @@ pub struct HostV1 {
     pub version: u32,
     pub capabilities: u32,
     pub reserved: u32,
-    pub scene_begin: unsafe extern "C" fn(scene: *const SceneV1),
+    pub scene_begin: unsafe extern "C" fn(scene: *const SceneV2),
     pub scene_end: unsafe extern "C" fn(),
     pub frame_event: unsafe extern "C" fn(kind: u32, a: u32, b: u32),
     pub draw: unsafe extern "C" fn(draw: *const DrawV1),
@@ -405,11 +426,16 @@ pub struct HostV1 {
 // The sizes of the header. They are for the 32-bit target only.
 #[cfg(target_pointer_width = "32")]
 const _: () = {
-    assert!(size_of::<SceneV1>() == 80);
+    assert!(size_of::<SceneV1>() == 56);
     // A reader of an older packet (48 bytes) has no view: the field starts at its end.
     assert!(core::mem::offset_of!(SceneV1, view) == 48);
     assert!(core::mem::offset_of!(SceneV1, repeat_walk) == 52);
-    assert!(core::mem::offset_of!(SceneV1, frustum) == 56);
+    assert!(size_of::<SceneV2>() == 80);
+    // The fields of V1 at their places in V2.
+    assert!(core::mem::offset_of!(SceneV2, camera_origin) == core::mem::offset_of!(SceneV1, camera_origin));
+    assert!(core::mem::offset_of!(SceneV2, view) == 48);
+    assert!(core::mem::offset_of!(SceneV2, repeat_walk) == 52);
+    assert!(core::mem::offset_of!(SceneV2, frustum) == 56);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);

@@ -1032,7 +1032,7 @@ unsafe fn method(object: u32, index: usize) -> usize {
 static SCENE_ORIGIN: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static SCENE_RELATIVE: AtomicBool = AtomicBool::new(false);
 
-unsafe extern "C" fn scene_begin(scene: *const SceneV1) {
+unsafe extern "C" fn scene_begin(scene: *const SceneV2) {
     if scene.is_null() {
         SCENE_RELATIVE.store(false, Ordering::Relaxed);
         return;

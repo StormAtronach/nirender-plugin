@@ -1209,8 +1209,8 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     let route = crate::instance_stream::route_of(roots.scene_kind, back_buffer, crate::own_host::target_is_known());
     let (view, first_of_repeat) = crate::instance_stream::view_of_scene(t, &click, route);
     let walk_due = crate::world_walk::installed() && crate::world_walk::walk_due_for(roots.scene_kind, scene_root);
-    let mut scene = SceneV1 {
-        struct_size: size_of::<SceneV1>() as u32,
+    let mut scene = SceneV2 {
+        struct_size: size_of::<SceneV2>() as u32,
         kind: roots.scene_kind,
         camera: camera as u32,
         scene_root: scene_root as u32,
@@ -1230,7 +1230,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     // sets the camera's field of view, so the frustum is read after it.
     let function = STREAM_SCENE_BEGIN.load(Ordering::Relaxed);
     if function != 0 {
-        core::mem::transmute::<usize, unsafe extern "C" fn(*const SceneV1)>(function)(&scene);
+        core::mem::transmute::<usize, unsafe extern "C" fn(*const SceneV2)>(function)(&scene);
     }
     scene.frustum = camera_frustum(camera);
     (host.scene_begin)(&scene);
@@ -1251,7 +1251,7 @@ unsafe fn camera_position(camera: usize) -> [f64; 3] {
     core::array::from_fn(|i| f64::from(rd::<f32>(camera, AV_WORLD_TRANSLATION + i * 4)))
 }
 
-/// The camera's view frustum: left, right, top, bottom, near, far (`SceneV1::frustum`).
+/// The camera's view frustum: left, right, top, bottom, near, far (`SceneV2::frustum`).
 unsafe fn camera_frustum(camera: usize) -> [f32; 6] {
     if camera == 0 {
         return [0.0; 6];
@@ -2140,7 +2140,7 @@ mod resync_tests {
     unsafe extern "C" fn use_facts_of_host(mask: u32) -> u32 {
         mask
     }
-    unsafe extern "C" fn scene_begin(_scene: *const SceneV1) {}
+    unsafe extern "C" fn scene_begin(_scene: *const SceneV2) {}
     unsafe extern "C" fn no_arguments() {}
     unsafe extern "C" fn frame_event(_kind: u32, _a: u32, _b: u32) {}
     unsafe extern "C" fn draw(_draw: *const DrawV1) {}

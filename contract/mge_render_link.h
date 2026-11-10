@@ -354,10 +354,9 @@ typedef struct MgeLinkSceneV1 {
     uint32_t renderTarget;
     // MGE_LINK_SCENE_HAS_*
     uint32_t flags;
-    // The position of the camera in the world space of the game, for every camera (nirender
-    // stream format 10). With MGE_LINK_SCENE_HAS_CAMERA_ORIGIN it is exact, and a world matrix
-    // that is relative to the camera has its translation relative to this point; without it,
-    // it is the camera's own world translation.
+    // The exact position of the camera in the world space of the game. A world matrix that
+    // is relative to the camera has its translation relative to this point. Valid with
+    // MGE_LINK_SCENE_HAS_CAMERA_ORIGIN.
     double cameraOrigin[3];
     // The view slot of the scene plus 1, 0 for a scene that is not a view (nirender
     // src/view_slots.rs). Only the low byte is used. A packet with a structSize of 48 has no
@@ -365,10 +364,36 @@ typedef struct MgeLinkSceneV1 {
     uint32_t view;
     // MGE_LINK_SCENE_REPEAT_MASK and MGE_LINK_SCENE_WALK_DUE; the other bits are 0.
     uint32_t repeatWalk;
-    // The camera's view frustum: left, right, top, bottom, near, far, after the host's
-    // MGE_StreamSceneBegin (its field of view). A packet with a structSize of 56 has none.
-    float frustum[6];
 } MgeLinkSceneV1;
+
+// The scene packet that the client sends (nirender stream format 10): the fields of
+// MgeLinkSceneV1 at the same places, with the camera's position for every camera, and the
+// camera's frustum after them.
+typedef struct MgeLinkSceneV2 {
+    uint32_t structSize;
+    // MGE_LINK_SCENE_*
+    uint32_t kind;
+    // The NiCamera of BeginPaint.
+    uint32_t camera;
+    // The scene graph root of the camera.
+    uint32_t sceneRoot;
+    // The NiRenderedTexture that is the target, or 0 for the back buffer.
+    uint32_t renderTarget;
+    // MGE_LINK_SCENE_HAS_*
+    uint32_t flags;
+    // The position of the camera in the world space of the game, for every camera. With
+    // MGE_LINK_SCENE_HAS_CAMERA_ORIGIN it is exact, and a world matrix that is relative to the
+    // camera has its translation relative to this point; without it, it is the camera's own
+    // world translation.
+    double cameraOrigin[3];
+    // As in MgeLinkSceneV1.
+    uint32_t view;
+    uint32_t repeatWalk;
+    // The camera's view frustum: left, right, top, bottom, near, far, after the host's
+    // MGE_StreamSceneBegin (its field of view). The client fills it after that call: the host
+    // reads it as 0 there.
+    float frustum[6];
+} MgeLinkSceneV2;
 
 typedef struct MgeLinkLightV1 {
     // The NiLight.
@@ -535,7 +560,7 @@ typedef struct MgeRenderLinkHostV1 {
     uint32_t reserved;
     // A scene starts. The call comes before the view transform of the scene goes to the
     // device. The D3D8 calls that follow belong to this scene.
-    void (__cdecl* sceneBegin)(const MgeLinkSceneV1* scene);
+    void (__cdecl* sceneBegin)(const MgeLinkSceneV2* scene);
     // EndPaint starts.
     void (__cdecl* sceneEnd)(void);
     // MGE_LINK_EVENT_*. The call comes before the D3D8 calls of the event.
@@ -579,7 +604,8 @@ typedef struct MgeRenderLinkHostV1 {
 
 #ifdef __cplusplus
 static_assert(sizeof(void*) == 4, "the render link is for 32-bit code");
-static_assert(sizeof(MgeLinkSceneV1) == 80, "MgeLinkSceneV1 size");
+static_assert(sizeof(MgeLinkSceneV1) == 56, "MgeLinkSceneV1 size");
+static_assert(sizeof(MgeLinkSceneV2) == 80, "MgeLinkSceneV2 size");
 static_assert(sizeof(MgeLinkLightV1) == 16, "MgeLinkLightV1 size");
 static_assert(sizeof(MgeLinkDrawV1) == 48, "MgeLinkDrawV1 size");
 static_assert(sizeof(MgeLinkStateLightV1) == 108, "MgeLinkStateLightV1 size");
@@ -603,7 +629,7 @@ const MgeRenderLinkHostV1* __cdecl MGE_RenderLinkConnect(uint32_t clientVersion)
 // from patches of its own in the engine's code.
 // A camera's Click starts, before its view transform goes to the device. MGE XE reads the
 // camera object that `scene->camera` names (the same process); the eye is `cameraOrigin`.
-void __cdecl MGE_StreamSceneBegin(const MgeLinkSceneV1* scene);
+void __cdecl MGE_StreamSceneBegin(const MgeLinkSceneV2* scene);
 
 // The plugin's lines in MGE XE's log (mgeXE.log): d3d8.dll writes each line of `text` (a text
 // can have more than one, at its '\n') as "nirender: <line>", with no limit of length. Any
