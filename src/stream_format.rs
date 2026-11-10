@@ -77,8 +77,15 @@
 /// scene flag `link::SCENE_LIKE_EXTERIOR` is the one source of "the cell is like an exterior",
 /// and MGE XE's environment record no longer has it (W84, 2026-11-09). A helper of format 8 would
 /// take every cell for a plain interior. A shape record no longer ends with the world bound of the
-/// shape (the retired flag 0x400; no reader since the D126 batch 1).
-pub const STREAM_FORMAT: u32 = 9;
+/// shape (the retired flag 0x400; no reader since the D126 batch 1). 10: the facts of a scene come
+/// with its record (W298, 2026-11-10): the scene record (88 bytes) has the flag
+/// `link::SCENE_WORLD_CAMERA`, the camera's position for every camera, its frustum, and MGE XE's
+/// fog colour of the scene; a scene of the kind `SCENE_OTHER` has the walk event too;
+/// `RETAINED_SCENE` comes at the start of each scene with a world, with MGE XE's fog colour when
+/// MGE XE gives one; an instance record has the flag 0x1000 of the engine's sorter; and
+/// `EVENT_SET_TARGET` comes only when the renderer took the target. A helper of format 9 would
+/// take the position of a camera that is not relative for an origin.
+pub const STREAM_FORMAT: u32 = 10;
 
 /// The bytes of a HEADER record: the width and the height of the picture, the window of the
 /// game, the abilities of the stream, the stream format, then the build id of the plugin as

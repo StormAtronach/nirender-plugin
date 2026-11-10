@@ -37,7 +37,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use crate::link::{
-    DrawV1, SceneV1, TextureV1, CALL_COPY_PIXELS, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE, CALL_CREATE_INDEX_BUFFER,
+    DrawV1, SceneV2, TextureV1, CALL_COPY_PIXELS, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE, CALL_CREATE_INDEX_BUFFER,
     CALL_CREATE_TEXTURE, CALL_CREATE_VERTEX_BUFFER, CALL_CUBE_FACE, CALL_GET_DEPTH_BUFFER, CALL_GET_RENDER_TARGET, CALL_PRESENT,
     CALL_RENDER_TARGET, CALL_SURFACE_DESCRIPTION, CALL_SURFACE_LOCK, CALL_SURFACE_UNLOCK, CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM,
 };
@@ -87,7 +87,7 @@ pub mod tag {
     pub const TEXTURE: u32 = 1;
     // Tag 2 (the bytes that the game wrote into a buffer of the device) is retired (step
     // R7b): no other tag takes its number.
-    /// A `MgeLinkSceneV1`.
+    /// A `MgeLinkSceneV2` (stream format 10).
     pub const SCENE_BEGIN: u32 = 3;
     /// flags (`SCENE_END_*` of `link.rs`).
     pub const SCENE_END: u32 = 4;
@@ -1546,6 +1546,8 @@ pub unsafe fn stop() {
                 crate::log!("stream: {}", crate::map_tiles::report());
                 crate::log!("stream: {}", crate::map_fog::report());
                 crate::log!("stream: {}", crate::world_walk::report());
+                crate::log!("stream: render targets: {} calls of SetRenderTarget refused by the port, with no event", crate::link_client::target_refusals());
+                crate::log!("stream: {}", crate::shape_stream::scene_fog_line());
                 crate::log!("stream: {}", crate::queue_flush::report());
                 tiles.close();
             }
@@ -1903,7 +1905,7 @@ unsafe fn bytes_at(address: u32, length: usize) -> &'static [u8] {
     }
 }
 
-pub unsafe fn scene_begin(scene: &SceneV1) {
+pub unsafe fn scene_begin(scene: &SceneV2) {
     write(tag::SCENE_BEGIN, &[bytes_of(scene)]);
 }
 

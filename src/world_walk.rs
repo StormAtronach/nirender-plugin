@@ -7,7 +7,8 @@
 //! comes after it. `NiCamera::Click` (0x6CC7B0) walks the root with one call of
 //! `NiAVObject::CullShow` at 0x6CC874. The plugin owns MWSE's override of that call
 //! (`mwse_native::NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW`): MWSE calls `click_cull_show` there.
-//! For the root of the world scene (a plain `NiNode`), the function does what the engine does
+//! For the root of a scene with a world (`has_world`: the world scene and a scene of another
+//! camera or root; a plain `NiNode`), the function does what the engine does
 //! for that one object, in the same order: the tests of `NiAVObject::CullShow` (0x6EB480) on
 //! the root, then the loop of `NiNode::Display` (0x6C9190) over the children, each child
 //! through the engine's `CullShow`. When the step of the sky root returns, the frame event
@@ -94,8 +95,15 @@ unsafe fn walk_due(t: &MainThread, root: usize) -> bool {
 pub unsafe fn walk_due_for(kind: u32, root: usize) -> bool {
     root != 0
         && crate::capture::recording()
-        && kind == crate::link::SCENE_WORLD
+        && has_world(kind)
         && rd::<usize>(rd::<usize>(root, 0), SLOT_DISPLAY) == NODE_DISPLAY
+}
+
+/// The scene of the kind `kind` has a world whose start the helper needs: the world scene, and
+/// a scene of another camera or root (a mod's view, a main view with a root of its own). Their
+/// roots are walked with the event in every target (W298 fix B).
+pub fn has_world(kind: u32) -> bool {
+    kind == crate::link::SCENE_WORLD || kind == crate::link::SCENE_OTHER
 }
 
 /// `NiAVObject::CullShow` of the root with `NiNode::Display` in place of its `Display`, as
@@ -142,7 +150,7 @@ unsafe fn node_display(t: &MainThread, root: usize, camera: usize) {
     let children: usize = rd(root, N::kChildren_storage);
     let sky_is_child = sky != 0 && (0..rd::<u32>(root, N::kChildren_endIndex) as usize).any(|i| rd::<usize>(children, i * 4) == sky);
     if !sky_is_child {
-        world_walk_event(t, root);
+        world_walk_event();
     }
     let mut i = 0;
     while i < rd::<u32>(root, N::kChildren_endIndex) as usize {
@@ -150,7 +158,7 @@ unsafe fn node_display(t: &MainThread, root: usize, camera: usize) {
         if child != 0 {
             thiscall1(CULL_SHOW, child, camera as u32);
             if sky_is_child && child == sky {
-                world_walk_event(t, root);
+                world_walk_event();
             }
         }
         i += 1;
@@ -169,11 +177,10 @@ unsafe fn restore(camera: usize, set: &[u32; 4]) {
     }
 }
 
-/// The values of the world for the frame (`instance_stream::world_scene`), then the event:
-/// the helper's start of the world takes its sun, ambient and fog from them, in every mode.
-unsafe fn world_walk_event(t: &MainThread, root: usize) {
+/// The event: the helper starts the scene's world here. The scene's values came at its start
+/// (`instance_stream::world_scene`).
+unsafe fn world_walk_event() {
     EVENTS.fetch_add(1, Ordering::Relaxed);
-    crate::instance_stream::world_scene(t, root);
     let _lock = crate::sync::device_lock();
     crate::capture::frame_event(crate::link::EVENT_WORLD_WALK, 0, 0);
 }

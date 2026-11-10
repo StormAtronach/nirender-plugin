@@ -293,7 +293,7 @@ pub unsafe fn update_d3d_state(this: usize, property_state: usize) {
 
     update_fog_states(this, rd(property_state, NiPropertyState::propFog));
     let fog: usize = rd(property_state, NiPropertyState::propFog);
-    set_if_changed(this, D3DRS_FOGCOLOR, rd(fog, NiFogProperty::color));
+    set_if_changed(this, D3DRS_FOGCOLOR, crate::shape_stream::fog_color(fog));
 
     let dither = flags_of(engine::property_state_global_dither_property(property_state)) & 1;
     set_if_changed(this, D3DRS_DITHERENABLE, dither);

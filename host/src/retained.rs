@@ -36,6 +36,9 @@ pub const INSTANCE_BLOCK: u32 = 0x100;
 /// The flag of a skinned instance (the shape record's `SKINNED`): its world is the identity,
 /// and its bones come in `INSTANCE_BONES` records ([`RetainedSet::set_bones`]).
 const INSTANCE_SKINNED: u32 = 4;
+/// The flag of an instance record: the engine's sorter takes the shape, from its alpha
+/// property's blend and no-sorter bits (the plugin's `instance_stream::SORTED_BLEND`).
+const INSTANCE_SORTED_BLEND: u32 = 0x1000;
 /// The bytes of one bone of an `INSTANCE_BONES` record: the matrix of the rotation and the
 /// scale (9 floats, by columns) and the exact translation in the world (3 doubles).
 pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
@@ -1255,10 +1258,10 @@ pub enum Sorted {
 
 /// A draw begins the world of a view of its own ([`Player::view_world_items`]), by the main
 /// view's rule (`plan::world_draw`): a draw that is not the sky, after a draw of the sky or with
-/// the sky hidden. A stream that marks the walk (`walk_marked`) begins it at the event, except
-/// with the sky hidden.
+/// the sky hidden. A scene whose walk the stream marks (`walk_marked`) begins it at the event
+/// only, with the sky hidden too.
 pub(crate) fn view_world_begins(sky: bool, sky_hidden: bool, walk_marked: bool, sky_seen: bool) -> bool {
-    !sky && (sky_hidden || (!walk_marked && sky_seen))
+    !sky && !walk_marked && (sky_hidden || sky_seen)
 }
 
 /// A draw of the game is a draw of the scene's world that reaches the target before the world
@@ -2228,7 +2231,13 @@ impl Player {
             // A skinned instance keeps its range of bones when it is made again; its bound
             // comes with the bones that the plugin sends after the instance record.
             let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id, bones_needed) } else { NO_BONES };
-            let sorted = crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter);
+            // The engine's sorter takes the instance: the plugin's mark of its alpha property
+            // (stream format 10), outside the sky. The helper's rule from the derived material
+            // stays as the check.
+            let sorted = r.flags & INSTANCE_SORTED_BLEND != 0 && !scene::sky_class(r.class);
+            if sorted != crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter) {
+                self.renderer.counts.sort_mark_differs += 1;
+            }
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
             set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, sorted, in_place, pinned, bones_first, bones_needed, no_lights: derived.no_lights, claim, held: false, uv_base: None, effect_entries });
             set.ranges_total += ranges.len();
@@ -2255,16 +2264,16 @@ impl Player {
     }
 
     /// The values of the world of the frame for the retained draws, at its start: the
-    /// ambient light and the fog from the `RETAINED_SCENE` record of the frame (the plugin
+    /// ambient light and the fog from the `RETAINED_SCENE` record of its scene (the plugin
     /// computes them for a retained shape as the engine would), else those of the stream.
     pub(super) fn retained_scene_main(&self, facts: &WorldFacts) -> SceneData {
-        self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size)
+        self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size, facts.values)
     }
 
-    /// The values of a view of the table: those of the world of the frame (see
-    /// `retained_scene_main`) with this view, projection, origin and target size.
-    fn retained_scene_of(&self, view: &[f32; 16], projection: &[f32; 16], origin: Option<[f64; 3]>, target_size: (u32, u32)) -> SceneData {
-        let (ambient, fog) = match self.retained_values {
+    /// The values of a view of the table: the ambient light and the fog of its scene's record
+    /// (`values`, see `retained_scene_main`) with this view, projection, origin and target size.
+    fn retained_scene_of(&self, view: &[f32; 16], projection: &[f32; 16], origin: Option<[f64; 3]>, target_size: (u32, u32), values: Option<(u32, Option<[u32; 4]>)>) -> SceneData {
+        let (ambient, fog) = match values {
             Some((ambient, fog)) => (color(known(ambient, 0)), fog.unwrap_or([0; 4])),
             None => ([self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0], self.stream.fog),
         };
@@ -2776,7 +2785,7 @@ impl Player {
             }
             engine::views::ShadeChoice::None => None,
         };
-        let mut scene = self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size);
+        let mut scene = self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size, facts.values);
         if let Some(shade) = shade {
             apply_shade(&mut scene, &shade);
         }
@@ -2986,8 +2995,9 @@ mod list_tests {
         assert!(view_world_begins(false, false, false, true));
         // With the event, the draws begin nothing: the event does.
         assert!(!view_world_begins(false, false, true, true));
-        // With the sky hidden there is no sky draw: the first draw.
-        assert!(view_world_begins(false, true, true, false));
+        // With the sky hidden there is no sky draw: the first draw, in a stream without the
+        // event. With the event, the event begins it (W298 fix B).
+        assert!(!view_world_begins(false, true, true, false));
         assert!(view_world_begins(false, true, false, false));
     }
 
@@ -3005,8 +3015,10 @@ mod list_tests {
         assert!(!world_draw_is_early(true, false, false, false, true, true, true));
         // A stream without the event: the first draw after the sky begins the world, it is not early.
         assert!(!world_draw_is_early(true, false, false, false, false, true, false));
-        // The sky hidden: the first draw begins the world.
-        assert!(!world_draw_is_early(true, false, false, true, true, false, false));
+        // The sky hidden: without the event the first draw begins the world; with it, a draw
+        // before the event is early.
+        assert!(!world_draw_is_early(true, false, false, true, false, false, false));
+        assert!(world_draw_is_early(true, false, false, true, true, false, false));
         // No extension, or a scene that is no world scene of a view or the main view.
         assert!(!world_draw_is_early(false, false, false, false, true, true, false));
     }

@@ -68,6 +68,9 @@ pub const SCENE_WIREFRAME: u32 = 0x10;
 /// flag "behaves like an exterior" (`Cell::cellFlags` 0x80; `link_client::cell_of_scene`).
 /// With no cell (the main menu) the scene is like an exterior too.
 pub const SCENE_LIKE_EXTERIOR: u32 = 0x20;
+/// The scene's camera is the world camera (`Click::world_camera`): the helper takes it from
+/// here, not from the camera of an earlier scene. Stream format 10.
+pub const SCENE_WORLD_CAMERA: u32 = 0x40;
 
 /// The engine's sorted queue stays open after the scene: a later scene of the same camera
 /// flushes it (`ports::base::main_queue_open`).
@@ -222,6 +225,8 @@ pub const FACT_NAMES: [&str; 32] = [
     "client camera space",
 ];
 
+/// The scene packet of the first contract (`MgeLinkSceneV1`), kept in the contract as it was.
+/// The plugin sends [`SceneV2`].
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct SceneV1 {
@@ -242,6 +247,42 @@ pub struct SceneV1 {
     /// format 6 wrote 0 in the whole word.
     pub repeat_walk: u32,
 }
+
+/// The scene packet (`MgeLinkSceneV2`, W298, the owner's choice of a new struct): the fields of
+/// [`SceneV1`], the camera's position for every camera, and the camera's frustum. The plugin
+/// sends it to the host table and to MGE XE, and writes it as the scene record (stream format
+/// 10).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SceneV2 {
+    pub struct_size: u32,
+    pub kind: u32,
+    pub camera: u32,
+    pub scene_root: u32,
+    pub render_target: u32,
+    pub flags: u32,
+    /// The position of the camera in the world, for every camera: exact for a camera that the
+    /// plugin makes relative (then also the origin of its relative matrices, with
+    /// [`SCENE_HAS_CAMERA_ORIGIN`]), else the camera's own world translation.
+    pub camera_origin: [f64; 3],
+    /// As [`SceneV1::view`].
+    pub view: u32,
+    /// As [`SceneV1::repeat_walk`].
+    pub repeat_walk: u32,
+    /// The camera's view frustum (`NiCamera::kViewFrustum`): left, right, top, bottom, near and
+    /// far, as the renderer takes them for the projection (after MGE XE's change of the field of
+    /// view). The engine's projection of a camera is always a perspective.
+    pub frustum: [f32; 6],
+    /// The fog colour that MGE XE gives the scene's draws, with [`SCENE_MGE_FOG_COLOR`] in
+    /// `mge_flags`: MGE XE fills both in `MGE_StreamSceneBegin` (the scattering of the sky),
+    /// in the format of the fog property's colour.
+    pub mge_fog_color: u32,
+    pub mge_flags: u32,
+}
+
+/// The bit of `SceneV2::mge_flags`: MGE XE gives the scene's draws the fog colour
+/// `SceneV2::mge_fog_color`.
+pub const SCENE_MGE_FOG_COLOR: u32 = 0x1;
 
 /// The bits of `SceneV1::repeat_walk` that hold the first slot of a repeat plus 1.
 pub const SCENE_REPEAT_MASK: u32 = 0xFF;
@@ -369,7 +410,7 @@ pub struct HostV1 {
     pub version: u32,
     pub capabilities: u32,
     pub reserved: u32,
-    pub scene_begin: unsafe extern "C" fn(scene: *const SceneV1),
+    pub scene_begin: unsafe extern "C" fn(scene: *const SceneV2),
     pub scene_end: unsafe extern "C" fn(),
     pub frame_event: unsafe extern "C" fn(kind: u32, a: u32, b: u32),
     pub draw: unsafe extern "C" fn(draw: *const DrawV1),
@@ -398,6 +439,14 @@ const _: () = {
     // A reader of an older packet (48 bytes) has no view: the field starts at its end.
     assert!(core::mem::offset_of!(SceneV1, view) == 48);
     assert!(core::mem::offset_of!(SceneV1, repeat_walk) == 52);
+    assert!(size_of::<SceneV2>() == 88);
+    // The fields of V1 at their places in V2.
+    assert!(core::mem::offset_of!(SceneV2, camera_origin) == core::mem::offset_of!(SceneV1, camera_origin));
+    assert!(core::mem::offset_of!(SceneV2, view) == 48);
+    assert!(core::mem::offset_of!(SceneV2, repeat_walk) == 52);
+    assert!(core::mem::offset_of!(SceneV2, frustum) == 56);
+    assert!(core::mem::offset_of!(SceneV2, mge_fog_color) == 80);
+    assert!(core::mem::offset_of!(SceneV2, mge_flags) == 84);
     assert!(size_of::<LightV1>() == 16);
     assert!(size_of::<DrawV1>() == 48);
     assert!(size_of::<StateLightV1>() == 108);

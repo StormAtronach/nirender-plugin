@@ -28,7 +28,14 @@ pub(crate) struct Stream {
     pub(crate) projection: [f32; 16],
     pub(crate) viewport: Option<([f32; 4], [f32; 2])>,
     pub(crate) back_buffer: bool,
+    /// The origin of the relative matrices of the scene: its camera's exact position, when the
+    /// plugin makes the camera relative.
     pub(crate) origin: Option<[f64; 3]>,
+    /// The position of the scene's camera, for every camera (the scene record).
+    pub(crate) position: [f64; 3],
+    /// The frustum of the scene's camera: left, right, top, bottom, near, far (the scene
+    /// record).
+    pub(crate) frustum: [f32; 6],
     /// The player is in an interior cell, from the scene packet.
     pub(crate) interior: bool,
     /// The player's cell is like an exterior, from the scene packet ([`SCENE_LIKE_EXTERIOR`]).
