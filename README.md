@@ -226,7 +226,9 @@ The instruments and the tests:
 
 The helper's diagnostic and test switches (`host/src/switches.rs`, read once; none is a
 setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own
-switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree.
+switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree. One of them,
+`MGE_XE_CORE_MODS=0` (no core mod joins the shaders), is set by the baseline gate for its
+replays.
 
 - `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting. The
   baseline gate replays with both.
