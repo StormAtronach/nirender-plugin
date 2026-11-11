@@ -235,6 +235,23 @@ def transaction_entries(store, transaction_id):
         return set()
 
 
+def stored(store, entry):
+    """True when the store holds the pdb of an entry ("name\\key"): a file other than refs.ptr in its folder."""
+    folder = os.path.join(store, *entry.split("\\"))
+    try:
+        return any(name.lower() != "refs.ptr" for name in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def missing(store, live):
+    """The entries that a live transaction names and the store has no pdb for, as "build: name\\key". symstore writes
+    the transaction first and copies the pdbs after it, so an add that is stopped (the timeout of run_symstore)
+    leaves such entries (W352: an add of 5 pdbs stopped at 0.15 to 0.8 s named 5 and held 4)."""
+    return ["%s: %s" % (transaction.version or transaction.id, entry)
+            for transaction in live for entry in sorted(transaction.keys) if not stored(store, entry)]
+
+
 def store_size(store):
     """The bytes of every file of the store."""
     total = 0
@@ -297,7 +314,8 @@ def add_build(store, name, binaries, pdb_dirs, symstore):
         return 0, notes
     wanted = {entry_id(entry.name, entry.key) for entry, _, _ in found}
     for transaction in transactions(store):
-        if wanted <= transaction.keys:
+        # A transaction of an add that was stopped names pdbs it does not hold: it does not count.
+        if wanted <= transaction.keys and all(stored(store, entry) for entry in wanted):
             return 0, notes + ["%s: its pdbs are in the store (%s)" % (name, transaction.version or transaction.id)]
     pdbs, entries = [], []
     for entry, guid, age in found:
@@ -309,7 +327,7 @@ def add_build(store, name, binaries, pdb_dirs, symstore):
         entries.append(entry)
     if not pdbs:
         return 0, notes
-    new = sum(1 for entry in entries if not os.path.isdir(os.path.join(store, entry.name, entry.key)))
+    new = sum(1 for entry in entries if not stored(store, entry_id(entry.name, entry.key)))
     comment = "md5 " + " ".join("%s=%s" % (os.path.basename(entry.binary), entry.md5) for entry in entries)
     with tempfile.TemporaryDirectory(prefix="symbols-") as folder:
         listing = os.path.join(folder, "pdbs.txt")
@@ -466,16 +484,21 @@ def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEE
         return "symbols: not added: %s: %s" % (type(error).__name__, error)
 
 
-def status(store, budget, keep_list):
+def status(store, budget, keep_list, pending=PENDING):
     lines, problem = keep_lines(keep_list)
     rows = ["symbols: store %s, %.2f of %.1f GB" % (store, store_size(store) / GB if os.path.isdir(store) else 0, budget / GB)]
-    for transaction in transactions(store):
+    live = transactions(store)
+    for transaction in live:
         pin = pin_of(transaction, lines)
         rows.append("  %s %s: %d pdbs%s" % (transaction.id, transaction.version, len(transaction.keys), "; pinned: " + pin.replace("\t", " | ") if pin else ""))
     if problem:
         rows.append("  " + problem)
-    waiting = read_pending(PENDING)
-    rows.append("  waiting in %s: %s" % (PENDING, ", ".join(build[0] for build in waiting) or "none"))
+    gaps = missing(store, live)
+    if gaps:
+        rows.append("  %d entries of transactions have no pdb in the store (an add that was stopped):" % len(gaps))
+        rows += ["    " + gap for gap in gaps]
+    waiting = read_pending(pending)
+    rows.append("  waiting in %s: %s" % (pending, ", ".join(build[0] for build in waiting) or "none"))
     return "\n".join(rows)
 
 
@@ -545,8 +568,8 @@ def self_test_in(work):
     line = run("a", a_binaries)
     assert line.startswith("symbols: +3, store "), line
     key = index_key(guid, age)
-    stored = os.listdir(os.path.join(store, pdb_name, key))
-    assert stored and all(name.endswith("_") for name in stored if name != "refs.ptr"), stored
+    packed = os.listdir(os.path.join(store, pdb_name, key))
+    assert packed and all(name.endswith("_") for name in packed if name != "refs.ptr"), packed
     live = transactions(store)
     assert [t.version for t in live] == ["a"] and len(live[0].keys) == 3, live
     assert re.search(r"ComInterfaces\.dll=[0-9a-f]{32}", live[0].comment), live[0].comment
@@ -661,6 +684,25 @@ def self_test_in(work):
     line = add("j", j_binaries, store=store, budget=1, symstore=no_delete, keep_list=keep, gate=free, pending=pending, lock=lock)
     assert line.startswith("symbols: +") and "; prune: SymbolError: symstore del: exit 1" in line, line
     assert "j" in [t.version for t in transactions(store)] and read_pending(pending) == [], line
+
+    # An add that was stopped: symstore wrote the transaction and not every pdb (an add of the 5 fixtures stopped at
+    # 0.15 to 0.8 s named 5 and held 4). Here the pdb file of Executor goes from the store. The status names the gap,
+    # and a new add of Executor puts it back: the dedupe does not count a transaction without the pdb. The null:
+    # before the gap, the same add is "in the store".
+    assert "have no pdb in the store" not in status(store, BUDGET, keep, pending)
+    m_binaries, _ = build("m", ["Executor"])
+    assert "m: its pdbs are in the store" in run("m", m_binaries)
+    with open(m_binaries[0], "rb") as file:
+        m_guid, m_age, m_pdb = codeview(file.read())
+    m_folder = os.path.join(store, m_pdb, index_key(m_guid, m_age))
+    for name in os.listdir(m_folder):
+        if name.lower() != "refs.ptr":
+            os.remove(os.path.join(m_folder, name))
+    shown = status(store, BUDGET, keep, pending)
+    assert "have no pdb in the store" in shown and entry_id(m_pdb, index_key(m_guid, m_age)) in shown, shown
+    line = run("m", m_binaries)
+    assert line.startswith("symbols: +1,") and "in the store" not in line, line
+    assert stored(store, entry_id(m_pdb, index_key(m_guid, m_age))) and missing(store, transactions(store)) == []
 
 
 def main():
