@@ -22,9 +22,10 @@
 //! of the cap. A list that cannot be read, that a build with another world shader wrote, or that
 //! cannot be written, leaves each key to its first use, with a line in the log.
 //!
-//! A live start also sends the uber-shader's own pipelines of a fixed set ([`UBER_SET`]) to the
-//! thread, before the list's. They are the keys of the uber-shader that the frame thread made in a
-//! start with no list. The frame thread takes such a pipeline at the key's first draw, and makes a key of the
+//! A live start with no list sends the uber-shader's own pipelines of a fixed set ([`UBER_SET`]) to
+//! the thread. They are the keys of the uber-shader that the frame thread made in a start with no
+//! list. A start with a list does not send them: the list's pipelines go to the thread only while
+//! it has few jobs, so the set would hold them back. The frame thread takes such a pipeline at the key's first draw, and makes a key of the
 //! set itself only when the thread has not given it back yet. The report counts both.
 //!
 //! A debug view with code in the world shader ([`crate::debug_lines::world_variant`]) draws
@@ -620,9 +621,9 @@ impl StageShaders {
         }
     }
 
-    /// Starts the thread that makes the pipelines of a live session, and gives it the keys of
-    /// [`UBER_SET`] (`frame_samples`: the samples of the frame's targets), then the pipelines of
-    /// the list.
+    /// Starts the thread that makes the pipelines of a live session, and gives it the pipelines of
+    /// the list, or with no list the keys of [`UBER_SET`] (`frame_samples`: the samples of the
+    /// frame's targets).
     pub(crate) fn start(&mut self, maker: crate::renderer::PipelineMaker, frame_samples: u32) {
         if !self.on {
             return;
@@ -658,15 +659,21 @@ impl StageShaders {
         self.jobs = Some(jobs);
         self.done = Some(done);
         self.sync = false;
-        self.send_uber_set(frame_samples);
         self.list = list_path(self.world_hash);
         self.load_list();
+        self.send_uber_set(frame_samples);
     }
 
     /// Sends the keys of [`UBER_SET`] to the thread, with `frame_samples` in place of
-    /// [`FRAME_SAMPLES`]. The first job carries the world shader's own text as the module of the
-    /// uber-shader. The list does not keep these keys ([`StageShaders::receive`]).
+    /// [`FRAME_SAMPLES`], when no pipeline of the list waits. The first job carries the world
+    /// shader's own text as the module of the uber-shader. The list does not keep these keys
+    /// ([`StageShaders::receive`]).
     fn send_uber_set(&mut self, frame_samples: u32) {
+        // `send_queued` sends the list only while fewer than `LIST_BATCH` jobs
+        // wait, so the set's jobs would hold the list back.
+        if !self.queued.is_empty() {
+            return;
+        }
         let Some(jobs) = self.jobs.clone() else { return };
         let mut source = Some(self.world_source.clone());
         for key in UBER_SET {
@@ -1382,6 +1389,15 @@ mod tests {
         }
         assert_eq!(shaders.pending.len(), UBER_SET.len());
         assert!(shaders.sent_modules.contains(&(0, 0)));
+    }
+
+    #[test]
+    fn with_a_list_the_uber_set_is_not_sent() {
+        let (mut shaders, job_receiver) = live_shaders();
+        shaders.queued.push_back((UBER_SET[0], key(1, 0)));
+        shaders.send_uber_set(4);
+        assert_eq!(job_receiver.try_iter().count(), 0);
+        assert!(shaders.uber_set.is_empty() && shaders.pending.is_empty());
     }
 
     #[test]
