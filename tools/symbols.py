@@ -64,6 +64,8 @@ STATE = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "n
 PENDING = os.path.join(STATE, "symbols-pending.txt")
 LOCK = os.path.join(STATE, "symbols.lock")
 LOCK_SECONDS = 600
+# The longest symstore run: the add of f222 took 28 s.
+SYMSTORE_SECONDS = 300
 
 Entry = collections.namedtuple("Entry", "binary name key md5")
 Transaction = collections.namedtuple("Transaction", "id version comment keys")
@@ -218,10 +220,14 @@ def store_size(store):
     return total
 
 
-def run_symstore(arguments, symstore):
-    """Runs symstore; a nonzero exit code or an error that it counts is a SymbolError."""
+def run_symstore(arguments, symstore, seconds=None):
+    """Runs symstore; a nonzero exit code, an error that it counts or a run longer than SYMSTORE_SECONDS is a
+    SymbolError (an add then waits in the pending list)."""
+    seconds = SYMSTORE_SECONDS if seconds is None else seconds
     try:
-        done = subprocess.run([symstore] + arguments, capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL)
+        done = subprocess.run([symstore] + arguments, capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL, timeout=seconds)
+    except subprocess.TimeoutExpired as error:
+        raise SymbolError("symstore %s: no end in %g s" % (arguments[0], seconds)) from error
     except OSError as error:
         raise SymbolError("symstore %s: %s" % (arguments[0], error)) from error
     errors = re.search(r"Number of errors = (\d+)", done.stdout)
@@ -403,8 +409,8 @@ def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEE
             pruned, prune_notes = prune(store, budget, keep_list, symstore)
             line = "symbols: +%d, store %.1f of %.1f GB, pruned %s" % (added, store_size(store) / GB, budget / GB, ", ".join(pruned) or "none")
             return line + "".join("; " + note for note in notes + prune_notes)
-    except (OSError, SymbolError) as error:
-        return "symbols: not added: %s" % error
+    except Exception as error:  # noqa: BLE001 - a fault of the store must not stop the build tool that calls it
+        return "symbols: not added: %s: %s" % (type(error).__name__, error)
 
 
 def status(store, budget, keep_list):
@@ -545,6 +551,27 @@ def self_test_in(work):
     assert line.startswith("symbols: +0,") and "f: symstore add" in line, line
     assert [build[0] for build in read_pending(pending)] == ["f"], read_pending(pending)
     assert run(None, []).startswith("symbols: +1,") and read_pending(pending) == []
+
+    # A symstore that does not end is stopped at its time, and the build waits (the Reviewer's verdict 193). The
+    # stand-in sleeps 5 s and ends by itself, so a killed shell leaves no process for long.
+    hang = os.path.join(work, "hang.cmd")
+    with open(hang, "w", encoding="ascii") as file:
+        file.write('@"%s" -c "import time; time.sleep(5)"\n' % sys.executable)
+    # Discoverer is in b and Executor in e: no one transaction holds both, so symstore runs.
+    h_binaries, _ = build("h", ["Discoverer"])
+    global SYMSTORE_SECONDS
+    saved, SYMSTORE_SECONDS = SYMSTORE_SECONDS, 1
+    try:
+        line = add("h", h_binaries + c_binaries, store=store, symstore=hang, keep_list=keep, gate=free, pending=pending, lock=lock)
+    finally:
+        SYMSTORE_SECONDS = saved
+    assert "no end in 1 s" in line and [build[0] for build in read_pending(pending)] == ["h"], (line, read_pending(pending))
+    write_pending(pending, [])
+    # Any other fault is a line too: here a gate that raises.
+    def broken():
+        raise ValueError("a broken gate")
+    line = add("i", h_binaries, store=store, keep_list=keep, gate=broken, pending=pending, lock=lock)
+    assert line == "symbols: not added: ValueError: a broken gate", line
 
 
 def main():
