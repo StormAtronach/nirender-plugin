@@ -166,8 +166,9 @@ pub fn is_known(tag: u32) -> bool {
 
 /// The least length of a record of the tag: its fixed part, which holds the counts of the
 /// variable parts ([`needed`] takes it from there). The lengths are those of the fixed parts
-/// the plugin writes (`src/capture.rs` of the plugin). 0 for a tag the player does not read,
-/// or reads with a check of its own on the whole record.
+/// the plugin writes (`src/capture.rs` of the plugin); `tools/check_stream_tags.py` compares
+/// them in the commit hook. 0 for a tag the player does not read, or reads with a check of its
+/// own on the whole record.
 pub fn least_length(tag: u32) -> usize {
     match tag {
         // The width, the height, the window and the abilities of the stream.

@@ -887,10 +887,7 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         18 => {
             // SetGammaRamp(flags, ramp): the helper applies it to the picture of the window.
             if a[1] != 0 {
-                crate::capture::gamma_ramp(core::slice::from_raw_parts(
-                    a[1] as usize as *const u8,
-                    crate::capture::GAMMA_RAMP_BYTES,
-                ));
+                crate::capture::gamma_ramp(&*(a[1] as usize as *const [u8; crate::capture::GAMMA_RAMP_BYTES]));
             }
             OK
         }

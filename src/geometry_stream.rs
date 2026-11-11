@@ -1077,12 +1077,12 @@ unsafe fn send_morph_targets(handle: u32, unique: u32, morph: &Morph) {
     use crate::gen::layouts::{NiMorphData as MD, NiMorphData_MorphTarget as MT};
     let head = [handle, unique, morph.targets, morph.vertices];
     let array: usize = rd(morph.data, MD::arrayMorphTargets);
-    let mut parts: Vec<&[u8]> = vec![crate::capture::word_bytes(&head)];
+    let mut targets: Vec<&[u8]> = Vec::with_capacity(morph.targets as usize);
     for i in 0..morph.targets as usize {
         let verts: usize = rd(array + i * MT::SIZE, MT::targetVerts);
-        parts.push(core::slice::from_raw_parts(verts as *const u8, morph.vertices as usize * 12));
+        targets.push(core::slice::from_raw_parts(verts as *const u8, morph.vertices as usize * 12));
     }
-    crate::capture::morph_targets(&parts);
+    crate::capture::morph_targets(&head, &targets);
 }
 
 /// The steps sent as weights, the weights of the last step, the targets sent, and the check
