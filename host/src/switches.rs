@@ -28,6 +28,13 @@ pub(crate) struct Switches {
     /// that reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose
     /// for it. `engine` (the default until the A/B reaches parity): the lights the engine chose.
     pub(crate) world_lights: bool,
+    /// `NIRENDER_BLIND_LIGHT_KEY=0`: a lit draw whose colour cannot take light keeps its lights
+    /// ([`crate::light_keys`]). On by default; the switch is for a diagnostic.
+    pub(crate) blind_light_key: bool,
+    /// `NIRENDER_ZERO_LIGHT_KEY=0`: a lit draw with no lights does not take
+    /// [`crate::NO_LIGHTS_BIT`], and its shader keeps the light loop. On by default; the switch
+    /// is for a diagnostic.
+    pub(crate) zero_light_key: bool,
     /// `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of each draw of that geometry.
     pub(crate) draw_dump: u32,
     /// `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
@@ -110,6 +117,8 @@ impl Switches {
             cores_to_scheduler: read.on("MGE_XE_CORES") == Some(false),
             clusters: read.on("MGE_XE_CLUSTERS"),
             world_lights: read.choice("MGE_XE_LIGHTS", &["world", "engine"]) == Some("world"),
+            blind_light_key: read.on("NIRENDER_BLIND_LIGHT_KEY") != Some(false),
+            zero_light_key: read.on("NIRENDER_ZERO_LIGHT_KEY") != Some(false),
             draw_dump: read.parsed("MGE_XE_DRAW_DUMP", "a geometry handle in hex", |v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0),
             gpu_time: read.on("MGE_XE_GPU_TIME") == Some(true),
             stage_shaders: read.on("MGE_XE_STAGE_SHADERS") != Some(false),

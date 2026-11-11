@@ -610,7 +610,9 @@ pub trait Extension {
     /// into the pass: the lights, the ambient light, the fog. Called for each draw of the
     /// world of the game into the back buffer with a perspective projection, when
     /// [`FrameParameters::shade`] is true. The extension sets bit 1 of `counts[3]` for a draw
-    /// that its shader functions shade; bit 2 and the bits from 16 are its own.
+    /// that its shader functions shade; bit 2 and the bits from 16 are its own, but
+    /// [`crate::NO_LIGHTS_BIT`], which the renderer sets after this call for a
+    /// draw lit for each pixel with no lights: its shader may leave its light loop out.
     fn shade(&mut self, _draw: &mut DrawData, _lights: &mut [LightData], _facts: &DrawFacts) {}
 
     /// The shade of the retained table for a frame, one time at the start of its world, when

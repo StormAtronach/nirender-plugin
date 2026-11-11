@@ -34,8 +34,9 @@ pub(crate) const MAX_KEYS: usize = 256;
 const STAGES: usize = 6;
 /// The first line of the list, then [`LIST_FORMAT`] and the hash of the world shader's text.
 const LIST_HEADER: &str = "numidium stage pipelines";
-/// The format of the list's lines; it is in the list's file name too ([`list_name`]).
-const LIST_FORMAT: u32 = 2;
+/// The format of the list's lines; it is in the list's file name too ([`list_name`]). 3: the
+/// key's shade bits have [`crate::NO_LIGHTS_BIT`].
+const LIST_FORMAT: u32 = 3;
 /// The frames between two writes of a changed list.
 const SAVE_FRAMES: u32 = 600;
 /// The list's pipelines go to the thread while it has fewer jobs than this, so that a key of
@@ -47,9 +48,11 @@ const LIST_KEYS: usize = MAX_KEYS / 2;
 const KEY_WORDS: usize = 6 + STAGES * 7;
 /// The bits of `counts.w` in a stage key: each one chooses a branch of `fs` or of the
 /// extension's shade (1 the extension shades, 2, 16, 32 the sun's shadow, 128 the light for
-/// each pixel, 512). A draw of the retained table also takes the bits of its kind from the
-/// scene (`draw_counts_w`): those stay values of the frame.
-const SHADE_BITS: u32 = 1 | 2 | 16 | 32 | 128 | 512;
+/// each pixel, 512, and this crate's [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of
+/// the retained table also takes the bits of its kind from the scene (`draw_counts_w`): those
+/// stay values of the frame. The key keeps the bits in a `u16`.
+const SHADE_BITS: u32 = 1 | 2 | 16 | 32 | 128 | 512 | crate::NO_LIGHTS_BIT;
+const _: () = assert!(SHADE_BITS <= u16::MAX as u32, "the stage key keeps the shade bits in a u16");
 
 /// The codes that `fs` switches on for a draw. Only the stages below `count` are kept; the
 /// rest are 0, so that two draws that differ only in an unused stage share a key.
@@ -733,6 +736,18 @@ mod tests {
         let mut other = data;
         other.counts[3] = 1 | 32;
         assert_eq!(StageKey::of(&other), Some(key));
+    }
+
+    #[test]
+    fn no_lights_is_a_fact_of_the_key() {
+        let mut data = DrawData::zeroed();
+        data.counts[3] = 1 | 16 | 128 | 512;
+        data.flags = [1, 0, 1, 0];
+        let lit = StageKey::of(&data).unwrap();
+        data.counts[3] |= crate::NO_LIGHTS_BIT;
+        let without_lights = StageKey::of(&data).unwrap();
+        assert_ne!(lit, without_lights);
+        assert_eq!(u32::from(without_lights.shade), 1 | 16 | 128 | 512 | crate::NO_LIGHTS_BIT);
     }
 
     #[test]

@@ -81,6 +81,7 @@ mod d3d;
 use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expands, filter, gpu_pixels, known, stencil_operation, texture_format, INPUT_FORMATS};
 pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod lights;
+mod light_keys;
 use influences::FVF_INFLUENCES;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
 pub mod switches;
@@ -356,6 +357,12 @@ struct Retained {
 /// cluster of its pixel (`MGE_XE_LIGHTS=world`, `world_lights_here` in the shader). A lit
 /// draw of the world of the stream and a retained slot with lights have it.
 pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
+
+/// Bit 32768 of `counts.w`, set by this crate: a lit draw with no lights, none of its own, none
+/// from the clusters and none of the world (the module `light_keys`). A fact of the stage key
+/// (the module `stage_shaders`): the shader of the extension leaves out its light loop, the lookup of
+/// the clusters and the lights of the world for such a draw. The colour does not change.
+pub const NO_LIGHTS_BIT: u32 = 1 << 15;
 
 /// The lines `early world draws: ...` of a run: one for each scene whose world draws reached the
 /// target before its world began, for the first ones only.
