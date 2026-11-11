@@ -2,7 +2,27 @@
 //! and the picture files (PNG, JPEG).
 
 use super::*;
-use crate::objects::Create;
+use crate::objects::{Create, CreateView};
+
+/// A depth texture with its two views, made once with it: the whole texture (a target of a
+/// resolve or of a merge) and its depth aspect (what a pass reads). A frame that uses the
+/// texture again makes no view ([`crate::objects`]).
+pub(crate) struct DepthTarget {
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) whole: wgpu::TextureView,
+    pub(crate) depth: wgpu::TextureView,
+}
+
+impl DepthTarget {
+    pub(crate) fn new(texture: wgpu::Texture) -> DepthTarget {
+        let whole = texture.counted_view(&Default::default());
+        let depth = texture.counted_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
+        DepthTarget { texture, whole, depth }
+    }
+}
 
 /// The size of a texture that the game draws into: each side the size that the game asked
 /// for, cut to `largest`, the device's largest side of a 2D texture. A larger texture is an

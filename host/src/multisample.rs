@@ -17,6 +17,8 @@ use crate::objects::Create;
 pub(crate) struct Multisample {
     depth_layout: wgpu::BindGroupLayout,
     depth_pipeline: wgpu::RenderPipeline,
+    /// The group of the resolve: a resolve of the same view takes it again.
+    depth_group: gpu::KeptGroup,
     color_layout: wgpu::BindGroupLayout,
     color_pipeline: wgpu::RenderPipeline,
 }
@@ -161,6 +163,7 @@ impl Multisample {
         Multisample {
             depth_layout,
             depth_pipeline,
+            depth_group: gpu::KeptGroup::default(),
             color_layout,
             color_pipeline,
         }
@@ -169,13 +172,13 @@ impl Multisample {
     /// Writes the nearest sample of each pixel of `source` (a view of the multisampled depth,
     /// its depth aspect only) into `target` (a depth texture with one sample).
     pub(crate) fn resolve_depth(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::TextureView,
         target: &wgpu::TextureView,
     ) {
-        let group = gpu::frame_group(
+        let group = self.depth_group.get(
             device,
             &wgpu::BindGroupDescriptor {
                 label: Some("depth resolve"),

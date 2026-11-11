@@ -446,17 +446,19 @@ impl Player {
                     wgpu::TextureUsages::RENDER_ATTACHMENT,
                     self.renderer.samples,
                 ));
-                self.ms_depth = Some(multisampled_texture(
+                self.ms_depth = Some(DepthTarget::new(multisampled_texture(
                     &self.renderer.device,
                     width,
                     height,
                     self.renderer.depth_format,
                     wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                     self.renderer.samples,
-                ));
+                )));
             }
             self.color = Some(Rc::new(self.ms_color.as_ref().unwrap().counted_view(&Default::default())));
-            self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().counted_view(&Default::default())));
+            self.depth = Some(Rc::new(
+                self.ms_depth.as_ref().unwrap().texture.counted_view(&Default::default()),
+            ));
             self.back_view = Some(back_view);
         } else {
             self.color = Some(back_view);

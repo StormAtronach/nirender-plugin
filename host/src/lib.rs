@@ -950,7 +950,7 @@ struct Player {
     /// view. [`None`] with one sample. See `multisample.rs`.
     back_view: Option<Rc<wgpu::TextureView>>,
     ms_color: Option<wgpu::Texture>,
-    ms_depth: Option<wgpu::Texture>,
+    ms_depth: Option<DepthTarget>,
     /// The samples for each pixel of the targets of the pass that is open, for the pipelines.
     pass_samples: u32,
     /// A part of the frame in progress went to the GPU before its end, so the back buffer
@@ -1086,7 +1086,7 @@ struct Player {
     before_kept: bool,
     /// The picture and the depth of the frame before a call of [`Extension::draw_class`].
     picture_copy: Option<wgpu::Texture>,
-    depth_copy: Option<wgpu::Texture>,
+    depth_copy: Option<DepthTarget>,
     /// The copies of the colour and the depth of a rendered texture that the post chain of a
     /// picture reads ([`Extension::view_post`]): one pair for each size of picture.
     post_copies: Vec<PostCopy>,
@@ -1094,18 +1094,18 @@ struct Player {
     /// clears its depth before its later scenes. The projection of the world at that time,
     /// and true when a draw of the first-person scene went into the back buffer in this
     /// frame (its depth goes into the copy at the end of that scene).
-    world_depth: Option<wgpu::Texture>,
+    world_depth: Option<DepthTarget>,
     world_depth_kept: bool,
     world_depth_projection: Option<[f32; 16]>,
     /// The depth of the frame before and after a late sorted run, and the pass that puts what
     /// the run wrote into the copy of the world depth ([`late_depth`]).
-    late_before: Option<wgpu::Texture>,
-    late_after: Option<wgpu::Texture>,
+    late_before: Option<DepthTarget>,
+    late_after: Option<DepthTarget>,
     late_depth: Option<late_depth::LateDepth>,
     first_person_drawn: bool,
     /// The depth of the draws of [`Extension::before_world`], for [`Extension::post`]: the
     /// renderer clears the depth after them.
-    before_depth: Option<wgpu::Texture>,
+    before_depth: Option<DepthTarget>,
     before_depth_kept: bool,
     /// The counts at the last mark. See [`tag::MARK`].
     mark_times: [u64; TIME_COUNT],
