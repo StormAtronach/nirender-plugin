@@ -32,6 +32,9 @@ The checks of each list:
 - `check_names.py` (docs): no skill names a switch or a Lua call the code lost.
 - `check_format.py`: the Rust code is formatted as `cargo fmt` writes it, in each Rust root of
   this repository; with `--mge` (the MGE XE list): in the MGE XE workspace.
+- `check_counted_objects.py`: the host crate makes its GPU objects through the counted calls of
+  `host/src/objects.rs` (no `create_*` call of the device or a texture elsewhere, D288); with
+  `--mge` (the MGE XE list): the helper too.
 
 The docs scripts come from the docs checkout beside the main checkout, or from the tree that
 the local.json key "docs" names (`common.docs_place`), never from beside a worktree. MWSE is
@@ -131,21 +134,26 @@ CHECKS = {
     "format": (PLUGIN / "tools" / "check_format.py", PLUGIN),
     "mge format": (PLUGIN / "tools" / "check_format.py", REPOS / "MGE-XE-G7-render-link", ["--mge", str(REPOS / "MGE-XE-G7-render-link")]),
     "format self-test": (PLUGIN / "tools" / "check_format.py", PLUGIN, ["--self-test"]),
+    # The GPU objects are made through the counted calls of host/src/objects.rs (D288), in the
+    # crate and in the helper.
+    "counted objects": (PLUGIN / "tools" / "check_counted_objects.py", PLUGIN),
+    "mge counted objects": (PLUGIN / "tools" / "check_counted_objects.py", REPOS / "MGE-XE-G7-render-link", ["--mge", str(REPOS / "MGE-XE-G7-render-link")]),
+    "counted objects self-test": (PLUGIN / "tools" / "check_counted_objects.py", PLUGIN, ["--self-test"]),
     # The places of the docs and MWSE for a tree with no siblings.
     "check places": (PLUGIN / "tools" / "checks.py", PLUGIN, ["--self-test"]),
     # The pure parts of the corrupted-capture tool (the record walk, the mutations, the verdicts).
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test"],
-    "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test"],
+    "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 
 # The option that gives each check of the MGE XE tree another tree than the render-link sibling
 # (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
-MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge"}
+MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge", "mge counted objects": "--mge"}
 
 
 def self_test():

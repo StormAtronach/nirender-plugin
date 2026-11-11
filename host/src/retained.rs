@@ -21,6 +21,7 @@
 //! lights the retained instances use (flag 8): a light that changes is written once.
 
 use super::*;
+use crate::objects::Create;
 
 /// The size of a `Scene` uniform, the step of the dynamic offset (a multiple of the
 /// alignment of a uniform offset, 256).
@@ -97,7 +98,7 @@ const _: () = assert!(core::mem::size_of::<SceneData>() == SCENE_SIZE);
 
 /// The buffers of the retained draws: the scenes, the light indexes, the lights.
 pub fn scene_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("scenes"),
         size: (SCENE_SLOTS * SCENE_SIZE) as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -715,14 +716,19 @@ impl RetainedSet {
     }
 
     /// A chain of a texture effect ([`crate::tag::EFFECT_CHAIN`]). The stages take it at the next
-    /// [`RetainedSet::turn_effects`].
-    pub fn effect_chain_record(&mut self, data: &[u8]) {
+    /// [`RetainedSet::turn_effects`]. True for a chain of an id that is new.
+    pub fn effect_chain_record(&mut self, data: &[u8]) -> bool {
         let words: Vec<u32> = data.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect();
-        if let Some((id, chain)) = crate::effect_turn::Chain::parse(&words) {
-            self.counts.chain_records += 1;
-            if let Some(before) = self.effect_chains.insert(id, chain) {
+        let Some((id, chain)) = crate::effect_turn::Chain::parse(&words) else {
+            return false;
+        };
+        self.counts.chain_records += 1;
+        match self.effect_chains.insert(id, chain) {
+            Some(before) => {
                 self.chains_before.insert(id, before);
+                false
             }
+            None => true,
         }
     }
 

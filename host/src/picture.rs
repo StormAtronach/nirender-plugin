@@ -2,6 +2,27 @@
 //! and the picture files (PNG, JPEG).
 
 use super::*;
+use crate::objects::{Create, CreateView};
+
+/// A depth texture with its two views, made once with it: the whole texture (a target of a
+/// resolve or of a merge) and its depth aspect (what a pass reads). A frame that uses the
+/// texture again makes no view ([`crate::objects`]).
+pub(crate) struct DepthTarget {
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) whole: wgpu::TextureView,
+    pub(crate) depth: wgpu::TextureView,
+}
+
+impl DepthTarget {
+    pub(crate) fn new(texture: wgpu::Texture) -> DepthTarget {
+        let whole = texture.counted_view(&Default::default());
+        let depth = texture.counted_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
+        DepthTarget { texture, whole, depth }
+    }
+}
 
 /// The size of a texture that the game draws into: each side the size that the game asked
 /// for, cut to `largest`, the device's largest side of a 2D texture. A larger texture is an
@@ -50,7 +71,7 @@ pub(crate) fn multisampled_texture(
     usage: wgpu::TextureUsages,
     samples: u32,
 ) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+    device.counted_texture(&wgpu::TextureDescriptor {
         label: Some(if samples > 1 {
             "multisampled render target"
         } else {
@@ -79,8 +100,10 @@ pub(crate) fn copy_picture(
     width: u32,
     height: u32,
 ) -> (wgpu::Buffer, usize) {
+    // A read of the picture is a request of its frame, with a buffer of its own.
+    crate::objects::changed("a picture");
     let row = (width as usize * 4).next_multiple_of(256);
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let buffer = device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("picture read"),
         size: (row * height as usize) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,

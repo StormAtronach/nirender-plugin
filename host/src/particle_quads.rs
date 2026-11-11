@@ -10,6 +10,7 @@
 //! passes go into the frame's commands, which the frame's submit sends before its draws.
 
 use super::*;
+use crate::objects::Create;
 
 /// The bytes of a particle of a shape record and of a vertex of a quad.
 const PARTICLE: u64 = 20;
@@ -118,6 +119,9 @@ pub(crate) struct ParticleQuads {
     vertex_capacity: u64,
     jobs_buffer: wgpu::Buffer,
     jobs_capacity: u64,
+    /// The compute group of each vertex buffer of the jobs, kept while what it binds stays the
+    /// same; a buffer that no job of a frame used drops its group.
+    groups: Vec<(wgpu::Buffer, crate::gpu::KeptGroup)>,
     /// The particles of the frame not yet written to `input`, from `staged_from` on.
     staged: Vec<u8>,
     staged_from: u64,
@@ -131,7 +135,7 @@ pub(crate) struct ParticleQuads {
 }
 
 fn storage(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
         usage,
@@ -141,7 +145,7 @@ fn storage(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsa
 
 impl ParticleQuads {
     pub(crate) fn new(device: &wgpu::Device) -> ParticleQuads {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("particle quads"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
@@ -155,7 +159,7 @@ impl ParticleQuads {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("particle quads"),
             entries: &[
                 entry(0, wgpu::BufferBindingType::Storage { read_only: true }, false),
@@ -163,13 +167,13 @@ impl ParticleQuads {
                 entry(2, wgpu::BufferBindingType::Uniform, true),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("particle quads"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.counted_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("particle quads"),
             layout: Some(&pipeline_layout),
             module: &module,
@@ -204,6 +208,7 @@ impl ParticleQuads {
                 wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             ),
             jobs_capacity,
+            groups: Vec::new(),
             staged: Vec::new(),
             staged_from: 0,
             particles_used: 0,
@@ -330,28 +335,38 @@ impl ParticleQuads {
             let mut bound: Option<(Rc<wgpu::Buffer>, wgpu::BindGroup)> = None;
             for (n, job) in self.jobs.iter().enumerate() {
                 if !bound.as_ref().is_some_and(|(buffer, _)| Rc::ptr_eq(buffer, &job.vertices)) {
-                    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("particle quads"),
-                        layout: &self.layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: self.input.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: job.vertices.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                    buffer: &self.jobs_buffer,
-                                    offset: 0,
-                                    size: core::num::NonZeroU64::new(48),
-                                }),
-                            },
-                        ],
-                    });
+                    let at = match self.groups.iter().position(|(buffer, _)| *buffer == *job.vertices) {
+                        Some(at) => at,
+                        None => {
+                            self.groups.push(((*job.vertices).clone(), crate::gpu::KeptGroup::default()));
+                            self.groups.len() - 1
+                        }
+                    };
+                    let group = self.groups[at].1.get(
+                        device,
+                        &wgpu::BindGroupDescriptor {
+                            label: Some("particle quads"),
+                            layout: &self.layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: self.input.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: job.vertices.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: &self.jobs_buffer,
+                                        offset: 0,
+                                        size: core::num::NonZeroU64::new(48),
+                                    }),
+                                },
+                            ],
+                        },
+                    );
                     bound = Some((job.vertices.clone(), group));
                 }
                 if let Some((_, group)) = bound.as_ref() {
@@ -360,6 +375,9 @@ impl ParticleQuads {
                 pass.dispatch_workgroups(job.count.div_ceil(GROUP), 1, 1);
             }
         }
+        let jobs = &self.jobs;
+        self.groups
+            .retain(|(buffer, _)| jobs.iter().any(|job| *job.vertices == *buffer));
         commands.defer(encoder.finish());
         self.jobs.clear();
     }

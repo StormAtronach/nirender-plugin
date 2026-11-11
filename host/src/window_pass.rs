@@ -6,7 +6,7 @@
 //! game set one. A window of the picture's size keeps the exact copy of `live::to_window`.
 
 use super::*;
-use wgpu::util::DeviceExt;
+use crate::objects::Create;
 
 /// The scaled pass's name in the census and the pass report.
 const SCALED: &str = "scaled picture";
@@ -59,12 +59,16 @@ pub(crate) struct Scale {
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     identity: wgpu::Buffer,
+    /// The view of the back buffer and the group of the draw, kept while what they bind stays
+    /// the same.
+    source_view: gpu::KeptView,
+    group: gpu::KeptGroup,
 }
 
 impl Scale {
     pub(crate) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Scale {
         let fragment = wgpu::ShaderStages::FRAGMENT;
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("scaled picture"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -95,17 +99,17 @@ impl Scale {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scaled picture"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scaled picture"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scaled picture"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -130,14 +134,14 @@ impl Scale {
             multiview_mask: None,
             cache: None,
         });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             label: Some("scaled picture"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let floats: Vec<u8> = identity_ramp().iter().flat_map(|value| value.to_le_bytes()).collect();
-        let identity = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let identity = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("identity ramp"),
             contents: &floats,
             usage: wgpu::BufferUsages::UNIFORM,
@@ -147,23 +151,26 @@ impl Scale {
             pipeline,
             sampler,
             identity,
+            source_view: gpu::KeptView::default(),
+            group: gpu::KeptGroup::default(),
         }
     }
 
-    /// Draws `source` (the back buffer) into the rectangle `rect` of `target` (the picture of
-    /// the window), black outside it, through `ramp` (the gamma pass's table) or the identity.
+    /// Draws `source` (the back buffer) into the rectangle `rect` of `target` (the view of the
+    /// picture of the window), black outside it, through `ramp` (the gamma pass's table) or the
+    /// identity.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::Texture,
-        target: &wgpu::Texture,
+        target: &wgpu::TextureView,
         rect: [u32; 4],
         ramp: Option<&wgpu::Buffer>,
     ) {
-        let source_view = source.create_view(&Default::default());
-        let target_view = target.create_view(&Default::default());
-        let group = gpu::frame_group(
+        let source_view = self.source_view.get(source);
+        let group = self.group.get(
             device,
             &wgpu::BindGroupDescriptor {
                 label: Some("scaled picture"),
@@ -171,7 +178,7 @@ impl Scale {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source_view),
+                        resource: wgpu::BindingResource::TextureView(source_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -188,7 +195,7 @@ impl Scale {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("scaled picture"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target_view,
+                view: target,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -215,16 +222,18 @@ impl Scale {
 
 /// The back buffer into the picture of the window at its own size, the part that the two have:
 /// through the gamma ramp of the device, or a plain copy for an identity ramp. The window shots
-/// take it as it is (their picture has the back buffer's size).
+/// take it as it is (their picture has the back buffer's size). `window_view` is the view of
+/// `window`, made once for each picture of the window by the caller.
 pub(crate) fn exact(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     gamma: Option<&gamma::Gamma>,
     back_buffer: &wgpu::Texture,
     window: &wgpu::Texture,
+    window_view: &wgpu::TextureView,
 ) {
     match gamma {
-        Some(gamma) => gamma.draw(device, encoder, back_buffer, window),
+        Some(gamma) => gamma.draw(device, encoder, back_buffer, window, window_view),
         None => {
             crate::pass_report::note_skipped(gamma::NAME, "the identity ramp: a copy");
             encoder.copy_texture_to_texture(
@@ -257,6 +266,7 @@ impl ToWindow {
         gamma: Option<&gamma::Gamma>,
         back_buffer: &wgpu::Texture,
         window: &wgpu::Texture,
+        window_view: &wgpu::TextureView,
     ) {
         let picture = (back_buffer.width(), back_buffer.height());
         let rect = fit(picture, (window.width(), window.height()));
@@ -278,11 +288,18 @@ impl ToWindow {
         // undefined pixels beside the copy, and the scaled draw clears them black.
         if (window.width(), window.height()) == picture {
             crate::pass_report::note_skipped(SCALED, "the window has the picture's size");
-            return exact(device, encoder, gamma, back_buffer, window);
+            return exact(device, encoder, gamma, back_buffer, window, window_view);
         }
         crate::pass_report::note_skipped(gamma::NAME, "the scaled picture takes the ramp");
         let scale = self.scale.get_or_insert_with(|| Scale::new(device, window.format()));
-        scale.draw(device, encoder, back_buffer, window, rect, gamma.map(gamma::Gamma::table));
+        scale.draw(
+            device,
+            encoder,
+            back_buffer,
+            window_view,
+            rect,
+            gamma.map(gamma::Gamma::table),
+        );
     }
 }
 

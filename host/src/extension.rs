@@ -600,6 +600,14 @@ pub trait Extension {
     /// commands go with the next frame.
     fn after_frame(&mut self, _scene: &SceneView) {}
 
+    /// The first change of the extension in the frame that ends, by its name: it loaded data,
+    /// changed a setting or a shader, or made what it draws again. That frame is not steady
+    /// for the count of the GPU objects ([`crate::objects`]), and may make objects. The
+    /// renderer calls this once at the end of each frame that it draws. [`None`] by default.
+    fn frame_changed(&mut self) -> Option<&'static str> {
+        None
+    }
+
     /// The renderer draws a capture file and not a live stream: the frames must be the
     /// same each time. The extension completes each load before a frame, with no limit on
     /// the work of a frame. The renderer calls this one time, before the first record.

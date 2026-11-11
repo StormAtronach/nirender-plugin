@@ -7,6 +7,7 @@
 //! (depth design, "The post chain's world depth").
 
 use super::*;
+use crate::objects::Create;
 
 /// The pass's name in the census, the pass report and the GPU time.
 pub(crate) const NAME: &str = "depth: late sorted blends into the world depth";
@@ -14,6 +15,8 @@ pub(crate) const NAME: &str = "depth: late sorted blends into the world depth";
 pub(crate) struct LateDepth {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    /// The group of the merge: a merge of the same copies takes it again.
+    group: gpu::KeptGroup,
 }
 
 /// A triangle over the whole target, from the index of the vertex.
@@ -51,21 +54,21 @@ impl LateDepth {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("late depth"),
             entries: &[texture(0), texture(1)],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("late depth"),
             source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{FRAGMENT}").into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("late depth"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("late depth"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -93,20 +96,24 @@ impl LateDepth {
             multiview_mask: None,
             cache: None,
         });
-        LateDepth { layout, pipeline }
+        LateDepth {
+            layout,
+            pipeline,
+            group: gpu::KeptGroup::default(),
+        }
     }
 
     /// Writes into `target` (copy 1) the depth of `after` where it differs from `before`, if
     /// it is nearer.
     pub(crate) fn merge(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         before: &wgpu::TextureView,
         after: &wgpu::TextureView,
         target: &wgpu::TextureView,
     ) {
-        let group = gpu::frame_group(
+        let group = self.group.get(
             device,
             &wgpu::BindGroupDescriptor {
                 label: Some("late depth"),

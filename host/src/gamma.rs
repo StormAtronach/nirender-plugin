@@ -5,6 +5,7 @@
 //! of the back buffer into the window. An identity ramp (gamma 1) keeps the plain copy.
 
 use super::*;
+use crate::objects::Create;
 
 /// The pass's name in the census and the pass report.
 pub(crate) const NAME: &str = "gamma ramp";
@@ -38,6 +39,9 @@ pub(crate) struct Gamma {
     pipeline: wgpu::RenderPipeline,
     /// The ramp as 768 floats from 0 to 1 (192 vectors of 4).
     table: wgpu::Buffer,
+    /// The view of the back buffer and the group of the draw, kept while the back buffer stays
+    /// the same. A cell: the callers hold the gamma pass as shared.
+    kept: std::cell::RefCell<(gpu::KeptView, gpu::KeptGroup)>,
 }
 
 /// A triangle over the whole target, from the index of the vertex.
@@ -62,7 +66,7 @@ fn entry(channel: u32, value: f32) -> f32 {
 
 impl Gamma {
     pub(crate) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Gamma {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gamma ramp"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -87,17 +91,17 @@ impl Gamma {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("gamma ramp"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gamma ramp"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("gamma ramp"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -122,13 +126,18 @@ impl Gamma {
             multiview_mask: None,
             cache: None,
         });
-        let table = device.create_buffer(&wgpu::BufferDescriptor {
+        let table = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("gamma ramp"),
             size: (RAMP_VALUES * 4) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Gamma { layout, pipeline, table }
+        Gamma {
+            layout,
+            pipeline,
+            table,
+            kept: Default::default(),
+        }
     }
 
     /// The table of the ramp, for the scaled draw of `window_pass`.
@@ -148,17 +157,20 @@ impl Gamma {
     }
 
     /// Draws `source` (the back buffer) through the table into `target` (the picture of the
-    /// window): the part that the two have, as the plain copy; black outside it.
+    /// window, with its view `target_view`): the part that the two have, as the plain copy;
+    /// black outside it.
     pub(crate) fn draw(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::Texture,
         target: &wgpu::Texture,
+        target_view: &wgpu::TextureView,
     ) {
-        let source_view = source.create_view(&Default::default());
-        let target_view = target.create_view(&Default::default());
-        let group = gpu::frame_group(
+        let mut kept = self.kept.borrow_mut();
+        let (source_view, kept_group) = &mut *kept;
+        let source_view = source_view.get(source);
+        let group = kept_group.get(
             device,
             &wgpu::BindGroupDescriptor {
                 label: Some("gamma ramp"),
@@ -166,7 +178,7 @@ impl Gamma {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source_view),
+                        resource: wgpu::BindingResource::TextureView(source_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -179,7 +191,7 @@ impl Gamma {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("gamma ramp"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target_view,
+                view: target_view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {

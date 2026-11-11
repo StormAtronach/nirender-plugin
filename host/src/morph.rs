@@ -9,6 +9,7 @@
 //! draws; the normals, the colours and the texture sets stay those of the geometry record.
 
 use super::*;
+use crate::objects::Create;
 
 /// The values of a job: a dynamic offset must be a multiple of 256.
 const JOB_STRIDE: u64 = 256;
@@ -83,6 +84,9 @@ pub(crate) struct Morphs {
     job_of: HashMap<u32, usize>,
     jobs_buffer: wgpu::Buffer,
     jobs_capacity: u64,
+    /// The compute group of each vertex buffer of the jobs, kept while what it binds stays the
+    /// same; a buffer that no job of a frame used drops its group.
+    groups: Vec<(wgpu::Buffer, crate::gpu::KeptGroup)>,
     /// The steps of the session, and the steps not made: no targets of that unique id, no
     /// geometry, or a vertex buffer over the device's limit of a storage binding.
     pub(crate) steps: u64,
@@ -90,7 +94,7 @@ pub(crate) struct Morphs {
 }
 
 fn buffer(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
         usage,
@@ -100,7 +104,7 @@ fn buffer(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsag
 
 impl Morphs {
     pub(crate) fn new(device: &wgpu::Device) -> Morphs {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("morphs"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
@@ -114,7 +118,7 @@ impl Morphs {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("morphs"),
             entries: &[
                 entry(0, wgpu::BufferBindingType::Storage { read_only: true }, false),
@@ -123,13 +127,13 @@ impl Morphs {
                 entry(3, wgpu::BufferBindingType::Uniform, true),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("morphs"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.counted_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("morphs"),
             layout: Some(&pipeline_layout),
             module: &module,
@@ -169,6 +173,7 @@ impl Morphs {
                 wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             ),
             jobs_capacity,
+            groups: Vec::new(),
             steps: 0,
             skipped: 0,
         }
@@ -339,32 +344,42 @@ impl Morphs {
             let mut bound: Option<(Rc<wgpu::Buffer>, wgpu::BindGroup)> = None;
             for (n, job) in self.jobs.iter().enumerate() {
                 if !bound.as_ref().is_some_and(|(buffer, _)| Rc::ptr_eq(buffer, &job.buffer)) {
-                    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("morphs"),
-                        layout: &self.layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: self.buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: self.weights_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: job.buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 3,
-                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                    buffer: &self.jobs_buffer,
-                                    offset: 0,
-                                    size: core::num::NonZeroU64::new(32),
-                                }),
-                            },
-                        ],
-                    });
+                    let at = match self.groups.iter().position(|(buffer, _)| *buffer == *job.buffer) {
+                        Some(at) => at,
+                        None => {
+                            self.groups.push(((*job.buffer).clone(), crate::gpu::KeptGroup::default()));
+                            self.groups.len() - 1
+                        }
+                    };
+                    let group = self.groups[at].1.get(
+                        device,
+                        &wgpu::BindGroupDescriptor {
+                            label: Some("morphs"),
+                            layout: &self.layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: self.buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: self.weights_buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: job.buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: &self.jobs_buffer,
+                                        offset: 0,
+                                        size: core::num::NonZeroU64::new(32),
+                                    }),
+                                },
+                            ],
+                        },
+                    );
                     bound = Some((job.buffer.clone(), group));
                 }
                 if let Some((_, group)) = bound.as_ref() {
@@ -373,6 +388,9 @@ impl Morphs {
                 pass.dispatch_workgroups(job.vertices.div_ceil(GROUP), 1, 1);
             }
         }
+        let jobs = &self.jobs;
+        self.groups
+            .retain(|(buffer, _)| jobs.iter().any(|job| *job.buffer == *buffer));
         commands.defer(encoder.finish());
         self.jobs.clear();
         self.job_of.clear();

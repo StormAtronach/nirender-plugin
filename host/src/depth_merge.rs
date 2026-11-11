@@ -9,6 +9,7 @@
 //! world, with the depth terms of each projection ([`depth`]).
 
 use super::*;
+use crate::objects::Create;
 
 /// The pass's name in the census, the pass report and the GPU time.
 pub(crate) const NAME: &str = "first person depth merged into the world's";
@@ -48,7 +49,7 @@ struct Values { projections: vec4f, mode: vec4f }
 
 impl DepthMerge {
     pub(crate) fn new(device: &wgpu::Device, depth_format: wgpu::TextureFormat) -> DepthMerge {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("first-person depth merge"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -73,17 +74,17 @@ impl DepthMerge {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("first-person depth merge"),
             source: wgpu::ShaderSource::Wgsl(format!("{}{}", depth::wgsl(), SHADER).into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("first-person depth merge"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("first-person depth merge"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -128,14 +129,11 @@ impl DepthMerge {
         let perspective = arms_projection[11] == 1.0 && world_projection[11] == 1.0 && arms_projection[14] != 0.0;
         let ([arms_a, arms_b], [world_a, world_b]) = (depth::terms(arms_projection), depth::terms(world_projection));
         let values: [f32; 8] = [arms_a, arms_b, world_a, world_b, perspective as u32 as f32, 0.0, 0.0, 0.0];
-        let buffer = wgpu::util::DeviceExt::create_buffer_init(
-            device,
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("first-person depth merge"),
-                contents: bytemuck::cast_slice(&values),
-                usage: wgpu::BufferUsages::UNIFORM,
-            },
-        );
+        let buffer = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("first-person depth merge"),
+            contents: bytemuck::cast_slice(&values),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         let group = gpu::frame_group(
             device,
             &wgpu::BindGroupDescriptor {

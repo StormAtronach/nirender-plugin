@@ -107,6 +107,15 @@ pub const EFFECT_CHAIN_GONE: u32 = 48;
 /// (form D): a count, then the count's ids, each once.
 pub const INSTANCE_SHOWN: u32 = 49;
 
+/// The tags of the records that can need new GPU objects (a texture, morph targets, a new
+/// size, a new gamma ramp, a texture or a material that went from the arrays that groups
+/// bind): a frame with one of them is not steady for the count of the GPU objects
+/// ([`crate::objects`]). A `MATERIAL`, a `GEOMETRY`, an `INSTANCE` and an `EFFECT_CHAIN`
+/// record count only with a handle, an id or a size that is new (`Player::feed`): the plugin
+/// sends the known ones again, and a known effect chain each frame with its new values. A
+/// geometry, an instance or an effect chain that goes frees its place and needs no object.
+pub const CONTENT: [u32; 7] = [HEADER, SIZE, TEXTURE, TEXTURE_GONE, MATERIAL_GONE, MORPH_TARGETS, GAMMA_RAMP];
+
 /// Every tag of this build. A new tag goes here with its constant, read by the player or not:
 /// a test asks that each constant is here.
 pub const KNOWN: [u32; 46] = [

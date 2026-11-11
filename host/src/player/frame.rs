@@ -1,6 +1,7 @@
 //! The frame and the pass of [`Player`]: begin, the targets, the draws into the pass, the end
 //! and the pictures. The struct is in lib.rs; the other concerns are beside this file.
 
+use crate::objects::CreateView;
 use crate::*;
 
 impl Player {
@@ -63,6 +64,7 @@ impl Player {
             back_view: None,
             ms_color: None,
             ms_depth: None,
+            back_kept: None,
             pass_samples: 1,
             sent_in_part: false,
             last_picture: None,
@@ -150,6 +152,7 @@ impl Player {
             pass_arrays: None,
             small_arrays: None,
             small_copy: None,
+            frame_change: Some("the first frame"),
             phase_world: false,
             phase_posted: false,
             pass_draws_at_open: None,
@@ -304,7 +307,7 @@ impl Player {
         }
         self.close_pass();
         let (Some(multisample), Some(source), Some(target), Some(encoder)) = (
-            self.renderer.multisample.as_ref(),
+            self.renderer.multisample.as_mut(),
             self.back_view.as_ref(),
             self.color.as_ref(),
             self.encoder.as_mut(),
@@ -432,7 +435,10 @@ impl Player {
         self.renderer.record_written = 0;
         self.renderer.record_extras = 0;
         self.renderer.instance_extras = 0;
-        let back_view = Rc::new(color.create_view(&Default::default()));
+        if self.back_kept.as_ref().is_none_or(|(kept, _)| kept != color) {
+            self.back_kept = Some((color.clone(), Rc::new(color.counted_view(&Default::default()))));
+        }
+        let back_view = Rc::clone(&self.back_kept.as_ref().unwrap().1);
         self.back_buffer = Some(color.clone());
         if self.renderer.samples > 1 {
             // The draws go into the multisampled targets; the colour resolves into the back
@@ -442,27 +448,29 @@ impl Player {
             if self
                 .ms_color
                 .as_ref()
-                .is_none_or(|ms| (ms.width(), ms.height(), ms.format()) != (width, height, color.format()))
+                .is_none_or(|(ms, _)| (ms.width(), ms.height(), ms.format()) != (width, height, color.format()))
             {
-                self.ms_color = Some(multisampled_texture(
+                let ms_color = multisampled_texture(
                     &self.renderer.device,
                     width,
                     height,
                     color.format(),
                     wgpu::TextureUsages::RENDER_ATTACHMENT,
                     self.renderer.samples,
-                ));
-                self.ms_depth = Some(multisampled_texture(
+                );
+                let view = Rc::new(ms_color.counted_view(&Default::default()));
+                self.ms_color = Some((ms_color, view));
+                self.ms_depth = Some(DepthTarget::new(multisampled_texture(
                     &self.renderer.device,
                     width,
                     height,
                     self.renderer.depth_format,
                     wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                     self.renderer.samples,
-                ));
+                )));
             }
-            self.color = Some(Rc::new(self.ms_color.as_ref().unwrap().create_view(&Default::default())));
-            self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().create_view(&Default::default())));
+            self.color = Some(Rc::clone(&self.ms_color.as_ref().unwrap().1));
+            self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().whole.clone()));
             self.back_view = Some(back_view);
         } else {
             self.color = Some(back_view);
@@ -713,6 +721,15 @@ impl Player {
         );
         for (buffer, row, width, height, path) in std::mem::take(&mut self.early_pictures) {
             save_picture(&self.renderer.device, &buffer, row, width, height, blue_first, &path);
+        }
+        // The GPU objects of the frame (`objects`): a steady frame has no new content of the
+        // game and no change of the extension, and must make none. The groups of the arrays
+        // that a change of this frame dropped are made in it.
+        self.renderer.make_dropped_array_groups();
+        let extension_change = self.extension.as_mut().and_then(|extension| extension.frame_changed());
+        let change = self.frame_change.take().or(extension_change);
+        if let Some(line) = crate::objects::end_frame(change) {
+            println!("{line}");
         }
         crate::pass_report::end_frame();
         self.renderer.counts.times[TIME_END] += clock.elapsed();

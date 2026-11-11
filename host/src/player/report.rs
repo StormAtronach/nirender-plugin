@@ -68,6 +68,11 @@ impl Player {
     }
 
     pub(crate) fn print_counts(&self) {
+        // The GPU objects made, and those of the steady frames with their lines (the gate
+        // reads the first line).
+        for line in crate::objects::report_lines() {
+            println!("{line}");
+        }
         let c = &self.renderer.counts;
         println!(
             "draws {} in {} pipeline runs, pipelines {}, textures {}, samplers {}",

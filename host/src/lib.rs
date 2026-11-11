@@ -340,7 +340,6 @@ enum Item {
 }
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 /// The records of an instance, in frames of the player: its first and its last, and the name
 /// of its shape.
@@ -548,6 +547,7 @@ impl Pass {
 pub mod gpu;
 mod influences;
 pub mod material;
+pub mod objects;
 mod overlay;
 pub mod pass_report;
 mod pool;
@@ -792,6 +792,8 @@ struct Renderer {
     frame_uniform: wgpu::Buffer,
     frame_sampler: wgpu::Sampler,
     frame_group: Rc<wgpu::BindGroup>,
+    /// The frame group, kept while what it binds stays the same.
+    frame_kept: crate::gpu::KeptGroup,
     clusters: Clusters,
     extension_lights: ExtensionLights,
     samplers: FxHashMap<[u32; 5], Rc<wgpu::Sampler>>,
@@ -813,6 +815,10 @@ struct Renderer {
     /// it was made for, the group, and the slot of each texture in it. It stays from frame to
     /// frame as the group of the frame does, and goes with it (`forget_array_groups`).
     small_array_group: Option<(Vec<u32>, SmallArrays)>,
+    /// A change of the arrays dropped their groups in the frame in progress, and the slots of
+    /// the small group it dropped (`Renderer::make_dropped_array_groups`).
+    array_groups_dropped: bool,
+    small_slots_dropped: Option<Vec<u32>>,
     /// How the world shader takes the textures (tier A: the arrays above; tier C: the groups
     /// below; `request::TextureTier`).
     pub(crate) tier: request::TextureTier,
@@ -955,8 +961,11 @@ struct Player {
     /// colour into, and the multisampled colour and depth targets that `color` and `depth`
     /// view. [`None`] with one sample. See `multisample.rs`.
     back_view: Option<Rc<wgpu::TextureView>>,
-    ms_color: Option<wgpu::Texture>,
-    ms_depth: Option<wgpu::Texture>,
+    ms_color: Option<(wgpu::Texture, Rc<wgpu::TextureView>)>,
+    ms_depth: Option<DepthTarget>,
+    /// The back buffer of the last frame and its view, made once: the next frame with the same
+    /// back buffer takes the view again.
+    back_kept: Option<(wgpu::Texture, Rc<wgpu::TextureView>)>,
     /// The samples for each pixel of the targets of the pass that is open, for the pipelines.
     pass_samples: u32,
     /// A part of the frame in progress went to the GPU before its end, so the back buffer
@@ -1088,11 +1097,11 @@ struct Player {
     /// the game's viewports are in its size.
     target_scale: (f32, f32),
     viewport: Option<([f32; 4], [f32; 2])>,
-    before: Option<wgpu::Texture>,
+    before: Option<(wgpu::Texture, wgpu::TextureView)>,
     before_kept: bool,
     /// The picture and the depth of the frame before a call of [`Extension::draw_class`].
-    picture_copy: Option<wgpu::Texture>,
-    depth_copy: Option<wgpu::Texture>,
+    picture_copy: Option<(wgpu::Texture, wgpu::TextureView)>,
+    depth_copy: Option<DepthTarget>,
     /// The copies of the colour and the depth of a rendered texture that the post chain of a
     /// picture reads ([`Extension::view_post`]): one pair for each size of picture.
     post_copies: Vec<PostCopy>,
@@ -1100,18 +1109,18 @@ struct Player {
     /// clears its depth before its later scenes. The projection of the world at that time,
     /// and true when a draw of the first-person scene went into the back buffer in this
     /// frame (its depth goes into the copy at the end of that scene).
-    world_depth: Option<wgpu::Texture>,
+    world_depth: Option<DepthTarget>,
     world_depth_kept: bool,
     world_depth_projection: Option<[f32; 16]>,
     /// The depth of the frame before and after a late sorted run, and the pass that puts what
     /// the run wrote into the copy of the world depth ([`late_depth`]).
-    late_before: Option<wgpu::Texture>,
-    late_after: Option<wgpu::Texture>,
+    late_before: Option<DepthTarget>,
+    late_after: Option<DepthTarget>,
     late_depth: Option<late_depth::LateDepth>,
     first_person_drawn: bool,
     /// The depth of the draws of [`Extension::before_world`], for [`Extension::post`]: the
     /// renderer clears the depth after them.
-    before_depth: Option<wgpu::Texture>,
+    before_depth: Option<DepthTarget>,
     before_depth_kept: bool,
     /// The counts at the last mark. See [`tag::MARK`].
     mark_times: [u64; TIME_COUNT],
@@ -1145,6 +1154,10 @@ struct Player {
     /// The copy of the draw in progress for the small group: its first instance among the
     /// frame's instances (`mark_small_draws`).
     small_copy: Option<u32>,
+    /// The first record of new content in the frame in progress ([`tag::CONTENT`], or a new
+    /// material, geometry or instance), by its name: a frame with one is not steady for the
+    /// count of the GPU objects ([`objects`]).
+    frame_change: Option<&'static str>,
     /// The world began and the post chain ran, among the items run so far in the frame.
     phase_world: bool,
     phase_posted: bool,

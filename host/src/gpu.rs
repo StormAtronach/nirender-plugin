@@ -12,6 +12,7 @@
 //!   (its label), and the counts of wgpu's objects, for a long run (risk 43, the growth of the
 //!   helper's memory; `MGE_XE_MEMORY_MINUTES`).
 
+use crate::objects::Create;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -106,13 +107,125 @@ pub fn last_submission() -> Option<wgpu::SubmissionIndex> {
     LAST_SUBMISSION.lock().ok().and_then(|last| last.clone())
 }
 
-/// `device.create_bind_group`, counted: for a bind group that is made for one frame.
+/// `device.create_bind_group`, counted: for a bind group that is made for one frame. Its
+/// object counts at the line of the caller ([`crate::objects`]).
+#[track_caller]
 pub fn frame_group(device: &wgpu::Device, descriptor: &wgpu::BindGroupDescriptor) -> wgpu::BindGroup {
     let start = Instant::now();
-    let group = device.create_bind_group(descriptor);
+    let group = device.counted_bind_group(descriptor);
     GROUPS.fetch_add(1, Ordering::Relaxed);
     GROUP_NANOS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     group
+}
+
+/// What one entry of a [`KeptGroup`] binds: the resources by their identity (wgpu compares
+/// them so), with the range of a buffer.
+#[derive(Clone, PartialEq)]
+enum Bound {
+    Buffer(wgpu::Buffer, wgpu::BufferAddress, Option<wgpu::BufferSize>),
+    Sampler(wgpu::Sampler),
+    View(wgpu::TextureView),
+    Views(Vec<wgpu::TextureView>),
+}
+
+impl Bound {
+    /// The resource of an entry, or [`None`] for a kind that a kept group does not compare.
+    fn of(resource: &wgpu::BindingResource) -> Option<Bound> {
+        match resource {
+            wgpu::BindingResource::Buffer(range) => Some(Bound::Buffer(range.buffer.clone(), range.offset, range.size)),
+            wgpu::BindingResource::Sampler(sampler) => Some(Bound::Sampler((*sampler).clone())),
+            wgpu::BindingResource::TextureView(view) => Some(Bound::View((*view).clone())),
+            wgpu::BindingResource::TextureViewArray(views) => {
+                Some(Bound::Views(views.iter().map(|view| (*view).clone()).collect()))
+            }
+            _ => None,
+        }
+    }
+
+    /// True when `resource` binds the same as this, compared without a copy.
+    fn is(&self, resource: &wgpu::BindingResource) -> bool {
+        match (self, resource) {
+            (Bound::Buffer(buffer, offset, size), wgpu::BindingResource::Buffer(range)) => {
+                buffer == range.buffer && *offset == range.offset && *size == range.size
+            }
+            (Bound::Sampler(sampler), wgpu::BindingResource::Sampler(other)) => sampler == *other,
+            (Bound::View(view), wgpu::BindingResource::TextureView(other)) => view == *other,
+            (Bound::Views(views), wgpu::BindingResource::TextureViewArray(others)) => {
+                views.len() == others.len() && views.iter().zip(others.iter()).all(|(view, other)| view == *other)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A bind group that is kept while its layout and what each of its entries binds stay the
+/// same: a frame that binds the same views, buffers and samplers again makes no group
+/// ([`crate::objects`]). A group with an array of buffers or of samplers is made again at
+/// each call.
+#[derive(Default)]
+pub struct KeptGroup {
+    kept: Option<Kept>,
+}
+
+/// The group of a [`KeptGroup`] with what it binds.
+struct Kept {
+    layout: wgpu::BindGroupLayout,
+    /// What each entry binds, by its binding; [`None`]: an entry of a kind that is not compared.
+    bound: Option<Vec<(u32, Bound)>>,
+    group: wgpu::BindGroup,
+}
+
+impl KeptGroup {
+    /// The group of `descriptor`: the kept one when it binds the same, else a new one, which
+    /// is kept. A new group counts at the line of the caller ([`crate::objects`]). The handle
+    /// is a clone: it makes no GPU object.
+    #[track_caller]
+    pub fn get(&mut self, device: &wgpu::Device, descriptor: &wgpu::BindGroupDescriptor) -> wgpu::BindGroup {
+        let same = self.kept.as_ref().is_some_and(|kept| {
+            kept.layout == *descriptor.layout
+                && kept.bound.as_ref().is_some_and(|bound| {
+                    bound.len() == descriptor.entries.len()
+                        && bound
+                            .iter()
+                            .zip(descriptor.entries)
+                            .all(|((binding, bound), entry)| *binding == entry.binding && bound.is(&entry.resource))
+                })
+        });
+        if !same {
+            let group = device.counted_bind_group(descriptor);
+            let bound = descriptor
+                .entries
+                .iter()
+                .map(|entry| Bound::of(&entry.resource).map(|bound| (entry.binding, bound)))
+                .collect();
+            self.kept = Some(Kept {
+                layout: descriptor.layout.clone(),
+                bound,
+                group,
+            });
+        }
+        self.kept.as_ref().expect("a group, kept or made above").group.clone()
+    }
+}
+
+/// The whole view of a texture, kept while the texture stays the same: a call with the same
+/// texture makes no view ([`crate::objects`]).
+#[derive(Default)]
+pub struct KeptView {
+    kept: Option<(wgpu::Texture, wgpu::TextureView)>,
+}
+
+impl KeptView {
+    /// The view of `texture`: the kept one for the same texture, else a new one, which is kept.
+    /// A new view counts at the line of the caller ([`crate::objects`]).
+    #[track_caller]
+    pub fn get(&mut self, texture: &wgpu::Texture) -> &wgpu::TextureView {
+        if self.kept.as_ref().is_none_or(|(kept, _)| kept != texture) {
+            let view = crate::objects::CreateView::counted_view(texture, &Default::default());
+            self.kept = Some((texture.clone(), view));
+        }
+        &self.kept.as_ref().expect("a view, kept or made above").1
+    }
 }
 
 /// Why a pass on the game's targets opened (`Player::open_pass`), for the census of the passes.
@@ -617,13 +730,13 @@ mod memory_tests {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, _queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
-        let _buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let _buffer = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("memory test pool 7"),
             size: 4 << 20,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
-        let _texture = device.create_texture(&wgpu::TextureDescriptor {
+        let _texture = device.counted_texture(&wgpu::TextureDescriptor {
             label: Some("memory test page 3"),
             size: wgpu::Extent3d {
                 width: 256,
