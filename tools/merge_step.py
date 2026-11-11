@@ -17,7 +17,9 @@ path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a 
 minute, as no game runs and the slot lapses after 15 idle minutes; a hold that lapses all the same is taken again before
 the next stage only when it is free. --dry-run and --self-test take no slot (the self-test uses slot.py on a scratch state
 folder). A hold by another session, or by an earlier run of this session, makes this run wait in the queues; with
---no-wait it stops with exit code 3 and holds nothing.
+--no-wait it stops with exit code 3 and holds nothing. Its takes have a place of their own beside the other places of
+its session (slot.py's --another, W361, when the slot.py has it): a wait of the session for the game, or another
+merge check, keeps its place.
 
 <tip> is the tip of the shared branch before the merge. It is required: the parents of <commit> do not tell the change, as
 the first parent misses a fast-forward and a branch that merged the shared branch. The tool refuses a <tip> that is newer
@@ -665,6 +667,13 @@ def evidence_problem(stages):
 OWN_HOLD = ("this session holds it as", "your session already holds the build slot as")
 
 
+def take_options(slots, options):
+    """The keywords of a take: `options`, and slot.py's --another (W361) when this slot.py has it, so that the place of
+    this run does not replace another place of its session in the queue."""
+    another = getattr(slots, "ANOTHER", None)
+    return {**(options or {}), **({another: True} if another else {})}
+
+
 def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES):
     """Takes a slot ("build", "game", or "both": the game and the whole build side together), and asks again in its
     queue, so that the place stays. A hold of another run of this session (an earlier merge_step) cannot overlap this run:
@@ -676,7 +685,7 @@ def take_slot(slots, slot, what, no_wait, options=None, minutes=SLOT_MINUTES):
     with slot_asker(slots, slot) as ask:
         while True:
             try:
-                reply = ask(what, minutes=minutes, **(options or {}))
+                reply = ask(what, minutes=minutes, **take_options(slots, options))
             except slots.StateBusy as error:
                 say("the state of the slots is busy, and I ask again: %s" % error)
                 time.sleep(WAIT_SECONDS)
@@ -1353,6 +1362,14 @@ def self_test():
         asked.clear()
         assert take_slot(Slots, "both", "x", False, minutes=GAME_SLOT_MINUTES) is True and asked == [(("both", "x"), {"minutes": GAME_SLOT_MINUTES})], asked
         assert GAME_SLOT_MINUTES > SLOT_MINUTES
+        # A slot.py with --another (W361) gets it on each take, beside the other options; one without it gets none (above).
+        asked.clear()
+        Slots.ANOTHER = "another"
+        try:
+            assert take_slot(Slots, "build", "x", False, {"whole": True}) is True
+        finally:
+            del Slots.ANOTHER
+        assert asked == [(("build", "x"), {"minutes": SLOT_MINUTES, "whole": True, "another": True})], asked
 
         # With slot.py's LoopWaiter, a leave of the place ends the wait: the next ask returns WAIT_ENDED, and the run is
         # NOT RUN with no take (2026-11-09 07:51: a loop of plain takes took the whole side after its leave). The plain
