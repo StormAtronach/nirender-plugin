@@ -53,7 +53,16 @@ def self_test():
     assert found("let g = device.counted_bind_group(&d);\nlet e = device.create_command_encoder(&d);\n") == []
     assert found("// device.create_buffer(&d) was here\n/// `texture.create_view` makes a view\n") == []
     assert found("let x = 1; // then device.create_sampler(&d)\n") == []
+    assert mge_tree(["--mge", "master", "--mge", "tree"]) == Path("tree")
     print("check_counted_objects: self-test passed")
+
+
+def mge_tree(argv):
+    """The tree of the last --mge: checks.py adds the tree of a worktree's hook after its own."""
+    at = len(argv) - 1 - argv[::-1].index("--mge")
+    if at + 1 >= len(argv):
+        raise SystemExit("usage: check_counted_objects.py [--mge DIR | --self-test]")
+    return Path(argv[at + 1])
 
 
 def main(argv):
@@ -61,7 +70,7 @@ def main(argv):
         self_test()
         return 0
     if "--mge" in argv:
-        root = Path(argv[argv.index("--mge") + 1]) / "mgeHost64" / "src"
+        root = mge_tree(argv) / "mgeHost64" / "src"
     else:
         root = Path(__file__).resolve().parents[1] / "host" / "src"
     if not root.is_dir():
