@@ -18,11 +18,13 @@ import time
 import tomllib
 
 import common  # noqa: E402
-from common import REPO, local, local_file_hint, sibling
+from common import REPO, docs_place, local, local_file_hint
 
-HARNESS_DIR = local("harness", sibling("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
+# The harness of the docs checkout beside the main checkout (common.docs_root), unless the key "harness" names one.
+HARNESS_DIR = local("harness", docs_place("docs", "scripts", "test-harness-2026-10-03"))
 if not os.path.isfile(os.path.join(HARNESS_DIR, "harness.py")):
-    raise SystemExit("session.py: no harness.py in %s. Set the key \"harness\" in %s." % (HARNESS_DIR, local_file_hint()))
+    raise SystemExit("session.py: no harness.py in %s. Set the key \"docs\" (a docs tree) or \"harness\" (the folder) in %s." % (
+        HARNESS_DIR, local_file_hint()))
 sys.path.insert(0, HARNESS_DIR)
 import harness  # noqa: E402
 

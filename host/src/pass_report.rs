@@ -53,13 +53,19 @@ struct Report {
     view: u8,
     /// The view kinds of this frame, as bits.
     views: u8,
-    frame: BTreeSet<Entry>,
+    /// The notes of this frame, in the order they came. The end of the frame sorts them and
+    /// drops the repeats. The buffer is kept from frame to frame, as are `asked` and `unknown`:
+    /// a frame allocates only when its set of parts is new.
+    frame: Vec<Entry>,
     /// Every part that a frame noted.
     seen: BTreeSet<Part>,
     /// The parts that run only when a record asks for them ([`on_request`]).
     requested: BTreeSet<&'static str>,
     /// The parts on request whose call came in this frame.
-    asked: BTreeSet<Part>,
+    asked: Vec<Part>,
+    /// The parts of this frame that show "reason unknown", found at its end.
+    unknown: Vec<Part>,
+    /// The set of the frame before, sorted.
     last: Vec<Entry>,
     /// The frames of each distinct set.
     sets: BTreeMap<Vec<Entry>, u64>,
@@ -77,10 +83,11 @@ impl Report {
         Report {
             view: 0,
             views: 0,
-            frame: BTreeSet::new(),
+            frame: Vec::new(),
             seen: BTreeSet::new(),
             requested: BTreeSet::new(),
-            asked: BTreeSet::new(),
+            asked: Vec::new(),
+            unknown: Vec::new(),
             last: Vec::new(),
             sets: BTreeMap::new(),
             totals: BTreeMap::new(),
@@ -91,7 +98,7 @@ impl Report {
     }
 
     fn note(&mut self, name: &'static str, outcome: Outcome) {
-        self.frame.insert(((name, self.view), outcome));
+        self.frame.push(((name, self.view), outcome));
     }
 
     /// The call of the parts `names` on request came: in this frame they run or say why not.
@@ -109,43 +116,57 @@ impl Report {
 
     /// Ends the frame. Returns the block to print, or nothing in a frame like the one before.
     fn end_frame(&mut self) -> Option<Vec<String>> {
-        let noted: BTreeSet<Part> = self.frame.iter().map(|(part, _)| *part).collect();
+        sort_and_dedup(&mut self.frame);
+        sort_and_dedup(&mut self.asked);
         // A part on request is expected only when its call came; the others in each view of
         // their kind that the frame has.
-        let asked = std::mem::take(&mut self.asked);
-        for &part in self.seen.iter().chain(&asked) {
+        self.unknown.clear();
+        for part in self.seen.iter().chain(&self.asked) {
             let expected = if self.requested.contains(part.0) {
-                asked.contains(&part)
+                self.asked.binary_search(part).is_ok()
             } else {
                 self.views & (1 << part.1) != 0
             };
-            if expected && !noted.contains(&part) {
-                self.frame.insert((part, Outcome::Unknown));
+            if expected && !has_part(&self.frame, part) {
+                self.unknown.push(*part);
             }
         }
-        self.seen.extend(noted);
-        let set: Vec<Entry> = std::mem::take(&mut self.frame).into_iter().collect();
+        self.seen.extend(self.frame.iter().map(|(part, _)| *part));
+        self.frame.extend(self.unknown.iter().map(|part| (*part, Outcome::Unknown)));
+        sort_and_dedup(&mut self.frame);
+        self.asked.clear();
         self.views = 0;
         self.view = 0;
         self.frames += 1;
-        for entry in &set {
+        for entry in &self.frame {
             *self.totals.entry(*entry).or_default() += 1;
         }
-        let frames_of_set = self.sets.entry(set.clone()).or_default();
-        *frames_of_set += 1;
-        let first_time = *frames_of_set == 1;
-        if set == self.last {
-            return None;
-        }
-        let block = if !first_time {
-            self.repeats += 1;
-            None
-        } else if self.last.is_empty() {
-            Some(self.block_whole(&set))
-        } else {
-            Some(self.block_change(&set))
+        // Only a set not seen before is copied into the map.
+        let first_time = match self.sets.get_mut(self.frame.as_slice()) {
+            Some(frames_of_set) => {
+                *frames_of_set += 1;
+                false
+            }
+            None => {
+                self.sets.insert(self.frame.clone(), 1);
+                true
+            }
         };
-        self.last = set;
+        let block = if self.frame == self.last {
+            None
+        } else {
+            let block = if !first_time {
+                self.repeats += 1;
+                None
+            } else if self.last.is_empty() {
+                Some(self.block_whole(&self.frame))
+            } else {
+                Some(self.block_change(&self.frame))
+            };
+            self.last.clone_from(&self.frame);
+            block
+        };
+        self.frame.clear();
         block
     }
 
@@ -184,6 +205,18 @@ impl Report {
         );
         lines
     }
+}
+
+/// Sorts `items` and drops the repeats, in the buffer.
+fn sort_and_dedup<T: Ord>(items: &mut Vec<T>) {
+    items.sort_unstable();
+    items.dedup();
+}
+
+/// True when the sorted `set` has an entry of `part`.
+fn has_part(set: &[Entry], part: &Part) -> bool {
+    let at = set.partition_point(|(entry_part, _)| entry_part < part);
+    set.get(at).is_some_and(|(entry_part, _)| entry_part == part)
 }
 
 fn entry_text(((name, view), outcome): &Entry) -> String {
@@ -371,6 +404,17 @@ mod tests {
             block.contains(&"  not run, reason unknown: map tile copy (main view)".to_owned()),
             "{block:?}"
         );
+    }
+
+    #[test]
+    fn a_note_twice_is_one_entry_and_a_known_set_adds_no_set() {
+        let mut report = Report::new();
+        let block = frame(&mut report, &[("sky", None), ("sky", None), ("post", None)]).unwrap();
+        assert_eq!(block[0], "pass report, frame 1: 2 parts");
+        frame(&mut report, &[("post", None), ("sky", None)]);
+        assert_eq!(report.sets.len(), 1);
+        assert_eq!(report.sets.values().copied().collect::<Vec<_>>(), [2]);
+        assert!(report.frame.is_empty() && report.asked.is_empty());
     }
 
     #[test]
