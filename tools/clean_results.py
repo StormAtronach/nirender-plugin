@@ -348,9 +348,15 @@ def print_runs(plans, links, names):
         print("    %-8s %5d runs  %9s  %9s freed" % (treatment, count, gigabytes(size), gigabytes(freed)))
 
 
+def label_names(plans, evidence):
+    """The names of the uncited runs whose label the text holds, sorted. A run of the keep list is not one of them: the
+    list keeps it whole, so a citation adds nothing (W359)."""
+    return sorted({row["name"] for _, rows in plans for row in rows if row["treatment"] != "kept" and evidence.label_only(row["name"])})
+
+
 def print_labels(plans, evidence):
-    """The uncited runs whose label the text holds, for the Archivist: a citation by its time keeps each one."""
-    names = sorted({row["name"] for _, rows in plans for row in rows if evidence.label_only(row["name"])})
+    """The uncited runs whose label the text holds, for the Archivist (`label_names`): a citation by its time keeps each one."""
+    names = label_names(plans, evidence)
     print("\nUNCITED RUNS WHOSE LABEL THE TEXT HOLDS, for the Archivist (%d):" % len(names))
     for name in names:
         print("  " + name)
@@ -488,6 +494,19 @@ def self_test():
         assert later[names["cited"]] == "trim" and later[names["kept"]] == "kept" and later[names["trim"]] == "expired", later
         # The null: without its line on the keep list, the kept run is an uncited old run, and goes.
         assert {row["name"]: row["treatment"] for row in plan_root(root, Evidence(""), now)}[names["kept"]] == "expired"
+
+        # W359: the list of uncited runs whose label the text holds leaves out a run of the keep list. Both runs below
+        # have their label in the text and no time; only the one off the list is named. The null: the same run without
+        # its line on the list is named.
+        labelled = {"kept": stamp(70) + "-sky-pair-kept", "other": stamp(71) + "-sky-pair-other"}
+        for name in labelled.values():
+            os.makedirs(os.path.join(root, name))
+        text = "the runs sky-pair-kept and sky-pair-other"
+        kept_line = {os.path.join(root, labelled["kept"]).replace("\\", "/").upper()}
+        listed = label_names([(root, plan_root(root, Evidence(text, kept=kept_line), now))], Evidence(text, kept=kept_line))
+        assert listed == [labelled["other"]], listed
+        unlisted = label_names([(root, plan_root(root, Evidence(text), now))], Evidence(text))
+        assert unlisted == sorted(labelled.values()), unlisted
 
         # A dump that a record names cites its old run, though the record does not name the run: the run stays trimmed.
         with_dump = stamp(45) + "-f"
