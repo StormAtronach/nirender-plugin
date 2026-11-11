@@ -77,7 +77,7 @@ def main():
         command += ["--debug-view"] + args.debug_view
     if args.debug_lines is not None:
         command += ["--debug-lines", args.debug_lines]
-    env =dict(os.environ, MGE_XE_DISTANT_LAND_DIR=args.distant_land, MGE_XE_GAME_DIR=args.game_dir)
+    env = dict(os.environ, MGE_XE_DISTANT_LAND_DIR=args.distant_land, MGE_XE_GAME_DIR=args.game_dir)
     result = subprocess.run(command, cwd=args.config_root, env=env, capture_output=True, text=True)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
