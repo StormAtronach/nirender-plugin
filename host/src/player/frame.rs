@@ -1,6 +1,7 @@
 //! The frame and the pass of [`Player`]: begin, the targets, the draws into the pass, the end
 //! and the pictures. The struct is in lib.rs; the other concerns are beside this file.
 
+use crate::objects::CreateView;
 use crate::*;
 
 impl Player {
@@ -149,6 +150,7 @@ impl Player {
             pass_arrays: None,
             small_arrays: None,
             small_copy: None,
+            frame_content: true,
             phase_world: false,
             phase_posted: false,
             pass_draws_at_open: None,
@@ -424,7 +426,7 @@ impl Player {
         self.renderer.record_written = 0;
         self.renderer.record_extras = 0;
         self.renderer.instance_extras = 0;
-        let back_view = Rc::new(color.create_view(&Default::default()));
+        let back_view = Rc::new(color.counted_view(&Default::default()));
         self.back_buffer = Some(color.clone());
         if self.renderer.samples > 1 {
             // The draws go into the multisampled targets; the colour resolves into the back
@@ -453,8 +455,8 @@ impl Player {
                     self.renderer.samples,
                 ));
             }
-            self.color = Some(Rc::new(self.ms_color.as_ref().unwrap().create_view(&Default::default())));
-            self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().create_view(&Default::default())));
+            self.color = Some(Rc::new(self.ms_color.as_ref().unwrap().counted_view(&Default::default())));
+            self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().counted_view(&Default::default())));
             self.back_view = Some(back_view);
         } else {
             self.color = Some(back_view);
@@ -705,6 +707,13 @@ impl Player {
         );
         for (buffer, row, width, height, path) in std::mem::take(&mut self.early_pictures) {
             save_picture(&self.renderer.device, &buffer, row, width, height, blue_first, &path);
+        }
+        // The GPU objects of the frame (`objects`): a steady frame has no new content of the
+        // game and no change of the extension, and must make none.
+        let extension_changed = self.extension.as_mut().is_some_and(|extension| extension.frame_changed());
+        let steady = !std::mem::take(&mut self.frame_content) && !extension_changed;
+        if let Some(line) = crate::objects::end_frame(steady) {
+            println!("{line}");
         }
         self.renderer.counts.times[TIME_END] += clock.elapsed();
     }

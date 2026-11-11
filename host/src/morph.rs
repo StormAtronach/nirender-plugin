@@ -9,6 +9,7 @@
 //! draws; the normals, the colours and the texture sets stay those of the geometry record.
 
 use super::*;
+use crate::objects::Create;
 
 /// The values of a job: a dynamic offset must be a multiple of 256.
 const JOB_STRIDE: u64 = 256;
@@ -90,7 +91,7 @@ pub(crate) struct Morphs {
 }
 
 fn buffer(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
         usage,
@@ -100,7 +101,7 @@ fn buffer(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsag
 
 impl Morphs {
     pub(crate) fn new(device: &wgpu::Device) -> Morphs {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("morphs"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
@@ -114,7 +115,7 @@ impl Morphs {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("morphs"),
             entries: &[
                 entry(0, wgpu::BufferBindingType::Storage { read_only: true }, false),
@@ -123,13 +124,13 @@ impl Morphs {
                 entry(3, wgpu::BufferBindingType::Uniform, true),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("morphs"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.counted_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("morphs"),
             layout: Some(&pipeline_layout),
             module: &module,
@@ -339,7 +340,7 @@ impl Morphs {
             let mut bound: Option<(Rc<wgpu::Buffer>, wgpu::BindGroup)> = None;
             for (n, job) in self.jobs.iter().enumerate() {
                 if !bound.as_ref().is_some_and(|(buffer, _)| Rc::ptr_eq(buffer, &job.buffer)) {
-                    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("morphs"),
                         layout: &self.layout,
                         entries: &[

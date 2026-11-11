@@ -11,6 +11,7 @@
 //! group binds the new buffer. A copy of the bytes stays here for that write, so the growth
 //! needs no encoder (`queue.write_buffer` lands before the commands of the frame).
 
+use crate::objects::Create;
 use crate::pool;
 
 /// The bytes of an entry of the list: the bone (u32) and its weight (f32).
@@ -102,7 +103,7 @@ pub(crate) struct Influences {
 }
 
 fn make_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("bone influences"),
         size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

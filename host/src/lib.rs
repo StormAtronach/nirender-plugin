@@ -340,7 +340,6 @@ enum Item {
 }
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 /// The records of an instance, in frames of the player: its first and its last, and the name
 /// of its shape.
@@ -548,6 +547,7 @@ impl Pass {
 pub mod gpu;
 mod influences;
 pub mod material;
+pub mod objects;
 mod overlay;
 mod pool;
 mod ticks;
@@ -1137,6 +1137,10 @@ struct Player {
     /// The copy of the draw in progress for the small group: its first instance among the
     /// frame's instances (`mark_small_draws`).
     small_copy: Option<u32>,
+    /// The frame in progress had a record of new content ([`tag::CONTENT`], or a new
+    /// material, geometry or instance): it is not steady for the count of the GPU objects
+    /// ([`objects`]).
+    frame_content: bool,
     /// The world began and the post chain ran, among the items run so far in the frame.
     phase_world: bool,
     phase_posted: bool,

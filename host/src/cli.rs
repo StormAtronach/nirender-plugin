@@ -2,6 +2,7 @@
 //! (`run`, `run_with`).
 
 use super::*;
+use crate::objects::CreateView;
 
 pub(crate) fn option(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
@@ -209,7 +210,7 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         // Each frame up to the wanted one is drawn: the game can draw into a rendered texture
         // in one frame and use it in the frames after that.
         if frame <= wanted && !player.drawing() {
-            player.begin_frame(&target, Rc::new(depth.create_view(&Default::default())), false);
+            player.begin_frame(&target, Rc::new(depth.counted_view(&Default::default())), false);
         }
         if player.feed(*tag, data) {
             if player.drawing() {

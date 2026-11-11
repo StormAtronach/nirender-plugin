@@ -7,6 +7,7 @@
 //! format, which can differ from the format of the rendered texture, and alpha must be 1, as
 //! the game makes it in its read (`WorldControllerRenderTarget::renderMap` 0x42F6F0).
 
+use crate::objects::{Create, CreateView};
 use crate::*;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -48,12 +49,12 @@ impl Player {
             return pipeline.clone();
         }
         let device = &self.renderer.device;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("map tile copy"),
             source: wgpu::ShaderSource::Wgsl(TILE_SHADER.into()),
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("map tile copy"),
             layout: None,
             vertex: wgpu::VertexState {
@@ -105,7 +106,7 @@ impl Player {
         };
         let made = self.flush_split(Some(touch), |player| {
             let device = player.renderer.device.clone();
-            let tile = device.create_texture(&wgpu::TextureDescriptor {
+            let tile = device.counted_texture(&wgpu::TextureDescriptor {
                 label: Some("map tile"),
                 size: wgpu::Extent3d {
                     width,
@@ -122,13 +123,13 @@ impl Player {
                     | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            let view = tile.create_view(&Default::default());
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let view = tile.counted_view(&Default::default());
+            let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("map tile copy"),
                 layout: &pipeline.get_bind_group_layout(0),
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&source.create_view(&Default::default())),
+                    resource: wgpu::BindingResource::TextureView(&source.counted_view(&Default::default())),
                 }],
             });
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

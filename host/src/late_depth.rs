@@ -7,6 +7,7 @@
 //! (depth design, "The post chain's world depth").
 
 use super::*;
+use crate::objects::Create;
 
 pub(crate) struct LateDepth {
     layout: wgpu::BindGroupLayout,
@@ -48,21 +49,21 @@ impl LateDepth {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("late depth"),
             entries: &[texture(0), texture(1)],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("late depth"),
             source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{FRAGMENT}").into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("late depth"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("late depth"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {

@@ -12,6 +12,7 @@
 //!   (its label), and the counts of wgpu's objects, for a long run (risk 43, the growth of the
 //!   helper's memory; `MGE_XE_MEMORY_MINUTES`).
 
+use crate::objects::Create;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -106,10 +107,12 @@ pub fn last_submission() -> Option<wgpu::SubmissionIndex> {
     LAST_SUBMISSION.lock().ok().and_then(|last| last.clone())
 }
 
-/// `device.create_bind_group`, counted: for a bind group that is made for one frame.
+/// `device.create_bind_group`, counted: for a bind group that is made for one frame. Its
+/// object counts at the line of the caller ([`crate::objects`]).
+#[track_caller]
 pub fn frame_group(device: &wgpu::Device, descriptor: &wgpu::BindGroupDescriptor) -> wgpu::BindGroup {
     let start = Instant::now();
-    let group = device.create_bind_group(descriptor);
+    let group = device.counted_bind_group(descriptor);
     GROUPS.fetch_add(1, Ordering::Relaxed);
     GROUP_NANOS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     group
@@ -605,13 +608,13 @@ mod memory_tests {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, _queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
-        let _buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let _buffer = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("memory test pool 7"),
             size: 4 << 20,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
-        let _texture = device.create_texture(&wgpu::TextureDescriptor {
+        let _texture = device.counted_texture(&wgpu::TextureDescriptor {
             label: Some("memory test page 3"),
             size: wgpu::Extent3d {
                 width: 256,

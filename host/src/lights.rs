@@ -3,6 +3,7 @@
 //! extension, with clusters of their own. The buffers and the binning only; the light
 //! values come from the records ([`LightData`]).
 
+use crate::objects::Create;
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
@@ -120,7 +121,7 @@ pub(crate) fn bin_lights(
 
 /// A storage buffer with room for `count` items of `item` bytes.
 pub(crate) fn storage_buffer(device: &wgpu::Device, label: &str, count: usize, item: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: (count.max(1) * item) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -175,7 +176,7 @@ impl Clusters {
             forced,
             world: crate::switches().world_lights,
             world_built: false,
-            uniform: device.create_buffer(&wgpu::BufferDescriptor {
+            uniform: device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some("clusters"),
                 size: core::mem::size_of::<ClusterData>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -396,7 +397,7 @@ impl ExtensionLights {
             noted: HashMap::new(),
             lights: storage_buffer(device, "extension lights", 64, core::mem::size_of::<LightData>()),
             light_capacity: 64,
-            uniform: device.create_buffer(&wgpu::BufferDescriptor {
+            uniform: device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some("extension clusters"),
                 size: core::mem::size_of::<ClusterData>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -511,7 +512,7 @@ impl ExtensionLights {
 
 /// A buffer for the lights of a frame.
 pub(crate) fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("lights"),
         size: (lights * core::mem::size_of::<LightData>()) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

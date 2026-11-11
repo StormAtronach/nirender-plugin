@@ -4,6 +4,7 @@
 //! range goes back to its pool when the geometry record that took it is replaced, one frame
 //! later, when the GPU is done with the draws that used it.
 
+use crate::objects::Create;
 use std::rc::Rc;
 
 /// A range of a buffer of a pool, taken for one geometry record.
@@ -123,7 +124,7 @@ impl Pool {
             Some(found) => found,
             None => {
                 let chunk_size = self.chunk_size.max(size + align);
-                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                let buffer = device.counted_buffer(&wgpu::BufferDescriptor {
                     label: Some(self.label),
                     size: chunk_size,
                     usage: self.usage,

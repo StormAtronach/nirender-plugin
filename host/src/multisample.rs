@@ -12,6 +12,7 @@
 //!   interface of the game) go into the multisampled target again.
 
 use super::*;
+use crate::objects::Create;
 
 pub(crate) struct Multisample {
     depth_layout: wgpu::BindGroupLayout,
@@ -57,7 +58,7 @@ impl Multisample {
         depth_format: wgpu::TextureFormat,
         samples: u32,
     ) -> Multisample {
-        let depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let depth_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("depth resolve"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -70,17 +71,17 @@ impl Multisample {
                 count: None,
             }],
         });
-        let depth_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let depth_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("depth resolve"),
             source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{}{DEPTH_SHADER}", depth::wgsl()).into()),
         });
-        let depth_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let depth_pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("depth resolve"),
             bind_group_layouts: &[Some(&depth_layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let depth_pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("depth resolve"),
             layout: Some(&depth_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -107,7 +108,7 @@ impl Multisample {
             multiview_mask: None,
             cache: None,
         });
-        let color_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let color_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("colour load"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -120,16 +121,16 @@ impl Multisample {
                 count: None,
             }],
         });
-        let color_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let color_module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("colour load"),
             source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{COLOR_SHADER}").into()),
         });
-        let color_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let color_pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("colour load"),
             bind_group_layouts: &[Some(&color_layout)],
             immediate_size: 0,
         });
-        let color_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let color_pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("colour load"),
             layout: Some(&color_pipeline_layout),
             vertex: wgpu::VertexState {

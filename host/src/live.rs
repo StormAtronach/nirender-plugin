@@ -1,6 +1,7 @@
 //! The live mode: the records come from a ring in shared memory while the game runs, and
 //! the frames go into a window.
 
+use crate::objects::{Create, CreateView};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -653,7 +654,7 @@ impl App {
             player.renderer.depth_format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
         );
-        self.depth = Some(Rc::new(depth.create_view(&Default::default())));
+        self.depth = Some(Rc::new(depth.counted_view(&Default::default())));
     }
 
     /// Shows the last picture of the game again, with the sign that the game sends no
@@ -695,7 +696,7 @@ impl App {
             device,
             queue,
             &mut encoder,
-            &frame.texture.create_view(&Default::default()),
+            &frame.texture.counted_view(&Default::default()),
             size,
             Some(self.sign_step),
             &[],
@@ -1161,7 +1162,7 @@ impl ApplicationHandler for App {
                             &device,
                             &queue,
                             encoder,
-                            &frame.texture.create_view(&Default::default()),
+                            &frame.texture.counted_view(&Default::default()),
                             (frame.texture.width(), frame.texture.height()),
                             None,
                             &lines,
@@ -1199,7 +1200,7 @@ impl ApplicationHandler for App {
                 // The same pictures as the window shows them: the gamma ramp and the overlay
                 // are on a copy of the back buffer, as on the picture of the window.
                 if let (true, Some(overlay)) = (self.window_shots, self.overlay.as_mut()) {
-                    let copy = device.create_texture(&wgpu::TextureDescriptor {
+                    let copy = device.counted_texture(&wgpu::TextureDescriptor {
                         label: Some("window picture"),
                         size: wgpu::Extent3d {
                             width,
@@ -1221,7 +1222,7 @@ impl ApplicationHandler for App {
                         &device,
                         &queue,
                         &mut encoder,
-                        &copy.create_view(&Default::default()),
+                        &copy.counted_view(&Default::default()),
                         (width, height),
                         None,
                         &lines,

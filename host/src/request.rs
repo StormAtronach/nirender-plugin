@@ -692,6 +692,7 @@ pub(crate) fn refuse_live(refusals: &[Refusal]) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::objects::Create;
 
     #[test]
     fn the_samples_are_the_largest_count_that_stands() {
@@ -849,7 +850,7 @@ mod tests {
         let (device, _queue) = pollster::block_on(adapter.request_device(&descriptor)).expect("a device");
         let source = tier_c_shader_source(&world_shader_source(&crate::extension::extension_shaders(None)));
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let _module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let _module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tier c"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });

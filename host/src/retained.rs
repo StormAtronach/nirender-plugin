@@ -21,6 +21,7 @@
 //! lights the retained instances use (flag 8): a light that changes is written once.
 
 use super::*;
+use crate::objects::Create;
 
 /// The size of a `Scene` uniform, the step of the dynamic offset (a multiple of the
 /// alignment of a uniform offset, 256).
@@ -97,7 +98,7 @@ const _: () = assert!(core::mem::size_of::<SceneData>() == SCENE_SIZE);
 
 /// The buffers of the retained draws: the scenes, the light indexes, the lights.
 pub fn scene_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("scenes"),
         size: (SCENE_SLOTS * SCENE_SIZE) as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

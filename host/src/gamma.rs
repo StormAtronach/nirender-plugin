@@ -5,6 +5,7 @@
 //! of the back buffer into the window. An identity ramp (gamma 1) keeps the plain copy.
 
 use super::*;
+use crate::objects::{Create, CreateView};
 
 /// The values of a ramp: red, green and blue, 256 each (a `D3DGAMMARAMP`).
 pub(crate) const RAMP_VALUES: usize = 768;
@@ -59,7 +60,7 @@ fn entry(channel: u32, value: f32) -> f32 {
 
 impl Gamma {
     pub(crate) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Gamma {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gamma ramp"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -84,17 +85,17 @@ impl Gamma {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("gamma ramp"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gamma ramp"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("gamma ramp"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -119,7 +120,7 @@ impl Gamma {
             multiview_mask: None,
             cache: None,
         });
-        let table = device.create_buffer(&wgpu::BufferDescriptor {
+        let table = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("gamma ramp"),
             size: (RAMP_VALUES * 4) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -153,8 +154,8 @@ impl Gamma {
         source: &wgpu::Texture,
         target: &wgpu::Texture,
     ) {
-        let source_view = source.create_view(&Default::default());
-        let target_view = target.create_view(&Default::default());
+        let source_view = source.counted_view(&Default::default());
+        let target_view = target.counted_view(&Default::default());
         let group = gpu::frame_group(
             device,
             &wgpu::BindGroupDescriptor {

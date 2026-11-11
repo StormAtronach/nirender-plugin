@@ -10,6 +10,7 @@
 //! passes go into the frame's commands, which the frame's submit sends before its draws.
 
 use super::*;
+use crate::objects::Create;
 
 /// The bytes of a particle of a shape record and of a vertex of a quad.
 const PARTICLE: u64 = 20;
@@ -131,7 +132,7 @@ pub(crate) struct ParticleQuads {
 }
 
 fn storage(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
         usage,
@@ -141,7 +142,7 @@ fn storage(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsa
 
 impl ParticleQuads {
     pub(crate) fn new(device: &wgpu::Device) -> ParticleQuads {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("particle quads"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
@@ -155,7 +156,7 @@ impl ParticleQuads {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("particle quads"),
             entries: &[
                 entry(0, wgpu::BufferBindingType::Storage { read_only: true }, false),
@@ -163,13 +164,13 @@ impl ParticleQuads {
                 entry(2, wgpu::BufferBindingType::Uniform, true),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("particle quads"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.counted_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("particle quads"),
             layout: Some(&pipeline_layout),
             module: &module,
@@ -330,7 +331,7 @@ impl ParticleQuads {
             let mut bound: Option<(Rc<wgpu::Buffer>, wgpu::BindGroup)> = None;
             for (n, job) in self.jobs.iter().enumerate() {
                 if !bound.as_ref().is_some_and(|(buffer, _)| Rc::ptr_eq(buffer, &job.vertices)) {
-                    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("particle quads"),
                         layout: &self.layout,
                         entries: &[

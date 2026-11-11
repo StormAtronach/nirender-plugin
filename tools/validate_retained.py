@@ -28,6 +28,11 @@ Stages (capture, baseline and only by default, in this order):
            accepted pictures (`accepted/adapter.txt`) and printed with the result; a
            compare on another adapter says so, since the pictures can differ by the GPU.
            The replays run with MGE_XE_CORE_MODS=0: no core mod joins the shaders.
+           Last, the objects check (D288): each capture again to its last frame, plain (no GPU
+           time, no marks: nothing waits for the GPU), on vulkan and on dx12. A steady frame (no
+           new content, no change of the extension) that made a GPU object fails, with the kinds
+           and the lines of code of the objects (`host/src/objects.rs`); so does a lost device,
+           and a build without the count.
   only     a run with the rate step: prints the frame rate, the time of the ports for each
            frame and the busy time of the helper. With --gpu-time the helper writes GPU
            time stamps (they cost it about 0.4 ms a frame).
@@ -308,6 +313,17 @@ def self_test():
     assert adapter_note(None, same).endswith("(accept again to record it)")
     assert "can be the GPU's" in adapter_note("AMD Radeon (Vulkan, driver 1)", same)
     assert adapter_note(same, None) == "adapter: not printed by the helper"
+    # The objects stage (D288): a steady frame that made objects fails with its sites; a lost
+    # device, a build without the count and a capture with no steady frame fail too.
+    clean = "frame 119\ngpu objects: 840 made in 120 frames; 117 steady frames, 0 of them made objects (0 objects)\n"
+    assert objects_verdict(clean) == (True, "117 steady frames of 120 made no object (840 made in the others)")
+    dirty = ("gpu objects: 900 made in 120 frames; 117 steady frames, 96 of them made objects (96 objects)\n"
+             "gpu objects of the steady frames: 96 bind group at host/src/renderer.rs:1155\n")
+    good, text = objects_verdict(dirty)
+    assert not good and text == "96 of 117 steady frames made 96 objects: 96 bind group at host/src/renderer.rs:1155", text
+    assert objects_verdict("gpu: the device is lost (Unknown): Out of memory\n" + clean) == (False, "the device is lost")
+    assert not objects_verdict("frame 119\n")[0] and "without the count" in objects_verdict("frame 119\n")[1]
+    assert not objects_verdict("gpu objects: 5 made in 2 frames; 0 steady frames, 0 of them made objects (0 objects)\n")[0]
     # A tool that ends with another code than 0 fails the stage, and its last lines show: an
     # exception, or a helper that died and printed no traceback.
     assert ran((0, "pictures in a folder"), "tool")
@@ -579,6 +595,47 @@ def stage_baseline(baseline, accept, mge_build, now=None):
             else:
                 print("       %-40s %s" % (name, numbers.get("problem") or "%.2f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("largest", 0))), flush=True)
         ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s" % (equal, len(names), b))
+    return stage_objects(baseline, mge_build) and ok
+
+
+OBJECTS_LINE = re.compile(r"^gpu objects: (\d+) made in (\d+) frames; (\d+) steady frames, (\d+) of them made objects \((\d+) objects\)", re.M)
+# The backends of the objects stage: each replay runs plain, to its last frame, with no GPU time
+# and no marks, so that nothing waits for the GPU (risk 79: a wait hid a lost dx12 device).
+OBJECT_BACKENDS = ("vulkan", "dx12")
+
+
+def objects_verdict(output):
+    """The verdict of one replay of the objects stage, from its output: (ok, text). A steady frame
+    that made GPU objects fails, with the lines of the objects; so do a lost device and a build
+    without the count (no report line)."""
+    if "device is lost" in output:
+        return False, "the device is lost"
+    found = OBJECTS_LINE.search(output)
+    if not found:
+        return False, "no 'gpu objects' report line: a build without the count of the objects (D288)"
+    made, frames, steady, steady_made, objects = (int(n) for n in found.groups())
+    if steady == 0:
+        return False, "%d frames, none steady: the capture shows nothing of the rule" % frames
+    if steady_made:
+        sites = next((line for line in output.splitlines() if line.startswith("gpu objects of the steady frames: ")), "")
+        return False, "%d of %d steady frames made %d objects: %s" % (steady_made, steady, objects, sites[len("gpu objects of the steady frames: "):])
+    return True, "%d steady frames of %d made no object (%d made in the others)" % (steady, frames, made)
+
+
+def stage_objects(baseline, mge_build):
+    """Each capture of the baseline folder to its last frame, plain, on each backend of
+    OBJECT_BACKENDS: no steady frame (no new content, no change of the extension) may make a GPU
+    object, and no device may be lost (D288)."""
+    captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
+    if not captures:
+        return check(False, "objects: no capture in the baseline folder")
+    out = tempfile.mkdtemp(prefix="gate-objects-")
+    ok = True
+    for backend in OBJECT_BACKENDS:
+        for capture in captures:
+            code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], dict(GATE_ENV))
+            good, text = objects_verdict(output)
+            ok &= check(good and code == 0, "objects, %s, %s: %s%s" % (backend, capture, text, "" if code == 0 else " (replay.py ended with the code %d)" % code))
     return ok
 
 

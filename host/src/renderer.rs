@@ -3,6 +3,7 @@
 //! struct is in lib.rs.
 
 use super::*;
+use crate::objects::{Create, CreateView};
 
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
 /// the lights and the bones of the frame, and the buffers of the retained instances.
@@ -100,7 +101,7 @@ pub(crate) fn frame_group(
 
 /// The buffer of the arguments of the indirect draws of a frame.
 pub(crate) fn indirect_buffer(device: &wgpu::Device, draws: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("indirect draws"),
         size: (draws * ARGS_SIZE) as u64,
         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
@@ -163,7 +164,7 @@ pub(crate) fn draw_dump(path: &str, geometry: u32, data: &DrawData) {
 
 /// The records of the draws of a frame.
 pub(crate) fn record_buffer(device: &wgpu::Device, records: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("draw records"),
         size: (records * RECORD_SIZE) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -174,7 +175,7 @@ pub(crate) fn record_buffer(device: &wgpu::Device, records: usize) -> wgpu::Buff
 /// The inputs a vertex does not have, zeros, one entry for each instance the instance buffer
 /// can hold: a draw's instances index both buffers, so this one must be as long.
 pub(crate) fn defaults_buffer(device: &wgpu::Device, instances: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("vertex defaults"),
         size: (instances * 64) as u64,
         usage: wgpu::BufferUsages::VERTEX,
@@ -184,7 +185,7 @@ pub(crate) fn defaults_buffer(device: &wgpu::Device, instances: usize) -> wgpu::
 
 /// The instances of a frame.
 pub(crate) fn instance_buffer(device: &wgpu::Device, instances: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("instances"),
         size: (instances * INSTANCE_SIZE) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -237,7 +238,7 @@ pub(crate) fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<
     }
     let size = TIMING_QUERIES as u64 * 8;
     let buffer = |usage| {
-        device.create_buffer(&wgpu::BufferDescriptor {
+        device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("timing"),
             size,
             usage,
@@ -245,7 +246,7 @@ pub(crate) fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<
         })
     };
     let (sender, ready) = std::sync::mpsc::channel();
-    let set = device.create_query_set(&wgpu::QuerySetDescriptor {
+    let set = device.counted_query_set(&wgpu::QuerySetDescriptor {
         label: Some("timing"),
         ty: wgpu::QueryType::Timestamp,
         count: TIMING_QUERIES,
@@ -363,7 +364,7 @@ impl Timing {
 
 /// The bones of the skinned draws of the frame, matrices.
 pub(crate) fn bone_buffer(device: &wgpu::Device, bones: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("bones"),
         size: (bones * 64) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -445,7 +446,7 @@ impl Renderer {
         } else {
             source
         };
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader.wgsl"),
             source: wgpu::ShaderSource::Wgsl(source.clone().into()),
         });
@@ -476,7 +477,7 @@ impl Renderer {
                 .chain((0..STAGES as u32).map(|stage| sampler_entry(STAGES as u32 + stage, None)))
                 .collect(),
         };
-        let array_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let array_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some(if tier == request::TextureTier::A {
                 "draw texture arrays"
             } else {
@@ -484,7 +485,7 @@ impl Renderer {
             }),
             entries: &array_entries,
         });
-        let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let frame_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("extension frame"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -646,7 +647,7 @@ impl Renderer {
                 },
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("draw"),
             // From the group that changes least to the one that changes most: the frame, the
             // arrays of the frame. The record of a draw is in the frame group, named by the
@@ -656,7 +657,7 @@ impl Renderer {
         });
         let white = Rc::new(
             device
-                .create_texture_with_data(
+                .counted_texture_with_data(
                     &queue,
                     &wgpu::TextureDescriptor {
                         label: Some("white"),
@@ -675,16 +676,16 @@ impl Renderer {
                     wgpu::util::TextureDataOrder::MipMajor,
                     &[255, 255, 255, 255],
                 )
-                .create_view(&Default::default()),
+                .counted_view(&Default::default()),
         );
         let defaults = defaults_buffer(&device, RETAINED_AT_FIRST + INSTANCES_AT_FIRST);
-        let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        let frame_uniform = device.counted_buffer(&wgpu::BufferDescriptor {
             label: Some("extension frame"),
             size: 512,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let frame_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let frame_sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             label: Some("extension frame"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -1373,7 +1374,7 @@ impl Renderer {
                 }
             }
         }
-        let texture = self.device.create_texture_with_data(
+        let texture = self.device.counted_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
                 label: Some("game texture"),
@@ -1392,7 +1393,7 @@ impl Renderer {
             wgpu::util::TextureDataOrder::MipMajor,
             &bytes,
         );
-        self.set_texture(handle, Rc::new(texture.create_view(&Default::default())));
+        self.set_texture(handle, Rc::new(texture.counted_view(&Default::default())));
         self.texture_objects.insert(handle, (texture, d3d_format));
         self.counts.textures += 1;
     }
@@ -1404,7 +1405,7 @@ impl Renderer {
     /// pass that the draw goes into.
     pub(crate) fn screen_pipeline(&mut self, samples: u32) -> wgpu::RenderPipeline {
         if self.screen_layout.is_none() {
-            self.screen_layout = Some(self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            self.screen_layout = Some(self.device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("screen draw"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
@@ -1425,7 +1426,7 @@ impl Renderer {
                     },
                 ],
             }));
-            self.screen_sampler = Some(self.device.create_sampler(&wgpu::SamplerDescriptor {
+            self.screen_sampler = Some(self.device.counted_sampler(&wgpu::SamplerDescriptor {
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
@@ -1434,18 +1435,18 @@ impl Renderer {
         if let Some(pipeline) = self.screen_pipelines.get(&samples) {
             return pipeline.clone();
         }
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = self.device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("screen draw"),
             source: wgpu::ShaderSource::Wgsl(SCREEN_SHADER.into()),
         });
-        let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let layout = self.device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("screen draw"),
             bind_group_layouts: &[self.screen_layout.as_ref()],
             immediate_size: 0,
         });
         let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x2];
         let _long = crate::LongStep::begin();
-        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = self.device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("screen draw"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -1511,7 +1512,7 @@ impl Renderer {
         }
         let all = 32 - width.max(height).leading_zeros();
         let levels = if levels == 0 { all } else { levels.min(all) };
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        let texture = self.device.counted_texture(&wgpu::TextureDescriptor {
             label: Some("game render target"),
             size: wgpu::Extent3d {
                 width,
@@ -1525,7 +1526,7 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        self.set_texture(handle, Rc::new(texture.create_view(&Default::default())));
+        self.set_texture(handle, Rc::new(texture.counted_view(&Default::default())));
         self.texture_objects.insert(handle, (texture, d3d_format));
         self.counts.textures += 1;
     }
@@ -1560,7 +1561,7 @@ impl Renderer {
             self.depth_format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
-        let view = Rc::new(texture.create_view(&Default::default()));
+        let view = Rc::new(texture.counted_view(&Default::default()));
         self.set_texture(handle, view.clone());
         self.texture_objects.remove(&handle);
         self.targets.insert(
@@ -1568,7 +1569,7 @@ impl Renderer {
             RenderTexture {
                 texture,
                 view,
-                depth: Rc::new(depth.create_view(&Default::default())),
+                depth: Rc::new(depth.counted_view(&Default::default())),
                 depth_texture: depth,
                 size: (width, height),
                 asked,
@@ -2014,7 +2015,7 @@ impl Renderer {
                 .flat_map(|q| [0u16, 1, 2, 0, 2, 3].map(|i| (q * 4) as u16 + i))
                 .flat_map(|i| i.to_le_bytes())
                 .collect();
-            let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let buffer = self.device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("quads"),
                 contents: &indexes,
                 usage: wgpu::BufferUsages::INDEX,
@@ -2056,7 +2057,7 @@ impl Renderer {
             && filter(values[3]) == wgpu::FilterMode::Linear
             && known(values[4], 0) != 0;
         let sampler = self.samplers.entry(values).or_insert_with(|| {
-            Rc::new(device.create_sampler(&wgpu::SamplerDescriptor {
+            Rc::new(device.counted_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: address(values[0]),
                 address_mode_v: address(values[1]),
                 // MGE XE gives each texture that the game filters its anisotropic filter, with
@@ -2124,7 +2125,7 @@ impl PipelineMaker {
     /// A fragment module of a stage key, or None when the device refuses it.
     pub(crate) fn module(&self, source: &str) -> Option<wgpu::ShaderModule> {
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = self.device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stage shader"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
@@ -2229,7 +2230,7 @@ impl PipelineMaker {
             _ => None,
         };
         let depth_on = key.depth[0] != 0;
-        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = self.device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("game draw"),
             layout: Some(&self.layout),
             vertex: wgpu::VertexState {

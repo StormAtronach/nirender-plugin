@@ -6,7 +6,7 @@
 //! game set one. A window of the picture's size keeps the exact copy of `live::to_window`.
 
 use super::*;
-use wgpu::util::DeviceExt;
+use crate::objects::{Create, CreateView};
 
 /// The rectangle of the window that the picture covers: x, y, width, height. The largest with
 /// the picture's aspect, centred, in whole pixels; the picture's own size and place when the
@@ -61,7 +61,7 @@ pub(crate) struct Scale {
 impl Scale {
     pub(crate) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Scale {
         let fragment = wgpu::ShaderStages::FRAGMENT;
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("scaled picture"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -92,17 +92,17 @@ impl Scale {
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scaled picture"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scaled picture"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let _long = crate::LongStep::begin();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scaled picture"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -127,14 +127,14 @@ impl Scale {
             multiview_mask: None,
             cache: None,
         });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = device.counted_sampler(&wgpu::SamplerDescriptor {
             label: Some("scaled picture"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let floats: Vec<u8> = identity_ramp().iter().flat_map(|value| value.to_le_bytes()).collect();
-        let identity = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let identity = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("identity ramp"),
             contents: &floats,
             usage: wgpu::BufferUsages::UNIFORM,
@@ -158,8 +158,8 @@ impl Scale {
         rect: [u32; 4],
         ramp: Option<&wgpu::Buffer>,
     ) {
-        let source_view = source.create_view(&Default::default());
-        let target_view = target.create_view(&Default::default());
+        let source_view = source.counted_view(&Default::default());
+        let target_view = target.counted_view(&Default::default());
         let group = gpu::frame_group(
             device,
             &wgpu::BindGroupDescriptor {
