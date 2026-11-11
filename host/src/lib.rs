@@ -1084,7 +1084,7 @@ struct Player {
     /// the game's viewports are in its size.
     target_scale: (f32, f32),
     viewport: Option<([f32; 4], [f32; 2])>,
-    before: Option<wgpu::Texture>,
+    before: Option<(wgpu::Texture, wgpu::TextureView)>,
     before_kept: bool,
     /// The picture and the depth of the frame before a call of [`Extension::draw_class`].
     picture_copy: Option<(wgpu::Texture, wgpu::TextureView)>,

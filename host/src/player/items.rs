@@ -989,7 +989,7 @@ impl Player {
         ) {
             let at = stamp(&self.renderer.stamps, encoder, StampKind::Part, "the blend pass (extension)");
             scene.picture = picture.as_ref();
-            let before = before.counted_view(&Default::default());
+            let before = before.1.clone();
             let depth = resolved.unwrap_or_else(|| {
                 depth.texture().counted_view(&wgpu::TextureViewDescriptor {
                     aspect: wgpu::TextureAspect::DepthOnly,
@@ -1046,12 +1046,11 @@ impl Player {
         );
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
-        let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| {
-            copy.texture.counted_view(&wgpu::TextureViewDescriptor {
-                aspect: wgpu::TextureAspect::DepthOnly,
-                ..Default::default()
-            })
-        });
+        let before_depth = self
+            .before_depth
+            .as_ref()
+            .filter(|_| self.before_depth_kept)
+            .map(|copy| copy.depth.clone());
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
@@ -1111,12 +1110,11 @@ impl Player {
         );
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
-        let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| {
-            copy.texture.counted_view(&wgpu::TextureViewDescriptor {
-                aspect: wgpu::TextureAspect::DepthOnly,
-                ..Default::default()
-            })
-        });
+        let before_depth = self
+            .before_depth
+            .as_ref()
+            .filter(|_| self.before_depth_kept)
+            .map(|copy| copy.depth.clone());
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
@@ -1189,14 +1187,16 @@ impl Player {
             return;
         }
         let size = source.size();
-        if self.before.as_ref().is_none_or(|before| before.size() != size) {
-            self.before = Some(target_texture(
+        if self.before.as_ref().is_none_or(|(before, _)| before.size() != size) {
+            let before = target_texture(
                 &self.renderer.device,
                 size.width,
                 size.height,
                 source.format(),
                 wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            ));
+            );
+            let view = before.counted_view(&Default::default());
+            self.before = Some((before, view));
         }
         // A copy is not a part of a pass.
         self.close_pass();
@@ -1207,7 +1207,7 @@ impl Player {
             StampKind::Outside,
             "picture kept for the blend",
         );
-        encoder.copy_texture_to_texture(source.as_image_copy(), self.before.as_ref().unwrap().as_image_copy(), size);
+        encoder.copy_texture_to_texture(source.as_image_copy(), self.before.as_ref().unwrap().0.as_image_copy(), size);
         stamp_end(&self.renderer.stamps, encoder, at);
         self.renderer.counts.picture_copies += 1;
         self.before_kept = true;
@@ -1391,12 +1391,11 @@ impl Player {
         );
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
-        let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| {
-            copy.texture.counted_view(&wgpu::TextureViewDescriptor {
-                aspect: wgpu::TextureAspect::DepthOnly,
-                ..Default::default()
-            })
-        });
+        let before_depth = self
+            .before_depth
+            .as_ref()
+            .filter(|_| self.before_depth_kept)
+            .map(|copy| copy.depth.clone());
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
@@ -1471,12 +1470,11 @@ impl Player {
         );
         let commands = self.renderer.commands.clone();
         let mut scene = facts.view(&device, &queue, &commands, format);
-        let before_depth = self.before_depth.as_ref().filter(|_| self.before_depth_kept).map(|copy| {
-            copy.texture.counted_view(&wgpu::TextureViewDescriptor {
-                aspect: wgpu::TextureAspect::DepthOnly,
-                ..Default::default()
-            })
-        });
+        let before_depth = self
+            .before_depth
+            .as_ref()
+            .filter(|_| self.before_depth_kept)
+            .map(|copy| copy.depth.clone());
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
