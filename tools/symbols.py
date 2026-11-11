@@ -374,8 +374,14 @@ def store_lock(path, seconds=LOCK_SECONDS):
             msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def md5_of(path):
+    with open(path, "rb") as file:
+        return hashlib.md5(file.read()).hexdigest()
+
+
 def read_pending(path):
-    """The adds that waited for a timing run: (name, binaries, pdb folders) for each line."""
+    """The adds that waited for a timing run: (name, binaries, pdb folders, md5s) for each line. The md5s are those of
+    the binaries when the add was put off, in their order; a line of the three fields before W352 has none."""
     try:
         with open(path, encoding="utf-8") as file:
             lines = file.read().splitlines()
@@ -384,15 +390,31 @@ def read_pending(path):
     found = []
     for line in lines:
         fields = line.split("\t")
-        if len(fields) == 3 and fields[0]:
-            found.append((fields[0], [p for p in fields[1].split("|") if p], [p for p in fields[2].split("|") if p]))
+        if len(fields) in (3, 4) and fields[0]:
+            split = [[part for part in field.split("|") if part] for field in fields[1:]]
+            found.append((fields[0], split[0], split[1], split[2] if len(split) == 3 else []))
     return found
 
 
 def write_pending(path, builds):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:
-        file.write("".join("%s\t%s\t%s\n" % (name, "|".join(binaries), "|".join(dirs)) for name, binaries, dirs in builds))
+        file.write("".join("%s\t%s\t%s\t%s\n" % (name, "|".join(binaries), "|".join(dirs), "|".join(md5s))
+                           for name, binaries, dirs, md5s in builds))
+
+
+def unchanged(build_name, binaries, md5s, notes):
+    """The binaries of a build that are there and have the md5 of the time of its add, with a note for each other one.
+    A binary built again after its add was put off is not this build's any more."""
+    kept = []
+    for index, path in enumerate(binaries):
+        if not os.path.isfile(path):
+            continue
+        if index < len(md5s) and md5_of(path) != md5s[index]:
+            notes.append("%s: %s changed after the add was put off" % (build_name, os.path.basename(path)))
+            continue
+        kept.append(path)
+    return kept
 
 
 def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEEP_LIST, symstore=SYMSTORE, gate=e_ok,
@@ -411,7 +433,7 @@ def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEE
         with store_lock(lock):
             waiting = [build for build in read_pending(pending) if build[0] != name]
             if name and binaries:
-                waiting.append((name, binaries, pdb_dirs))
+                waiting.append((name, binaries, pdb_dirs, [md5_of(path) for path in binaries]))
             if not waiting:
                 return "symbols: nothing to add"
             refused = gate()
@@ -419,15 +441,15 @@ def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEE
                 write_pending(pending, waiting)
                 return "symbols: put off, %d builds wait in %s: %s" % (len(waiting), pending, refused)
             added, notes, left = 0, [], []
-            for build_name, build_binaries, build_dirs in waiting:
-                present = [path for path in build_binaries if os.path.isfile(path)]
+            for build_name, build_binaries, build_dirs, build_md5s in waiting:
+                present = unchanged(build_name, build_binaries, build_md5s, notes)
                 if not present:
-                    notes.append("%s: its binaries are gone" % build_name)
+                    notes.append("%s: its binaries are gone or changed" % build_name)
                     continue
                 try:
                     count, build_notes = add_build(store, build_name, present, build_dirs, symstore)
                 except SymbolError as error:
-                    left.append((build_name, build_binaries, build_dirs))
+                    left.append((build_name, build_binaries, build_dirs, build_md5s))
                     notes.append("%s: %s" % (build_name, error))
                     continue
                 added += count
@@ -585,6 +607,21 @@ def self_test_in(work):
     assert line.startswith("symbols: +1,") and "e" in [t.version for t in transactions(store)], line
     assert read_pending(pending) == []
     assert run(None, []) == "symbols: nothing to add"
+    # A binary built again while its add waits is not added under the old name; the other binary goes in. The null:
+    # TestEngine, unchanged, is taken. A line of the three fields before W352 is read with no md5s.
+    k_binaries, _ = build("k", ["TestEngine", "CppUnitTestExtension"])
+    assert run("k", k_binaries, gate=lambda: "e-ok: no").startswith("symbols: put off")
+    assert read_pending(pending)[0][3] == [hashlib.md5(open(path, "rb").read()).hexdigest() for path in k_binaries]
+    shutil.copy2(os.path.join(FIXTURES, FIXTURE_PREFIX + "Executor.dll"), k_binaries[1])
+    line = run(None, [])
+    assert "k: %s changed after the add was put off" % os.path.basename(k_binaries[1]) in line, line
+    # TestEngine alone is in b's transaction: the dedupe names it, so it was taken.
+    assert "k: its pdbs are in the store (b)" in line, line
+    assert read_pending(pending) == []
+    with open(pending, "w", encoding="utf-8") as file:
+        file.write("old\t%s\t\n" % k_binaries[0])
+    assert read_pending(pending) == [("old", [k_binaries[0]], [], [])], read_pending(pending)
+    write_pending(pending, [])
 
     # A fault of symstore is a line, not an exception, and the build waits for the next add.
     f_binaries, _ = build("f", ["ComInterfaces"])
