@@ -7,7 +7,9 @@ use crate::objects::{Create, CreateView};
 
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
 /// the lights and the bones of the frame, and the buffers of the retained instances.
+#[track_caller]
 pub(crate) fn frame_group(
+    kept: &mut crate::gpu::KeptGroup,
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     uniform: &wgpu::Buffer,
@@ -24,7 +26,7 @@ pub(crate) fn frame_group(
     influences: &wgpu::Buffer,
     effect_entries: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
-    crate::gpu::frame_group(
+    kept.get(
         device,
         &wgpu::BindGroupDescriptor {
             label: Some("extension frame"),
@@ -712,7 +714,9 @@ impl Renderer {
         let first_retained_bones = bone_buffer(&device, RETAINED_BONES_AT_FIRST);
         let first_effect_entries = effect_entry_buffer(&device, EFFECT_ENTRIES_AT_FIRST);
         let influences = crate::influences::Influences::new(&device);
+        let mut frame_kept = crate::gpu::KeptGroup::default();
         let frame_group = Rc::new(frame_group(
+            &mut frame_kept,
             &device,
             &frame_layout,
             &frame_uniform,
@@ -751,6 +755,7 @@ impl Renderer {
             extension_lights,
             frame_sampler,
             frame_group,
+            frame_kept,
             light_buffer: first_lights,
             instance_buffer: instance_buffer(&device, RETAINED_AT_FIRST + INSTANCES_AT_FIRST),
             instance_capacity: RETAINED_AT_FIRST + INSTANCES_AT_FIRST,

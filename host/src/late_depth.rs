@@ -12,6 +12,8 @@ use crate::objects::Create;
 pub(crate) struct LateDepth {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    /// The group of the merge: a merge of the same copies takes it again.
+    group: gpu::KeptGroup,
 }
 
 /// A triangle over the whole target, from the index of the vertex.
@@ -91,20 +93,24 @@ impl LateDepth {
             multiview_mask: None,
             cache: None,
         });
-        LateDepth { layout, pipeline }
+        LateDepth {
+            layout,
+            pipeline,
+            group: gpu::KeptGroup::default(),
+        }
     }
 
     /// Writes into `target` (copy 1) the depth of `after` where it differs from `before`, if
     /// it is nearer.
     pub(crate) fn merge(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         before: &wgpu::TextureView,
         after: &wgpu::TextureView,
         target: &wgpu::TextureView,
     ) {
-        let group = gpu::frame_group(
+        let group = self.group.get(
             device,
             &wgpu::BindGroupDescriptor {
                 label: Some("late depth"),

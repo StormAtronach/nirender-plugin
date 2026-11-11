@@ -786,6 +786,8 @@ struct Renderer {
     frame_uniform: wgpu::Buffer,
     frame_sampler: wgpu::Sampler,
     frame_group: Rc<wgpu::BindGroup>,
+    /// The frame group, kept while what it binds stays the same.
+    frame_kept: crate::gpu::KeptGroup,
     clusters: Clusters,
     extension_lights: ExtensionLights,
     samplers: FxHashMap<[u32; 5], Rc<wgpu::Sampler>>,
@@ -1085,7 +1087,7 @@ struct Player {
     before: Option<wgpu::Texture>,
     before_kept: bool,
     /// The picture and the depth of the frame before a call of [`Extension::draw_class`].
-    picture_copy: Option<wgpu::Texture>,
+    picture_copy: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_copy: Option<DepthTarget>,
     /// The copies of the colour and the depth of a rendered texture that the post chain of a
     /// picture reads ([`Extension::view_post`]): one pair for each size of picture.

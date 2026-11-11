@@ -166,7 +166,8 @@ impl Player {
             }
         }
         renderer.counts.times[TIME_CLUSTERS] += clock.elapsed();
-        renderer.frame_group = Rc::new(frame_group(
+        let group = frame_group(
+            &mut renderer.frame_kept,
             &renderer.device,
             &renderer.frame_layout,
             &renderer.frame_uniform,
@@ -182,7 +183,10 @@ impl Player {
             &renderer.retained_bone_buffer,
             &renderer.influences.buffer,
             &renderer.effect_entry_buffer,
-        ));
+        );
+        if *renderer.frame_group != group {
+            renderer.frame_group = Rc::new(group);
+        }
         // The GPU time of the frame by part (`MGE_XE_GPU_TIME=1`): one span for each group of
         // items of one kind in one phase of the frame. The world's start and end, the post
         // chain and the first person's depth have spans of their own inside.
@@ -897,10 +901,6 @@ impl Player {
         let late = self
             .late_depth
             .get_or_insert_with(|| late_depth::LateDepth::new(&device, format));
-        let depth_only = wgpu::TextureViewDescriptor {
-            aspect: wgpu::TextureAspect::DepthOnly,
-            ..Default::default()
-        };
         if let (Some(before), Some(after), Some(world), Some(encoder)) = (
             self.late_before.as_ref(),
             self.late_after.as_ref(),
@@ -913,13 +913,7 @@ impl Player {
                 StampKind::Outside,
                 "depth: late sorted blends into the world depth",
             );
-            late.merge(
-                &device,
-                encoder,
-                &before.texture.counted_view(&depth_only),
-                &after.texture.counted_view(&depth_only),
-                &world.texture.counted_view(&Default::default()),
-            );
+            late.merge(&device, encoder, &before.depth, &after.depth, &world.whole);
             stamp_end(&self.renderer.stamps, encoder, at);
         }
         self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
@@ -1244,12 +1238,10 @@ impl Player {
 
     /// The copy of the depth at the end of the world scene, when it was kept in this frame.
     pub(crate) fn world_depth_view(&self) -> Option<wgpu::TextureView> {
-        self.world_depth.as_ref().filter(|_| self.world_depth_kept).map(|copy| {
-            copy.texture.counted_view(&wgpu::TextureViewDescriptor {
-                aspect: wgpu::TextureAspect::DepthOnly,
-                ..Default::default()
-            })
-        })
+        self.world_depth
+            .as_ref()
+            .filter(|_| self.world_depth_kept)
+            .map(|copy| copy.depth.clone())
     }
 
     /// Copies the picture of the frame, outside of the pass. The pass stays closed. `name`:
@@ -1260,26 +1252,28 @@ impl Player {
             return None;
         }
         let size = source.size();
-        if self.picture_copy.as_ref().is_none_or(|copy| copy.size() != size) {
-            self.picture_copy = Some(target_texture(
+        if self.picture_copy.as_ref().is_none_or(|(copy, _)| copy.size() != size) {
+            let copy = target_texture(
                 &self.renderer.device,
                 size.width,
                 size.height,
                 source.format(),
                 wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            ));
+            );
+            let view = copy.counted_view(&Default::default());
+            self.picture_copy = Some((copy, view));
         }
         self.close_pass();
         let encoder = self.encoder.as_mut()?;
         let at = stamp(&self.renderer.stamps, encoder, StampKind::Outside, name);
         encoder.copy_texture_to_texture(
             source.as_image_copy(),
-            self.picture_copy.as_ref().unwrap().as_image_copy(),
+            self.picture_copy.as_ref().unwrap().0.as_image_copy(),
             size,
         );
         stamp_end(&self.renderer.stamps, encoder, at);
         self.renderer.counts.picture_copies += 1;
-        self.picture_copy.as_ref().map(|copy| copy.counted_view(&Default::default()))
+        self.picture_copy.as_ref().map(|(_, view)| view.clone())
     }
 
     /// Copies the depth as it is now, outside of the pass: into the copy of the moment (0),
@@ -1371,7 +1365,7 @@ impl Player {
                 &self.renderer.device,
                 encoder,
                 &arms,
-                &target.texture.counted_view(&Default::default()),
+                &target.whole,
                 projection,
                 &world_projection,
             );
