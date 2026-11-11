@@ -41,8 +41,9 @@ import common  # noqa: E402
 REPOS_ROOT = os.path.dirname(common.main_checkout()) if common.main_checkout() else common.SIBLINGS
 KEEP_ROOT = "E:\\nirender-keep"
 LOG = os.path.join(KEEP_ROOT, "clean-worktrees.log")
-# The docs that cite the runs: those of the docs checkout of the tools (common.docs_root), never a stale docs worktree.
-DOCS = os.path.join(common.docs_root(), "docs")
+# The docs that cite the runs: those of the docs main checkout (common.find_docs without the key "docs"). A run cited
+# only on docs main must stay when the key names a branch tree, and never a stale docs worktree.
+DOCS = os.path.join(common.find_docs(common.main_checkout(), None), "docs")
 # The notes of the sessions also name runs.
 MEMORY = os.path.join(os.path.expanduser("~"), ".claude", "projects", "c--Users-ivan--source-repos-MWSE-MWSE", "memory")
 COMMIT_REPOS = [os.path.join(REPOS_ROOT, name) for name in ("nirender-plugin", "MGE-XE-G7-render-link", os.path.join("MWSE", "MWSE"), "moreFPS")]

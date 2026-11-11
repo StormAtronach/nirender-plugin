@@ -226,6 +226,8 @@ def local(key, default):
 # local.json names another docs tree on purpose (a branch under test).
 DOCS_REPO = "moreFPS"
 DOCS_KEY = "docs"
+# The main branch of the docs repository: the docs main checkout on another branch is named on stderr.
+DOCS_MAIN = "main"
 
 
 def find_docs(main, named):
@@ -244,15 +246,27 @@ def branch_of(folder):
     return run.stdout.strip() or "a detached HEAD"
 
 
+def docs_line(root, beside_main, branch, key_file):
+    """The stderr line for the docs tree `root` on `branch`, or None. A tree other than `beside_main` (the one beside the
+    main checkout) came from the key "docs" of `key_file`; the tree beside the main checkout gets a line only when it is
+    not on DOCS_MAIN (a missing tree stops later, with its own message)."""
+    if os.path.normcase(root) != os.path.normcase(beside_main):
+        return "docs: %s (branch %s), from the key \"%s\" of %s; the main checkout's is %s" % (
+            root, branch, DOCS_KEY, key_file, beside_main)
+    if branch not in (DOCS_MAIN, "no git tree"):
+        return "docs: %s (branch %s), the docs main checkout, not on %s" % (root, branch, DOCS_MAIN)
+    return None
+
+
 @functools.lru_cache(maxsize=None)
 def docs_root():
-    """The docs repository of the tools (`find_docs`). A tree other than the one beside the main checkout is named once
-    on stderr, with its branch and the file of the key."""
+    """The docs repository of the tools (`find_docs`). A tree other than the one beside the main checkout, or that one
+    on another branch than DOCS_MAIN, is named once on stderr (`docs_line`)."""
     main = main_checkout()
     root, beside_main = find_docs(main, local(DOCS_KEY, None)), find_docs(main, None)
-    if os.path.normcase(root) != os.path.normcase(beside_main):
-        print("docs: %s (branch %s), from the key \"%s\" of %s; the main checkout's is %s" % (
-            root, branch_of(root), DOCS_KEY, local_file_hint(), beside_main), file=sys.stderr)
+    line = docs_line(root, beside_main, branch_of(root), local_file_hint())
+    if line:
+        print(line, file=sys.stderr)
     return root
 
 
@@ -374,6 +388,13 @@ def self_test():
         text = missing_docs_text(beside_main, ("docs", "scripts", "test-harness-2026-10-03"))
         assert beside_main in text and '"docs"' in text and "test-harness-2026-10-03" in text, text
         assert branch_of(root) == "no git tree", branch_of(root)
+        # The line on stderr: a named tree, and the tree beside the main checkout on another branch; none on main.
+        named_line = docs_line(stale, beside_main, "old", "the file")
+        assert stale in named_line and "branch old" in named_line and "the file" in named_line, named_line
+        assert docs_line(beside_main, beside_main, DOCS_MAIN, "the file") is None
+        assert docs_line(beside_main, beside_main, "no git tree", "the file") is None, "a missing tree stops later"
+        other_line = docs_line(beside_main, beside_main, "scripts/x", "the file")
+        assert beside_main in other_line and "branch scripts/x" in other_line, other_line
     if real:
         assert bare(real) == real_bare, "core.bare of %s changed from %r to %r" % (real, real_bare, bare(real))
     parts_test()
