@@ -220,6 +220,71 @@ def local(key, default):
     return default
 
 
+# The docs repository: the harness of the runs, the state-page scripts and the batches that the tools run. A tool takes
+# it beside the main checkout of this repository, never beside a worktree: a group of worktrees in C:/tmp can hold a
+# docs worktree of an old branch, whose harness.py lacked an argument of the runner's call (W355). The key "docs" of
+# local.json names another docs tree on purpose (a branch under test).
+DOCS_REPO = "moreFPS"
+DOCS_KEY = "docs"
+# The main branch of the docs repository: the docs main checkout on another branch is named on stderr.
+DOCS_MAIN = "main"
+
+
+def find_docs(main, named):
+    """The folder of the docs repository: `named` (the value of the key "docs") when it is set, else the moreFPS beside
+    the main checkout `main`, else the one beside this tree (a tree outside git has no main checkout)."""
+    if named:
+        return os.path.normpath(named)
+    return os.path.join(os.path.dirname(main) if main else SIBLINGS, DOCS_REPO)
+
+
+def branch_of(folder):
+    """The branch of the git tree at `folder`, "a detached HEAD" without one, or "no git tree"."""
+    run = subprocess.run(["git", "-C", folder, "branch", "--show-current"], capture_output=True, text=True, env=git_env())
+    if run.returncode != 0:
+        return "no git tree"
+    return run.stdout.strip() or "a detached HEAD"
+
+
+def docs_line(root, beside_main, branch, key_file):
+    """The stderr line for the docs tree `root` on `branch`, or None. A tree other than `beside_main` (the one beside the
+    main checkout) came from the key "docs" of `key_file`; the tree beside the main checkout gets a line only when it is
+    not on DOCS_MAIN (a missing tree stops later, with its own message)."""
+    if os.path.normcase(root) != os.path.normcase(beside_main):
+        return "docs: %s (branch %s), from the key \"%s\" of %s; the main checkout's is %s" % (
+            root, branch, DOCS_KEY, key_file, beside_main)
+    if branch not in (DOCS_MAIN, "no git tree"):
+        return "docs: %s (branch %s), the docs main checkout, not on %s" % (root, branch, DOCS_MAIN)
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def docs_root():
+    """The docs repository of the tools (`find_docs`). A tree other than the one beside the main checkout, or that one
+    on another branch than DOCS_MAIN, is named once on stderr (`docs_line`)."""
+    main = main_checkout()
+    root, beside_main = find_docs(main, local(DOCS_KEY, None)), find_docs(main, None)
+    line = docs_line(root, beside_main, branch_of(root), local_file_hint())
+    if line:
+        print(line, file=sys.stderr)
+    return root
+
+
+def missing_docs_text(root, parts):
+    """The text of a tool that stops for want of the place `parts` in the docs repository `root`."""
+    return "no %s in the docs checkout %s. Check out %s there, or set the key \"%s\" in %s to another docs tree." % (
+        os.path.join(*parts), root, DOCS_REPO, DOCS_KEY, local_file_hint())
+
+
+def docs_place(*parts, required=False):
+    """The place `parts` in the docs repository (`docs_root`), for example ("docs", "scripts", "test-harness-2026-10-03").
+    With `required`, a missing place stops the tool (`missing_docs_text`); without it, the tool decides."""
+    place = os.path.join(docs_root(), *parts)
+    if required and not os.path.exists(place):
+        raise SystemExit(missing_docs_text(docs_root(), parts))
+    return place
+
+
 def find_sibling(siblings, main, parts):
     """The place `parts` in the folder `siblings`, else next to the main checkout `main`. The
     place in `siblings` when neither exists."""
@@ -237,7 +302,7 @@ def sibling(*parts):
 
 
 def self_test():
-    """The tests of `checkout_of`, `find_local` and `find_sibling` in a temporary folder. A commit
+    """The tests of `checkout_of`, `find_local`, `find_sibling` and `find_docs` in a temporary folder. A commit
     hook runs this test with the GIT_ names of its own repository: every git call of the test
     goes without them (`git_env`), and the test fails when core.bare of this repository's main
     checkout changes."""
@@ -308,6 +373,28 @@ def self_test():
         assert find_sibling(os.path.join(root, "away"), None, ["docs"]) == os.path.join(root, "away", "docs")
         os.makedirs(os.path.join(root, "away", "docs"))
         assert find_sibling(os.path.join(root, "away"), main, ["docs"]) == os.path.join(root, "away", "docs")
+        # The docs repository: the one beside the main checkout. The null: a stale docs worktree named moreFPS beside
+        # the worktree (the group folder of a worker in C:/tmp) is not taken.
+        beside_main = os.path.join(root, "repos", DOCS_REPO)
+        stale = os.path.join(root, "away", DOCS_REPO)
+        os.makedirs(beside_main)
+        os.makedirs(stale)
+        assert same(find_docs(main, None)) == same(beside_main), find_docs(main, None)
+        assert same(find_docs(main, "")) == same(beside_main), "an empty key names no tree"
+        assert same(find_docs(checkout_of(tree), None)) == same(beside_main), "a worktree finds its main checkout's"
+        # A branch under test, named on purpose by the key: that one, even the stale one.
+        assert same(find_docs(main, stale)) == same(stale)
+        assert same(find_docs(None, None)) == same(os.path.join(SIBLINGS, DOCS_REPO)), "outside git: beside this tree"
+        text = missing_docs_text(beside_main, ("docs", "scripts", "test-harness-2026-10-03"))
+        assert beside_main in text and '"docs"' in text and "test-harness-2026-10-03" in text, text
+        assert branch_of(root) == "no git tree", branch_of(root)
+        # The line on stderr: a named tree, and the tree beside the main checkout on another branch; none on main.
+        named_line = docs_line(stale, beside_main, "old", "the file")
+        assert stale in named_line and "branch old" in named_line and "the file" in named_line, named_line
+        assert docs_line(beside_main, beside_main, DOCS_MAIN, "the file") is None
+        assert docs_line(beside_main, beside_main, "no git tree", "the file") is None, "a missing tree stops later"
+        other_line = docs_line(beside_main, beside_main, "scripts/x", "the file")
+        assert beside_main in other_line and "branch scripts/x" in other_line, other_line
     if real:
         assert bare(real) == real_bare, "core.bare of %s changed from %r to %r" % (real, real_bare, bare(real))
     parts_test()

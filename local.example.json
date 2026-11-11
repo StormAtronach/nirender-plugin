@@ -1,4 +1,5 @@
 {
+  "docs": "C:/path/to/a/docs/tree/under/test/moreFPS",
   "harness": "C:/path/to/moreFPS/docs/scripts/test-harness-2026-10-03",
   "mwse_mcp": "C:/path/to/mwse-mcp/mwse-mcp",
   "obs_record": "C:/path/to/moreFPS/docs/scripts/obs-record",

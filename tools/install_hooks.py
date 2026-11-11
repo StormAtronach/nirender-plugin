@@ -27,9 +27,13 @@ import sys
 from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PLUGIN / "tools"))
+import common  # noqa: E402
+
 REPOS = PLUGIN.parent
 MGE = REPOS / "MGE-XE-G7-render-link"
-STATE_PAGES = REPOS / "moreFPS" / "docs" / "Numidium Project" / "scripts" / "state-page" / "check_state_pages.py"
+# The docs checkout of the tools (common.docs_place): beside the main checkout, not beside a worktree.
+STATE_PAGES = Path(common.docs_place("docs", "Numidium Project", "scripts", "state-page", "check_state_pages.py"))
 MARK = "# Written by nirender-plugin/tools/install_hooks.py."
 
 
