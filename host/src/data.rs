@@ -321,6 +321,10 @@ pub(crate) struct PipelineKey {
     /// The id of the draw's stage key (`crate::stage_shaders`): the fragment shader made for
     /// its stage state, or 0 for the world shader's own `fs` (the uber-shader).
     pub(crate) stages: u32,
+    /// The world variant whose fragment shader draws it ([`crate::debug_lines::world_variant`]):
+    /// 0 in normal play. [`Renderer::pipeline`] sets it from the frame, where the draw is drawn,
+    /// so a key that the table keeps has 0.
+    pub(crate) debug: u32,
 }
 
 /// A texture that the game draws into.
