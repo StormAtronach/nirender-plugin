@@ -273,6 +273,12 @@ pub unsafe fn send_checks(t: &MainThread, camera: usize) {
             .iter()
             .all(|&node| rd::<u16>(node, AV::flags) & DISPLAYED != 0)
         {
+            // The parts below fill the record's words exactly: a change of either length fails
+            // the build, not the copy in the game.
+            const _: () = assert!(
+                1 + 9 + 3 + 3 + crate::ports::texture_pass_b::EFFECT_STAGE_WORDS - 2
+                    == crate::capture::tag::EFFECT_TURN_CHECK_WORDS
+            );
             let mut words = [0u32; crate::capture::tag::EFFECT_TURN_CHECK_WORDS];
             words[0] = effect as u32;
             words[1..10].copy_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
