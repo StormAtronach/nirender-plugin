@@ -175,6 +175,19 @@ pub fn world_shader_source(extension_text: &str) -> String {
     )
 }
 
+/// The line of the world shader that names its debug view (shader.wgsl).
+const DEBUG_VIEW_LINE: &str = "const DEBUG_VIEW: u32 = 0u;";
+
+/// The text of the world shader's variant ([`crate::debug_lines::world_variant`]): the text
+/// with the variant's id on its one `DEBUG_VIEW` line. None when the text does not have that
+/// line exactly once: a missed line would give a variant equal to normal play, with no error.
+pub fn world_variant_source(source: &str, variant: u32) -> Option<String> {
+    if source.matches(DEBUG_VIEW_LINE).count() != 1 {
+        return None;
+    }
+    Some(source.replacen(DEBUG_VIEW_LINE, &format!("const DEBUG_VIEW: u32 = {variant}u;"), 1))
+}
+
 fn array_features() -> wgpu::Features {
     wgpu::Features::TEXTURE_BINDING_ARRAY
         | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
@@ -875,6 +888,28 @@ mod tests {
             "shader.wgsl",
             &world_shader_source(&crate::extension::extension_shaders(None)),
         );
+    }
+
+    /// A variant's text is the world shader's text with the variant's id on the one
+    /// `DEBUG_VIEW` line, and it validates; a text without the line, or with it twice, has no
+    /// variant (a missed line would give a variant equal to normal play).
+    #[test]
+    fn a_world_variant_changes_the_one_debug_view_line() {
+        use crate::debug_lines::view_id;
+        let world = world_shader_source(&crate::extension::extension_shaders(None));
+        assert_eq!(world.matches(DEBUG_VIEW_LINE).count(), 1);
+        for variant in [view_id::LIGHTS, view_id::SHADOW_LAYERS] {
+            let source = world_variant_source(&world, variant).expect("the line is there once");
+            let line = format!("const DEBUG_VIEW: u32 = {variant}u;");
+            assert_ne!(source, world);
+            assert_eq!(source.matches(&line).count(), 1);
+            assert_eq!(source.replacen(&line, DEBUG_VIEW_LINE, 1), world);
+            crate::assert_wgsl(&format!("world variant {variant}"), &source);
+        }
+        // The text of tier C keeps the line.
+        assert!(world_variant_source(&tier_c_shader_source(&world), view_id::LIGHTS).is_some());
+        assert_eq!(world_variant_source(&world.replace(DEBUG_VIEW_LINE, ""), 1), None);
+        assert_eq!(world_variant_source(&format!("{world}\n{DEBUG_VIEW_LINE}\n"), 1), None);
     }
 
     /// The cone of a spot light has one home: the world shader has the text of spot.rs once,

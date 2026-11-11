@@ -573,6 +573,15 @@ mod tests {
         let rest = &rest[rest.find('"')? + 1..];
         Some(rest[..rest.find('"')?].to_string())
     }
+
+    /// The place that the switch `name` names, else the key `key` of `local.json`, with where
+    /// it was named; None when neither names one.
+    fn named(name: &str, key: &str) -> Option<(String, String)> {
+        match crate::switches::text(name) {
+            Some(place) => Some((place, format!("the switch {name}"))),
+            None => local(key).map(|place| (place, format!("{key} of local.json"))),
+        }
+    }
     /// The `Morrowind.exe` that the database is made from (sha256): the Code Patch has a
     /// folder of its patch file for each exe that it knows.
     const DATABASE_EXE: &str = "6fb89bbe8932b7de718c86dd4387fd59e04b9a33b011b61bc78254ded32f5456";
@@ -596,30 +605,27 @@ mod tests {
     /// `mcpatch`, with `;` between them; `mcpatch_root` of `local.json` without it) that writes
     /// inside a ported function must be in [`ports::CODE_PATCH_RECORDS`], and the census must
     /// follow it with the option on (the bytes of the record) and off (the bytes of
-    /// [`NIRENDER_VANILLA_EXE`], or `vanilla_exe` of `local.json`). Skipped without the places
-    /// or the files: the patch file is not ours to ship.
+    /// [`NIRENDER_VANILLA_EXE`], or `vanilla_exe` of `local.json`). Skipped when no place is
+    /// named: the patch file is not ours to ship. A named place whose file cannot be read fails
+    /// the test, so that a check that did not run never passes.
     #[test]
     fn every_code_patch_record_in_a_port_is_followed() {
-        let Some(roots) = crate::switches::text("NIRENDER_MCPATCH").or_else(|| local("mcpatch_root")) else {
+        let Some((roots, roots_from)) = named("NIRENDER_MCPATCH", "mcpatch_root") else {
             eprintln!("skipped: no NIRENDER_MCPATCH and no mcpatch_root in local.json");
             return;
         };
         let roots: Vec<String> = roots.split(';').map(str::to_string).collect();
-        let Some(vanilla_path) = crate::switches::text("NIRENDER_VANILLA_EXE").or_else(|| local("vanilla_exe")) else {
+        let Some((vanilla_path, vanilla_from)) = named("NIRENDER_VANILLA_EXE", "vanilla_exe") else {
             eprintln!("skipped: no NIRENDER_VANILLA_EXE and no vanilla_exe in local.json");
             return;
         };
-        let Ok(vanilla) = std::fs::read(&vanilla_path) else {
-            eprintln!("skipped: no {vanilla_path}");
-            return;
-        };
+        let vanilla = std::fs::read(&vanilla_path)
+            .unwrap_or_else(|error| panic!("{vanilla_from} names {vanilla_path}, which cannot be read: {error}"));
         let mut checked = 0;
         for root in &roots {
             let path = format!("{root}/mcpatch/{DATABASE_EXE}/patch");
-            let Ok(blob) = std::fs::read(&path) else {
-                eprintln!("no {path}");
-                continue;
-            };
+            let blob = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("{roots_from} names {root}, and {path} cannot be read: {error}"));
             for (feature, offset, data) in code_patch_records(&blob) {
                 let va = 0x400000 + offset;
                 for port in ports::all() {

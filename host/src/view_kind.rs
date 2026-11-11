@@ -76,30 +76,35 @@ impl Additions {
     /// The casting of the shadows: the atlas made from the camera.
     pub const SHADOW_CAST: Additions = Additions(1 << 4);
     /// The receiving of the shadows: the overlay that samples the frame's atlas.
+    ///
+    /// No reader; the look is not decided. A draw of the table in a view takes the shadow when
+    /// its shade has the shadow bit, with this part or without it.
     pub const SHADOW_RECEIVE: Additions = Additions(1 << 5);
-    /// The water of MGE XE, in place of the water plane of the game.
+    /// The water of MGE XE, in place of the water plane of the game. The reflection is a
+    /// decision inside the water, not a part of its own.
     pub const WATER: Additions = Additions(1 << 6);
-    /// The reflection of the water, made from the camera.
-    pub const REFLECTION: Additions = Additions(1 << 7);
     /// The sky shader.
-    pub const SKY_SHADER: Additions = Additions(1 << 8);
+    pub const SKY_SHADER: Additions = Additions(1 << 7);
     /// The post chain covers the pixels of the view in the back buffer.
-    pub const POST_COVER: Additions = Additions(1 << 9);
+    pub const POST_COVER: Additions = Additions(1 << 8);
     /// The per-pixel shade of the draws.
-    pub const SHADE: Additions = Additions(1 << 10);
+    ///
+    /// No reader but a counter; the look is not decided. The shade of a view's draws comes from
+    /// `shade_choice` in `engine::views`, with this part or without it.
+    pub const SHADE: Additions = Additions(1 << 9);
     /// Every part: a main view, each by its switch.
-    pub const ALL: Additions = Additions((1 << 11) - 1);
+    pub const ALL: Additions = Additions((1 << 10) - 1);
 
     /// The additions that a mod asks for a view (`mge.camera.setViewOptions`): the bits of
     /// `MGEApi.h` `ViewPart`, as the plugin's event `EVENT_VIEW_OPTIONS` carries them. Bits
     /// beyond the six are ignored. `shaders` is the post chain of the view
-    /// ([`Additions::POST_COVER`]); `distantWater` is the water of MGE XE and its reflection.
+    /// ([`Additions::POST_COVER`]); `distantWater` is the water of MGE XE ([`Additions::WATER`]).
     pub const fn from_option_parts(parts: u32) -> Additions {
         const MAP: [(u32, Additions); 6] = [
             (1 << 0, Additions::LAND),
             (1 << 1, Additions::STATICS),
             (1 << 2, Additions::GRASS),
-            (1 << 3, Additions::WATER.with(Additions::REFLECTION)),
+            (1 << 3, Additions::WATER),
             (1 << 4, Additions::POST_COVER),
             (1 << 5, Additions::GLOWS),
         ];
@@ -123,10 +128,12 @@ impl Additions {
     /// the distant statics, the grass and the glows (stage 3b, slices 1 and 2). The other
     /// granted parts stay unused until their slices come.
     ///
-    /// Open item of stage 3b: the shadows. A view of its own gets no shadow in these slices:
-    /// the options (`ViewPart` of MGEApi) have no bit for them, and the shaders of the land and
-    /// the statics in the view group have no shadow map binding. The shadow overlay is a part
-    /// of the main view ([`Additions::SHADOW_CAST`], [`Additions::SHADOW_RECEIVE`]).
+    /// Open item of stage 3b: the shadows. The extension's parts in a view of its own get no
+    /// shadow in these slices: the options (`ViewPart` of MGEApi) have no bit for them, and the
+    /// shaders of the land and the statics in the view group have no shadow map binding. The
+    /// draws of the table in a view are not these parts: they take the shadow when their shade
+    /// has the shadow bit. The shadow overlay is a part of the main view
+    /// ([`Additions::SHADOW_CAST`], [`Additions::SHADOW_RECEIVE`]).
     pub const TIER_DRAWN: Additions = Additions::LAND
         .with(Additions::STATICS)
         .with(Additions::GRASS)
@@ -251,7 +258,6 @@ mod tests {
             Additions::SHADOW_CAST,
             Additions::SHADOW_RECEIVE,
             Additions::WATER,
-            Additions::REFLECTION,
             Additions::SKY_SHADER,
             Additions::POST_COVER,
             Additions::SHADE,
@@ -273,7 +279,6 @@ mod tests {
             Additions::GLOWS,
             Additions::SHADOW_CAST,
             Additions::WATER,
-            Additions::REFLECTION,
             Additions::SKY_SHADER,
         ] {
             assert!(!other.contains(part));
@@ -281,6 +286,33 @@ mod tests {
         assert!(ViewKind::Picture.additions(true).is_empty());
         // After the interface scene the kind Main keeps its parts: a frame has one main view.
         assert_eq!(ViewKind::Main.additions(true), Additions::ALL);
+    }
+
+    /// Every part is one bit, and ALL is the set of the named parts, no bit more: a part that
+    /// leaves (the reflection, W341 step B) leaves ALL too.
+    #[test]
+    fn all_is_the_named_parts() {
+        let parts = [
+            Additions::LAND,
+            Additions::STATICS,
+            Additions::GRASS,
+            Additions::GLOWS,
+            Additions::SHADOW_CAST,
+            Additions::SHADOW_RECEIVE,
+            Additions::WATER,
+            Additions::SKY_SHADER,
+            Additions::POST_COVER,
+            Additions::SHADE,
+        ];
+        let mut union = Additions::NONE;
+        for part in parts {
+            assert_eq!(part.0.count_ones(), 1, "{part:?}");
+            assert!(!union.contains(part), "{part:?} shares a bit");
+            union = union.with(part);
+        }
+        assert_eq!(union, Additions::ALL);
+        // The option distantWater asks for the water alone.
+        assert_eq!(Additions::from_option_parts(1 << 3), Additions::WATER);
     }
 
     /// A picture with options draws the land, the statics, the grass and the glows in its own

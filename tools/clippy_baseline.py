@@ -11,7 +11,11 @@ place does not compile; release.py runs it. A lint with fewer lowers its line wi
 The baseline only goes down: raise a line by hand, with the reason in the commit message (a
 new toolchain can add lints; see `rust-toolchain.toml` of each folder).
 
-Clippy compiles: ask for a build slot first. `--mge` names another render-link folder.
+Clippy compiles: ask for a build slot first. `--mge` names another render-link folder. A place
+whose folder is missing stops the tool before cargo runs, with the folder and, when the main
+checkout has a render-link beside it, the `--mge` and `--mge-host` to give: a worktree in a group
+in C:/tmp has no `MGE-XE-G7-render-link` beside it, and cargo then stopped with
+NotADirectoryError after the plugin place had compiled.
 `--mge-host DIR` builds the render-link place against the host crate in DIR, through cargo's
 `--config paths=[...]` override, which leaves the render-link tree as it is: for a render-link
 branch whose code needs a host crate that the main checkout does not have yet. release.py runs
@@ -27,8 +31,12 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import common  # noqa: E402
+
 PLUGIN = os.path.dirname(HERE)
-MGE = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
+MGE_NAME = "MGE-XE-G7-render-link"
+MGE = os.path.join(os.path.dirname(PLUGIN), MGE_NAME)
 BASELINE = os.path.join(HERE, "clippy.baseline")
 
 
@@ -54,6 +62,22 @@ def places(mge, host=None):
     }
 
 
+def missing_text(places_of, main):
+    """The text that stops the tool when a folder of `places_of` (`places`) is missing, or None. `main`: the main
+    checkout of this repository, whose render-link sibling the text offers with this tree's host crate."""
+    missing = [(name, folder) for name, (folder, _) in places_of.items() if not os.path.isdir(folder)]
+    if not missing:
+        return None
+    lines = ["clippy: no folder for the place %s: %s" % (name, folder) for name, folder in missing]
+    beside_main = os.path.join(os.path.dirname(main), MGE_NAME) if main else None
+    if any(name == "render-link" for name, _ in missing) and beside_main and os.path.isdir(beside_main):
+        lines.append("clippy: name a render-link tree with --mge; with the main checkout's, build it against this tree's "
+                     "host crate: --mge %s --mge-host %s" % (beside_main, os.path.join(PLUGIN, "host")))
+    elif any(name == "render-link" for name, _ in missing):
+        lines.append("clippy: name a render-link tree with --mge")
+    return "\n".join(lines)
+
+
 def count_warnings(folder, args):
     """The warnings of each lint in one place; None when the place does not compile."""
     run = subprocess.run(["cargo", "clippy", "--message-format=json", *args], cwd=folder, capture_output=True,
@@ -77,9 +101,14 @@ def count_warnings(folder, args):
 
 
 def scan(mge, host=None):
-    """{(place, lint): count} of all places; None when a place does not compile."""
+    """{(place, lint): count} of all places; None when a place does not compile. A missing folder stops the tool
+    before any cargo runs (`missing_text`)."""
+    places_of = places(mge, host)
+    text = missing_text(places_of, common.main_checkout())
+    if text:
+        raise SystemExit(text)
     found = {}
-    for place, (folder, args) in places(mge, host).items():
+    for place, (folder, args) in places_of.items():
         counts = count_warnings(folder, args)
         if counts is None:
             print("clippy: %s does not compile" % place)
@@ -130,6 +159,26 @@ def self_test():
             pass
         else:
             raise AssertionError("--mge-host %s was taken" % bad)
+    # A missing place stops before cargo, with its folder; the main checkout's render-link is offered with this tree's
+    # host crate. The null: a worktree in a group in C:/tmp, where cargo got a missing cwd (NotADirectoryError).
+    import tempfile
+    with tempfile.TemporaryDirectory() as root:
+        group_mge = os.path.join(root, "group", MGE_NAME)
+        main = os.path.join(root, "repos", "nirender-plugin")
+        beside_main = os.path.join(root, "repos", MGE_NAME)
+        text = missing_text(places(group_mge), main)
+        assert text and group_mge in text and "render-link" in text and "--mge-host" not in text, text
+        os.makedirs(beside_main)
+        text = missing_text(places(group_mge), main)
+        assert "--mge %s --mge-host %s" % (beside_main, host) in text, text
+        assert missing_text(places(group_mge), None).endswith("name a render-link tree with --mge"), "outside git"
+        assert missing_text(places(beside_main), main) is None, "every folder there"
+        try:
+            scan(group_mge)
+        except SystemExit as stop:
+            assert group_mge in str(stop), stop
+        else:
+            raise AssertionError("scan ran with a missing place")
     print("clippy_baseline self-test: ok")
 
 

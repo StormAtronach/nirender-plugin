@@ -39,7 +39,9 @@ from ctypes import wintypes
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import session  # noqa: E402
+import symbols  # noqa: E402
 from common import REPO  # noqa: E402
+from make_play_set import PDB_KEEP  # noqa: E402
 
 TAG = "[nirender.owndevice] "
 HOST_DIR = os.path.join(REPO, "host")
@@ -263,6 +265,15 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
 
 
 TIMING_STEPS = ("rate", "walk")
+
+
+def is_timing_run(args):
+    """Whether the run measures time, so that the slot check needs the game slot held with
+    --timing (the owner's D297): --timing, a step of TIMING_STEPS, or no --steps (all the
+    steps, the timing steps among them). A shader batch is a timing run only with --timing:
+    most batches take pictures or hold a live session."""
+    steps = [name for name in re.split(r"[,\s]+", args.steps or "") if name]
+    return bool(args.timing) or not steps or any(name in TIMING_STEPS for name in steps)
 WEATHER_IN_LINE = re.compile(r'(?:current|next|from|to) (\d+) "([^"]*)"')
 # A change of the weather in a shader batch, with the text of its first argument.
 WEATHER_CHANGE = re.compile(r"\b(switchImmediate|switchTransition|changeWeather)\s*\(\s*([^),]*)")
@@ -1236,6 +1247,14 @@ def self_test_weather():
     assert weather_summary(None, ["step exterior: true"]) == "the game's: none logged"
     assert weather_summary(None, ["weather start: not read: x"]) == "the game's: none logged"
 
+    # The timing rule of the slot check (D297): the steps rate and walk, no --steps, or --timing.
+    def timing(**changes):
+        return is_timing_run(namespace(**{"timing": False, **changes}))
+    assert timing() and timing(steps="rate") and timing(steps="exterior, walk") and timing(steps="exterior,rate,capture")
+    assert not timing(steps="exterior,capture") and not timing(steps="shaders", shader_batch="E:/batch.lua")
+    assert not timing(steps="interior,shaders") and not timing(steps="tour")
+    assert timing(steps="shaders", shader_batch="E:/batch.lua", timing=True) and timing(steps="exterior", timing=True)
+
     # The warning: a run that times and leaves the weather to the game; the steps named decide.
     assert weather_warning(namespace(weather=0)) is None
     assert weather_warning(namespace(weather=0, steps="rate")) is None
@@ -1785,8 +1804,54 @@ def self_test_use_instance():
         session.MGE_LOGS = saved_mge
 
 
+def add_symbols(mge_build, plugin_dll, add=symbols.add):
+    """The symbol store (W345): the pdbs of the run's build, beside its binaries or kept by the play set of its name;
+    a timing run puts the add off until its game slot is free (D297). The run's plugin can be of another tree than the
+    build, so it goes in as a build of its own, "plugin-<md5 8>" (W352): the build's name pins only the build's pdbs.
+    A play set's own plugin is in the set's transaction already, and its add is "in the store". A build folder that is
+    not a play set f<N> is named with the md5 of its d3d8.dll (symbols.build_name). Returns the lines."""
+    folder_name = os.path.basename(os.path.normpath(mge_build))
+    binaries = [os.path.join(mge_build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")]
+    lines = [add(symbols.build_name(mge_build), binaries, [os.path.join(PDB_KEEP, folder_name)])]
+    if plugin_dll and os.path.isfile(plugin_dll):
+        lines.append(add("plugin-" + symbols.md5_of(plugin_dll)[:8], [plugin_dll], [os.path.join(PDB_KEEP, folder_name)]))
+    return lines
+
+
+def self_test_add_symbols():
+    """The two adds of a run: the build under its name, the plugin under its md5."""
+    with tempfile.TemporaryDirectory() as folder:
+        plugin = os.path.join(folder, "akulakhan.dll")
+        with open(plugin, "wb") as file:
+            file.write(b"abc")
+        calls = []
+
+        def add(*call):
+            calls.append(call)
+            return "symbols: +0"
+
+        build = os.path.join(folder, "f231")
+        assert add_symbols(build + os.sep, plugin, add) == ["symbols: +0", "symbols: +0"]
+        assert calls[0] == ("f231", [os.path.join(build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")],
+                            [os.path.join(PDB_KEEP, "f231")]), calls[0]
+        # A play set's plugin pdb is in the set's pdb folder, not beside its dll (the Reviewer's verdict 204).
+        assert calls[1] == ("plugin-90015098", [plugin], [os.path.join(PDB_KEEP, "f231")]), calls[1]
+        # A run without the plugin, or with no file at its path, adds the build only.
+        calls.clear()
+        assert len(add_symbols(build, None, add)) == 1 and len(add_symbols(build, plugin + "x", add)) == 1 and len(calls) == 2
+        # A build folder that is not a play set is named with its d3d8.dll's md5; its pdb folder keeps the plain name.
+        calls.clear()
+        other = os.path.join(folder, "build")
+        os.makedirs(other)
+        with open(os.path.join(other, "d3d8.dll"), "wb") as file:
+            file.write(b"abc")
+        add_symbols(other, None, add)
+        assert calls[0][0] == "build-90015098" and calls[0][2] == [os.path.join(PDB_KEEP, "build")], calls[0]
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
+    self_test_add_symbols()
     self_test_mge_log_problems()
     self_test_refusal()
     self_test_ring_problem()
@@ -1940,6 +2005,9 @@ def main():
     ap.add_argument("--capture-menu", type=int, default=0, help="frames of a capture file that starts at the main menu and holds the load of the "
                     "save (menu.nircap): the loading screen is a screen polygon")
     ap.add_argument("--budget", type=int, default=200)
+    ap.add_argument("--timing", action="store_true", help="the run measures time (a shader batch that times frames): the slot check "
+                    "refuses it unless this session holds the game slot with slot.py take game|both ... --timing (D297). The steps rate "
+                    "and walk, and a run with no --steps, are timing runs without this")
     ap.add_argument("--full-dump", action="store_true", help="MWSE writes a full-memory dump at a crash (its setting CreateFullMinidumps, set only in "
                     "the run's copy of MWSE.json): about " + FULL_DUMP_SIZE + " in the run folder, so that the objects and the heap of a crash can be read")
     ap.add_argument("--settle", type=float, default=None, help="the seconds to wait at the interior and at the exterior before the picture (6 without this)")
@@ -2008,6 +2076,8 @@ def main():
             print("run_own_device: " + weather_pin_warning(args))
         if full_dump_note(args):
             print("run_own_device: " + full_dump_note(args))
+        if is_timing_run(args):
+            print("run_own_device: a timing run: the game slot must be held with --timing (D297)")
         return 0
     if args.engine_reference:
         args.reference = True
@@ -2058,7 +2128,8 @@ def main():
     problem = no_plugin and overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
     if problem:
         raise SystemExit("run_own_device: " + problem)
-    session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin)
+    session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin,
+                    timing=is_timing_run(args))
     if no_plugin:
         for name in session.plugin_mods(session.harness.read_modlist()[0]):
             if name not in args.disable_mod:
@@ -2102,6 +2173,8 @@ def main():
         # switch off: Direct3D 9 with the d3d8.dll and the helper of that build (the helper as
         # the IPC host of distant land).
         mods[0] = (MGE_MOD, session.mge_build_files(args.mge_build))
+        for line in add_symbols(args.mge_build, None if no_plugin else session.DLL):
+            print(line, flush=True)
     elif args.reference:
         # MGE XE of the instance on Direct3D 9.
         mods.pop(0)

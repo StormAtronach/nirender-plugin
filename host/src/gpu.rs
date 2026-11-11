@@ -255,7 +255,6 @@ static PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static BEGUN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static DRAWN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static TABLE_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-static OTHER_PASSES: AtomicU64 = AtomicU64::new(0);
 static ARRAY_BINDS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 /// The number of counts in [`passes`].
@@ -296,9 +295,16 @@ pub fn note_drawn_pass(reason: PassReason, table: bool) {
 }
 
 /// A pass of another part opened: a copy, a merge, the overlay, the map tiles, the extension's
-/// own passes.
-pub fn note_other_pass() {
-    OTHER_PASSES.fetch_add(1, Ordering::Relaxed);
+/// own passes. `name`: the part's name in the census and in the pass report
+/// ([`crate::pass_report`]); the name of its GPU stamp where it has one.
+pub fn note_other_pass(name: &'static str) {
+    crate::pass_report::note_other_pass(name);
+}
+
+/// A pass of another part opened inside a part that notes itself: the census counts it by
+/// `name`, the pass report has no part for it ([`crate::pass_report::note_inner_pass`]).
+pub fn note_inner_pass(name: &'static str) {
+    crate::pass_report::note_inner_pass(name);
 }
 
 /// The bind group of the texture arrays was set in a pass.
@@ -308,7 +314,7 @@ pub fn note_array_bind(origin: BindOrigin) {
 
 /// The census of the passes since the start, by [`PassReason`]: the passes asked for (0..7),
 /// begun (7..14), with a draw (14..21) and with a draw of the table (21..28); then the other
-/// passes, and the binds of the texture arrays by [`BindOrigin`] (29..33).
+/// passes (the sum of [`crate::pass_report`]'s passes by name), and the binds of the texture arrays by [`BindOrigin`] (29..33).
 pub fn passes() -> [u64; PASS_COUNTS] {
     let mut out = [0u64; PASS_COUNTS];
     for (slot, count) in out
@@ -317,17 +323,22 @@ pub fn passes() -> [u64; PASS_COUNTS] {
     {
         *slot = count.load(Ordering::Relaxed);
     }
-    out[28] = OTHER_PASSES.load(Ordering::Relaxed);
+    out[28] = crate::pass_report::passes().values().sum();
     for (slot, count) in out[29..].iter_mut().zip(ARRAY_BINDS.iter()) {
         *slot = count.load(Ordering::Relaxed);
     }
     out
 }
 
-/// The census as a line of the log: `delta` against the counts at the last mark, for `frames`
-/// frames.
-pub fn pass_line(delta: &[u64; PASS_COUNTS], frames: u64) -> String {
+/// The census as a line of the log: `delta` against the counts at the last mark, and `named`,
+/// the other passes by name against the same mark, for `frames` frames.
+pub fn pass_line(delta: &[u64; PASS_COUNTS], named: &[(&str, u64)], frames: u64) -> String {
     let per = |n: u64| n as f64 / frames.max(1) as f64;
+    let others: Vec<String> = named
+        .iter()
+        .filter(|(_, n)| *n != 0)
+        .map(|(name, n)| format!("{name} {:.2}", per(*n)))
+        .collect();
     let part = |counts: &[u64]| {
         let reasons: Vec<String> = PASS_REASONS
             .iter()
@@ -338,12 +349,13 @@ pub fn pass_line(delta: &[u64; PASS_COUNTS], frames: u64) -> String {
         format!("{:.2} ({})", per(counts.iter().sum()), reasons.join(", "))
     };
     format!(
-        "passes: on the game's targets for each frame {} asked for, {} begun, {} with a draw, {} with a draw of the table; {:.2} other passes; {:.2} binds of the whole texture arrays ({:.2} by the game's draws, {:.2} by the table, {:.2} by the replays), {:.2} binds of a small group",
+        "passes: on the game's targets for each frame {} asked for, {} begun, {} with a draw, {} with a draw of the table; {:.2} other passes ({}); {:.2} binds of the whole texture arrays ({:.2} by the game's draws, {:.2} by the table, {:.2} by the replays), {:.2} binds of a small group",
         part(&delta[..7]),
         part(&delta[7..14]),
         part(&delta[14..21]),
         part(&delta[21..28]),
         per(delta[28]),
+        others.join(", "),
         per(delta[29] + delta[30] + delta[31]),
         per(delta[29]),
         per(delta[30]),

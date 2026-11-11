@@ -18,11 +18,13 @@ import time
 import tomllib
 
 import common  # noqa: E402
-from common import REPO, local, local_file_hint, sibling
+from common import REPO, docs_place, local, local_file_hint
 
-HARNESS_DIR = local("harness", sibling("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
+# The harness of the docs checkout beside the main checkout (common.docs_root), unless the key "harness" names one.
+HARNESS_DIR = local("harness", docs_place("docs", "scripts", "test-harness-2026-10-03"))
 if not os.path.isfile(os.path.join(HARNESS_DIR, "harness.py")):
-    raise SystemExit("session.py: no harness.py in %s. Set the key \"harness\" in %s." % (HARNESS_DIR, local_file_hint()))
+    raise SystemExit("session.py: no harness.py in %s. Set the key \"docs\" (a docs tree) or \"harness\" (the folder) in %s." % (
+        HARNESS_DIR, local_file_hint()))
 sys.path.insert(0, HARNESS_DIR)
 import harness  # noqa: E402
 
@@ -143,7 +145,7 @@ def stage_archive_lua(archive, dist):
     return sorted(shipped), sorted(missing)
 
 
-def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True):
+def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, timing=False):
     """Builds the plugin, runs the offline tests and installs the mod into the testing instance.
 
     `features` are cargo features of the build: ("rig",) for a run of the comparison rig.
@@ -152,7 +154,9 @@ def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True):
     `extra_files` are (source, path in the mod) pairs that go into the run's mod for this run
     only: test files, or another MWSE.dll as `Root/MWSE.dll`. The run's mod wins over the mods
     of the instance; the next install takes them out. `archive` is an extracted release archive:
-    the mod's Lua of the run is the archive's ([`stage_archive_lua`])."""
+    the mod's Lua of the run is the archive's ([`stage_archive_lua`]). With `timing` the run
+    measures time: the slot check refuses it unless this session holds the game slot with
+    `--timing` (the owner's D297)."""
     if build:
         env = dict(os.environ)
         env["PATH"] = os.path.join(os.path.expanduser("~"), ".cargo", "bin") + os.pathsep + env["PATH"]
@@ -174,7 +178,7 @@ def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True):
     harness.MOD_NAME = MOD_NAME
     harness.MOD_DIR = os.path.join(harness.MO2_ROOT, "mods", MOD_NAME)
     harness.SPEC_DIR = os.path.join(harness.MOD_DIR, "MWSE", "config")
-    harness.refuse_if_busy()
+    harness.refuse_if_busy(timing=timing)
     # The mod stays off between runs: it would take the place of the release in a game by hand.
     for change in harness.install_mod(enable=False):
         print("  %s: %s" % (MOD_NAME, change))

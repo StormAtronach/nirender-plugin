@@ -70,8 +70,10 @@ import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import SIBLINGS, find_sibling, local, main_checkout  # noqa: E402
+from common import SIBLINGS, docs_place, local, main_checkout  # noqa: E402
 from validate_tour import NOT_RUN, NOT_RUN_CODE  # noqa: E402
+import symbols  # noqa: E402
+from symbols import codeview  # noqa: E402,F401  (the tests and keep_pdbs read CodeView records by it)
 
 REPOS = local("repos", SIBLINGS)
 PLUGIN_REPO = os.path.join(REPOS, "nirender-plugin")
@@ -90,10 +92,10 @@ PDBS = (
     (os.path.join("Data Files", "mwse", "lib", "akulakhan.dll"), "plugin", os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.pdb")),
 )
 KEPT_RUNS = "E:/nirender-keep/runs-%s"
-# The moreFPS repo is beside the repos folder, else beside the main checkout (a worktree group in C:/tmp has no moreFPS).
-HARNESS = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
-BATCH = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua"))
-LIVECODING = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua"))
+# The docs checkout beside the main checkout, or the one of the key "docs" (common.docs_root).
+HARNESS = docs_place("docs", "scripts", "test-harness-2026-10-03")
+BATCH = docs_place("docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua")
+LIVECODING = docs_place("docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua")
 BASELINE_PARTS = ("results", "baseline-records")
 
 
@@ -511,26 +513,10 @@ def inside(path, folder):
     return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
 
 
-def codeview(binary):
-    """The GUID, the age and the pdb's file name of the CodeView record (RSDS) of a binary's bytes, or None.
-
-    This is a scan of the bytes for the first "RSDS" with a pdb's name after it, not a walk of the PE debug
-    directory. The 4 binaries of f213 have one RSDS each, and the scan gives the values of a walk of the
-    directory (the Reviewer, 2026-11-04)."""
-    at = binary.find(b"RSDS")
-    while at >= 0:
-        end = binary.find(b"\0", at + 24)
-        path = binary[at + 24:end] if end > 0 else b""
-        if path.lower().endswith(b".pdb"):
-            name = path.decode("ascii", "replace").replace("\\", "/").rsplit("/", 1)[-1]
-            return binary[at + 4:at + 20], struct.unpack_from("<I", binary, at + 20)[0], name
-        at = binary.find(b"RSDS", at + 4)
-    return None
-
-
 def keep_pdbs(name, folder, trees, plugin_commit, mge_commit, keep=PDB_KEEP, sets=SETS):
-    """Copies the pdb of each binary of the set to keep/name. A pdb is kept only when it holds the GUID of its
-    binary's CodeView record with its age, which is the test of a debugger. Writes the folder's WHAT.txt and returns its
+    """Copies the pdb of each binary of the set to keep/name. A pdb is kept only when the GUID of its info stream and
+    the age of its DBI stream are those of its binary's CodeView record (symbols.pdb_matches): the test of a
+    debugger. Writes the folder's WHAT.txt and returns its
     lines. A pdb that is absent or of another build is not kept, and its line says why."""
     if inside(keep, sets):
         raise SystemExit("the folder of the pdbs %s is in the sets %s: no pdb may go into a set" % (keep, sets))
@@ -549,11 +535,11 @@ def keep_pdbs(name, folder, trees, plugin_commit, mge_commit, keep=PDB_KEEP, set
                 lines.append("%s: not kept: %s has no CodeView record of it" % (pdb_name, shown))
                 continue
             guid, age, _ = record
-            # The PDB info stream holds the age and then the GUID: the two that a debugger matches.
-            with open(pdb_file, "rb") as file:
-                if struct.pack("<I", age) + guid not in file.read():
-                    lines.append("%s: not kept: the pdb in the tree is of another build than %s" % (pdb_name, shown))
-                    continue
+            if not os.path.isfile(pdb_file):
+                raise FileNotFoundError(2, "No such file or directory", pdb_file)
+            if not symbols.pdb_matches(pdb_file, guid, age):
+                lines.append("%s: not kept: the pdb in the tree is of another build than %s" % (pdb_name, shown))
+                continue
             shutil.copy2(pdb_file, os.path.join(out, pdb_name))
             lines.append("%s: %s md5 %s, GUID %s, age %d" % (pdb_name, shown, md5_of(binary_file), guid.hex(), age))
         except OSError as error:
@@ -1193,7 +1179,7 @@ def self_test():
         assert os.path.basename(kept) == os.path.basename(run) and os.path.isfile(os.path.join(kept, "a.txt"))
         KEPT_RUNS = kept_before
 
-    # The pdbs: outside the sets, each only when it holds the GUID of its binary's CodeView record.
+    # The pdbs: outside the sets, each only when its GUID and DBI age are those of its binary's CodeView record.
     assert not inside(PDB_KEEP, SETS)
     assert inside(SETS + "/f9", SETS) and inside(SETS, SETS) and not inside(SETS + "x/f9", SETS)
     guids = {name: bytes([index]) * 16 for index, name in enumerate(("d3d8", "dinput8", "numidium", "akulakhan", "other"), 1)}
@@ -1217,8 +1203,10 @@ def self_test():
             with open(os.path.join(folder, binary_path), "wb") as file:
                 file.write(binaries[binary_path])
             os.makedirs(os.path.dirname(os.path.join(trees[tree], pdb_path)), exist_ok=True)
-            with open(os.path.join(trees[tree], pdb_path), "wb") as file:
-                file.write(b"Microsoft C/C++ MSF 7.00\r\n" + b"\0" * 40 + struct.pack("<I", 1) + pdb_guids[os.path.basename(pdb_path)] + b"\0" * 8)
+            # d3d8's info stream has age 2 and its DBI stream age 1, as a linker writes them (Visual Studio's
+            # Executor pair): the debugger and the keep match the DBI age. The scan before W352 refused this pdb.
+            symbols.write_test_pdb(os.path.join(trees[tree], pdb_path), pdb_guids[os.path.basename(pdb_path)], 1,
+                                   info_age=2 if pdb_path.endswith("d3d8.pdb") else None)
         lines = keep_pdbs("f9", folder, trees, "abc", "def", keep=keep, sets=sets)
         # The GUID with another age is another build.
         with open(os.path.join(folder, "d3d8.dll"), "wb") as file:
@@ -1372,6 +1360,8 @@ def main():
                 say("pdb: %s" % line)
         except OSError as error:
             say("pdb: no pdb kept for %s: %s" % (name, error))
+        # The symbol store (W345): the pdbs that keep_pdbs kept, indexed for cdb.
+        say(symbols.add(name, [os.path.join(folder, binary) for binary, _, _ in PDBS], [os.path.join(PDB_KEEP, name)]))
         result = run_smoke(plugin_tree, folder, plugin_dll, owner_local_bat, notes, slots, args.no_wait)
         passed = True
     except SmokeFailed as failure:

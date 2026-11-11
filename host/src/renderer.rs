@@ -815,6 +815,8 @@ impl Renderer {
             pinned_samplers: Vec::new(),
             pinned_samplers_in_frame: 0,
             pipelines: FxHashMap::default(),
+            debug_variant: 0,
+            variant_shader: None,
             textures: FxHashMap::default(),
             texture_objects: FxHashMap::default(),
             decoded: Default::default(),
@@ -2107,27 +2109,89 @@ impl Renderer {
         sampler.clone()
     }
 
+    /// The pipeline of a draw's key, in the frame's world variant ([`Renderer::set_debug_variant`]).
+    /// The variant is set here, where the draw is drawn: a key that the table keeps has none.
     pub(crate) fn pipeline(&mut self, key: PipelineKey) -> Option<Rc<wgpu::RenderPipeline>> {
+        self.pipeline_of(PipelineKey {
+            debug: self.debug_variant,
+            ..key
+        })
+    }
+
+    fn pipeline_of(&mut self, key: PipelineKey) -> Option<Rc<wgpu::RenderPipeline>> {
         // A stage key's own pipeline, or the uber-shader's while it is not made or when it failed.
         if key.stages != 0 {
             if let Some(pipeline) = self.stage_shaders.pipeline(key, &self.maker, &mut self.pipelines) {
                 return Some(pipeline);
             }
-            return self.pipeline(PipelineKey { stages: 0, ..key });
+            return self.pipeline_of(PipelineKey { stages: 0, ..key });
         }
         if let Some(pipeline) = self.pipelines.get(&key) {
             return Some(pipeline.clone());
         }
+        // The first draw of a key of the uber set that the thread made (`crate::stage_shaders`).
+        if key.debug == 0 {
+            if let Some(pipeline) = self.stage_shaders.uber_pipeline(key) {
+                let pipeline = Rc::new(pipeline);
+                self.pipelines.insert(key, pipeline.clone());
+                return Some(pipeline);
+            }
+        }
         attributes(key.fvf, key.stride)?;
         let _long = crate::LongStep::begin();
-        let pipeline = Rc::new(self.maker.build(key, &self.shader)?);
+        let built = if key.debug == 0 {
+            self.maker.build(key, &self.shader)
+        } else {
+            // A variant without its module draws as normal play.
+            let Some(fragment) = self.variant_shader() else {
+                return self.pipeline_of(PipelineKey { debug: 0, ..key });
+            };
+            self.maker.build(key, &fragment)
+        };
+        let pipeline = Rc::new(built?);
         self.pipelines.insert(key, pipeline.clone());
         Some(pipeline)
     }
 
+    /// The world variant of the frame's debug view ([`crate::debug_lines::world_variant`]). A
+    /// change drops the old variant: its module, its pipelines and what the stage shaders keep
+    /// of it. So at most one variant exists beside normal play.
+    pub(crate) fn set_debug_variant(&mut self, variant: u32) {
+        if variant == self.debug_variant {
+            return;
+        }
+        let old = self.debug_variant;
+        self.debug_variant = variant;
+        self.variant_shader = None;
+        let before = self.pipelines.len();
+        self.pipelines.retain(|key, _| key.debug == 0);
+        self.stage_shaders.set_variant(variant);
+        println!(
+            "debug view: world variant {variant}; {} pipelines of variant {old} dropped",
+            before - self.pipelines.len()
+        );
+    }
+
+    /// The world shader's module of the frame's variant, made at its first use. None when its
+    /// text or its module fails.
+    fn variant_shader(&mut self) -> Option<wgpu::ShaderModule> {
+        if self.variant_shader.is_none() {
+            let variant = self.debug_variant;
+            let module = self
+                .stage_shaders
+                .world_text(variant)
+                .and_then(|source| self.maker.module("debug view", source));
+            if module.is_some() {
+                println!("debug view: the world shader's module of variant {variant} made");
+            }
+            self.variant_shader = Some(module);
+        }
+        self.variant_shader.clone().flatten()
+    }
+
     /// Starts the thread of the stage pipelines: a live session makes them away from the frame.
     pub(crate) fn start_stage_shaders(&mut self) {
-        self.stage_shaders.start(self.maker.clone());
+        self.stage_shaders.start(self.maker.clone(), self.samples);
     }
 
     /// The start of a frame: the stage pipelines that the thread made, and the list's write.
@@ -2151,17 +2215,18 @@ pub(crate) struct PipelineMaker {
 }
 
 impl PipelineMaker {
-    /// A fragment module of a stage key, or None when the device refuses it.
-    pub(crate) fn module(&self, source: &str) -> Option<wgpu::ShaderModule> {
+    /// A fragment module of a stage key or a world variant, or None when the device refuses it.
+    /// `label` names the module and starts the line of its error.
+    pub(crate) fn module(&self, label: &str, source: &str) -> Option<wgpu::ShaderModule> {
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = self.device.counted_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stage shader"),
+            label: Some(label),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         match pollster::block_on(scope.pop()) {
             None => Some(module),
             Some(error) => {
-                println!("stage shaders: a fragment module failed: {error}");
+                println!("{label}: a fragment module failed: {error}");
                 None
             }
         }

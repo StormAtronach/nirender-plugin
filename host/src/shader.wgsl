@@ -9,6 +9,14 @@ enable wgpu_binding_array;
 // A matrix has the 16 floats of Direct3D in their order. Direct3D multiplies a row vector
 // with the matrix. Here the same floats are the columns, so `matrix * vector` is that product.
 
+// The debug view of this module: 0 in normal play. The module of a view with code in the world
+// shader is made from this text with the view's id on this line (`world_variant_source` in
+// request.rs), so the code of the view is not in the pipelines of normal play.
+const DEBUG_VIEW: u32 = 0u;
+// The ids of the views with code in the world shader (`debug_lines::view_id`).
+const VIEW_LIGHTS: u32 = 1u;
+const VIEW_SHADOW_LAYERS: u32 = 2u;
+
 struct Light {
     diffuse: vec4f,
     ambient: vec4f,

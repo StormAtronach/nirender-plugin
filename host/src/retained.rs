@@ -2368,6 +2368,7 @@ impl Player {
                 // sets the samples of that pass (`RetainedView::samples`).
                 samples: self.renderer.samples,
                 stages: 0,
+                debug: 0,
             };
             let mut dummy = Vec::new();
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
@@ -2844,7 +2845,8 @@ impl Player {
         // into it ([`late_depth`]): the depth before the run here, after it at the end.
         let late = self.world_depth_kept && !deferred.is_empty();
         if late {
-            self.copy_depth(3, "depth: before late sorted blends");
+            crate::pass_report::on_request(&[super::player::LATE_BEFORE]);
+            self.copy_depth(3, super::player::LATE_BEFORE);
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         if crate::dump_wanted() != 0 {
@@ -3911,6 +3913,7 @@ mod join_tests {
             color_write: 0,
             samples: 1,
             stages: 0,
+            debug: 0,
         }
     }
 

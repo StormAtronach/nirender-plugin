@@ -141,6 +141,7 @@ impl Player {
             mark_gpu: (0.0, 0.0, 0),
             mark_work: [0; 4],
             mark_passes: [0; crate::gpu::PASS_COUNTS],
+            mark_named: Default::default(),
             mark_errors: 0,
             bound: BoundGroups::default(),
             pass_pipeline: None,
@@ -301,6 +302,7 @@ impl Player {
     /// closed. Nothing with one sample.
     pub(crate) fn load_color(&mut self) {
         if self.back_view.is_none() {
+            crate::pass_report::note_skipped(crate::multisample::COLOUR_LOAD, "no back buffer");
             return;
         }
         self.close_pass();
@@ -310,6 +312,12 @@ impl Player {
             self.color.as_ref(),
             self.encoder.as_mut(),
         ) else {
+            let reason = if self.renderer.multisample.is_none() {
+                "one sample"
+            } else {
+                "no target or no frame in progress"
+            };
+            crate::pass_report::note_skipped(crate::multisample::COLOUR_LOAD, reason);
             return;
         };
         multisample.load_color(&self.renderer.device, encoder, source, target);
@@ -723,6 +731,7 @@ impl Player {
         if let Some(line) = crate::objects::end_frame(change) {
             println!("{line}");
         }
+        crate::pass_report::end_frame();
         self.renderer.counts.times[TIME_END] += clock.elapsed();
     }
 }

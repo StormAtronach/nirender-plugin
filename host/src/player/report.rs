@@ -45,8 +45,14 @@ impl Player {
         );
         let passes = gpu::passes();
         let delta: [u64; gpu::PASS_COUNTS] = core::array::from_fn(|i| passes[i] - self.mark_passes[i]);
-        println!("  {}", gpu::pass_line(&delta, frames as u64));
+        let named = pass_report::passes();
+        let named_delta: Vec<(&str, u64)> = named
+            .iter()
+            .map(|(name, now)| (*name, now - self.mark_named.get(name).copied().unwrap_or(0)))
+            .collect();
+        println!("  {}", gpu::pass_line(&delta, &named_delta, frames as u64));
         self.mark_passes = passes;
+        self.mark_named = named;
         println!("  {}", self.renderer.held_line());
         let errors = gpu::errors();
         if errors != self.mark_errors {
@@ -101,6 +107,7 @@ impl Player {
         }
         println!("{}", self.renderer.held_line());
         println!("{}", self.renderer.stage_shaders.report());
+        println!("{}", self.renderer.stage_shaders.uber_set_report());
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
         println!("light keys: {} draws whose colour cannot take light dropped their lights; {} draws with no lights had no light loop", c.blind_light_draws, c.zero_light_draws);
         println!("instances: {} records and {} moves ({} checked against a full record, {} different), {} draws from them, {} draws of an instance not known, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_moves, c.moves_checked, c.moves_different, c.instance_draws, c.instance_missing, c.merged_blends);
@@ -416,6 +423,9 @@ impl Player {
         );
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");
+        }
+        for line in pass_report::exit_lines() {
+            println!("{line}");
         }
     }
 
