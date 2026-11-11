@@ -433,7 +433,11 @@ def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEE
                 added += count
                 notes += build_notes
             write_pending(pending, left)
-            pruned, prune_notes = prune(store, budget, keep_list, symstore)
+            # The adds are done: a fault of the prune is a note of this line, not "not added".
+            try:
+                pruned, prune_notes = prune(store, budget, keep_list, symstore)
+            except Exception as error:  # noqa: BLE001 - the same rule as below
+                pruned, prune_notes = [], ["prune: %s: %s" % (type(error).__name__, error)]
             line = "symbols: +%d, store %.1f of %.1f GB, pruned %s" % (added, store_size(store) / GB, budget / GB, ", ".join(pruned) or "none")
             return line + "".join("; " + note for note in notes + prune_notes)
     except Exception as error:  # noqa: BLE001 - a fault of the store must not stop the build tool that calls it
@@ -609,6 +613,17 @@ def self_test_in(work):
         raise ValueError("a broken gate")
     line = add("i", h_binaries, store=store, keep_list=keep, gate=broken, pending=pending, lock=lock)
     assert line == "symbols: not added: ValueError: a broken gate", line
+
+    # A fault of the prune after the adds: the build is in, and the line says so (the verdict 193 addendum). The
+    # stand-in runs symstore for an add and fails a delete. ComInterfaces is in f and Executor in c: no one
+    # transaction holds both, so the add runs.
+    no_delete = os.path.join(work, "no-delete.cmd")
+    with open(no_delete, "w", encoding="ascii") as file:
+        file.write('@if /i "%%~1"=="del" exit /b 1\n@"%s" %%*\n' % SYMSTORE)
+    j_binaries, _ = build("j", ["ComInterfaces", "Executor"])
+    line = add("j", j_binaries, store=store, budget=1, symstore=no_delete, keep_list=keep, gate=free, pending=pending, lock=lock)
+    assert line.startswith("symbols: +") and "; prune: SymbolError: symstore del: exit 1" in line, line
+    assert "j" in [t.version for t in transactions(store)] and read_pending(pending) == [], line
 
 
 def main():
