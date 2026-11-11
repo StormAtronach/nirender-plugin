@@ -27,7 +27,7 @@ A stage prints NOT RUN, and exits with code 5, when it cannot judge:
 
 - an input is missing (the capture, the config copy, the distant land, the game folder, a build);
 - the game slot is held or reserved for a run that names the instance (the game start regenerates the distant land), its
-  status is not "game: free" or "game: held by", or a Morrowind.exe from the instance's folder runs;
+  status is not "game: free" or "game: held ... by", or a Morrowind.exe from the instance's folder runs;
 - a file that the generator writes (`generation_report.toml`, `generation_state.bin`) changed its time or size between the
   first replay and the last;
 - the base prints hash lines and none of them holds a grass record (the capture does not reach the code).
@@ -38,6 +38,7 @@ change of the grass fails the A/B, and the Coordinator judges it from the number
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -124,13 +125,14 @@ def guard_problem(before, after):
 
 def game_blocker(lines, instance):
     """Why the game slot stops a stage, as a text, or None. `lines` are the lines of the slot's status for the game: the
-    first one says "game: free" or "game: held by <the holder>", and a reservation follows on a line of its own. Any other
+    first one says "game: free" or "game: held (timing) by <the holder>" ("held (not timing)", D297), and a reservation
+    follows on a line of its own. Any other
     first line (a fault, a lease that ended) stops the stage, as the tool cannot tell who runs. A run or a reservation on
     another instance does not touch this one's data; a holder whose label names no instance is seen by `process_blocker`."""
     if not instance:
         return None
     first = lines[0] if lines else ""
-    if first.startswith("game: held by"):
+    if re.match(r"game: held (\((not )?timing\) )?by ", first):
         if instance.lower() in first.lower():
             return "the game slot is held by a run on %s: %s" % (instance, first)
     elif not first.startswith("game: free"):
@@ -523,7 +525,8 @@ def self_test():
 
         # The game slot: a run on the instance stops the stage, a run elsewhere and a free slot do not.
         assert game_blocker(["game: free"], "Outlander-test") is None
-        assert game_blocker(["game: held by Ryker: grass capture on Outlander-test, since t"], "Outlander-test").startswith("the game slot is held by a run on Outlander-test")
+        assert game_blocker(["game: held (timing) by Ryker: grass capture on Outlander-test, since t"], "Outlander-test").startswith("the game slot is held by a run on Outlander-test")
+        assert game_blocker(["game: held (not timing) by Rob: tour on Morrowind75testing, since t"], "Outlander-test") is None
         assert game_blocker(["game: held by Rob: tour on Morrowind75testing, since t"], "Outlander-test") is None
         # Any other first line stops the stage; a reservation is read; a Morrowind.exe from the instance's folder stops it.
         assert "neither free nor held" in game_blocker(["game: CORRUPT: x. The checks pass"], "Outlander-test")

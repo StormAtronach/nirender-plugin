@@ -263,6 +263,15 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
 
 
 TIMING_STEPS = ("rate", "walk")
+
+
+def is_timing_run(args):
+    """Whether the run measures time, so that the slot check needs the game slot held with
+    --timing (the owner's D297): --timing, a step of TIMING_STEPS, or no --steps (all the
+    steps, the timing steps among them). A shader batch is a timing run only with --timing:
+    most batches take pictures or hold a live session."""
+    steps = [name for name in re.split(r"[,\s]+", args.steps or "") if name]
+    return bool(args.timing) or not steps or any(name in TIMING_STEPS for name in steps)
 WEATHER_IN_LINE = re.compile(r'(?:current|next|from|to) (\d+) "([^"]*)"')
 # A change of the weather in a shader batch, with the text of its first argument.
 WEATHER_CHANGE = re.compile(r"\b(switchImmediate|switchTransition|changeWeather)\s*\(\s*([^),]*)")
@@ -1236,6 +1245,14 @@ def self_test_weather():
     assert weather_summary(None, ["step exterior: true"]) == "the game's: none logged"
     assert weather_summary(None, ["weather start: not read: x"]) == "the game's: none logged"
 
+    # The timing rule of the slot check (D297): the steps rate and walk, no --steps, or --timing.
+    def timing(**changes):
+        return is_timing_run(namespace(**{"timing": False, **changes}))
+    assert timing() and timing(steps="rate") and timing(steps="exterior, walk") and timing(steps="exterior,rate,capture")
+    assert not timing(steps="exterior,capture") and not timing(steps="shaders", shader_batch="E:/batch.lua")
+    assert not timing(steps="interior,shaders") and not timing(steps="tour")
+    assert timing(steps="shaders", shader_batch="E:/batch.lua", timing=True) and timing(steps="exterior", timing=True)
+
     # The warning: a run that times and leaves the weather to the game; the steps named decide.
     assert weather_warning(namespace(weather=0)) is None
     assert weather_warning(namespace(weather=0, steps="rate")) is None
@@ -1940,6 +1957,9 @@ def main():
     ap.add_argument("--capture-menu", type=int, default=0, help="frames of a capture file that starts at the main menu and holds the load of the "
                     "save (menu.nircap): the loading screen is a screen polygon")
     ap.add_argument("--budget", type=int, default=200)
+    ap.add_argument("--timing", action="store_true", help="the run measures time (a shader batch that times frames): the slot check "
+                    "refuses it unless this session holds the game slot with slot.py take game|both ... --timing (D297). The steps rate "
+                    "and walk, and a run with no --steps, are timing runs without this")
     ap.add_argument("--full-dump", action="store_true", help="MWSE writes a full-memory dump at a crash (its setting CreateFullMinidumps, set only in "
                     "the run's copy of MWSE.json): about " + FULL_DUMP_SIZE + " in the run folder, so that the objects and the heap of a crash can be read")
     ap.add_argument("--settle", type=float, default=None, help="the seconds to wait at the interior and at the exterior before the picture (6 without this)")
@@ -2008,6 +2028,8 @@ def main():
             print("run_own_device: " + weather_pin_warning(args))
         if full_dump_note(args):
             print("run_own_device: " + full_dump_note(args))
+        if is_timing_run(args):
+            print("run_own_device: a timing run: the game slot must be held with --timing (D297)")
         return 0
     if args.engine_reference:
         args.reference = True
@@ -2058,7 +2080,8 @@ def main():
     problem = no_plugin and overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
     if problem:
         raise SystemExit("run_own_device: " + problem)
-    session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin)
+    session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin,
+                    timing=is_timing_run(args))
     if no_plugin:
         for name in session.plugin_mods(session.harness.read_modlist()[0]):
             if name not in args.disable_mod:
