@@ -7,3 +7,8 @@ rustdocflags = ["--document-private-items"]
 [target.i686-pc-windows-msvc]
 # No dependency on the Visual C++ runtime DLLs of the machine.
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# The folder of this work tree, for the build id (build_support/build_id.rs): its build scripts
+# run again when another tree uses the same target folder.
+[env]
+BUILD_ID_TREE = { value = ".", relative = true }
