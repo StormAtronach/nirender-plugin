@@ -12,6 +12,12 @@
 //! frames made objects. `tools/checks.py` refuses a `create_*` call of the device or a
 //! texture outside this file.
 //!
+//! One object is allowed (the owner's D310): the view of the picture of the window's surface
+//! ([`CreateSurfaceView`]). The surface gives a new texture at each frame, so its view is new
+//! too. It counts apart, with the most in one steady frame, which must be 1. A part of the
+//! program that makes objects for a request of a frame (a read of the picture) marks that frame
+//! as changed ([`changed`]).
+//!
 //! wgpu's own counters (the feature `counters`, `gpu::memory_lines`) count the objects that
 //! live, not the objects made: an object made and freed in each frame leaves them flat.
 
@@ -79,6 +85,14 @@ pub struct Ledger {
     made: u64,
     /// The frames that were not steady, by their first change.
     changes: Vec<(&'static str, u64)>,
+    /// The first change that a part of the program noted for the frame in progress
+    /// ([`Ledger::changed`]).
+    noted_change: Option<&'static str>,
+    /// The surface views of the frame in progress ([`CreateSurfaceView`]).
+    surface_views: u64,
+    /// The surface views of the steady frames, and the most in one steady frame.
+    steady_surface_views: u64,
+    most_surface_views: u64,
 }
 
 fn add(list: &mut Vec<(Site, u64)>, site: Site, count: u64) {
@@ -119,6 +133,10 @@ impl Ledger {
             steady_frames_made: 0,
             made: 0,
             changes: Vec::new(),
+            noted_change: None,
+            surface_views: 0,
+            steady_surface_views: 0,
+            most_surface_views: 0,
         }
     }
 
@@ -128,12 +146,32 @@ impl Ledger {
         self.made += 1;
     }
 
+    /// A view of the picture of the window's surface made, the allowed object (D310).
+    pub fn note_surface_view(&mut self) {
+        self.surface_views += 1;
+        self.made += 1;
+    }
+
+    /// A view of the picture of the window's surface made for a sign of a wait: a frame of the
+    /// window with no frame of the game. It counts in the objects made, in no frame.
+    pub fn note_sign_view(&mut self) {
+        self.made += 1;
+    }
+
+    /// The frame in progress has the change `change`: a request of the frame that makes
+    /// objects. The first change noted counts, and only for this frame.
+    pub fn changed(&mut self, change: &'static str) {
+        self.noted_change.get_or_insert(change);
+    }
+
     /// The end of a frame. `change`: the first change of the frame (new content, a load, a
     /// change of a setting), or [`None`] for a steady frame. A steady frame that made objects
     /// gives its warning line, when it is one of the first 10 such frames or one of each 600th.
     pub fn end_frame(&mut self, change: Option<&'static str>) -> Option<String> {
         self.frames += 1;
         let frame = std::mem::take(&mut self.frame);
+        let surface_views = std::mem::take(&mut self.surface_views);
+        let change = change.or(self.noted_change.take());
         if let Some(change) = change {
             match self.changes.iter_mut().find(|(name, _)| *name == change) {
                 Some((_, n)) => *n += 1,
@@ -142,6 +180,8 @@ impl Ledger {
             return None;
         }
         self.steady_frames += 1;
+        self.steady_surface_views += surface_views;
+        self.most_surface_views = self.most_surface_views.max(surface_views);
         if frame.is_empty() {
             return None;
         }
@@ -187,6 +227,12 @@ impl Ledger {
                 site_list(&self.steady, usize::MAX)
             ));
         }
+        if self.steady_surface_views > 0 {
+            lines.push(format!(
+                "gpu objects allowed (D310): the surface view, {} in the steady frames, at most {} a frame",
+                self.steady_surface_views, self.most_surface_views
+            ));
+        }
         lines
     }
 }
@@ -197,6 +243,29 @@ static LEDGER: Mutex<Ledger> = Mutex::new(Ledger::new());
 pub fn note(kind: Kind, at: &'static Location<'static>) {
     if let Ok(mut ledger) = LEDGER.lock() {
         ledger.note(kind, at);
+    }
+}
+
+/// A view of the window's surface made: the counts of the program
+/// ([`Ledger::note_surface_view`]).
+fn note_surface_view() {
+    if let Ok(mut ledger) = LEDGER.lock() {
+        ledger.note_surface_view();
+    }
+}
+
+/// A view of the window's surface for a sign of a wait: the counts of the program
+/// ([`Ledger::note_sign_view`]).
+fn note_sign_view() {
+    if let Ok(mut ledger) = LEDGER.lock() {
+        ledger.note_sign_view();
+    }
+}
+
+/// The frame in progress of the program has the change `change` ([`Ledger::changed`]).
+pub fn changed(change: &'static str) {
+    if let Ok(mut ledger) = LEDGER.lock() {
+        ledger.changed(change);
     }
 }
 
@@ -314,6 +383,28 @@ impl CreateView for wgpu::Texture {
     }
 }
 
+/// The view of the picture of the window's surface, counted apart: the one object that a steady
+/// frame may make (D310).
+pub trait CreateSurfaceView {
+    /// The view for the frame of the game in progress.
+    fn surface_view(&self) -> wgpu::TextureView;
+    /// The view for a sign of a wait, a frame of the window with no frame of the game: it
+    /// counts in no frame of the game.
+    fn sign_view(&self) -> wgpu::TextureView;
+}
+
+impl CreateSurfaceView for wgpu::SurfaceTexture {
+    fn surface_view(&self) -> wgpu::TextureView {
+        note_surface_view();
+        self.texture.create_view(&Default::default())
+    }
+
+    fn sign_view(&self) -> wgpu::TextureView {
+        note_sign_view();
+        self.texture.create_view(&Default::default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +485,51 @@ mod tests {
         }
         assert_eq!(warned, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 600, 1200]);
         assert_eq!(ledger.steady_frames_made(), 1300);
+    }
+
+    #[test]
+    fn the_surface_view_counts_apart_with_the_most_in_one_steady_frame() {
+        let mut ledger = Ledger::new();
+        ledger.note_surface_view();
+        assert_eq!(ledger.end_frame(None), None);
+        // A frame that is not steady: its views do not count.
+        ledger.note_surface_view();
+        ledger.note_surface_view();
+        assert_eq!(ledger.end_frame(Some("texture")), None);
+        // A sign of a wait in the frame: its view counts in no frame.
+        ledger.note_sign_view();
+        ledger.note_surface_view();
+        assert_eq!(ledger.end_frame(None), None);
+        assert_eq!(ledger.steady_frames_made(), 0);
+        let report = ledger.report_lines();
+        assert_eq!(
+            report[0],
+            "gpu objects: 5 made in 3 frames; 2 steady frames, 0 of them made objects (0 objects)"
+        );
+        assert_eq!(
+            report.last().unwrap(),
+            "gpu objects allowed (D310): the surface view, 2 in the steady frames, at most 1 a frame"
+        );
+    }
+
+    #[test]
+    fn a_noted_change_makes_only_its_frame_not_steady() {
+        let mut ledger = Ledger::new();
+        ledger.changed("a picture");
+        ledger.changed("a later change");
+        ledger.note(Kind::Buffer, here());
+        assert_eq!(ledger.end_frame(None), None);
+        assert_eq!(ledger.end_frame(None), None);
+        assert_eq!(ledger.steady_frames_made(), 0);
+        let report = ledger.report_lines();
+        assert_eq!(
+            report[0],
+            "gpu objects: 1 made in 2 frames; 1 steady frames, 0 of them made objects (0 objects)"
+        );
+        assert_eq!(
+            report[1],
+            "gpu objects: the frames that were not steady, by their first change: a picture 1"
+        );
     }
 
     #[test]

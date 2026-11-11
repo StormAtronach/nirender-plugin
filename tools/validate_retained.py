@@ -31,10 +31,12 @@ Stages (capture, baseline and only by default, in this order):
            Last, the objects check (D288): each capture again to its last frame, plain (no GPU
            time, no marks: nothing waits for the GPU), on vulkan and on dx12. A steady frame (no
            record that can need a new GPU object, no change of the extension) that made a GPU
-           object gives a warning with the kinds and the lines of code of the objects
-           (`host/src/objects.rs`), and so does a capture with no steady frame, with the first
-           changes of its frames; with OBJECTS_STRICT both fail. A lost device and a build
-           without the count fail.
+           object fails, with the kinds and the lines of code of the objects
+           (`host/src/objects.rs`; a warning while OBJECTS_STRICT is False). The view of the
+           window's surface is allowed (D310), at most 1 in a steady frame. A capture with no
+           steady frame cannot show the rule: it gives a warning with the first changes of its
+           frames. The stage fails when no capture of a backend has a steady frame. A lost
+           device and a build without the count fail.
   only     a run with the rate step: prints the frame rate, the time of the ports for each
            frame and the busy time of the helper. With --gpu-time the helper writes GPU
            time stamps (they cost it about 0.4 ms a frame).
@@ -322,19 +324,29 @@ def self_test():
     assert "can be the GPU's" in adapter_note("AMD Radeon (Vulkan, driver 1)", same)
     assert adapter_note(same, None) == "adapter: not printed by the helper"
     # The objects stage (D288): a steady frame that made objects fails with its sites; a lost
-    # device, a build without the count and a capture with no steady frame fail too.
+    # device, a build without the count and two surface views in a steady frame fail too; a
+    # capture with no steady frame warns.
     clean = "frame 119\ngpu objects: 840 made in 120 frames; 117 steady frames, 0 of them made objects (0 objects)\n"
     assert objects_verdict(clean) == ("ok", "117 steady frames of 120 made no object (840 made in the others)")
     dirty = ("gpu objects: 900 made in 120 frames; 117 steady frames, 96 of them made objects (96 objects)\n"
              "gpu objects of the steady frames: 96 bind group at host/src/renderer.rs:1155\n")
     verdict, text = objects_verdict(dirty)
     assert verdict == "sites" and text == "96 of 117 steady frames made 96 objects: 96 bind group at host/src/renderer.rs:1155", text
+    # Every site, with no cut: more sites than the helper's warning line of a frame holds (12).
+    many = ", ".join("1 texture view at host/src/site%02d.rs:%d" % (n, n) for n in range(20))
+    verdict, text = objects_verdict("gpu objects: 120 made in 120 frames; 117 steady frames, 1 of them made objects (20 objects)\n"
+                                    "gpu objects of the steady frames: " + many + "\n")
+    assert verdict == "sites" and text.endswith(": " + many), text
     assert objects_verdict("gpu: the device is lost (Unknown): Out of memory\n" + clean) == ("fail", "the device is lost")
     assert objects_verdict("frame 119\n")[0] == "fail" and "without the count" in objects_verdict("frame 119\n")[1]
     restless = ("gpu objects: 5 made in 2 frames; 0 steady frames, 0 of them made objects (0 objects)\n"
                 "gpu objects: the frames that were not steady, by their first change: new instance 2\n")
-    assert objects_verdict(restless) == ("sites", "2 frames, none steady: the capture shows nothing of the rule; "
-                                                "the frames that were not steady, by their first change: new instance 2")
+    assert objects_verdict(restless) == ("idle", "2 frames, none steady: the capture cannot show the rule; "
+                                               "the frames that were not steady, by their first change: new instance 2")
+    one_view = clean + "gpu objects allowed (D310): the surface view, 117 in the steady frames, at most 1 a frame\n"
+    assert objects_verdict(one_view)[0] == "ok"
+    two_views = clean + "gpu objects allowed (D310): the surface view, 118 in the steady frames, at most 2 a frame\n"
+    assert objects_verdict(two_views) == ("fail", "a steady frame made 2 views of the window's surface; D310 allows 1")
     # A tool that ends with another code than 0 fails the stage, and its last lines show: an
     # exception, or a helper that died and printed no traceback.
     assert ran((0, "pictures in a folder"), "tool")
@@ -611,19 +623,22 @@ def stage_baseline(baseline, accept, mge_build, now=None):
 
 OBJECTS_LINE = re.compile(r"^gpu objects: (\d+) made in (\d+) frames; (\d+) steady frames, (\d+) of them made objects \((\d+) objects\)", re.M)
 OBJECTS_CHANGES = "gpu objects: the frames that were not steady, by their first change: "
+# The allowed object (D310): the view of the window's surface, at most 1 in a steady frame.
+OBJECTS_SURFACE = re.compile(r"^gpu objects allowed \(D310\): the surface view, (\d+) in the steady frames, at most (\d+) a frame", re.M)
 # The backends of the objects stage: each replay runs plain, to its last frame, with no GPU time
 # and no marks, so that nothing waits for the GPU (risk 79: a wait hid a lost dx12 device).
 OBJECT_BACKENDS = ("vulkan", "dx12")
-# False while W340 fixes the sites that make objects in steady frames: a site found warns. True
-# after the last site lands: a site found fails the gate (W340 step 4).
-OBJECTS_STRICT = False
+# True since the last site of W340 landed: a site found fails the gate. False only to look at the
+# sites of a build without a stop.
+OBJECTS_STRICT = True
 
 
 def objects_verdict(output):
     """The verdict of one replay of the objects stage, from its output: (verdict, text). The verdict
-    is "ok"; "sites" for steady frames that made GPU objects (with the lines of the objects) and
-    for a capture with no steady frame (with the first changes of its frames); "fail" for a lost
-    device and for a build without the count (no report line)."""
+    is "ok"; "sites" for steady frames that made GPU objects (with the lines of the objects);
+    "idle" for a capture with no steady frame (with the first changes of its frames); "fail" for a
+    lost device, for a build without the count (no report line) and for more than one surface view
+    in a steady frame (D310)."""
     if "device is lost" in output:
         return "fail", "the device is lost"
     found = OBJECTS_LINE.search(output)
@@ -632,7 +647,10 @@ def objects_verdict(output):
     made, frames, steady, steady_made, objects = (int(n) for n in found.groups())
     if steady == 0:
         changes = next((line for line in output.splitlines() if line.startswith(OBJECTS_CHANGES)), OBJECTS_CHANGES + "none")
-        return "sites", "%d frames, none steady: the capture shows nothing of the rule; %s" % (frames, changes[len("gpu objects: "):])
+        return "idle", "%d frames, none steady: the capture cannot show the rule; %s" % (frames, changes[len("gpu objects: "):])
+    surface = OBJECTS_SURFACE.search(output)
+    if surface and int(surface.group(2)) > 1:
+        return "fail", "a steady frame made %s views of the window's surface; D310 allows 1" % surface.group(2)
     if steady_made:
         sites = next((line for line in output.splitlines() if line.startswith("gpu objects of the steady frames: ")), "")
         return "sites", "%d of %d steady frames made %d objects: %s" % (steady_made, steady, objects, sites[len("gpu objects of the steady frames: "):])
@@ -643,21 +661,26 @@ def stage_objects(baseline, mge_build):
     """Each capture of the baseline folder to its last frame, plain, on each backend of
     OBJECT_BACKENDS: no steady frame (no new content, no change of the extension) may make a GPU
     object, and no device may be lost (D288). A steady frame that made objects warns while
-    OBJECTS_STRICT is False."""
+    OBJECTS_STRICT is False. A capture with no steady frame warns; a backend with no capture that
+    has a steady frame fails."""
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "objects: no capture in the baseline folder")
     out = tempfile.mkdtemp(prefix="gate-objects-")
     ok = True
     for backend in OBJECT_BACKENDS:
+        steady_seen = False
         for capture in captures:
             code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], dict(GATE_ENV))
             verdict, text = objects_verdict(output)
             line = "objects, %s, %s: %s%s" % (backend, capture, text, "" if code == 0 else " (replay.py ended with the code %d)" % code)
-            if verdict == "sites" and code == 0 and not OBJECTS_STRICT:
+            steady_seen |= verdict in ("ok", "sites")
+            if code == 0 and (verdict == "idle" or (verdict == "sites" and not OBJECTS_STRICT)):
                 ok &= warn(line)
             else:
                 ok &= check(verdict == "ok" and code == 0, line)
+        if not steady_seen:
+            ok &= check(False, "objects, %s: no capture has a steady frame: the stage cannot show the rule" % backend)
     return ok
 
 

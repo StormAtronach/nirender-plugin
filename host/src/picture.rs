@@ -100,6 +100,8 @@ pub(crate) fn copy_picture(
     width: u32,
     height: u32,
 ) -> (wgpu::Buffer, usize) {
+    // A read of the picture is a request of its frame, with a buffer of its own.
+    crate::objects::changed("a picture");
     let row = (width as usize * 4).next_multiple_of(256);
     let buffer = device.counted_buffer(&wgpu::BufferDescriptor {
         label: Some("picture read"),

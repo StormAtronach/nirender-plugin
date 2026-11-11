@@ -1,7 +1,7 @@
 //! The live mode: the records come from a ring in shared memory while the game runs, and
 //! the frames go into a window.
 
-use crate::objects::{Create, CreateView};
+use crate::objects::{Create, CreateSurfaceView, CreateView};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -684,8 +684,9 @@ impl App {
         };
         let (device, queue) = (&player.renderer.device, &player.renderer.queue);
         let size = (frame.texture.width(), frame.texture.height());
-        // The one view of the surface's picture (D310), for the window draw and the overlay.
-        let window_view = frame.texture.counted_view(&Default::default());
+        // The one view of the surface's picture (D310), for the window draw and the overlay. It
+        // counts in no frame of the game: a frame of the game can be in progress.
+        let window_view = frame.sign_view();
         let mut encoder = device.create_command_encoder(&Default::default());
         self.to_window.draw(
             device,
@@ -1159,7 +1160,7 @@ impl ApplicationHandler for App {
                 if let Some(frame) = frame.as_ref() {
                     // The one view of the surface's picture (D310), for the window draw and
                     // the overlay.
-                    let window_view = frame.texture.counted_view(&Default::default());
+                    let window_view = frame.surface_view();
                     window_draw.draw(&device, encoder, gamma, back_buffer, &frame.texture, &window_view);
                     // The debug overlay goes on the picture of the window, not into the
                     // back buffer: a picture file and a pixel read do not have it.
