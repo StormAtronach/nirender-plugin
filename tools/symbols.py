@@ -139,6 +139,21 @@ def pdb_identity(pdb):
         return info[12:28], struct.unpack_from("<I", dbi, 8)[0]
 
 
+def write_test_pdb(path, guid, age, info_age=None):
+    """Writes the smallest MSF 7.0 file that pdb_identity reads as (guid, age), for the self-tests. Its info stream has
+    the age `info_age` (default `age`): a linker writes a higher one there than in the DBI stream. Block 0 is the
+    superblock, block 1 the map of the directory's blocks, block 2 the directory, block 3 the info stream (stream 1)
+    and block 4 the DBI stream (stream 3)."""
+    block = 512
+    info = struct.pack("<III", 20000404, 0, age if info_age is None else info_age) + guid
+    dbi = struct.pack("<iII", -1, 19990903, age)
+    directory = struct.pack("<I4I", 4, 0, len(info), 0, len(dbi)) + struct.pack("<II", 3, 4)
+    superblock = MSF_MAGIC + struct.pack("<IIIIII", block, 1, 5, len(directory), 0, 1)
+    with open(path, "wb") as file:
+        for data in (superblock, struct.pack("<I", 2), directory, info, dbi):
+            file.write(data.ljust(block, b"\0"))
+
+
 def pdb_matches(pdb, guid, age):
     """True when the pdb is the one a debugger loads for a binary with this GUID and age."""
     try:
@@ -477,6 +492,10 @@ def self_test_in(work):
     assert pdb_name.lower() == (FIXTURE_PREFIX + "ComInterfaces.pdb").lower(), pdb_name
     assert pdb_matches(os.path.join(work, "a", pdb_name), guid, age)
     assert not pdb_matches(os.path.join(work, "a", FIXTURE_PREFIX + "Discoverer.pdb"), guid, age), "another build's pdb matched"
+    # The test pdb of the other self-tests: its DBI age is the match, not its info age.
+    small = os.path.join(work, "small.pdb")
+    write_test_pdb(small, guid, 1, info_age=2)
+    assert pdb_identity(small) == (guid, 1) and pdb_matches(small, guid, 1) and not pdb_matches(small, guid, 2)
 
     # The add: 3 pdbs, compressed, in the folders that the debugger reads; one transaction named a.
     line = run("a", a_binaries)
