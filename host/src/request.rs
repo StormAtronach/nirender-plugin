@@ -181,7 +181,7 @@ const DEBUG_VIEW_LINE: &str = "const DEBUG_VIEW: u32 = 0u;";
 /// The text of the world shader's variant ([`crate::debug_lines::world_variant`]): the text
 /// with the variant's id on its one `DEBUG_VIEW` line. None when the text does not have that
 /// line exactly once: a missed line would give a variant equal to normal play, with no error.
-pub(crate) fn world_variant_source(source: &str, variant: u32) -> Option<String> {
+pub fn world_variant_source(source: &str, variant: u32) -> Option<String> {
     if source.matches(DEBUG_VIEW_LINE).count() != 1 {
         return None;
     }
