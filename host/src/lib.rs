@@ -1137,10 +1137,10 @@ struct Player {
     /// The copy of the draw in progress for the small group: its first instance among the
     /// frame's instances (`mark_small_draws`).
     small_copy: Option<u32>,
-    /// The frame in progress had a record of new content ([`tag::CONTENT`], or a new
-    /// material, geometry or instance): it is not steady for the count of the GPU objects
-    /// ([`objects`]).
-    frame_content: bool,
+    /// The first record of new content in the frame in progress ([`tag::CONTENT`], or a new
+    /// material, geometry or instance), by its name: a frame with one is not steady for the
+    /// count of the GPU objects ([`objects`]).
+    frame_change: Option<&'static str>,
     /// The world began and the post chain ran, among the items run so far in the frame.
     phase_world: bool,
     phase_posted: bool,

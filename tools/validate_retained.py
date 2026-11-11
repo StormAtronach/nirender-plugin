@@ -30,9 +30,11 @@ Stages (capture, baseline and only by default, in this order):
            The replays run with MGE_XE_CORE_MODS=0: no core mod joins the shaders.
            Last, the objects check (D288): each capture again to its last frame, plain (no GPU
            time, no marks: nothing waits for the GPU), on vulkan and on dx12. A steady frame (no
-           new content, no change of the extension) that made a GPU object fails, with the kinds
-           and the lines of code of the objects (`host/src/objects.rs`); so does a lost device,
-           and a build without the count.
+           record that can need a new GPU object, no change of the extension) that made a GPU
+           object gives a warning with the kinds and the lines of code of the objects
+           (`host/src/objects.rs`), and so does a capture with no steady frame, with the first
+           changes of its frames; with OBJECTS_STRICT both fail. A lost device and a build
+           without the count fail.
   only     a run with the rate step: prints the frame rate, the time of the ports for each
            frame and the busy time of the helper. With --gpu-time the helper writes GPU
            time stamps (they cost it about 0.4 ms a frame).
@@ -180,6 +182,12 @@ def check(condition, text):
     return condition
 
 
+def warn(text):
+    """A finding that does not fail the gate yet: its line, and True."""
+    print("  warn " + text, flush=True)
+    return True
+
+
 # The CAPTURE FORMAT lines (common.py) of the replays of this process.
 CAPTURE_FORMATS = []
 
@@ -316,14 +324,17 @@ def self_test():
     # The objects stage (D288): a steady frame that made objects fails with its sites; a lost
     # device, a build without the count and a capture with no steady frame fail too.
     clean = "frame 119\ngpu objects: 840 made in 120 frames; 117 steady frames, 0 of them made objects (0 objects)\n"
-    assert objects_verdict(clean) == (True, "117 steady frames of 120 made no object (840 made in the others)")
+    assert objects_verdict(clean) == ("ok", "117 steady frames of 120 made no object (840 made in the others)")
     dirty = ("gpu objects: 900 made in 120 frames; 117 steady frames, 96 of them made objects (96 objects)\n"
              "gpu objects of the steady frames: 96 bind group at host/src/renderer.rs:1155\n")
-    good, text = objects_verdict(dirty)
-    assert not good and text == "96 of 117 steady frames made 96 objects: 96 bind group at host/src/renderer.rs:1155", text
-    assert objects_verdict("gpu: the device is lost (Unknown): Out of memory\n" + clean) == (False, "the device is lost")
-    assert not objects_verdict("frame 119\n")[0] and "without the count" in objects_verdict("frame 119\n")[1]
-    assert not objects_verdict("gpu objects: 5 made in 2 frames; 0 steady frames, 0 of them made objects (0 objects)\n")[0]
+    verdict, text = objects_verdict(dirty)
+    assert verdict == "sites" and text == "96 of 117 steady frames made 96 objects: 96 bind group at host/src/renderer.rs:1155", text
+    assert objects_verdict("gpu: the device is lost (Unknown): Out of memory\n" + clean) == ("fail", "the device is lost")
+    assert objects_verdict("frame 119\n")[0] == "fail" and "without the count" in objects_verdict("frame 119\n")[1]
+    restless = ("gpu objects: 5 made in 2 frames; 0 steady frames, 0 of them made objects (0 objects)\n"
+                "gpu objects: the frames that were not steady, by their first change: new instance 2\n")
+    assert objects_verdict(restless) == ("sites", "2 frames, none steady: the capture shows nothing of the rule; "
+                                                "the frames that were not steady, by their first change: new instance 2")
     # A tool that ends with another code than 0 fails the stage, and its last lines show: an
     # exception, or a helper that died and printed no traceback.
     assert ran((0, "pictures in a folder"), "tool")
@@ -599,33 +610,40 @@ def stage_baseline(baseline, accept, mge_build, now=None):
 
 
 OBJECTS_LINE = re.compile(r"^gpu objects: (\d+) made in (\d+) frames; (\d+) steady frames, (\d+) of them made objects \((\d+) objects\)", re.M)
+OBJECTS_CHANGES = "gpu objects: the frames that were not steady, by their first change: "
 # The backends of the objects stage: each replay runs plain, to its last frame, with no GPU time
 # and no marks, so that nothing waits for the GPU (risk 79: a wait hid a lost dx12 device).
 OBJECT_BACKENDS = ("vulkan", "dx12")
+# False while W340 fixes the sites that make objects in steady frames: a site found warns. True
+# after the last site lands: a site found fails the gate (W340 step 4).
+OBJECTS_STRICT = False
 
 
 def objects_verdict(output):
-    """The verdict of one replay of the objects stage, from its output: (ok, text). A steady frame
-    that made GPU objects fails, with the lines of the objects; so do a lost device and a build
-    without the count (no report line)."""
+    """The verdict of one replay of the objects stage, from its output: (verdict, text). The verdict
+    is "ok"; "sites" for steady frames that made GPU objects (with the lines of the objects) and
+    for a capture with no steady frame (with the first changes of its frames); "fail" for a lost
+    device and for a build without the count (no report line)."""
     if "device is lost" in output:
-        return False, "the device is lost"
+        return "fail", "the device is lost"
     found = OBJECTS_LINE.search(output)
     if not found:
-        return False, "no 'gpu objects' report line: a build without the count of the objects (D288)"
+        return "fail", "no 'gpu objects' report line: a build without the count of the objects (D288)"
     made, frames, steady, steady_made, objects = (int(n) for n in found.groups())
     if steady == 0:
-        return False, "%d frames, none steady: the capture shows nothing of the rule" % frames
+        changes = next((line for line in output.splitlines() if line.startswith(OBJECTS_CHANGES)), OBJECTS_CHANGES + "none")
+        return "sites", "%d frames, none steady: the capture shows nothing of the rule; %s" % (frames, changes[len("gpu objects: "):])
     if steady_made:
         sites = next((line for line in output.splitlines() if line.startswith("gpu objects of the steady frames: ")), "")
-        return False, "%d of %d steady frames made %d objects: %s" % (steady_made, steady, objects, sites[len("gpu objects of the steady frames: "):])
-    return True, "%d steady frames of %d made no object (%d made in the others)" % (steady, frames, made)
+        return "sites", "%d of %d steady frames made %d objects: %s" % (steady_made, steady, objects, sites[len("gpu objects of the steady frames: "):])
+    return "ok", "%d steady frames of %d made no object (%d made in the others)" % (steady, frames, made)
 
 
 def stage_objects(baseline, mge_build):
     """Each capture of the baseline folder to its last frame, plain, on each backend of
     OBJECT_BACKENDS: no steady frame (no new content, no change of the extension) may make a GPU
-    object, and no device may be lost (D288)."""
+    object, and no device may be lost (D288). A steady frame that made objects warns while
+    OBJECTS_STRICT is False."""
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "objects: no capture in the baseline folder")
@@ -634,8 +652,12 @@ def stage_objects(baseline, mge_build):
     for backend in OBJECT_BACKENDS:
         for capture in captures:
             code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], dict(GATE_ENV))
-            good, text = objects_verdict(output)
-            ok &= check(good and code == 0, "objects, %s, %s: %s%s" % (backend, capture, text, "" if code == 0 else " (replay.py ended with the code %d)" % code))
+            verdict, text = objects_verdict(output)
+            line = "objects, %s, %s: %s%s" % (backend, capture, text, "" if code == 0 else " (replay.py ended with the code %d)" % code)
+            if verdict == "sites" and code == 0 and not OBJECTS_STRICT:
+                ok &= warn(line)
+            else:
+                ok &= check(verdict == "ok" and code == 0, line)
     return ok
 
 

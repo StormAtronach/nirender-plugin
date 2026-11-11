@@ -150,7 +150,7 @@ impl Player {
             pass_arrays: None,
             small_arrays: None,
             small_copy: None,
-            frame_content: true,
+            frame_change: Some("the first frame"),
             phase_world: false,
             phase_posted: false,
             pass_draws_at_open: None,
@@ -710,9 +710,9 @@ impl Player {
         }
         // The GPU objects of the frame (`objects`): a steady frame has no new content of the
         // game and no change of the extension, and must make none.
-        let extension_changed = self.extension.as_mut().is_some_and(|extension| extension.frame_changed());
-        let steady = !std::mem::take(&mut self.frame_content) && !extension_changed;
-        if let Some(line) = crate::objects::end_frame(steady) {
+        let extension_change = self.extension.as_mut().and_then(|extension| extension.frame_changed());
+        let change = self.frame_change.take().or(extension_change);
+        if let Some(line) = crate::objects::end_frame(change) {
             println!("{line}");
         }
         self.renderer.counts.times[TIME_END] += clock.elapsed();

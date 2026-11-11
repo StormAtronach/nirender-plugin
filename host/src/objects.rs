@@ -62,7 +62,7 @@ type Site = (Kind, &'static Location<'static>);
 /// `WARN_EVERY`th.
 const WARN_FIRST: u64 = 10;
 const WARN_EVERY: u64 = 600;
-/// The sites in a warning line and in the report.
+/// The sites in a warning line; the report names them all.
 const SITES_SHOWN: usize = 12;
 
 /// The counts of the objects made: those of the frame in progress, and the totals.
@@ -77,6 +77,8 @@ pub struct Ledger {
     steady_frames_made: u64,
     /// The objects made in all frames.
     made: u64,
+    /// The frames that were not steady, by their first change.
+    changes: Vec<(&'static str, u64)>,
 }
 
 fn add(list: &mut Vec<(Site, u64)>, site: Site, count: u64) {
@@ -86,8 +88,8 @@ fn add(list: &mut Vec<(Site, u64)>, site: Site, count: u64) {
     }
 }
 
-/// The sites, the most objects first: `count kind at file:line`.
-fn site_list(list: &[(Site, u64)]) -> String {
+/// The sites, the most objects first: `count kind at file:line`, the first `most` of them.
+fn site_list(list: &[(Site, u64)], most: usize) -> String {
     let mut sorted: Vec<&(Site, u64)> = list.iter().collect();
     sorted.sort_by(|a, b| {
         b.1.cmp(&a.1)
@@ -96,10 +98,10 @@ fn site_list(list: &[(Site, u64)]) -> String {
     });
     let shown: Vec<String> = sorted
         .iter()
-        .take(SITES_SHOWN)
+        .take(most)
         .map(|((kind, at), n)| format!("{n} {} at {}:{}", kind.name(), at.file().replace('\\', "/"), at.line()))
         .collect();
-    let more = sorted.len().saturating_sub(SITES_SHOWN);
+    let more = sorted.len().saturating_sub(most);
     if more == 0 {
         shown.join(", ")
     } else {
@@ -116,6 +118,7 @@ impl Ledger {
             steady_frames: 0,
             steady_frames_made: 0,
             made: 0,
+            changes: Vec::new(),
         }
     }
 
@@ -125,13 +128,17 @@ impl Ledger {
         self.made += 1;
     }
 
-    /// The end of a frame. `steady`: the frame had no new content, no load and no change of a
-    /// setting. A steady frame that made objects gives its warning line, when it is one of the
-    /// first 10 such frames or one of each 600th.
-    pub fn end_frame(&mut self, steady: bool) -> Option<String> {
+    /// The end of a frame. `change`: the first change of the frame (new content, a load, a
+    /// change of a setting), or [`None`] for a steady frame. A steady frame that made objects
+    /// gives its warning line, when it is one of the first 10 such frames or one of each 600th.
+    pub fn end_frame(&mut self, change: Option<&'static str>) -> Option<String> {
         self.frames += 1;
         let frame = std::mem::take(&mut self.frame);
-        if !steady {
+        if let Some(change) = change {
+            match self.changes.iter_mut().find(|(name, _)| *name == change) {
+                Some((_, n)) => *n += 1,
+                None => self.changes.push((change, 1)),
+            }
             return None;
         }
         self.steady_frames += 1;
@@ -148,7 +155,7 @@ impl Ledger {
             format!(
                 "gpu objects: warning: frame {} is steady and made {total} GPU objects (steady frame {n} that made objects): {}",
                 self.frames,
-                site_list(&frame)
+                site_list(&frame, SITES_SHOWN)
             )
         })
     }
@@ -165,8 +172,20 @@ impl Ledger {
             "gpu objects: {} made in {} frames; {} steady frames, {} of them made objects ({} objects)",
             self.made, self.frames, self.steady_frames, self.steady_frames_made, steady_made
         )];
+        if !self.changes.is_empty() {
+            let mut changes = self.changes.clone();
+            changes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            let list: Vec<String> = changes.iter().map(|(name, n)| format!("{name} {n}")).collect();
+            lines.push(format!(
+                "gpu objects: the frames that were not steady, by their first change: {}",
+                list.join(", ")
+            ));
+        }
         if !self.steady.is_empty() {
-            lines.push(format!("gpu objects of the steady frames: {}", site_list(&self.steady)));
+            lines.push(format!(
+                "gpu objects of the steady frames: {}",
+                site_list(&self.steady, usize::MAX)
+            ));
         }
         lines
     }
@@ -182,8 +201,8 @@ pub fn note(kind: Kind, at: &'static Location<'static>) {
 }
 
 /// The end of a frame of the program ([`Ledger::end_frame`]).
-pub fn end_frame(steady: bool) -> Option<String> {
-    LEDGER.lock().ok().and_then(|mut ledger| ledger.end_frame(steady))
+pub fn end_frame(change: Option<&'static str>) -> Option<String> {
+    LEDGER.lock().ok().and_then(|mut ledger| ledger.end_frame(change))
 }
 
 /// The report of the program ([`Ledger::report_lines`]).
@@ -310,15 +329,15 @@ mod tests {
         let at = here();
         // A frame with new content may make objects: no warning, no count.
         ledger.note(Kind::BindGroup, at);
-        assert_eq!(ledger.end_frame(false), None);
+        assert_eq!(ledger.end_frame(Some("texture")), None);
         // A steady frame that makes none: no warning.
-        assert_eq!(ledger.end_frame(true), None);
+        assert_eq!(ledger.end_frame(None), None);
         // A steady frame that makes two groups at one line and a buffer at another.
         ledger.note(Kind::BindGroup, at);
         ledger.note(Kind::BindGroup, at);
         let other = here();
         ledger.note(Kind::Buffer, other);
-        let line = ledger.end_frame(true).expect("a warning");
+        let line = ledger.end_frame(None).expect("a warning");
         assert!(
             line.starts_with("gpu objects: warning: frame 3 is steady and made 3 GPU objects"),
             "{line}"
@@ -337,10 +356,28 @@ mod tests {
             report[0],
             "gpu objects: 4 made in 3 frames; 2 steady frames, 1 of them made objects (3 objects)"
         );
+        assert_eq!(
+            report[1],
+            "gpu objects: the frames that were not steady, by their first change: texture 1"
+        );
         assert!(
-            report[1].starts_with("gpu objects of the steady frames: 2 bind group at "),
+            report[2].starts_with("gpu objects of the steady frames: 2 bind group at "),
             "{}",
-            report[1]
+            report[2]
+        );
+    }
+
+    #[test]
+    fn the_frames_that_are_not_steady_are_counted_by_their_first_change_most_first() {
+        let mut ledger = Ledger::new();
+        for change in ["load", "new material", "load", "texture", "new material", "load"] {
+            ledger.note(Kind::Buffer, here());
+            assert_eq!(ledger.end_frame(Some(change)), None);
+        }
+        assert_eq!(ledger.steady_frames_made(), 0);
+        assert_eq!(
+            ledger.report_lines()[1],
+            "gpu objects: the frames that were not steady, by their first change: load 3, new material 2, texture 1"
         );
     }
 
@@ -351,7 +388,7 @@ mod tests {
         let mut warned = Vec::new();
         for frame in 1..=1300u64 {
             ledger.note(Kind::View, at);
-            if ledger.end_frame(true).is_some() {
+            if ledger.end_frame(None).is_some() {
                 warned.push(frame);
             }
         }

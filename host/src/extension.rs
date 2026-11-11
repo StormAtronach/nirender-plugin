@@ -600,12 +600,12 @@ pub trait Extension {
     /// commands go with the next frame.
     fn after_frame(&mut self, _scene: &SceneView) {}
 
-    /// True when the extension loaded data, changed a setting or a shader, or made what it
-    /// draws again in the frame that ends: that frame is not steady for the count of the GPU
-    /// objects ([`crate::objects`]), and may make objects. The renderer calls this once at the
-    /// end of each frame that it draws. False by default.
-    fn frame_changed(&mut self) -> bool {
-        false
+    /// The first change of the extension in the frame that ends, by its name: it loaded data,
+    /// changed a setting or a shader, or made what it draws again. That frame is not steady
+    /// for the count of the GPU objects ([`crate::objects`]), and may make objects. The
+    /// renderer calls this once at the end of each frame that it draws. [`None`] by default.
+    fn frame_changed(&mut self) -> Option<&'static str> {
+        None
     }
 
     /// The renderer draws a capture file and not a live stream: the frames must be the

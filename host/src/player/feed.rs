@@ -86,6 +86,12 @@ fn orphans_of(held: impl Iterator<Item = u32>, listed: &[u32]) -> Vec<u32> {
 }
 
 impl Player {
+    /// Records new content in the frame in progress, by its name; the first one names the
+    /// frame in the count of the GPU objects ([`crate::objects`]).
+    fn changed(&mut self, change: &'static str) {
+        self.frame_change.get_or_insert(change);
+    }
+
     /// Does one record. Returns true for the record that ends a frame.
     /// Engine-rules R19, R22 (the skill wgpu-renderer-dev).
     pub(crate) fn feed(&mut self, tag: u32, data: &[u8]) -> bool {
@@ -100,7 +106,7 @@ impl Player {
         }
         let move_check = self.move_check.take();
         if tag::CONTENT.contains(&tag) {
-            self.frame_content = true;
+            self.changed(tag::name(tag));
         }
         match tag {
             tag::HEADER => {
@@ -153,7 +159,11 @@ impl Player {
                 let had_uv = self.renderer.geometries.get(&handle).is_some_and(|g| g.uv.is_some());
                 let in_place = self.renderer.geometry(data);
                 // A new geometry, or one that did not fit its ranges, is new content.
-                self.frame_content |= !known || !in_place;
+                if !known {
+                    self.changed("new geometry");
+                } else if !in_place {
+                    self.changed("geometry not in place");
+                }
                 // New vertices in place hold the engine's coordinates: no step on them, until
                 // the `GEOMETRY_UV` record of their state.
                 if in_place && had_uv {
@@ -164,7 +174,11 @@ impl Player {
                 }
             }
             tag::GEOMETRY_UV => self.geometry_uv_record(data),
-            tag::EFFECT_CHAIN => self.retained.effect_chain_record(data),
+            tag::EFFECT_CHAIN => {
+                if self.retained.effect_chain_record(data) {
+                    self.changed("new effect chain");
+                }
+            }
             tag::EFFECT_CHAIN_GONE => self.retained.effect_chain_gone(word(data, 0)),
             tag::EFFECT_TURN_CHECK => self.retained.effect_turn_check_record(data),
             tag::MORPH_TARGETS => self.renderer.morph_targets(data),
@@ -183,7 +197,9 @@ impl Player {
             tag::MATERIAL if data.len() >= 4 => {
                 if let Some(parsed) = material::Material::parse(&data[4..]) {
                     let handle = word(data, 0);
-                    self.frame_content |= !self.renderer.materials.contains_key(&handle);
+                    if !self.renderer.materials.contains_key(&handle) {
+                        self.changed("new material");
+                    }
                     // A record with a handle that is known has the same content: a hold of a
                     // capture file sends it again.
                     self.renderer.materials.entry(handle).or_insert(parsed);
@@ -883,7 +899,9 @@ impl Player {
         let id = word(data, 0);
         let frame = self.renderer.counts.frames;
         // A new instance is new content; a known one that enters the table too (below).
-        self.frame_content |= !self.instance_made.contains_key(&id);
+        if !self.instance_made.contains_key(&id) {
+            self.changed("new instance");
+        }
         self.instance_made
             .entry(id)
             .or_insert_with(|| InstanceMade {
@@ -902,7 +920,7 @@ impl Player {
         self.renderer.counts.instance_records += 1;
         if retained.flags & INSTANCE_BLOCK != 0 {
             if !self.retained.update_place(id, &retained) {
-                self.frame_content = true;
+                self.changed("instance into the table");
                 self.retained_insert(id, &retained);
             }
         } else {
