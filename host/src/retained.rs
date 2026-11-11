@@ -2362,6 +2362,7 @@ impl Player {
                 // sets the samples of that pass (`RetainedView::samples`).
                 samples: self.renderer.samples,
                 stages: 0,
+                debug: 0,
             };
             let mut dummy = Vec::new();
             let mut data = self.stream.draw_data(&derived, &p, &mut self.renderer.counts, &mut dummy);
@@ -3906,6 +3907,7 @@ mod join_tests {
             color_write: 0,
             samples: 1,
             stages: 0,
+            debug: 0,
         }
     }
 

@@ -572,6 +572,8 @@ impl Player {
         let clusters = &mut self.renderer.clusters;
         clusters.on = clusters.forced.unwrap_or(parameters.clustered_lights);
         clusters.world = switches().world_lights || parameters.world_lights;
+        self.renderer
+            .set_debug_variant(crate::debug_lines::world_variant(parameters.debug_view));
         self.parameters = Some(parameters);
         self.takes = self
             .parameters

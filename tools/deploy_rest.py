@@ -44,8 +44,9 @@ import tempfile
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import local, parts_problems  # noqa: E402
+from common import REPO, local, parts_problems  # noqa: E402
 from make_play_set import SETS, next_set_number, say  # noqa: E402
+import symbols  # noqa: E402
 
 # The test installs, by name: the folder of the install (MO2 instance) and the names of its two mods. The key
 # "rest_installs" of local.json changes the places.
@@ -64,6 +65,8 @@ DATA_FILES = "Data Files/"
 # The folders of Data Files/ that go into the MGE mod, as paths below Data Files/.
 MGE_DATA_FOLDERS = ("meshes", "textures", "shaders", "mwse/mods/MGE XE Options")
 NIRENDER_PLUGIN = DATA_FILES + "mwse/lib/akulakhan.dll"
+# The binaries of a build whose pdbs go into the symbol store (W345), as paths in dist-staging.
+SYMBOL_BINARIES = ("d3d8.dll", "dinput8.dll", "numidium.exe", NIRENDER_PLUGIN)
 NIRENDER_LUA = DATA_FILES + "mwse/mods/nirender"
 # What a build must hold: a deploy without these is no deploy.
 REQUIRED = ("d3d8.dll", "numidium.exe", NIRENDER_PLUGIN, NIRENDER_LUA + "/main.lua")
@@ -288,8 +291,10 @@ def check_parts(build, plugin_commit=None, mge_commit=None):
     return commits
 
 
-def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile):
-    """The whole deploy. Returns the exit code."""
+def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile,
+        add_symbols=None):
+    """The whole deploy. Returns the exit code. `add_symbols` (symbols.add from the command line) puts the build's pdbs
+    into the symbol store: the pdbs of render-link's tree around the dist-staging folder, and of this tree's plugin."""
     items, left_out = plan_of(files_below(build))
     check_sources(build, items)
     check_installs(installs)
@@ -327,6 +332,10 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
             file.write(what_line(name, plugin_commit, mge_commit, digests, list(installs)))
     pdbs = [path for install in installs.values() for mod in ("mge", "nirender") for path in files_below(mod_folder(install, mod)) if path.lower().endswith(".pdb")]
     say("pdb in the deployed mods: %d" % len(pdbs))
+    if add_symbols:
+        mge_tree = os.path.dirname(os.path.dirname(build))
+        say(add_symbols(name or tag, [os.path.join(build, *path.split("/")) for path in SYMBOL_BINARIES],
+                        symbols.tree_pdb_dirs(mge_tree, REPO)))
     say("DONE: %d installs from %s with tag %s" % (len(installs), build, tag))
     return 0
 
@@ -503,7 +512,12 @@ def self_test():
         whole_sets = os.path.join(root, "whole-sets")
         two = {"E": fake_install(os.path.join(root, "E"), "MGE E"), "F": fake_install(os.path.join(root, "F"), "MGE F")}
         # With no commits given, the parts' own commits name the build.
-        assert run(build, two, keep=True, sets=whole_sets, tasklist=quiet) == 0
+        # The symbol store gets the set's name, the 4 binaries of the build and the pdb folders of the two trees.
+        added = []
+        assert run(build, two, keep=True, sets=whole_sets, tasklist=quiet, add_symbols=lambda *call: added.append(call) or "symbols: +4") == 0
+        assert len(added) == 1 and added[0][0] == "f1", added
+        assert [os.path.relpath(path, build).replace(os.sep, "/") for path in added[0][1]] == ["d3d8.dll", "dinput8.dll", "numidium.exe", NIRENDER_PLUGIN], added
+        assert os.path.join(os.path.dirname(os.path.dirname(build)), "target", "x86_64-pc-windows-msvc", "release") in added[0][2], added
         assert sorted(os.listdir(whole_sets)) == ["f1"], os.listdir(whole_sets)
         what = open(os.path.join(whole_sets, "f1", "WHAT.txt"), encoding="ascii").read()
         assert what.startswith("f1 ") and "nirender 79c752d, render-link c610f3b" in what and "deployed to E, F" in what, what
@@ -542,7 +556,8 @@ def main():
     if not args.build:
         parser.error("it needs --build")
     try:
-        return run(os.path.abspath(args.build), REST_INSTALLS, args.plugin_commit, args.mge_commit, args.tag, not args.no_keep, args.dry_run, args.sets)
+        return run(os.path.abspath(args.build), REST_INSTALLS, args.plugin_commit, args.mge_commit, args.tag, not args.no_keep, args.dry_run, args.sets,
+                   add_symbols=symbols.add)
     except Refused as error:
         say(str(error))
         return REFUSED_EXIT

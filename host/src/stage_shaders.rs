@@ -21,6 +21,11 @@
 //! them in its first frames, behind the keys of first use, and the list's keys take at most half
 //! of the cap. A list that cannot be read, that a build with another world shader wrote, or that
 //! cannot be written, leaves each key to its first use, with a line in the log.
+//!
+//! A debug view with code in the world shader ([`crate::debug_lines::world_variant`]) draws
+//! with a variant of the world shader's text. A module is kept by its stage key and its variant,
+//! so a draw of the view never takes a module of normal play, or the reverse. The pipelines of
+//! a variant do not go to the list, and a change of the variant drops them.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -338,11 +343,21 @@ fn pipeline_from_words(words: &[u32]) -> Option<PipelineKey> {
         samples: words[19],
         // Word 20 is the place of the stage key's id, which the list does not keep.
         stages: 0,
+        // The list keeps no variant.
+        debug: 0,
     })
 }
 
+/// The name of a fragment module: the id of its stage key and its world variant
+/// (`PipelineKey::stages`, `PipelineKey::debug`).
+type ModuleId = (u32, u32);
+
+fn module_id(key: &PipelineKey) -> ModuleId {
+    (key.stages, key.debug)
+}
+
 /// A pipeline to make on the thread: its key, and the fragment module's text when the thread
-/// has no module of its stage key yet.
+/// has no module of its stage key and variant yet.
 struct Job {
     key: PipelineKey,
     source: Option<String>,
@@ -360,15 +375,19 @@ pub(crate) struct StageShaders {
     sync: bool,
     world_source: String,
     world_hash: u64,
+    /// The world variant of the frames (`PipelineKey::debug`), 0 in normal play, and the world
+    /// shader's text of that variant; None when the variant's text cannot be made.
+    variant: u32,
+    variant_source: Option<String>,
     ids: HashMap<StageKey, u32>,
     /// The keys by id; id 0 is the uber-shader.
     keys: Vec<StageKey>,
-    /// The fragment modules of a replay, by id; None for a key whose module failed.
-    modules: HashMap<u32, Option<wgpu::ShaderModule>>,
-    /// The ids whose module the thread has.
-    sent_modules: HashSet<u32>,
-    /// The ids whose text the rewrite cannot make.
-    failed_sources: HashSet<u32>,
+    /// The fragment modules of a replay; None for a module that failed.
+    modules: HashMap<ModuleId, Option<wgpu::ShaderModule>>,
+    /// The modules that the thread has.
+    sent_modules: HashSet<ModuleId>,
+    /// The modules whose text the rewrite cannot make.
+    failed_sources: HashSet<ModuleId>,
     pending: HashSet<PipelineKey>,
     failed: HashSet<PipelineKey>,
     jobs: Option<mpsc::Sender<Job>>,
@@ -398,6 +417,8 @@ impl StageShaders {
             sync: true,
             world_source: world_source.to_string(),
             world_hash: text_hash(world_source),
+            variant: 0,
+            variant_source: None,
             ids: HashMap::new(),
             keys: vec![StageKey::default()],
             modules: HashMap::new(),
@@ -445,8 +466,50 @@ impl StageShaders {
         id
     }
 
-    fn source_of(&self, id: u32) -> Option<String> {
-        fragment_source(&self.world_source, self.keys.get(id as usize)?)
+    /// The world shader's text of a variant: the text of normal play for 0, else the text of
+    /// the frames' variant. None for an older variant, or when the variant's text cannot be made.
+    pub(crate) fn world_text(&self, variant: u32) -> Option<&str> {
+        match variant {
+            0 => Some(&self.world_source),
+            _ if variant == self.variant => self.variant_source.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn source_of(&self, (id, variant): ModuleId) -> Option<String> {
+        fragment_source(self.world_text(variant)?, self.keys.get(id as usize)?)
+    }
+
+    /// The world variant of the frames ([`crate::debug_lines::world_variant`]). A change drops
+    /// what the stage shaders keep of the old variant: its modules, the marks of its modules that
+    /// the thread has, and its pending and failed pipelines. A pipeline of the old variant that
+    /// the thread gives back later is discarded ([`StageShaders::receive`]); the caller drops
+    /// the pipelines that it keeps.
+    pub(crate) fn set_variant(&mut self, variant: u32) {
+        if variant == self.variant {
+            return;
+        }
+        let old = self.variant;
+        self.variant = variant;
+        self.variant_source = match variant {
+            0 => None,
+            _ => {
+                let source = crate::request::world_variant_source(&self.world_source, variant);
+                if source.is_none() {
+                    println!(
+                        "debug view: the world shader has no one DEBUG_VIEW line; variant {variant} draws as normal play"
+                    );
+                }
+                source
+            }
+        };
+        if old != 0 {
+            self.modules.retain(|&(_, v), _| v != old);
+            self.sent_modules.retain(|&(_, v)| v != old);
+            self.failed_sources.retain(|&(_, v)| v != old);
+            self.pending.retain(|key| key.debug != old);
+            self.failed.retain(|key| key.debug != old);
+        }
     }
 
     /// Starts the thread that makes the pipelines of a live session, and gives it the pipelines
@@ -458,13 +521,19 @@ impl StageShaders {
         let (jobs, job_receiver) = mpsc::channel::<Job>();
         let (done_sender, done) = mpsc::channel::<Done>();
         let spawned = std::thread::Builder::new().name("stage pipelines".into()).spawn(move || {
-            let mut modules: HashMap<u32, Option<wgpu::ShaderModule>> = HashMap::new();
+            let mut modules: HashMap<ModuleId, Option<wgpu::ShaderModule>> = HashMap::new();
             while let Ok(job) = job_receiver.recv() {
+                let id = module_id(&job.key);
                 if let Some(source) = job.source {
-                    modules.insert(job.key.stages, maker.module(&source));
+                    // The first module of a variant drops the modules of the variant before it.
+                    let variant = id.1;
+                    if variant != 0 {
+                        modules.retain(|&(_, v), _| v == 0 || v == variant);
+                    }
+                    modules.insert(id, maker.module("stage shaders", &source));
                 }
                 let pipeline = modules
-                    .get(&job.key.stages)
+                    .get(&id)
                     .and_then(|module| module.as_ref())
                     .and_then(|module| maker.make(job.key, module));
                 if done_sender.send(Done { key: job.key, pipeline }).is_err() {
@@ -558,17 +627,18 @@ impl StageShaders {
 
     /// Sends a pipeline to the thread; false when the thread is gone.
     fn send(&mut self, key: PipelineKey) -> bool {
-        // The module's text goes with the first pipeline of its stage key; a key whose text the
-        // rewrite cannot make is not sent.
-        let source = if self.sent_modules.contains(&key.stages) {
+        // The module's text goes with the first pipeline of its stage key and variant; a key
+        // whose text the rewrite cannot make is not sent.
+        let id = module_id(&key);
+        let source = if self.sent_modules.contains(&id) {
             None
-        } else if self.failed_sources.contains(&key.stages) {
+        } else if self.failed_sources.contains(&id) {
             return false;
         } else {
-            match self.source_of(key.stages) {
+            match self.source_of(id) {
                 Some(source) => Some(source),
                 None => {
-                    self.failed_sources.insert(key.stages);
+                    self.failed_sources.insert(id);
                     println!(
                         "stage shaders: the rewrite of stage key {} failed; the uber-shader draws it",
                         key.stages
@@ -581,7 +651,7 @@ impl StageShaders {
         if jobs.send(Job { key, source }).is_err() {
             return false;
         }
-        self.sent_modules.insert(key.stages);
+        self.sent_modules.insert(id);
         self.pending.insert(key);
         true
     }
@@ -591,10 +661,18 @@ impl StageShaders {
         let Some(done) = &self.done else { return };
         while let Ok(Done { key, pipeline }) = done.try_recv() {
             self.pending.remove(&key);
+            // A pipeline of a variant that a change dropped (`set_variant`) is discarded.
+            if key.debug != 0 && key.debug != self.variant {
+                continue;
+            }
             match pipeline {
                 Some(pipeline) => {
                     pipelines.insert(key, std::rc::Rc::new(pipeline));
                     self.made_count += 1;
+                    // The list keeps the pipelines of normal play only.
+                    if key.debug != 0 {
+                        continue;
+                    }
                     if let Some(stage) = self.keys.get(key.stages as usize) {
                         if self.made.insert((PipelineKey { stages: 0, ..key }, *stage)) {
                             self.changed = true;
@@ -629,13 +707,14 @@ impl StageShaders {
             return None;
         }
         if self.sync {
-            if !self.modules.contains_key(&key.stages) {
-                let module = self.source_of(key.stages).and_then(|source| maker.module(&source));
-                self.modules.insert(key.stages, module);
+            let id = module_id(&key);
+            if !self.modules.contains_key(&id) {
+                let module = self.source_of(id).and_then(|source| maker.module("stage shaders", &source));
+                self.modules.insert(id, module);
             }
             let pipeline = self
                 .modules
-                .get(&key.stages)
+                .get(&id)
                 .and_then(|module| module.as_ref())
                 .and_then(|module| maker.make(key, module));
             let Some(pipeline) = pipeline else {
@@ -741,6 +820,7 @@ fn list_name(world_hash: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_lines::view_id;
     use bytemuck::Zeroable;
 
     fn world() -> String {
@@ -940,6 +1020,7 @@ mod tests {
             color_write: 7,
             samples: 1,
             stages: 0,
+            debug: 0,
         };
         let mut words = pipeline_words(&pipeline);
         words.push(0);
@@ -964,5 +1045,104 @@ mod tests {
         let mut b = a;
         b.stages[3].color = [7, 2, 1, 0];
         assert_eq!(StageKey::of(&a), StageKey::of(&b));
+    }
+
+    fn pipeline_key(stages: u32, debug: u32) -> PipelineKey {
+        PipelineKey {
+            fvf: 0x152,
+            stride: 24,
+            topology: 4,
+            blend: [1, 5, 6],
+            depth: [1, 0, 4],
+            cull: 1,
+            fill: 3,
+            stencil: [0; 7],
+            color_write: 7,
+            samples: 1,
+            stages,
+            debug,
+        }
+    }
+
+    /// The list keeps no variant: a key of a variant reads back from its words as the key of
+    /// normal play.
+    #[test]
+    fn the_list_words_keep_no_variant() {
+        let mut words = pipeline_words(&pipeline_key(0, view_id::LIGHTS));
+        words.push(0);
+        assert_eq!(pipeline_from_words(&words), Some(pipeline_key(0, 0)));
+    }
+
+    /// A stage module is kept by its stage key and its variant: the first pipeline of a variant
+    /// sends the variant's text, though the thread has the module of normal play of that key.
+    #[test]
+    fn a_stage_module_is_kept_by_its_key_and_its_variant() {
+        let mut shaders = StageShaders::new(true, &world());
+        let (jobs, received) = mpsc::channel();
+        shaders.jobs = Some(jobs);
+        let id = shaders.intern(key(1, 0));
+        shaders.set_variant(view_id::LIGHTS);
+        assert!(shaders.send(pipeline_key(id, 0)));
+        assert!(shaders.send(pipeline_key(id, view_id::LIGHTS)));
+        assert!(shaders.send(PipelineKey {
+            cull: 2,
+            ..pipeline_key(id, view_id::LIGHTS)
+        }));
+        let texts: Vec<Option<String>> = received.try_iter().map(|job| job.source).collect();
+        assert_eq!(texts.len(), 3);
+        let normal = texts[0].as_deref().expect("the text of normal play");
+        let variant = texts[1].as_deref().expect("the text of the variant");
+        assert!(normal.contains("const DEBUG_VIEW: u32 = 0u;"));
+        assert!(variant.contains("const DEBUG_VIEW: u32 = 1u;"));
+        crate::assert_wgsl("stage shader of a variant", variant);
+        // The second pipeline of the variant takes the module that the thread has.
+        assert_eq!(texts[2], None);
+    }
+
+    /// A change of the variant drops what the stage shaders keep of the old one, and a job of
+    /// the old variant that comes back later is discarded.
+    #[test]
+    fn a_change_of_the_variant_drops_the_old_one() {
+        let mut shaders = StageShaders::new(true, &world());
+        let (jobs, _received) = mpsc::channel();
+        shaders.jobs = Some(jobs);
+        let (done_sender, done) = mpsc::channel();
+        shaders.done = Some(done);
+        shaders.sync = false;
+        let id = shaders.intern(key(1, 0));
+        let lights = pipeline_key(id, view_id::LIGHTS);
+        let layers = pipeline_key(id, view_id::SHADOW_LAYERS);
+
+        shaders.set_variant(view_id::LIGHTS);
+        assert!(shaders.send(lights));
+        shaders.failed.insert(PipelineKey { cull: 2, ..lights });
+        shaders.set_variant(view_id::SHADOW_LAYERS);
+        assert!(shaders.pending.is_empty() && shaders.failed.is_empty() && shaders.sent_modules.is_empty());
+        assert_eq!(shaders.world_text(view_id::LIGHTS), None);
+        assert!(shaders.world_text(view_id::SHADOW_LAYERS).is_some());
+
+        // The job of the dropped variant fails late: it is not a failed pipeline of the session.
+        // A failed job of the variant of the frames is.
+        done_sender
+            .send(Done {
+                key: lights,
+                pipeline: None,
+            })
+            .unwrap();
+        done_sender
+            .send(Done {
+                key: layers,
+                pipeline: None,
+            })
+            .unwrap();
+        let mut pipelines = rustc_hash::FxHashMap::default();
+        shaders.receive(&mut pipelines);
+        assert!(!shaders.failed.contains(&lights));
+        assert!(shaders.failed.contains(&layers));
+        assert_eq!(shaders.failed_count, 1);
+
+        shaders.set_variant(0);
+        assert!(shaders.failed.is_empty());
+        assert_eq!(shaders.world_text(view_id::SHADOW_LAYERS), None);
     }
 }
