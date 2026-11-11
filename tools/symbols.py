@@ -48,8 +48,17 @@ from clean_common import KEEP_LIST  # noqa: E402
 from common import local, sibling  # noqa: E402
 
 HARNESS_DIR = local("harness", sibling("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
-sys.path.insert(0, HARNESS_DIR)
-import harness  # noqa: E402
+
+
+def symbol_store():
+    """harness.SYMBOL_STORE, or None when the harness has none. The harness is imported here, not at load, so that the
+    build tools that import this module do not need the docs checkout."""
+    if HARNESS_DIR not in sys.path:
+        sys.path.insert(0, HARNESS_DIR)
+    import harness
+
+    return getattr(harness, "SYMBOL_STORE", None)
+
 
 SYMSTORE = r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\symstore.exe"
 SLOT_PY = os.path.join(HARNESS_DIR, "slot.py")
@@ -390,7 +399,10 @@ def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEE
         pending=PENDING, lock=LOCK):
     """Adds the pdbs of a build, after the builds that waited, then prunes. Returns the one line. With no name it
     takes only the builds that waited (`symbols.py pending`)."""
-    store = store or getattr(harness, "SYMBOL_STORE", None)
+    try:
+        store = store or symbol_store()
+    except ImportError as error:
+        return "symbols: not added: no harness at %s: %s" % (HARNESS_DIR, error)
     if not store:
         return "symbols: not added: the harness at %s names no SYMBOL_STORE" % HARNESS_DIR
     binaries =[os.path.abspath(path) for path in binaries if os.path.isfile(path)]
@@ -484,6 +496,12 @@ def self_test_in(work):
 
     def run(name, binaries, dirs=(), budget=BUDGET, gate=free):
         return add(name, binaries, dirs, store=store, budget=budget, keep_list=keep, gate=gate, pending=pending, lock=lock)
+
+    # The import of this module leaves the harness out: the build tools import it without the docs checkout.
+    tools = os.path.dirname(os.path.abspath(__file__))
+    probe = "import sys; sys.path.insert(0, %r); import symbols; sys.exit(3 if 'harness' in sys.modules else 0)" % tools
+    imported = subprocess.run([sys.executable, "-I", "-B", "-c", probe], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert imported.returncode == 0, "the import of symbols imported the harness: %s" % (imported.stdout + imported.stderr)[-300:]
 
     # The index: the GUID and age of each fixture's CodeView record name its folder, and its pdb matches.
     a_binaries, _ = build("a", ["ComInterfaces", "CppUnitTestExtension", "Discoverer"])
@@ -612,7 +630,8 @@ def main():
     elif args.command == "pending":
         print(add(None, []))
     elif args.command == "status":
-        print(status(harness.SYMBOL_STORE, BUDGET, KEEP_LIST))
+        store = symbol_store()
+        print(status(store, BUDGET, KEEP_LIST) if store else "symbols: the harness at %s names no SYMBOL_STORE" % HARNESS_DIR)
     else:
         parser.error("it needs a command, or --self-test")
     return 0
