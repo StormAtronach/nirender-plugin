@@ -216,6 +216,17 @@ pub struct FrameParameters {
     /// `views.full_tier_max`, up to 32, the view slots): see `engine::full_tier`. [`None`] keeps the number the
     /// player has (1 at the start).
     pub full_tier_max: Option<usize>,
+    /// The id of the debug view that is on in this frame ([`crate::debug_lines::view_id`];
+    /// 0 none). A shader key that removes work must keep it while a view of that work's value
+    /// is on: [`FrameParameters::lights_view`].
+    pub debug_view: u32,
+}
+
+impl FrameParameters {
+    /// The lights view is on in this frame: a draw shows the light it takes.
+    pub fn lights_view(&self) -> bool {
+        self.debug_view == crate::debug_lines::view_id::LIGHTS
+    }
 }
 
 /// The lights of the world of a frame, for an extension that lights what it draws as the
