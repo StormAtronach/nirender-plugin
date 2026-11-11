@@ -22,6 +22,11 @@
 //! of the cap. A list that cannot be read, that a build with another world shader wrote, or that
 //! cannot be written, leaves each key to its first use, with a line in the log.
 //!
+//! A live start also sends the uber-shader's own pipelines of a fixed set ([`UBER_SET`]) to the
+//! thread, before the list's. They are the keys of the uber-shader that the frame thread made in a
+//! start with no list. The frame thread takes such a pipeline at the key's first draw, and makes a key of the
+//! set itself only when the thread has not given it back yet. The report counts both.
+//!
 //! A debug view with code in the world shader ([`crate::debug_lines::world_variant`]) draws
 //! with a variant of the world shader's text. A module is kept by its stage key and its variant,
 //! so a draw of the view never takes a module of normal play, or the reverse. The pipelines of
@@ -51,6 +56,93 @@ const LIST_BATCH: usize = 4;
 const LIST_KEYS: usize = MAX_KEYS / 2;
 /// The words of a stage key in the list.
 const KEY_WORDS: usize = 6 + STAGES * 7;
+
+/// The samples of a key of [`UBER_SET`] that draws into the frame's targets. [`StageShaders::start`] puts the
+/// frame's count in its place: it is the user's multisample setting.
+const FRAME_SAMPLES: u32 = 0;
+/// The base of a key of [`UBER_SET`] that draws into the frame's targets: a filled triangle list with the
+/// stencil off, drawn by the uber-shader in normal play.
+const UBER: PipelineKey = PipelineKey {
+    fvf: 0,
+    stride: 0,
+    topology: 4,
+    blend: [0; 3],
+    depth: [0; 3],
+    cull: 0,
+    fill: 3,
+    stencil: [0; 7],
+    color_write: 0,
+    samples: FRAME_SAMPLES,
+    stages: 0,
+    debug: 0,
+};
+/// The base of a key of [`UBER_SET`] that draws into a texture of the game: one sample.
+const TEXTURE: PipelineKey = PipelineKey { samples: 1, ..UBER };
+/// The stencil states of [`UBER_SET`], in Direct3D's numbers: enable, fail, depth fail, pass, function, mask, write
+/// mask. The test always passes and the pass replaces the value.
+const STENCIL_WRITE: [u32; 7] = [1, 1, 1, 3, 8, u32::MAX, u32::MAX];
+/// The test always passes, and a depth fail increments the value (saturated).
+const STENCIL_INCREMENT: [u32; 7] = [1, 1, 4, 1, 8, u32::MAX, u32::MAX];
+/// The test always passes, and a depth fail decrements the value (saturated).
+const STENCIL_DECREMENT: [u32; 7] = [1, 1, 5, 1, 8, u32::MAX, u32::MAX];
+/// The test passes where the value is not the reference; nothing is written.
+const STENCIL_NOT_EQUAL: [u32; 7] = [1, 1, 1, 1, 6, u32::MAX, u32::MAX];
+/// The fixed set of the uber-shader's pipelines (D306), in their order of first use: the keys that the frame thread
+/// made of the uber-shader in a live start with no list (run 20261111-193018-d306-step1: the test interior, Seyda
+/// Neen, the Census and Excise Office, Vivec). [`StageShaders::start`] sends them to the thread before the list, so
+/// that the first start after a change of the world shader does not make them on the frame thread in play. A key of
+/// the set that the frame needs before the thread gives it back is made on the frame thread, as before.
+#[rustfmt::skip]
+const UBER_SET: [PipelineKey; 48] = [
+    PipelineKey { fvf: 322, stride: 24, blend: [0, 2, 1], depth: [1, 0, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 6], depth: [1, 0, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 6], depth: [1, 0, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 322, stride: 24, blend: [1, 5, 6], depth: [1, 0, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 274, stride: 32, blend: [0, 2, 1], depth: [1, 1, 8], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 338, stride: 36, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 2], depth: [1, 0, 4], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 2], depth: [1, 0, 4], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 322, stride: 24, blend: [1, 2, 2], depth: [1, 0, 8], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 15, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 4444, stride: 52, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 15, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 6], depth: [1, 1, 4], cull: 2, color_write: 15, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 8, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 6], depth: [1, 1, 4], cull: 2, color_write: 15, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 8, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 4380, stride: 48, blend: [1, 5, 6], depth: [1, 1, 4], cull: 2, color_write: 15, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 4380, stride: 48, blend: [1, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 8, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 6], depth: [1, 1, 4], cull: 1, color_write: 15, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 2, 1], depth: [1, 1, 4], cull: 1, color_write: 8, stencil: STENCIL_WRITE, ..TEXTURE },
+    PipelineKey { fvf: 338, stride: 36, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 274, stride: 32, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 2], depth: [1, 0, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 2], depth: [1, 0, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 9, 2], depth: [1, 0, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 3, 2], depth: [1, 0, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 6], depth: [1, 1, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 6], depth: [1, 1, 4], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 6], depth: [1, 0, 4], cull: 1, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 4380, stride: 48, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 338, stride: 36, blend: [0, 2, 1], depth: [1, 1, 4], cull: 1, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 6], depth: [1, 1, 4], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 6], depth: [1, 0, 8], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 6], depth: [1, 0, 4], cull: 3, color_write: 7, ..TEXTURE },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 6], depth: [1, 1, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 4444, stride: 52, blend: [0, 2, 1], depth: [1, 1, 4], cull: 1, color_write: 7, ..UBER },
+    PipelineKey { fvf: 4380, stride: 48, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 4636, stride: 56, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 274, stride: 32, blend: [0, 2, 1], depth: [1, 1, 4], cull: 3, color_write: 7, ..UBER },
+    PipelineKey { fvf: 4444, stride: 52, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 338, stride: 36, blend: [0, 2, 1], depth: [1, 1, 4], cull: 3, color_write: 7, ..UBER },
+    PipelineKey { fvf: 258, stride: 20, blend: [1, 5, 6], depth: [1, 0, 4], cull: 3, color_write: 7, stencil: STENCIL_INCREMENT, ..UBER },
+    PipelineKey { fvf: 258, stride: 20, blend: [1, 5, 6], depth: [1, 0, 4], cull: 2, color_write: 7, stencil: STENCIL_DECREMENT, ..UBER },
+    PipelineKey { fvf: 258, stride: 20, blend: [1, 1, 3], depth: [1, 0, 8], cull: 2, color_write: 7, stencil: STENCIL_NOT_EQUAL, ..UBER },
+    PipelineKey { fvf: 274, stride: 32, blend: [1, 5, 2], depth: [1, 0, 8], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 786, stride: 48, blend: [1, 5, 2], depth: [1, 0, 8], cull: 2, color_write: 7, ..UBER },
+    PipelineKey { fvf: 338, stride: 36, blend: [1, 5, 6], depth: [1, 0, 4], cull: 2, color_write: 15, ..TEXTURE },
+    PipelineKey { fvf: 4444, stride: 52, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 15, ..TEXTURE },
+];
 /// The bits of `counts.w` in a stage key: each one chooses a branch of `fs` or of the
 /// extension's shade (1 the extension shades, 2, 16, 32 the sun's shadow, 128 the light for
 /// each pixel, 512, and this crate's [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of
@@ -407,6 +499,17 @@ pub(crate) struct StageShaders {
     pub(crate) failed_count: u32,
     pub(crate) uber_draws: u64,
     pub(crate) past_cap: u64,
+    /// The keys of [`UBER_SET`] in this session, in its order, with the frame's samples in place. A search of it
+    /// comes only at the first draw of a key of the uber-shader.
+    uber_set: Vec<PipelineKey>,
+    /// The pipelines of the set that the thread made, until their first draw.
+    uber_ready: HashMap<PipelineKey, wgpu::RenderPipeline>,
+    /// The keys of the set that have drawn.
+    uber_drawn: HashSet<PipelineKey>,
+    /// The keys of the set whose pipeline the thread made before their first draw.
+    uber_ahead: u32,
+    /// The keys of the set that drew first with a pipeline of the frame thread: the sign that the set is late or stale.
+    uber_late: u32,
 }
 
 impl StageShaders {
@@ -439,6 +542,11 @@ impl StageShaders {
             failed_count: 0,
             uber_draws: 0,
             past_cap: 0,
+            uber_set: Vec::new(),
+            uber_ready: HashMap::new(),
+            uber_drawn: HashSet::new(),
+            uber_ahead: 0,
+            uber_late: 0,
         }
     }
 
@@ -512,9 +620,10 @@ impl StageShaders {
         }
     }
 
-    /// Starts the thread that makes the pipelines of a live session, and gives it the pipelines
-    /// of the list.
-    pub(crate) fn start(&mut self, maker: crate::renderer::PipelineMaker) {
+    /// Starts the thread that makes the pipelines of a live session, and gives it the keys of
+    /// [`UBER_SET`] (`frame_samples`: the samples of the frame's targets), then the pipelines of
+    /// the list.
+    pub(crate) fn start(&mut self, maker: crate::renderer::PipelineMaker, frame_samples: u32) {
         if !self.on {
             return;
         }
@@ -549,8 +658,56 @@ impl StageShaders {
         self.jobs = Some(jobs);
         self.done = Some(done);
         self.sync = false;
+        self.send_uber_set(frame_samples);
         self.list = list_path(self.world_hash);
         self.load_list();
+    }
+
+    /// Sends the keys of [`UBER_SET`] to the thread, with `frame_samples` in place of
+    /// [`FRAME_SAMPLES`]. The first job carries the world shader's own text as the module of the
+    /// uber-shader. The list does not keep these keys ([`StageShaders::receive`]).
+    fn send_uber_set(&mut self, frame_samples: u32) {
+        let Some(jobs) = self.jobs.clone() else { return };
+        let mut source = Some(self.world_source.clone());
+        for key in UBER_SET {
+            let samples = if key.samples == FRAME_SAMPLES {
+                frame_samples
+            } else {
+                key.samples
+            };
+            let key = PipelineKey { samples, ..key };
+            // With one sample for the frame, a key of the frame equals a key of a texture.
+            if self.uber_set.contains(&key) {
+                continue;
+            }
+            self.uber_set.push(key);
+            if jobs
+                .send(Job {
+                    key,
+                    source: source.take(),
+                })
+                .is_err()
+            {
+                return;
+            }
+            self.pending.insert(key);
+        }
+        self.sent_modules.insert(module_id(&UBER));
+    }
+
+    /// The pipeline of a key of the uber-shader in normal play, when the thread made it as a key
+    /// of [`UBER_SET`] before its first draw; None otherwise, and the caller makes it.
+    pub(crate) fn uber_pipeline(&mut self, key: PipelineKey) -> Option<wgpu::RenderPipeline> {
+        if !self.uber_set.contains(&key) || !self.uber_drawn.insert(key) {
+            return None;
+        }
+        let pipeline = self.uber_ready.remove(&key);
+        if pipeline.is_some() {
+            self.uber_ahead += 1;
+        } else {
+            self.uber_late += 1;
+        }
+        pipeline
     }
 
     fn load_list(&mut self) {
@@ -661,6 +818,20 @@ impl StageShaders {
         let Some(done) = &self.done else { return };
         while let Ok(Done { key, pipeline }) = done.try_recv() {
             self.pending.remove(&key);
+            // A key of the uber set waits for its first draw ([`StageShaders::uber_pipeline`]). When the frame thread
+            // made it first, the thread's copy is not needed.
+            if key.stages == 0 {
+                match pipeline {
+                    Some(pipeline) if !self.uber_drawn.contains(&key) => {
+                        self.uber_ready.insert(key, pipeline);
+                    }
+                    Some(_) => {}
+                    None => {
+                        println!("stage shaders: a pipeline of the uber set failed; the frame makes it at its first draw")
+                    }
+                }
+                continue;
+            }
             // A pipeline of a variant that a change dropped (`set_variant`) is discarded.
             if key.debug != 0 && key.debug != self.variant {
                 continue;
@@ -791,6 +962,28 @@ impl StageShaders {
             self.list_left_out,
             self.failed_count,
             self.uber_draws
+        )
+    }
+
+    /// The report of [`UBER_SET`]: the keys sent to the thread, made before their first draw, drawn first with a
+    /// pipeline of the frame thread (late, or a key that the thread could not make), and not drawn in the session,
+    /// by their place from 1 among the keys sent (the table's place, unless the frame has one sample).
+    pub(crate) fn uber_set_report(&self) -> String {
+        let not_drawn: Vec<String> = self
+            .uber_set
+            .iter()
+            .enumerate()
+            .filter(|(_, key)| !self.uber_drawn.contains(key))
+            .map(|(index, _)| (index + 1).to_string())
+            .collect();
+        format!(
+            "uber set: {} keys sent, {} made before their first draw, {} drawn first on the frame thread, {} not drawn{}{}",
+            self.uber_set.len(),
+            self.uber_ahead,
+            self.uber_late,
+            not_drawn.len(),
+            if not_drawn.is_empty() { "" } else { ": " },
+            not_drawn.join(" ")
         )
     }
 }
@@ -1144,5 +1337,99 @@ mod tests {
         shaders.set_variant(0);
         assert!(shaders.failed.is_empty());
         assert_eq!(shaders.world_text(view_id::SHADOW_LAYERS), None);
+    }
+
+    /// A change of the key's layout breaks the words of the list: each key of the uber set must come back from its
+    /// words, with the frame's samples of a multisampled frame and of a frame with one sample.
+    #[test]
+    fn each_key_of_the_uber_set_comes_back_from_its_words() {
+        for frame_samples in [4, 1] {
+            for key in UBER_SET {
+                let samples = if key.samples == FRAME_SAMPLES {
+                    frame_samples
+                } else {
+                    key.samples
+                };
+                let key = PipelineKey { samples, ..key };
+                let mut words = pipeline_words(&key);
+                words.push(0);
+                assert_eq!(pipeline_from_words(&words), Some(key));
+            }
+        }
+    }
+
+    /// A shaders of a live session with a channel of its own in place of the thread.
+    fn live_shaders() -> (StageShaders, mpsc::Receiver<Job>) {
+        let mut shaders = StageShaders::new(true, &world());
+        let (jobs, job_receiver) = mpsc::channel::<Job>();
+        shaders.jobs = Some(jobs);
+        shaders.sync = false;
+        (shaders, job_receiver)
+    }
+
+    #[test]
+    fn the_uber_set_goes_to_the_thread_in_its_order_with_the_module_first() {
+        let (mut shaders, job_receiver) = live_shaders();
+        shaders.send_uber_set(4);
+        let jobs: Vec<Job> = job_receiver.try_iter().collect();
+        assert_eq!(jobs.len(), UBER_SET.len());
+        assert_eq!(jobs[0].source.as_deref(), Some(shaders.world_source.as_str()));
+        assert!(jobs[1..].iter().all(|job| job.source.is_none()));
+        for (job, key) in jobs.iter().zip(UBER_SET) {
+            let samples = if key.samples == FRAME_SAMPLES { 4 } else { key.samples };
+            assert_eq!(job.key, PipelineKey { samples, ..key });
+            assert_eq!((job.key.stages, job.key.debug), (0, 0));
+        }
+        assert_eq!(shaders.pending.len(), UBER_SET.len());
+        assert!(shaders.sent_modules.contains(&(0, 0)));
+    }
+
+    #[test]
+    fn with_one_sample_a_key_of_the_frame_that_equals_a_key_of_a_texture_goes_once() {
+        let (mut shaders, job_receiver) = live_shaders();
+        shaders.send_uber_set(1);
+        let keys: Vec<PipelineKey> = job_receiver.try_iter().map(|job| job.key).collect();
+        let resolved: HashSet<PipelineKey> = UBER_SET.iter().map(|key| PipelineKey { samples: 1, ..*key }).collect();
+        assert_eq!(keys.len(), resolved.len());
+        assert_eq!(keys.iter().copied().collect::<HashSet<_>>(), resolved);
+        assert!(keys.iter().all(|key| key.samples == 1));
+    }
+
+    #[test]
+    fn a_key_of_the_set_drawn_before_the_thread_gives_it_back_counts_late_once() {
+        let (mut shaders, _job_receiver) = live_shaders();
+        shaders.send_uber_set(4);
+        let first = shaders.uber_set[0];
+        let outside = PipelineKey { fvf: 2, ..first };
+        assert!(shaders.uber_pipeline(outside).is_none());
+        assert!(shaders.uber_pipeline(first).is_none());
+        assert!(shaders.uber_pipeline(first).is_none());
+        assert_eq!((shaders.uber_ahead, shaders.uber_late), (0, 1));
+
+        // The thread's late copy is dropped: the frame made the key.
+        let (done_sender, done) = mpsc::channel::<Done>();
+        shaders.done = Some(done);
+        done_sender
+            .send(Done {
+                key: first,
+                pipeline: None,
+            })
+            .unwrap();
+        let mut pipelines = rustc_hash::FxHashMap::default();
+        shaders.receive(&mut pipelines);
+        assert!(!shaders.pending.contains(&first));
+        assert!(shaders.uber_ready.is_empty());
+        assert!(pipelines.is_empty());
+        assert!(shaders.made.is_empty(), "the list keeps no key of the uber set");
+
+        let report = shaders.uber_set_report();
+        assert!(
+            report.starts_with(&format!(
+                "uber set: {} keys sent, 0 made before their first draw, 1 drawn first on the frame thread, {} not drawn: 2 3 ",
+                UBER_SET.len(),
+                UBER_SET.len() - 1
+            )),
+            "{report}"
+        );
     }
 }

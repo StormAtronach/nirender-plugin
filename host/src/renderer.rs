@@ -2099,6 +2099,14 @@ impl Renderer {
         if let Some(pipeline) = self.pipelines.get(&key) {
             return Some(pipeline.clone());
         }
+        // The first draw of a key of the uber set that the thread made (`crate::stage_shaders`).
+        if key.debug == 0 {
+            if let Some(pipeline) = self.stage_shaders.uber_pipeline(key) {
+                let pipeline = Rc::new(pipeline);
+                self.pipelines.insert(key, pipeline.clone());
+                return Some(pipeline);
+            }
+        }
         attributes(key.fvf, key.stride)?;
         let _long = crate::LongStep::begin();
         let built = if key.debug == 0 {
@@ -2153,7 +2161,7 @@ impl Renderer {
 
     /// Starts the thread of the stage pipelines: a live session makes them away from the frame.
     pub(crate) fn start_stage_shaders(&mut self) {
-        self.stage_shaders.start(self.maker.clone());
+        self.stage_shaders.start(self.maker.clone(), self.samples);
     }
 
     /// The start of a frame: the stage pipelines that the thread made, and the list's write.

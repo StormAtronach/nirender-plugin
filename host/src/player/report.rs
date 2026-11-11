@@ -96,6 +96,7 @@ impl Player {
         }
         println!("{}", self.renderer.held_line());
         println!("{}", self.renderer.stage_shaders.report());
+        println!("{}", self.renderer.stage_shaders.uber_set_report());
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
         println!("light keys: {} draws whose colour cannot take light dropped their lights; {} draws with no lights had no light loop", c.blind_light_draws, c.zero_light_draws);
         println!("instances: {} records and {} moves ({} checked against a full record, {} different), {} draws from them, {} draws of an instance not known, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_moves, c.moves_checked, c.moves_different, c.instance_draws, c.instance_missing, c.merged_blends);
