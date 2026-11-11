@@ -27,6 +27,7 @@ Stages (capture, baseline and only by default, in this order):
            GPU, the backend, the driver, as the helper prints it) is written with the
            accepted pictures (`accepted/adapter.txt`) and printed with the result; a
            compare on another adapter says so, since the pictures can differ by the GPU.
+           The replays run with MGE_XE_CORE_MODS=0: no core mod joins the shaders.
   only     a run with the rate step: prints the frame rate, the time of the ports for each
            frame and the busy time of the helper. With --gpu-time the helper writes GPU
            time stamps (they cost it about 0.4 ms a frame).
@@ -64,6 +65,10 @@ from common import BUILD_PARTS, NOT_RUN_EXIT, build_missing, capture_format_in, 
 from validate_tour import NOT_RUN, refusal_of  # noqa: E402
 import stream_rule  # noqa: E402
 PY = sys.executable
+# The variables of the baseline replays: no core mod (`Data Files/shaders/core-mods/*.wgsl`) of
+# the replay's folder joins the shaders, so the accepted pictures do not depend on what is
+# installed.
+GATE_ENV = {"MGE_XE_CORE_MODS": "0"}
 PLACES = {
     "seyda": ["--exterior", "Seyda Neen", "--position=-12288,-69632,74", "--yaw", "0"],
     "narsis": ["--exterior", "Narsis"],
@@ -434,7 +439,7 @@ def self_test():
     calls = []
     real_build_missing, real_run_code = build_missing, run_code
     build_missing = lambda _build: []  # noqa: E731
-    run_code = lambda command, _env: calls.append(command) or (1, "a planted failure of the replay")  # noqa: E731
+    run_code = lambda command, env: calls.append((command, env)) or (1, "a planted failure of the replay")  # noqa: E731
     try:
         # Also when the stage accepts: an accept of pictures drawn from a wrong stream would keep the fault.
         for name, frames, accept in (("wrong", wrong, False), ("wrong", wrong, True), ("right", right, False), ("right", right, True)):
@@ -445,7 +450,9 @@ def self_test():
                 with contextlib.redirect_stdout(io.StringIO()):
                     assert not stage_baseline(folder, accept, "no build", os.path.join(folder, "now"))
             assert len(calls) == (0 if name == "wrong" else 1), (name, accept, calls)
-        assert "replay.py" in calls[0][1]
+        assert "replay.py" in calls[0][0][1]
+        # The replays of the gate run with the core mods off.
+        assert calls[0][1].get("MGE_XE_CORE_MODS") == "0", calls[0][1]
     finally:
         build_missing, run_code = real_build_missing, real_run_code
     print("validate_retained self-test: ok")
@@ -528,7 +535,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
         return check(False, "no capture in the baseline folder")
     if not check_stream_rule(baseline):
         return False
-    env = {}
+    env = dict(GATE_ENV)
     accepted = os.path.join(baseline, "accepted")
     out, tour_out = picture_folders(baseline, accept, now)
     os.makedirs(out, exist_ok=True)
