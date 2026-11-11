@@ -205,12 +205,13 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         player.renderer.depth_format,
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
     );
+    let depth_view = Rc::new(depth.counted_view(&Default::default()));
     let mut frame = 0;
     for (tag, data) in &records {
         // Each frame up to the wanted one is drawn: the game can draw into a rendered texture
         // in one frame and use it in the frames after that.
         if frame <= wanted && !player.drawing() {
-            player.begin_frame(&target, Rc::new(depth.counted_view(&Default::default())), false);
+            player.begin_frame(&target, Rc::clone(&depth_view), false);
         }
         if player.feed(*tag, data) {
             if player.drawing() {

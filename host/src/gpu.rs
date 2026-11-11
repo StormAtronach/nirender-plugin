@@ -208,6 +208,26 @@ impl KeptGroup {
     }
 }
 
+/// The whole view of a texture, kept while the texture stays the same: a call with the same
+/// texture makes no view ([`crate::objects`]).
+#[derive(Default)]
+pub struct KeptView {
+    kept: Option<(wgpu::Texture, wgpu::TextureView)>,
+}
+
+impl KeptView {
+    /// The view of `texture`: the kept one for the same texture, else a new one, which is kept.
+    /// A new view counts at the line of the caller ([`crate::objects`]).
+    #[track_caller]
+    pub fn get(&mut self, texture: &wgpu::Texture) -> &wgpu::TextureView {
+        if self.kept.as_ref().is_none_or(|(kept, _)| kept != texture) {
+            let view = crate::objects::CreateView::counted_view(texture, &Default::default());
+            self.kept = Some((texture.clone(), view));
+        }
+        &self.kept.as_ref().expect("a view, kept or made above").1
+    }
+}
+
 /// Why a pass on the game's targets opened (`Player::open_pass`), for the census of the passes.
 #[derive(Clone, Copy)]
 pub enum PassReason {

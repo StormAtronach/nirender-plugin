@@ -684,6 +684,8 @@ impl App {
         };
         let (device, queue) = (&player.renderer.device, &player.renderer.queue);
         let size = (frame.texture.width(), frame.texture.height());
+        // The one view of the surface's picture (D310), for the window draw and the overlay.
+        let window_view = frame.texture.counted_view(&Default::default());
         let mut encoder = device.create_command_encoder(&Default::default());
         self.to_window.draw(
             device,
@@ -691,12 +693,13 @@ impl App {
             self.gamma.as_ref().filter(|_| player.gamma_ramp.is_some()),
             back_buffer,
             &frame.texture,
+            &window_view,
         );
         overlay.draw(
             device,
             queue,
             &mut encoder,
-            &frame.texture.counted_view(&Default::default()),
+            &window_view,
             size,
             Some(self.sign_step),
             &[],
@@ -1154,7 +1157,10 @@ impl ApplicationHandler for App {
                 // The picture goes into the window, through the gamma ramp of the device:
                 // exact at the window's size, else scaled with its aspect kept.
                 if let Some(frame) = frame.as_ref() {
-                    window_draw.draw(&device, encoder, gamma, back_buffer, &frame.texture);
+                    // The one view of the surface's picture (D310), for the window draw and
+                    // the overlay.
+                    let window_view = frame.texture.counted_view(&Default::default());
+                    window_draw.draw(&device, encoder, gamma, back_buffer, &frame.texture, &window_view);
                     // The debug overlay goes on the picture of the window, not into the
                     // back buffer: a picture file and a pixel read do not have it.
                     if let Some(overlay) = overlay {
@@ -1162,7 +1168,7 @@ impl ApplicationHandler for App {
                             &device,
                             &queue,
                             encoder,
-                            &frame.texture.counted_view(&Default::default()),
+                            &window_view,
                             (frame.texture.width(), frame.texture.height()),
                             None,
                             &lines,
@@ -1216,13 +1222,14 @@ impl ApplicationHandler for App {
                             | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
                     });
+                    let copy_view = copy.counted_view(&Default::default());
                     let mut encoder = device.create_command_encoder(&Default::default());
-                    super::window_pass::exact(&device, &mut encoder, gamma, back_buffer, &copy);
+                    super::window_pass::exact(&device, &mut encoder, gamma, back_buffer, &copy, &copy_view);
                     overlay.draw(
                         &device,
                         &queue,
                         &mut encoder,
-                        &copy.counted_view(&Default::default()),
+                        &copy_view,
                         (width, height),
                         None,
                         &lines,

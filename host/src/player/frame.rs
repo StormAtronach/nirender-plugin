@@ -64,6 +64,7 @@ impl Player {
             back_view: None,
             ms_color: None,
             ms_depth: None,
+            back_kept: None,
             pass_samples: 1,
             sent_in_part: false,
             last_picture: None,
@@ -304,7 +305,7 @@ impl Player {
         }
         self.close_pass();
         let (Some(multisample), Some(source), Some(target), Some(encoder)) = (
-            self.renderer.multisample.as_ref(),
+            self.renderer.multisample.as_mut(),
             self.back_view.as_ref(),
             self.color.as_ref(),
             self.encoder.as_mut(),
@@ -426,7 +427,10 @@ impl Player {
         self.renderer.record_written = 0;
         self.renderer.record_extras = 0;
         self.renderer.instance_extras = 0;
-        let back_view = Rc::new(color.counted_view(&Default::default()));
+        if self.back_kept.as_ref().is_none_or(|(kept, _)| kept != color) {
+            self.back_kept = Some((color.clone(), Rc::new(color.counted_view(&Default::default()))));
+        }
+        let back_view = Rc::clone(&self.back_kept.as_ref().unwrap().1);
         self.back_buffer = Some(color.clone());
         if self.renderer.samples > 1 {
             // The draws go into the multisampled targets; the colour resolves into the back
@@ -436,16 +440,18 @@ impl Player {
             if self
                 .ms_color
                 .as_ref()
-                .is_none_or(|ms| (ms.width(), ms.height(), ms.format()) != (width, height, color.format()))
+                .is_none_or(|(ms, _)| (ms.width(), ms.height(), ms.format()) != (width, height, color.format()))
             {
-                self.ms_color = Some(multisampled_texture(
+                let ms_color = multisampled_texture(
                     &self.renderer.device,
                     width,
                     height,
                     color.format(),
                     wgpu::TextureUsages::RENDER_ATTACHMENT,
                     self.renderer.samples,
-                ));
+                );
+                let view = Rc::new(ms_color.counted_view(&Default::default()));
+                self.ms_color = Some((ms_color, view));
                 self.ms_depth = Some(DepthTarget::new(multisampled_texture(
                     &self.renderer.device,
                     width,
@@ -455,10 +461,8 @@ impl Player {
                     self.renderer.samples,
                 )));
             }
-            self.color = Some(Rc::new(self.ms_color.as_ref().unwrap().counted_view(&Default::default())));
-            self.depth = Some(Rc::new(
-                self.ms_depth.as_ref().unwrap().texture.counted_view(&Default::default()),
-            ));
+            self.color = Some(Rc::clone(&self.ms_color.as_ref().unwrap().1));
+            self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().whole.clone()));
             self.back_view = Some(back_view);
         } else {
             self.color = Some(back_view);

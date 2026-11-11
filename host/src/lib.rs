@@ -951,8 +951,11 @@ struct Player {
     /// colour into, and the multisampled colour and depth targets that `color` and `depth`
     /// view. [`None`] with one sample. See `multisample.rs`.
     back_view: Option<Rc<wgpu::TextureView>>,
-    ms_color: Option<wgpu::Texture>,
+    ms_color: Option<(wgpu::Texture, Rc<wgpu::TextureView>)>,
     ms_depth: Option<DepthTarget>,
+    /// The back buffer of the last frame and its view, made once: the next frame with the same
+    /// back buffer takes the view again.
+    back_kept: Option<(wgpu::Texture, Rc<wgpu::TextureView>)>,
     /// The samples for each pixel of the targets of the pass that is open, for the pipelines.
     pass_samples: u32,
     /// A part of the frame in progress went to the GPU before its end, so the back buffer

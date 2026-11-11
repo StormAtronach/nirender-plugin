@@ -21,6 +21,8 @@ pub(crate) struct Multisample {
     depth_group: gpu::KeptGroup,
     color_layout: wgpu::BindGroupLayout,
     color_pipeline: wgpu::RenderPipeline,
+    /// The group of the colour load: a load of the same back buffer takes it again.
+    color_group: gpu::KeptGroup,
 }
 
 /// A triangle over the whole target, from the index of the vertex.
@@ -166,6 +168,7 @@ impl Multisample {
             depth_group: gpu::KeptGroup::default(),
             color_layout,
             color_pipeline,
+            color_group: gpu::KeptGroup::default(),
         }
     }
 
@@ -216,13 +219,13 @@ impl Multisample {
     /// Writes the picture of `source` (one sample) into every sample of `target` (the
     /// multisampled colour target).
     pub(crate) fn load_color(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::TextureView,
         target: &wgpu::TextureView,
     ) {
-        let group = gpu::frame_group(
+        let group = self.color_group.get(
             device,
             &wgpu::BindGroupDescriptor {
                 label: Some("colour load"),
