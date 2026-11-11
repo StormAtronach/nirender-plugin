@@ -87,7 +87,9 @@ E:\\nirender-keep\\merge-step\\merge-step-<commit>.log, where the data rule on b
 commit writes merge-step-<commit>-2.log, then -3, and so on: it never overwrites the log of an earlier round. It pushes nothing.
 
 A pass of the merge (every stage passed, against the accepted folder) closes the items that the merge subjects name (D180):
-a subject that ends with "(W<n>)" or "(W<n> <part>)", e.g. "(W96)" or "(W234 a)". The subjects are those of each merge
+a subject that ends with "(W<n>)" or "(W<n> <part>)", e.g. "(W96)" or "(W341 step A)". The item of a part keeps its part
+("W341 step A"): it closes that part, not the row, which can hold other parts that are still open (W357). Only a subject
+without a part closes the whole row. The subjects are those of each merge
 commit on the first-parent path from <tip> to <commit> and of <commit> itself, so one check of a batch of merges closes
 each of them (D183). A path with no merge commit with such a subject, to a <commit> that is no merge, gets a WARNING line
 before the round: a fast-forward closes only the item of <commit>. Each item appends one line to
@@ -141,9 +143,10 @@ LOG_FOLDER = "E:\\nirender-keep\\merge-step"
 CLOSES_FILE = os.path.join(LOG_FOLDER, "closes.tsv")
 CLOSES_HEADER = "time\titem\trepo\tcommit\tstages\tlog\tsubject"
 # The item of a merge subject: the subject ends with "(W<n>)" or "(W<n> <part>)", the form of the Coordinator's merge
-# subjects ("(W96)", "(W234 a)"). Any other subject names no item and closes nothing. A part that starts with "dropped" is
-# no part: master has "Merge: log pipe follow-ups W219 and W221 (W220 dropped)".
-ITEM = re.compile(r"\((W\d+)(?: (?!dropped\b)[^()]+)?\)$")
+# subjects ("(W96)", "(W341 step A)"). The item is the whole text in the parentheses, the part with it: a row with parts
+# closes one part at a time (W357). Any other subject names no item and closes nothing. A part that starts with "dropped"
+# is no part: master has "Merge: log pipe follow-ups W219 and W221 (W220 dropped)".
+ITEM = re.compile(r"\((W\d+(?: (?!dropped\b)[^()]+)?)\)$")
 # The tries of an append to the closes file while a reader holds it, and the wait between them.
 CLOSE_TRIES = 5
 CLOSE_WAIT_SECONDS = 0.5
@@ -518,9 +521,10 @@ def base_older_than_capture(names, results, reasons):
 
 
 def items_of(subject):
-    """The item that a merge subject names at its end, as a list of one, or no item."""
+    """The item that a merge subject names at its end, as a list of one, or no item. The item of a part keeps the part
+    ("W341 step A"); a row closes whole only from a subject without a part ("W341")."""
     match = ITEM.search(subject.strip())
-    return [match.group(1)] if match else []
+    return [" ".join(match.group(1).split())] if match else []
 
 
 def closing_commits(entries, tip):
@@ -1635,7 +1639,14 @@ def self_test():
 
         # The closing lines of the items (D180): only a subject that ends with "(W<n>)" or "(W<n> <part>)" names an item.
         assert items_of("Merge: a check that MWSE's vtable fills name their own slot (W93)") == ["W93"]
-        assert items_of("Merge: the second part (W234 a)") == ["W234"] and items_of("Merge: the crate half (W229 crate half) ") == ["W229"]
+        # W357: the item of a part keeps its part, so that a row with open parts does not close; a subject without a part
+        # closes the whole row.
+        assert items_of("Merge: the second part (W234 a)") == ["W234 a"]
+        assert items_of("Merge: the crate half (W229 crate half) ") == ["W229 crate half"]
+        assert items_of("Merge: d3d8 finds the plugin's exports by name (W173 line 3)") == ["W173 line 3"]
+        assert items_of("Merge: the pass report (W341 step A)") == ["W341 step A"]
+        assert items_of("Merge: the pass report, all steps (W341)") == ["W341"]
+        assert items_of("Merge: a part with two spaces (W341  step  A)") == ["W341 step A"]
         for no_item in ("Merge: W96 in the middle of the subject", "Merge: W96 in the middle (D161)", "Merge: dropped W220",
                         "Merge: log pipe follow-ups W219 and W221 (W220 dropped) and more", "Merge: lower case (w96)",
                         "Merge: log pipe follow-ups W219 and W221 (W220 dropped)", "Merge: a nested part (W234 (a))",
@@ -1673,7 +1684,7 @@ def self_test():
         # in the middle of a subject writes nothing.
         assert close([True] * 6, subject) == [], "a rerun wrote a second line"
         assert len(close([True] * 5, "Merge: part b (W93)", commit="abcdef0123456")) == 1
-        assert [written.split("\t")[1] for written in close([True] * 4, "Merge: the second part (W234 b)", commit="1111111111aa")] == ["W234"]
+        assert [written.split("\t")[1] for written in close([True] * 4, "Merge: the second part (W234 b)", commit="1111111111aa")] == ["W234 b"]
         assert close([True] * 6, "Merge: W96 in the middle of the subject", commit="3333333333") == []
         data = closes_bytes()
         assert data.count(b"\r\n") == 4 and data.count(CLOSES_HEADER.encode("ascii")) == 1 and b"\n" not in data.replace(b"\r\n", b""), data
@@ -1701,7 +1712,7 @@ def self_test():
         assert closing_commits([("t1t1t1t1t1tt", "0000", "Merge: a fast-forward (W98)")], "t1t1t1t1t1tt") == [("t1t1t1t1t1tt", "Merge: a fast-forward (W98)")]
         batch = closing_commits(entries, "m3m3m3m3m3mm")
         assert close_batch([True, False], batch) is None, "a failed batch wrote a close"
-        assert [line.split("\t")[1:4] for line in close_batch([True] * 6, batch)] == [["W96", PLUGIN_NAME, "m1m1m1m1m1"], ["W97", PLUGIN_NAME, "m2m2m2m2m2"]], "a batch"
+        assert [line.split("\t")[1:4] for line in close_batch([True] * 6, batch)] == [["W96", PLUGIN_NAME, "m1m1m1m1m1"], ["W97 a", PLUGIN_NAME, "m2m2m2m2m2"]], "a batch"
         assert close_batch([True] * 6, batch) == [], "a rerun of the batch wrote again"
         assert close_batch([True] * 6, [("m4m4m4m4m4mm", "Merge: three (W99)"), ("m4m4m4m4m4mm", "Merge: three (W99)")]) != [], "one line, not two"
         assert closes_bytes().count(b"\tW99\t") == 1, "one commit and item twice in a batch wrote two lines"
@@ -1733,7 +1744,7 @@ def self_test():
         history_tip = in_history("rev-parse", "HEAD")
         path, warning = closing_merges(history, history_base, history_tip)
         assert [subject for _, subject in path] == ["Merge: one (W96)", "Merge: two (W97 a)"], path
-        assert path[-1][0] == history_tip and [items_of(subject) for _, subject in path] == [["W96"], ["W97"]]
+        assert path[-1][0] == history_tip and [items_of(subject) for _, subject in path] == [["W96"], ["W97 a"]]
         assert warning is None, warning
         # A fast-forward of a branch with two commits: only the tip closes, and the check warns.
         in_history("switch", "-q", "-c", "three")
