@@ -11,6 +11,9 @@ use crate::*;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
+/// The copy's name in the census and the pass report.
+const TILE_COPY: &str = "map tile copy";
+
 /// A read of the pixels of a tile that waits for the GPU.
 pub(crate) struct TileRead {
     ticket: u32,
@@ -91,7 +94,9 @@ impl Player {
         let format = d3d_format.and_then(d3d::texture_format).filter(|&(format, block, bytes)| {
             block == 0 && bytes == 4 && matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm)
         });
+        crate::pass_report::on_request(&[TILE_COPY]);
         let (Some(source), Some(d3d_format), Some((format, _, _))) = (source, d3d_format, format) else {
+            crate::pass_report::note_skipped(TILE_COPY, "no target, or a texture of another format");
             self.renderer.counts.tiles_lost += 1;
             return;
         };
@@ -135,7 +140,7 @@ impl Player {
                 label: Some("map tile copy"),
             });
             {
-                crate::gpu::note_other_pass();
+                crate::gpu::note_other_pass(TILE_COPY);
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("map tile copy"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {

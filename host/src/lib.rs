@@ -549,6 +549,7 @@ pub mod gpu;
 mod influences;
 pub mod material;
 mod overlay;
+pub mod pass_report;
 mod pool;
 mod ticks;
 
@@ -1122,6 +1123,8 @@ struct Player {
     mark_work: [u64; 4],
     /// The census of the passes at the last mark (`gpu::passes`).
     mark_passes: [u64; gpu::PASS_COUNTS],
+    /// The other passes by name at the last mark (`pass_report::passes`).
+    mark_named: std::collections::BTreeMap<&'static str, u64>,
     mark_errors: u64,
     /// The groups that the pass of the game has now.
     bound: BoundGroups,

@@ -6,6 +6,9 @@
 
 use super::*;
 
+/// The pass's name in the census and the pass report.
+pub(crate) const NAME: &str = "gamma ramp";
+
 /// The values of a ramp: red, green and blue, 256 each (a `D3DGAMMARAMP`).
 pub(crate) const RAMP_VALUES: usize = 768;
 
@@ -172,7 +175,7 @@ impl Gamma {
                 ],
             },
         );
-        crate::gpu::note_other_pass();
+        crate::gpu::note_other_pass(NAME);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("gamma ramp"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

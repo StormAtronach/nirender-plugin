@@ -8,6 +8,9 @@
 
 use super::*;
 
+/// The pass's name in the census, the pass report and the GPU time.
+pub(crate) const NAME: &str = "depth: late sorted blends into the world depth";
+
 pub(crate) struct LateDepth {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -120,7 +123,7 @@ impl LateDepth {
                 ],
             },
         );
-        crate::gpu::note_other_pass();
+        crate::gpu::note_other_pass(NAME);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("late depth"),
             color_attachments: &[],

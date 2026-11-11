@@ -8,6 +8,9 @@
 use super::*;
 use wgpu::util::DeviceExt;
 
+/// The scaled pass's name in the census and the pass report.
+const SCALED: &str = "scaled picture";
+
 /// The rectangle of the window that the picture covers: x, y, width, height. The largest with
 /// the picture's aspect, centred, in whole pixels; the picture's own size and place when the
 /// window has its size. A window or a picture with no pixels gives the whole window.
@@ -181,7 +184,7 @@ impl Scale {
                 ],
             },
         );
-        crate::gpu::note_other_pass();
+        crate::gpu::note_other_pass(SCALED);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("scaled picture"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -222,15 +225,18 @@ pub(crate) fn exact(
 ) {
     match gamma {
         Some(gamma) => gamma.draw(device, encoder, back_buffer, window),
-        None => encoder.copy_texture_to_texture(
-            back_buffer.as_image_copy(),
-            window.as_image_copy(),
-            wgpu::Extent3d {
-                width: back_buffer.width().min(window.width()),
-                height: back_buffer.height().min(window.height()),
-                depth_or_array_layers: 1,
-            },
-        ),
+        None => {
+            crate::pass_report::note_skipped(gamma::NAME, "the identity ramp: a copy");
+            encoder.copy_texture_to_texture(
+                back_buffer.as_image_copy(),
+                window.as_image_copy(),
+                wgpu::Extent3d {
+                    width: back_buffer.width().min(window.width()),
+                    height: back_buffer.height().min(window.height()),
+                    depth_or_array_layers: 1,
+                },
+            )
+        }
     }
 }
 
@@ -271,8 +277,10 @@ impl ToWindow {
         // Only a window of the picture's size: a larger one (one more column) would keep
         // undefined pixels beside the copy, and the scaled draw clears them black.
         if (window.width(), window.height()) == picture {
+            crate::pass_report::note_skipped(SCALED, "the window has the picture's size");
             return exact(device, encoder, gamma, back_buffer, window);
         }
+        crate::pass_report::note_skipped(gamma::NAME, "the scaled picture takes the ramp");
         let scale = self.scale.get_or_insert_with(|| Scale::new(device, window.format()));
         scale.draw(device, encoder, back_buffer, window, rect, gamma.map(gamma::Gamma::table));
     }

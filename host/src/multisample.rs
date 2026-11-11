@@ -13,6 +13,9 @@
 
 use super::*;
 
+/// The load's name in the census and the pass report.
+pub(crate) const COLOUR_LOAD: &str = "colour load";
+
 pub(crate) struct Multisample {
     depth_layout: wgpu::BindGroupLayout,
     depth_pipeline: wgpu::RenderPipeline,
@@ -185,7 +188,8 @@ impl Multisample {
                 }],
             },
         );
-        crate::gpu::note_other_pass();
+        // A resolve runs inside a copy of the depth, which notes itself.
+        crate::gpu::note_inner_pass("depth resolve");
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("depth resolve"),
             color_attachments: &[],
@@ -229,7 +233,7 @@ impl Multisample {
                 }],
             },
         );
-        crate::gpu::note_other_pass();
+        crate::gpu::note_other_pass(COLOUR_LOAD);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("colour load"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

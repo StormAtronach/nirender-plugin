@@ -2839,7 +2839,8 @@ impl Player {
         // into it ([`late_depth`]): the depth before the run here, after it at the end.
         let late = self.world_depth_kept && !deferred.is_empty();
         if late {
-            self.copy_depth(3, "depth: before late sorted blends");
+            crate::pass_report::on_request(&[super::player::LATE_BEFORE]);
+            self.copy_depth(3, super::player::LATE_BEFORE);
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         if crate::dump_wanted() != 0 {
