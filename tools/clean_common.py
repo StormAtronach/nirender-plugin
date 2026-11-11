@@ -29,14 +29,21 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPOS_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+sys.path.insert(0, HERE)
+import common  # noqa: E402
+
+# The folder of the repositories: the one of the main checkout of this repository, also for a tool of a worktree.
+REPOS_ROOT = os.path.dirname(common.main_checkout()) if common.main_checkout() else common.SIBLINGS
 KEEP_ROOT = "E:\\nirender-keep"
 LOG = os.path.join(KEEP_ROOT, "clean-worktrees.log")
-DOCS = os.path.join(REPOS_ROOT, "moreFPS", "docs")
+# The docs that cite the runs: those of the docs main checkout (common.find_docs without the key "docs"). A run cited
+# only on docs main must stay when the key names a branch tree, and never a stale docs worktree.
+DOCS = os.path.join(common.find_docs(common.main_checkout(), None), "docs")
 # The notes of the sessions also name runs.
 MEMORY = os.path.join(os.path.expanduser("~"), ".claude", "projects", "c--Users-ivan--source-repos-MWSE-MWSE", "memory")
 COMMIT_REPOS = [os.path.join(REPOS_ROOT, name) for name in ("nirender-plugin", "MGE-XE-G7-render-link", os.path.join("MWSE", "MWSE"), "moreFPS")]

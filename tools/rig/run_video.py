@@ -14,9 +14,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the shared tools in tools/
 import session
-from common import SIBLINGS, local
+from common import docs_place, local, local_file_hint
 
-sys.path.insert(0, local("obs_record", os.path.join(SIBLINGS, "moreFPS", "docs", "scripts", "obs-record")))
+OBS_RECORD = local("obs_record", docs_place("docs", "scripts", "obs-record"))
+if not os.path.isfile(os.path.join(OBS_RECORD, "obs_record.py")):
+    raise SystemExit("run_video.py: no obs_record.py in %s. Set the key \"docs\" (a docs tree) or \"obs_record\" (the folder) in %s." % (
+        OBS_RECORD, local_file_hint()))
+sys.path.insert(0, OBS_RECORD)
 import obs_record  # noqa: E402
 
 TAG = "[nirender.video] "
