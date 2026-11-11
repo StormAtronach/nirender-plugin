@@ -208,6 +208,12 @@ pub struct FrameParameters {
     /// pixel (`world_lights_here` in the shader), not the lights the engine chose for it.
     /// `MGE_XE_LIGHTS=world` makes it true.
     pub world_lights: bool,
+    /// The debug view of the frame, by the ids of the debug-views design: 0 none, 1 the light
+    /// of each draw ([`FrameParameters::lights_view`]), 2 the shadow layers, 3 the shadow map,
+    /// 4 the water, 5 the post chain. A shader key that removes invisible work is off while a
+    /// view of its input is on: with the lights view a draw keeps the lights its colour cannot
+    /// take (`light_keys::colour_takes_no_light`), so that the view shows where they reach.
+    pub debug_view: u32,
     /// The reach of the extension's shadow map in units of the world, 0 without shadows:
     /// the plugin animates what the map reaches, so that a shadow moves while its caster
     /// is out of view.
@@ -216,6 +222,13 @@ pub struct FrameParameters {
     /// `views.full_tier_max`, up to 32, the view slots): see `engine::full_tier`. [`None`] keeps the number the
     /// player has (1 at the start).
     pub full_tier_max: Option<usize>,
+}
+
+impl FrameParameters {
+    /// The frame shows the light of each draw ([`FrameParameters::debug_view`] 1).
+    pub fn lights_view(&self) -> bool {
+        self.debug_view == 1
+    }
 }
 
 /// The lights of the world of a frame, for an extension that lights what it draws as the
@@ -599,7 +612,9 @@ pub trait Extension {
     /// into the pass: the lights, the ambient light, the fog. Called for each draw of the
     /// world of the game into the back buffer with a perspective projection, when
     /// [`FrameParameters::shade`] is true. The extension sets bit 1 of `counts[3]` for a draw
-    /// that its shader functions shade; bit 2 and the bits from 16 are its own.
+    /// that its shader functions shade; bit 2 and the bits from 16 are its own, but
+    /// [`crate::NO_LIGHTS_BIT`], which the renderer sets after this call for a
+    /// draw lit for each pixel with no lights: its shader may leave its light loop out.
     fn shade(&mut self, _draw: &mut DrawData, _lights: &mut [LightData], _facts: &DrawFacts) {}
 
     /// The shade of the retained table for a frame, one time at the start of its world, when

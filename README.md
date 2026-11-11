@@ -234,6 +234,12 @@ replays.
   baseline gate replays with both.
 - `MGE_XE_LIGHTS=world`: a lit draw of the world takes the point lights of the world that
   reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose for it.
+- `NIRENDER_BLIND_LIGHT_KEY=0`: a draw lit for each pixel whose colour cannot take light (the
+  diffuse and the ambient colours from the material and black) keeps its lights. On by
+  default, the draw drops them (`host/src/light_keys.rs`); the picture is the same.
+- `NIRENDER_ZERO_LIGHT_KEY=0`: a draw lit for each pixel with no lights keeps the light loop in
+  its shader. On by default, the draw takes `NO_LIGHTS_BIT` and its stage key leaves the loop
+  out; the picture is the same.
 - `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),

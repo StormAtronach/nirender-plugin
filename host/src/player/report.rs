@@ -75,6 +75,7 @@ impl Player {
         println!("{}", self.renderer.held_line());
         println!("{}", self.renderer.stage_shaders.report());
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
+        println!("light keys: {} draws whose colour cannot take light dropped their lights; {} draws with no lights had no light loop", c.blind_light_draws, c.zero_light_draws);
         println!("instances: {} records and {} moves ({} checked against a full record, {} different), {} draws from them, {} draws of an instance not known, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_moves, c.moves_checked, c.moves_different, c.instance_draws, c.instance_missing, c.merged_blends);
         println!(
             "sorted queue: {} places of the table's blends drawn in the engine's order, {} of an instance not known, {} outside the world scene, {} of an instance the table does not sort; {} sorted blends of the table without a place, not displayed by the engine ({} of them in frames with no place at all); {} places after the frame's first sorted blends; {} items of the table's blends before a depth clear after the world (the queue still open); {} instances whose sort mark differs from the rule of their material",

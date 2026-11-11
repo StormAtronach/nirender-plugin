@@ -65,8 +65,9 @@ struct Draw {
     // bit 4, the draw is the sky dome and the extension gives its shape and its colour; bit
     // 8, the extension gives the colour and the draw keeps its alpha (the shadow of a moon);
     // bit 128, the extension makes the light for each pixel: the vertex stage makes no light
-    // and the colour is not kept between 0 and 1 between the stages; bit 2 and the
-    // bits from 16 (but 128) are for the extension.
+    // and the colour is not kept between 0 and 1 between the stages; bit 32768, this crate's
+    // NO_LIGHTS_BIT: a draw lit for each pixel with no lights; bit 2 and the bits from 16
+    // (but 128 and 32768) are for the extension.
     counts: vec4u,
     // The lights of the draw in `lights`: the first and the number.
     light_range: vec4u,

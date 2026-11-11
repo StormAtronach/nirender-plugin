@@ -395,10 +395,20 @@ impl Player {
                 shaded = true;
             }
         }
+        // The exact keys of the light (`light_keys`), from this frame's record. A draw whose
+        // colour cannot take light drops its lights: none in the clusters' masks, none of the
+        // world. The extension still gets them as lights of the frame. A view that shows the
+        // light of each draw keeps them (`FrameParameters::debug_view`).
+        let light_view = self.parameters.as_ref().is_some_and(FrameParameters::lights_view);
+        let blind = shaded && !light_view && crate::switches::switches().blind_light_key && crate::light_keys::colour_takes_no_light(&draw_data);
+        if blind {
+            draw_data.light_range[1] = 0;
+            renderer.counts.blind_light_draws += 1;
+        }
         // The lights of a draw have keys: they are candidates for the clusters of the frame,
         // for the extension (`FrameLights`), and the draw that the extension shades can take
         // its light from them.
-        let masked = shaded && renderer.clusters.on && !renderer.clusters.world;
+        let masked = shaded && renderer.clusters.on && !renderer.clusters.world && !blind;
         let extension_lights = self.parameters.as_ref().is_some_and(|p| p.lights) && world;
         let first = draw_data.light_range[0] as usize;
         let relative = shape.relative && self.stream.origin.is_some();
@@ -419,8 +429,13 @@ impl Player {
         }
         // The lights of the world (`MGE_XE_LIGHTS=world`): a lit draw of the world, relative to
         // the camera, takes the point lights of its pixel's cluster in place of its own.
-        if shaded && world && relative && renderer.clusters.world && !derived.no_lights {
+        if shaded && world && relative && renderer.clusters.world && !derived.no_lights && !blind {
             draw_data.light_range[3] |= crate::WORLD_LIGHTS_BIT;
+        }
+        // A draw lit for each pixel with no lights of any source: its shader has no light loop.
+        if crate::switches::switches().zero_light_key && crate::light_keys::has_no_lights(&draw_data) {
+            draw_data.counts[3] |= crate::NO_LIGHTS_BIT;
+            renderer.counts.zero_light_draws += 1;
         }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
         let clock = ticks::Clock::now();

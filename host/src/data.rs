@@ -194,8 +194,8 @@ pub struct DrawData {
     pub more: [u32; 4],
     /// The number of lights, the number of stages, the ambient source, and bits: 1 the
     /// extension shades the draw, 4 the sky dome, 8 the shadow of a moon, 128 the colour is
-    /// not kept between 0 and 1 between the texture stages; 2 and from 16 (but 128) are the
-    /// extension's own.
+    /// not kept between 0 and 1 between the texture stages, 32768 the draw has no lights
+    /// ([`crate::NO_LIGHTS_BIT`]); 2 and from 16 (but 128 and 32768) are the extension's own.
     pub counts: [u32; 4],
     /// The lights of the draw in the light buffer of the frame: the first and the number.
     /// z: the first bone of a skinned draw in the palette buffer of the frame. w: bit 1
@@ -493,6 +493,10 @@ pub(crate) struct Counts {
     pub(crate) shape_missing: u32,
     /// The shape draws that cannot change the picture, not drawn (`material::keeps_picture`).
     pub(crate) shape_keeping: u32,
+    /// The draws that dropped the lights their colour cannot take, and the draws with no
+    /// lights ([`crate::NO_LIGHTS_BIT`]): the keys of [`crate::light_keys`].
+    pub(crate) blind_light_draws: u32,
+    pub(crate) zero_light_draws: u32,
     /// The shapes with a rule of the engine that this program does not follow: a material
     /// without the smooth flag (the game sets `D3DSHADE_FLAT` for it), and a material with
     /// the specular flag (the game sets `D3DRS_SPECULARENABLE`).
