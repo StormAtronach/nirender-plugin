@@ -773,7 +773,7 @@ unsafe fn record(
         at += part.len();
     }
     let tail = &all[..];
-    let mut words = [0u32; 36];
+    let mut words = [0u32; capture::tag::SHAPE_HEAD_WORDS];
     words[0] = geometry;
     words[1] = material;
     words[2] = flags;

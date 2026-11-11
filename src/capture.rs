@@ -151,6 +151,8 @@ pub mod tag {
     /// the game skins in software has a bit in its format, and after the indexes the count and
     /// the entries of its bone influences. See `geometry_stream`.
     pub const GEOMETRY: u32 = 18;
+    /// The words of the head of a [`GEOMETRY`], before the strip lengths.
+    pub const GEOMETRY_HEAD_WORDS: usize = 8;
     /// The material of a shape as facts: the handle (a hash of the words), then the words.
     /// See `material_stream`.
     pub const MATERIAL: u32 = 19;
@@ -170,6 +172,8 @@ pub mod tag {
     /// quads. A record with the flag `LINES` is the draw of lines: the helper draws its
     /// geometry as a line list. See `shape_stream`.
     pub const SHAPE: u32 = 20;
+    /// The words of the head of a [`SHAPE`], before the keys of the lights.
+    pub const SHAPE_HEAD_WORDS: usize = 36;
     /// A light of the light manager: its key (the index of the light), then its
     /// `D3DLIGHT8` (26 words). Sent when the light is new or changed. See `light_stream`.
     pub const LIGHT: u32 = 21;
@@ -185,6 +189,8 @@ pub mod tag {
     /// doubles), the stored translation (3 floats), the 14 colours of its material; then its
     /// name. The same id again replaces the instance.
     pub const INSTANCE: u32 = 23;
+    /// The words of an [`INSTANCE`] before its name.
+    pub const INSTANCE_HEAD_WORDS: usize = 44;
     /// A draw of a retained instance, in the place of a shape record: id, ambient, flags,
     /// the stages of the texture effects (36 words, as in [`SHAPE`]) when the flags have
     /// `EFFECTS`, the fog (4 words) when the flags have `FOG`, the number of lights, then
@@ -264,18 +270,26 @@ pub mod tag {
     /// (3 floats) and the world bound (4 floats). The other values stay those of its last
     /// [`INSTANCE`].
     pub const INSTANCE_MOVE: u32 = 40;
+    /// The words of an [`INSTANCE_MOVE`].
+    pub const INSTANCE_MOVE_WORDS: usize = 26;
     /// The state of the UV controller of a geometry (`geometry_stream::send_uv`): the handle,
     /// the unique id, the texture set in the low half and the flags in the high half (1: the
     /// state of the vertices of the `GEOMETRY` record just before), then the U offset, the V
     /// offset, the U tiling and the V tiling of the controller.
     pub const GEOMETRY_UV: u32 = 41;
+    /// The words of a [`GEOMETRY_UV`].
+    pub const GEOMETRY_UV_WORDS: usize = 7;
     /// The targets of the morph controller of a geometry (`geometry_stream::send_morph_targets`):
     /// the handle, the unique id, the number of targets, the vertices of a target; then the
     /// positions of each target (3 floats a vertex), one target after the other.
     pub const MORPH_TARGETS: u32 = 42;
+    /// The words of the head of a [`MORPH_TARGETS`], before the positions.
+    pub const MORPH_TARGETS_HEAD_WORDS: usize = 4;
     /// The weights of the targets for the new revision of a geometry (`send_morph_weights`):
     /// the handle, the unique id, the number of weights, then the weights.
     pub const MORPH_WEIGHTS: u32 = 43;
+    /// The words of the head of a [`MORPH_WEIGHTS`], before the weights.
+    pub const MORPH_WEIGHTS_HEAD_WORDS: usize = 3;
     /// The game made its renderer again at a new size (`TES3Game::restartRenderer`: its
     /// Options menu, or a resize of its window): the width and the height of the picture and
     /// the game's window, as the HEADER has them. The helper makes its back buffer again.
@@ -295,6 +309,8 @@ pub mod tag {
     /// place of the camera as the engine stores it (3 floats), and the texture matrix of the stage
     /// that the engine's callbacks make from them (16 floats).
     pub const EFFECT_TURN_CHECK: u32 = 47;
+    /// The words of an [`EFFECT_TURN_CHECK`].
+    pub const EFFECT_TURN_CHECK_WORDS: usize = 32;
     /// The plugin forgot the chain of an effect that lit nothing for a while (`effect_chain`): its
     /// id. A later display sends the chain again.
     pub const EFFECT_CHAIN_GONE: u32 = 48;
@@ -1802,7 +1818,7 @@ pub const GAMMA_RAMP_BYTES: usize = 3 * 256 * core::mem::size_of::<u16>();
 static GAMMA: LockCell<Option<Vec<u8>>> = LockCell::new(None);
 
 /// The device has a new gamma ramp (`SetGammaRamp`): kept for `gamma_ramp_now`, and sent.
-pub unsafe fn gamma_ramp(ramp: &[u8]) {
+pub unsafe fn gamma_ramp(ramp: &[u8; GAMMA_RAMP_BYTES]) {
     let lock = crate::sync::device_lock();
     *GAMMA.get(&lock) = Some(ramp.to_vec());
     write(tag::GAMMA_RAMP, &[ramp]);
@@ -2157,33 +2173,30 @@ pub const OBJECT_HAS_MATERIAL: u32 = 0x200;
 
 /// A shape record. See [`tag::SHAPE`]. `tail` and `bytes` follow the lights: the bones of a
 /// skinned shape, or the particle words and the particles.
-pub unsafe fn shape(head: &[u32], lights: &[u32], tail: &[u32], bytes: &[u8]) {
+pub unsafe fn shape(head: &[u32; tag::SHAPE_HEAD_WORDS], lights: &[u32], tail: &[u32], bytes: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::SHAPE, &[words(head), words(lights), words(tail), bytes]);
 }
 
 /// An instance record. See [`tag::INSTANCE`].
-pub unsafe fn instance(head: &[u32], name: &[u8]) {
+pub unsafe fn instance(head: &[u32; tag::INSTANCE_HEAD_WORDS], name: &[u8]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE, &[words(head), name]);
 }
 
 /// The targets of a morph controller: `parts` go into the ring one after the other. See
 /// [`tag::MORPH_TARGETS`].
-pub unsafe fn morph_targets(parts: &[&[u8]]) {
+pub unsafe fn morph_targets(head: &[u32; tag::MORPH_TARGETS_HEAD_WORDS], targets: &[&[u8]]) {
     let _lock = crate::sync::device_lock();
-    write(tag::MORPH_TARGETS, parts);
+    let mut parts = vec![words(head)];
+    parts.extend_from_slice(targets);
+    write(tag::MORPH_TARGETS, &parts);
 }
 
 /// The weights of a morph. See [`tag::MORPH_WEIGHTS`].
-pub unsafe fn morph_weights(head: &[u32], weights: &[f32]) {
+pub unsafe fn morph_weights(head: &[u32; tag::MORPH_WEIGHTS_HEAD_WORDS], weights: &[f32]) {
     let _lock = crate::sync::device_lock();
     write(tag::MORPH_WEIGHTS, &[words(head), float_bytes(weights)]);
-}
-
-/// The bytes of a list of words, for the head of a record made of parts.
-pub fn word_bytes(values: &[u32]) -> &[u8] {
-    words(values)
 }
 
 fn float_bytes(values: &[f32]) -> &[u8] {
@@ -2215,19 +2228,19 @@ pub unsafe fn effect_chain_gone(id: u32) {
 /// # Safety
 ///
 /// No condition of its own: the function reads no engine memory.
-pub unsafe fn effect_turn_check(record: &[u32]) {
+pub unsafe fn effect_turn_check(record: &[u32; tag::EFFECT_TURN_CHECK_WORDS]) {
     let _lock = crate::sync::device_lock();
     write(tag::EFFECT_TURN_CHECK, &[words(record)]);
 }
 
 /// A state of a UV controller. See [`tag::GEOMETRY_UV`].
-pub unsafe fn geometry_uv(head: &[u32]) {
+pub unsafe fn geometry_uv(head: &[u32; tag::GEOMETRY_UV_WORDS]) {
     let _lock = crate::sync::device_lock();
     write(tag::GEOMETRY_UV, &[words(head)]);
 }
 
 /// A move of an instance. See [`tag::INSTANCE_MOVE`].
-pub unsafe fn instance_move(head: &[u32]) {
+pub unsafe fn instance_move(head: &[u32; tag::INSTANCE_MOVE_WORDS]) {
     let _lock = crate::sync::device_lock();
     write(tag::INSTANCE_MOVE, &[words(head)]);
 }
@@ -2427,7 +2440,13 @@ pub unsafe fn material(handle: u32, record: &[u32]) {
 
 /// A geometry record. See [`tag::GEOMETRY`]. `list` is empty, or the count and the entries of the
 /// bone influences of a shape that the game skins in software.
-pub unsafe fn geometry(head: &[u32], lengths: &[u8], vertices: &[u8], indexes: &[u8], list: &[u8]) {
+pub unsafe fn geometry(
+    head: &[u32; tag::GEOMETRY_HEAD_WORDS],
+    lengths: &[u8],
+    vertices: &[u8],
+    indexes: &[u8],
+    list: &[u8],
+) {
     let _lock = crate::sync::device_lock();
     write(tag::GEOMETRY, &[words(head), lengths, vertices, indexes, list]);
 }

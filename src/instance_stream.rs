@@ -1728,7 +1728,7 @@ pub unsafe fn draw(
             | if gpu { BLOCK } else { 0 }
             | if skinned { crate::shape_stream::SKINNED } else { 0 }
             | if sorted { SORTED_BLEND } else { 0 };
-        let mut words = [0u32; 44];
+        let mut words = [0u32; capture::tag::INSTANCE_HEAD_WORDS];
         words[0] = id;
         words[1] = instance.class;
         words[2] = flags;
@@ -1808,7 +1808,7 @@ fn compact_moves_check() -> bool {
 /// Sends the `INSTANCE_MOVE` record of a sent instance: its rotation, its exact translation,
 /// its stored translation and its bound.
 unsafe fn send_move(instance: &Instance, exact: [f64; 3]) {
-    let mut words = [0u32; 26];
+    let mut words = [0u32; capture::tag::INSTANCE_MOVE_WORDS];
     words[0] = instance.id;
     words[1..13].copy_from_slice(&instance.rotation);
     for (i, value) in exact.iter().enumerate() {
@@ -1829,7 +1829,7 @@ unsafe fn send_instance(mt: &MainThread, shape: usize, instance: &Instance, exac
         | BLOCK
         | if instance.skinned { crate::shape_stream::SKINNED } else { 0 }
         | if sorted { SORTED_BLEND } else { 0 };
-    let mut words = [0u32; 44];
+    let mut words = [0u32; capture::tag::INSTANCE_HEAD_WORDS];
     words[0] = instance.id;
     words[1] = instance.class;
     words[2] = flags;

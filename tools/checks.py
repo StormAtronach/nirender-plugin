@@ -13,6 +13,9 @@ The checks of each list:
 - `check_contract.py`: `contract/mge_render_link.h` against `src/link.rs`; with `--mge` (the MGE XE
   list): also each export of the plugin that d3d8.dll looks up by name against the plugin's
   export of that name.
+- `check_stream_tags.py`: the tag numbers of the plugin's writer (`src/capture.rs`) against the
+  helper's reader (`host/src/tag.rs`), and the fixed length of each record against the reader's
+  `least_length`.
 - `check_mwse_native.py`: the plugin's and MGE XE's copies of MWSE's native ABI against MWSE's
   header.
 - `check_mwse_vtable_fills.py`: each vtable slot that MWSE fills from a member function gets the
@@ -72,6 +75,9 @@ CHECKS = {
     "mge readme": (PLUGIN / "tools" / "check_readme.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     "contract": (PLUGIN / "tools" / "check_contract.py", PLUGIN),
     "contract parsing": (PLUGIN / "tools" / "check_contract.py", PLUGIN, ["--self-test"]),
+    # The tags and the fixed record lengths of the plugin's writer against the helper's reader.
+    "stream tags": (PLUGIN / "tools" / "check_stream_tags.py", PLUGIN),
+    "stream tags parsing": (PLUGIN / "tools" / "check_stream_tags.py", PLUGIN, ["--self-test"]),
     "mge contract": (PLUGIN / "tools" / "check_contract.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     # The version handshake: one home for each format number and each layout constant of the
     # stream.
@@ -131,7 +137,7 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
