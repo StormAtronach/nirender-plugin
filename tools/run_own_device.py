@@ -1814,7 +1814,7 @@ def add_symbols(mge_build, plugin_dll, add=symbols.add):
     binaries = [os.path.join(mge_build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")]
     lines = [add(symbols.build_name(mge_build), binaries, [os.path.join(PDB_KEEP, folder_name)])]
     if plugin_dll and os.path.isfile(plugin_dll):
-        lines.append(add("plugin-" + symbols.md5_of(plugin_dll)[:8], [plugin_dll]))
+        lines.append(add("plugin-" + symbols.md5_of(plugin_dll)[:8], [plugin_dll], [os.path.join(PDB_KEEP, folder_name)]))
     return lines
 
 
@@ -1834,7 +1834,8 @@ def self_test_add_symbols():
         assert add_symbols(build + os.sep, plugin, add) == ["symbols: +0", "symbols: +0"]
         assert calls[0] == ("f231", [os.path.join(build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")],
                             [os.path.join(PDB_KEEP, "f231")]), calls[0]
-        assert calls[1] == ("plugin-90015098", [plugin]), calls[1]
+        # A play set's plugin pdb is in the set's pdb folder, not beside its dll (the Reviewer's verdict 204).
+        assert calls[1] == ("plugin-90015098", [plugin], [os.path.join(PDB_KEEP, "f231")]), calls[1]
         # A run without the plugin, or with no file at its path, adds the build only.
         calls.clear()
         assert len(add_symbols(build, None, add)) == 1 and len(add_symbols(build, plugin + "x", add)) == 1 and len(calls) == 2

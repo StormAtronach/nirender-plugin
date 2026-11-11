@@ -258,7 +258,8 @@ def stored(store, entry):
 def missing(store, live):
     """The entries that a live transaction names and the store has no pdb for, as "build: name\\key". symstore writes
     the transaction first and copies the pdbs after it, so an add that is stopped (the timeout of run_symstore)
-    leaves such entries (W352: an add of 5 pdbs stopped at 0.15 to 0.8 s named 5 and held 4)."""
+    leaves such entries (W352: an add of 5 pdbs stopped at 0.15 to 0.8 s named 5 and held 4). A pdb file that was
+    only partly copied counts as held: this finds a missing file, not a cut one."""
     return ["%s: %s" % (transaction.version or transaction.id, entry)
             for transaction in live for entry in sorted(transaction.keys) if not stored(store, entry)]
 
@@ -746,7 +747,11 @@ def main():
     elif args.command == "pending":
         print(add(None, []))
     elif args.command == "status":
-        store = symbol_store()
+        try:
+            store = symbol_store()
+        except ImportError as error:
+            print("symbols: no harness at %s: %s" % (HARNESS_DIR, error))
+            return 1
         print(status(store, BUDGET, KEEP_LIST) if store else "symbols: the harness at %s names no SYMBOL_STORE" % HARNESS_DIR)
     else:
         parser.error("it needs a command, or --self-test")
