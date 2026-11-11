@@ -273,13 +273,14 @@ pub unsafe fn send_checks(t: &MainThread, camera: usize) {
             .iter()
             .all(|&node| rd::<u16>(node, AV::flags) & DISPLAYED != 0)
         {
-            let mut words = vec![effect as u32];
-            words.extend_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
-            words.extend_from_slice(&rd::<[u32; 3]>(effect, TE::worldProjTrans));
-            words.extend_from_slice(&rd::<[u32; 3]>(camera, AV::worldTransform_translation));
+            let mut words = [0u32; crate::capture::tag::EFFECT_TURN_CHECK_WORDS];
+            words[0] = effect as u32;
+            words[1..10].copy_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
+            words[10..13].copy_from_slice(&rd::<[u32; 3]>(effect, TE::worldProjTrans));
+            words[13..16].copy_from_slice(&rd::<[u32; 3]>(camera, AV::worldTransform_translation));
             // The check compares the turned projection only: no effect state, so no stage count
             // of a pass. The words are zeros when the effect has no device texture.
-            words.extend_from_slice(
+            words[16..].copy_from_slice(
                 &crate::ports::texture_pass_b::effect_stage_words(crate::engine::renderer(), effect, 0)[2..],
             );
             crate::capture::effect_turn_check(&words);

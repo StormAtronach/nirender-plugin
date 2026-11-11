@@ -606,8 +606,9 @@ mod tests {
     /// inside a ported function must be in [`ports::CODE_PATCH_RECORDS`], and the census must
     /// follow it with the option on (the bytes of the record) and off (the bytes of
     /// [`NIRENDER_VANILLA_EXE`], or `vanilla_exe` of `local.json`). Skipped when no place is
-    /// named: the patch file is not ours to ship. A named place whose file cannot be read fails
-    /// the test, so that a check that did not run never passes.
+    /// named: the patch file is not ours to ship. A named place whose file cannot be read, or a
+    /// patch file with no record, fails the test, so that a check that did not run never passes.
+    /// A record outside the ports is not checked, so 0 records checked can pass.
     #[test]
     fn every_code_patch_record_in_a_port_is_followed() {
         let Some((roots, roots_from)) = named("NIRENDER_MCPATCH", "mcpatch_root") else {
@@ -626,7 +627,9 @@ mod tests {
             let path = format!("{root}/mcpatch/{DATABASE_EXE}/patch");
             let blob = std::fs::read(&path)
                 .unwrap_or_else(|error| panic!("{roots_from} names {root}, and {path} cannot be read: {error}"));
-            for (feature, offset, data) in code_patch_records(&blob) {
+            let records = code_patch_records(&blob);
+            assert!(!records.is_empty(), "{roots_from} names {root}, and {path} holds no record");
+            for (feature, offset, data) in records {
                 let va = 0x400000 + offset;
                 for port in ports::all() {
                     let func = crate::gen::funcs::FUNCS
