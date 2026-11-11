@@ -72,6 +72,8 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import SIBLINGS, find_sibling, local, main_checkout  # noqa: E402
 from validate_tour import NOT_RUN, NOT_RUN_CODE  # noqa: E402
+import symbols  # noqa: E402
+from symbols import codeview  # noqa: E402,F401  (the tests and keep_pdbs read CodeView records by it)
 
 REPOS = local("repos", SIBLINGS)
 PLUGIN_REPO = os.path.join(REPOS, "nirender-plugin")
@@ -509,23 +511,6 @@ def inside(path, folder):
     """True when `path` is `folder` or a path in it, also through a junction or a link."""
     path, folder = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(folder))
     return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
-
-
-def codeview(binary):
-    """The GUID, the age and the pdb's file name of the CodeView record (RSDS) of a binary's bytes, or None.
-
-    This is a scan of the bytes for the first "RSDS" with a pdb's name after it, not a walk of the PE debug
-    directory. The 4 binaries of f213 have one RSDS each, and the scan gives the values of a walk of the
-    directory (the Reviewer, 2026-11-04)."""
-    at = binary.find(b"RSDS")
-    while at >= 0:
-        end = binary.find(b"\0", at + 24)
-        path = binary[at + 24:end] if end > 0 else b""
-        if path.lower().endswith(b".pdb"):
-            name = path.decode("ascii", "replace").replace("\\", "/").rsplit("/", 1)[-1]
-            return binary[at + 4:at + 20], struct.unpack_from("<I", binary, at + 20)[0], name
-        at = binary.find(b"RSDS", at + 4)
-    return None
 
 
 def keep_pdbs(name, folder, trees, plugin_commit, mge_commit, keep=PDB_KEEP, sets=SETS):
@@ -1372,6 +1357,8 @@ def main():
                 say("pdb: %s" % line)
         except OSError as error:
             say("pdb: no pdb kept for %s: %s" % (name, error))
+        # The symbol store (W345): the pdbs that keep_pdbs kept, indexed for cdb.
+        say(symbols.add(name, [os.path.join(folder, binary) for binary, _, _ in PDBS], [os.path.join(PDB_KEEP, name)]))
         result = run_smoke(plugin_tree, folder, plugin_dll, owner_local_bat, notes, slots, args.no_wait)
         passed = True
     except SmokeFailed as failure:

@@ -39,7 +39,9 @@ from ctypes import wintypes
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import session  # noqa: E402
+import symbols  # noqa: E402
 from common import REPO  # noqa: E402
+from make_play_set import PDB_KEEP  # noqa: E402
 
 TAG = "[nirender.owndevice] "
 HOST_DIR = os.path.join(REPO, "host")
@@ -2125,6 +2127,13 @@ def main():
         # switch off: Direct3D 9 with the d3d8.dll and the helper of that build (the helper as
         # the IPC host of distant land).
         mods[0] = (MGE_MOD, session.mge_build_files(args.mge_build))
+        # The symbol store (W345): the pdbs of the run's build, beside its binaries or kept by the play set of its
+        # name; a timing run puts the add off until its game slot is free (D297).
+        binaries = [os.path.join(args.mge_build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")]
+        if not no_plugin:
+            binaries.append(session.DLL)
+        print(symbols.add(os.path.basename(os.path.normpath(args.mge_build)), binaries,
+                          [os.path.join(PDB_KEEP, os.path.basename(os.path.normpath(args.mge_build)))]), flush=True)
     elif args.reference:
         # MGE XE of the instance on Direct3D 9.
         mods.pop(0)
