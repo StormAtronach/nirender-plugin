@@ -10,6 +10,9 @@
 
 use super::*;
 
+/// The pass's name in the census, the pass report and the GPU time.
+pub(crate) const NAME: &str = "first person depth merged into the world's";
+
 pub(crate) struct DepthMerge {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -150,7 +153,7 @@ impl DepthMerge {
                 ],
             },
         );
-        crate::gpu::note_other_pass();
+        crate::gpu::note_other_pass(NAME);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("first-person depth merge"),
             color_attachments: &[],

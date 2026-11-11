@@ -45,8 +45,14 @@ impl Player {
         );
         let passes = gpu::passes();
         let delta: [u64; gpu::PASS_COUNTS] = core::array::from_fn(|i| passes[i] - self.mark_passes[i]);
-        println!("  {}", gpu::pass_line(&delta, frames as u64));
+        let named = pass_report::passes();
+        let named_delta: Vec<(&str, u64)> = named
+            .iter()
+            .map(|(name, now)| (*name, now - self.mark_named.get(name).copied().unwrap_or(0)))
+            .collect();
+        println!("  {}", gpu::pass_line(&delta, &named_delta, frames as u64));
         self.mark_passes = passes;
+        self.mark_named = named;
         println!("  {}", self.renderer.held_line());
         let errors = gpu::errors();
         if errors != self.mark_errors {
@@ -411,6 +417,9 @@ impl Player {
         );
         for (format, count) in &c.texture_formats {
             println!("texture format {format:#x} not made: {count}");
+        }
+        for line in pass_report::exit_lines() {
+            println!("{line}");
         }
     }
 
