@@ -48,8 +48,17 @@ from clean_common import KEEP_LIST  # noqa: E402
 from common import local, sibling  # noqa: E402
 
 HARNESS_DIR = local("harness", sibling("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
-sys.path.insert(0, HARNESS_DIR)
-import harness  # noqa: E402
+
+
+def symbol_store():
+    """harness.SYMBOL_STORE, or None when the harness has none. The harness is imported here, not at load, so that the
+    build tools that import this module do not need the docs checkout."""
+    if HARNESS_DIR not in sys.path:
+        sys.path.insert(0, HARNESS_DIR)
+    import harness
+
+    return getattr(harness, "SYMBOL_STORE", None)
+
 
 SYMSTORE = r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\symstore.exe"
 SLOT_PY = os.path.join(HARNESS_DIR, "slot.py")
@@ -139,6 +148,21 @@ def pdb_identity(pdb):
         return info[12:28], struct.unpack_from("<I", dbi, 8)[0]
 
 
+def write_test_pdb(path, guid, age, info_age=None):
+    """Writes the smallest MSF 7.0 file that pdb_identity reads as (guid, age), for the self-tests. Its info stream has
+    the age `info_age` (default `age`): a linker writes a higher one there than in the DBI stream. Block 0 is the
+    superblock, block 1 the map of the directory's blocks, block 2 the directory, block 3 the info stream (stream 1)
+    and block 4 the DBI stream (stream 3)."""
+    block = 512
+    info = struct.pack("<III", 20000404, 0, age if info_age is None else info_age) + guid
+    dbi = struct.pack("<iII", -1, 19990903, age)
+    directory = struct.pack("<I4I", 4, 0, len(info), 0, len(dbi)) + struct.pack("<II", 3, 4)
+    superblock = MSF_MAGIC + struct.pack("<IIIIII", block, 1, 5, len(directory), 0, 1)
+    with open(path, "wb") as file:
+        for data in (superblock, struct.pack("<I", 2), directory, info, dbi):
+            file.write(data.ljust(block, b"\0"))
+
+
 def pdb_matches(pdb, guid, age):
     """True when the pdb is the one a debugger loads for a binary with this GUID and age."""
     try:
@@ -176,6 +200,17 @@ def pdb_of(binary, name, guid, age, pdb_dirs):
     return None
 
 
+def build_name(folder):
+    """The transaction name of a build folder: a play set's name f<N> as it is; any other name with the first 8 hex
+    digits of the md5 of its d3d8.dll, for example "build-1a2b3c4d". A plain word such as "build" would be pinned by
+    any keep-list line that has that word."""
+    base = os.path.basename(os.path.normpath(folder))
+    d3d8 = os.path.join(folder, "d3d8.dll")
+    if re.fullmatch(r"f\d+", base, re.I) or not os.path.isfile(d3d8):
+        return base
+    return "%s-%s" % (base, md5_of(d3d8)[:8])
+
+
 def tree_pdb_dirs(*trees):
     """The pdb folders of build trees (render-link, nirender-plugin), for a build made from them."""
     return [os.path.join(tree, *parts) for tree in trees for parts in TREE_PDB_DIRS]
@@ -209,6 +244,24 @@ def transaction_entries(store, transaction_id):
             return {fields[0].lower() for fields in csv.reader(file) if fields}
     except FileNotFoundError:
         return set()
+
+
+def stored(store, entry):
+    """True when the store holds the pdb of an entry ("name\\key"): a file other than refs.ptr in its folder."""
+    folder = os.path.join(store, *entry.split("\\"))
+    try:
+        return any(name.lower() != "refs.ptr" for name in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def missing(store, live):
+    """The entries that a live transaction names and the store has no pdb for, as "build: name\\key". symstore writes
+    the transaction first and copies the pdbs after it, so an add that is stopped (the timeout of run_symstore)
+    leaves such entries (W352: an add of 5 pdbs stopped at 0.15 to 0.8 s named 5 and held 4). A pdb file that was
+    only partly copied counts as held: this finds a missing file, not a cut one."""
+    return ["%s: %s" % (transaction.version or transaction.id, entry)
+            for transaction in live for entry in sorted(transaction.keys) if not stored(store, entry)]
 
 
 def store_size(store):
@@ -273,7 +326,8 @@ def add_build(store, name, binaries, pdb_dirs, symstore):
         return 0, notes
     wanted = {entry_id(entry.name, entry.key) for entry, _, _ in found}
     for transaction in transactions(store):
-        if wanted <= transaction.keys:
+        # A transaction of an add that was stopped names pdbs it does not hold: it does not count.
+        if wanted <= transaction.keys and all(stored(store, entry) for entry in wanted):
             return 0, notes + ["%s: its pdbs are in the store (%s)" % (name, transaction.version or transaction.id)]
     pdbs, entries = [], []
     for entry, guid, age in found:
@@ -285,7 +339,7 @@ def add_build(store, name, binaries, pdb_dirs, symstore):
         entries.append(entry)
     if not pdbs:
         return 0, notes
-    new = sum(1 for entry in entries if not os.path.isdir(os.path.join(store, entry.name, entry.key)))
+    new = sum(1 for entry in entries if not stored(store, entry_id(entry.name, entry.key)))
     comment = "md5 " + " ".join("%s=%s" % (os.path.basename(entry.binary), entry.md5) for entry in entries)
     with tempfile.TemporaryDirectory(prefix="symbols-") as folder:
         listing = os.path.join(folder, "pdbs.txt")
@@ -350,8 +404,14 @@ def store_lock(path, seconds=LOCK_SECONDS):
             msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def md5_of(path):
+    with open(path, "rb") as file:
+        return hashlib.md5(file.read()).hexdigest()
+
+
 def read_pending(path):
-    """The adds that waited for a timing run: (name, binaries, pdb folders) for each line."""
+    """The adds that waited for a timing run: (name, binaries, pdb folders, md5s) for each line. The md5s are those of
+    the binaries when the add was put off, in their order; a line of the three fields before W352 has none."""
     try:
         with open(path, encoding="utf-8") as file:
             lines = file.read().splitlines()
@@ -360,22 +420,41 @@ def read_pending(path):
     found = []
     for line in lines:
         fields = line.split("\t")
-        if len(fields) == 3 and fields[0]:
-            found.append((fields[0], [p for p in fields[1].split("|") if p], [p for p in fields[2].split("|") if p]))
+        if len(fields) in (3, 4) and fields[0]:
+            split = [[part for part in field.split("|") if part] for field in fields[1:]]
+            found.append((fields[0], split[0], split[1], split[2] if len(split) == 3 else []))
     return found
 
 
 def write_pending(path, builds):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:
-        file.write("".join("%s\t%s\t%s\n" % (name, "|".join(binaries), "|".join(dirs)) for name, binaries, dirs in builds))
+        file.write("".join("%s\t%s\t%s\t%s\n" % (name, "|".join(binaries), "|".join(dirs), "|".join(md5s))
+                           for name, binaries, dirs, md5s in builds))
+
+
+def unchanged(build_name, binaries, md5s, notes):
+    """The binaries of a build that are there and have the md5 of the time of its add, with a note for each other one.
+    A binary built again after its add was put off is not this build's any more."""
+    kept = []
+    for index, path in enumerate(binaries):
+        if not os.path.isfile(path):
+            continue
+        if index < len(md5s) and md5_of(path) != md5s[index]:
+            notes.append("%s: %s changed after the add was put off" % (build_name, os.path.basename(path)))
+            continue
+        kept.append(path)
+    return kept
 
 
 def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEEP_LIST, symstore=SYMSTORE, gate=e_ok,
         pending=PENDING, lock=LOCK):
     """Adds the pdbs of a build, after the builds that waited, then prunes. Returns the one line. With no name it
     takes only the builds that waited (`symbols.py pending`)."""
-    store = store or getattr(harness, "SYMBOL_STORE", None)
+    try:
+        store = store or symbol_store()
+    except ImportError as error:
+        return "symbols: not added: no harness at %s: %s" % (HARNESS_DIR, error)
     if not store:
         return "symbols: not added: the harness at %s names no SYMBOL_STORE" % HARNESS_DIR
     binaries =[os.path.abspath(path) for path in binaries if os.path.isfile(path)]
@@ -384,7 +463,7 @@ def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEE
         with store_lock(lock):
             waiting = [build for build in read_pending(pending) if build[0] != name]
             if name and binaries:
-                waiting.append((name, binaries, pdb_dirs))
+                waiting.append((name, binaries, pdb_dirs, [md5_of(path) for path in binaries]))
             if not waiting:
                 return "symbols: nothing to add"
             refused = gate()
@@ -392,37 +471,46 @@ def add(name, binaries, pdb_dirs=(), *, store=None, budget=BUDGET, keep_list=KEE
                 write_pending(pending, waiting)
                 return "symbols: put off, %d builds wait in %s: %s" % (len(waiting), pending, refused)
             added, notes, left = 0, [], []
-            for build_name, build_binaries, build_dirs in waiting:
-                present = [path for path in build_binaries if os.path.isfile(path)]
+            for build_name, build_binaries, build_dirs, build_md5s in waiting:
+                present = unchanged(build_name, build_binaries, build_md5s, notes)
                 if not present:
-                    notes.append("%s: its binaries are gone" % build_name)
+                    notes.append("%s: its binaries are gone or changed" % build_name)
                     continue
                 try:
                     count, build_notes = add_build(store, build_name, present, build_dirs, symstore)
                 except SymbolError as error:
-                    left.append((build_name, build_binaries, build_dirs))
+                    left.append((build_name, build_binaries, build_dirs, build_md5s))
                     notes.append("%s: %s" % (build_name, error))
                     continue
                 added += count
                 notes += build_notes
             write_pending(pending, left)
-            pruned, prune_notes = prune(store, budget, keep_list, symstore)
+            # The adds are done: a fault of the prune is a note of this line, not "not added".
+            try:
+                pruned, prune_notes = prune(store, budget, keep_list, symstore)
+            except Exception as error:  # noqa: BLE001 - the same rule as below
+                pruned, prune_notes = [], ["prune: %s: %s" % (type(error).__name__, error)]
             line = "symbols: +%d, store %.1f of %.1f GB, pruned %s" % (added, store_size(store) / GB, budget / GB, ", ".join(pruned) or "none")
             return line + "".join("; " + note for note in notes + prune_notes)
     except Exception as error:  # noqa: BLE001 - a fault of the store must not stop the build tool that calls it
         return "symbols: not added: %s: %s" % (type(error).__name__, error)
 
 
-def status(store, budget, keep_list):
+def status(store, budget, keep_list, pending=PENDING):
     lines, problem = keep_lines(keep_list)
     rows = ["symbols: store %s, %.2f of %.1f GB" % (store, store_size(store) / GB if os.path.isdir(store) else 0, budget / GB)]
-    for transaction in transactions(store):
+    live = transactions(store)
+    for transaction in live:
         pin = pin_of(transaction, lines)
         rows.append("  %s %s: %d pdbs%s" % (transaction.id, transaction.version, len(transaction.keys), "; pinned: " + pin.replace("\t", " | ") if pin else ""))
     if problem:
         rows.append("  " + problem)
-    waiting = read_pending(PENDING)
-    rows.append("  waiting in %s: %s" % (PENDING, ", ".join(build[0] for build in waiting) or "none"))
+    gaps = missing(store, live)
+    if gaps:
+        rows.append("  %d entries of transactions have no pdb in the store (an add that was stopped):" % len(gaps))
+        rows += ["    " + gap for gap in gaps]
+    waiting = read_pending(pending)
+    rows.append("  waiting in %s: %s" % (pending, ", ".join(build[0] for build in waiting) or "none"))
     return "\n".join(rows)
 
 
@@ -470,6 +558,12 @@ def self_test_in(work):
     def run(name, binaries, dirs=(), budget=BUDGET, gate=free):
         return add(name, binaries, dirs, store=store, budget=budget, keep_list=keep, gate=gate, pending=pending, lock=lock)
 
+    # The import of this module leaves the harness out: the build tools import it without the docs checkout.
+    tools = os.path.dirname(os.path.abspath(__file__))
+    probe = "import sys; sys.path.insert(0, %r); import symbols; sys.exit(3 if 'harness' in sys.modules else 0)" % tools
+    imported = subprocess.run([sys.executable, "-I", "-B", "-c", probe], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert imported.returncode == 0, "the import of symbols imported the harness: %s" % (imported.stdout + imported.stderr)[-300:]
+
     # The index: the GUID and age of each fixture's CodeView record name its folder, and its pdb matches.
     a_binaries, _ = build("a", ["ComInterfaces", "CppUnitTestExtension", "Discoverer"])
     with open(a_binaries[0], "rb") as file:
@@ -477,13 +571,17 @@ def self_test_in(work):
     assert pdb_name.lower() == (FIXTURE_PREFIX + "ComInterfaces.pdb").lower(), pdb_name
     assert pdb_matches(os.path.join(work, "a", pdb_name), guid, age)
     assert not pdb_matches(os.path.join(work, "a", FIXTURE_PREFIX + "Discoverer.pdb"), guid, age), "another build's pdb matched"
+    # The test pdb of the other self-tests: its DBI age is the match, not its info age.
+    small = os.path.join(work, "small.pdb")
+    write_test_pdb(small, guid, 1, info_age=2)
+    assert pdb_identity(small) == (guid, 1) and pdb_matches(small, guid, 1) and not pdb_matches(small, guid, 2)
 
     # The add: 3 pdbs, compressed, in the folders that the debugger reads; one transaction named a.
     line = run("a", a_binaries)
     assert line.startswith("symbols: +3, store "), line
     key = index_key(guid, age)
-    stored = os.listdir(os.path.join(store, pdb_name, key))
-    assert stored and all(name.endswith("_") for name in stored if name != "refs.ptr"), stored
+    packed = os.listdir(os.path.join(store, pdb_name, key))
+    assert packed and all(name.endswith("_") for name in packed if name != "refs.ptr"), packed
     live = transactions(store)
     assert [t.version for t in live] == ["a"] and len(live[0].keys) == 3, live
     assert re.search(r"ComInterfaces\.dll=[0-9a-f]{32}", live[0].comment), live[0].comment
@@ -534,6 +632,17 @@ def self_test_in(work):
     assert pin_of(Transaction("9", "c", "md5 x.dll=%s" % hashlib.md5(open(c_binaries[0], "rb").read()).hexdigest(), set()), keep_lines(keep)[0])
     assert not pin_of(Transaction("9", "f23", "md5", set()), ["E:\\x\towner: f231\t2026-11-11"]), "f23 matched f231"
     assert pin_of(Transaction("9", "f231", "md5", set()), ["E:\\x\towner: f231, f232\t2026-11-11"])
+    # The name of a build folder: f<N> as it is; another name with its d3d8.dll's md5, so that a plain word in a keep
+    # line ("its build plan") does not pin it. The null: the plain name "build" is pinned by that line.
+    named = os.path.join(work, "names")
+    for folder in ("f232", "build", "empty"):
+        os.makedirs(os.path.join(named, folder))
+        if folder != "empty":
+            with open(os.path.join(named, folder, "d3d8.dll"), "wb") as file:
+                file.write(b"abc")
+    assert [build_name(os.path.join(named, folder)) for folder in ("f232", "build", "empty")] == ["f232", "build-90015098", "empty"]
+    plan = ["E:\\x\topen: the design page and its build plan\t2026-11-11"]
+    assert pin_of(Transaction("9", "build", "md5", set()), plan) and not pin_of(Transaction("9", "build-90015098", "md5", set()), plan)
 
     # A timing run puts the add off; the next add takes it. The null: with the gate free, it goes in at once.
     e_binaries, _ = build("e", ["Executor"])
@@ -544,6 +653,21 @@ def self_test_in(work):
     assert line.startswith("symbols: +1,") and "e" in [t.version for t in transactions(store)], line
     assert read_pending(pending) == []
     assert run(None, []) == "symbols: nothing to add"
+    # A binary built again while its add waits is not added under the old name; the other binary goes in. The null:
+    # TestEngine, unchanged, is taken. A line of the three fields before W352 is read with no md5s.
+    k_binaries, _ = build("k", ["TestEngine", "CppUnitTestExtension"])
+    assert run("k", k_binaries, gate=lambda: "e-ok: no").startswith("symbols: put off")
+    assert read_pending(pending)[0][3] == [hashlib.md5(open(path, "rb").read()).hexdigest() for path in k_binaries]
+    shutil.copy2(os.path.join(FIXTURES, FIXTURE_PREFIX + "Executor.dll"), k_binaries[1])
+    line = run(None, [])
+    assert "k: %s changed after the add was put off" % os.path.basename(k_binaries[1]) in line, line
+    # TestEngine alone is in b's transaction: the dedupe names it, so it was taken.
+    assert "k: its pdbs are in the store (b)" in line, line
+    assert read_pending(pending) == []
+    with open(pending, "w", encoding="utf-8") as file:
+        file.write("old\t%s\t\n" % k_binaries[0])
+    assert read_pending(pending) == [("old", [k_binaries[0]], [], [])], read_pending(pending)
+    write_pending(pending, [])
 
     # A fault of symstore is a line, not an exception, and the build waits for the next add.
     f_binaries, _ = build("f", ["ComInterfaces"])
@@ -573,6 +697,36 @@ def self_test_in(work):
     line = add("i", h_binaries, store=store, keep_list=keep, gate=broken, pending=pending, lock=lock)
     assert line == "symbols: not added: ValueError: a broken gate", line
 
+    # A fault of the prune after the adds: the build is in, and the line says so (the verdict 193 addendum). The
+    # stand-in runs symstore for an add and fails a delete. ComInterfaces is in f and Executor in c: no one
+    # transaction holds both, so the add runs.
+    no_delete = os.path.join(work, "no-delete.cmd")
+    with open(no_delete, "w", encoding="ascii") as file:
+        file.write('@if /i "%%~1"=="del" exit /b 1\n@"%s" %%*\n' % SYMSTORE)
+    j_binaries, _ = build("j", ["ComInterfaces", "Executor"])
+    line = add("j", j_binaries, store=store, budget=1, symstore=no_delete, keep_list=keep, gate=free, pending=pending, lock=lock)
+    assert line.startswith("symbols: +") and "; prune: SymbolError: symstore del: exit 1" in line, line
+    assert "j" in [t.version for t in transactions(store)] and read_pending(pending) == [], line
+
+    # An add that was stopped: symstore wrote the transaction and not every pdb (an add of the 5 fixtures stopped at
+    # 0.15 to 0.8 s named 5 and held 4). Here the pdb file of Executor goes from the store. The status names the gap,
+    # and a new add of Executor puts it back: the dedupe does not count a transaction without the pdb. The null:
+    # before the gap, the same add is "in the store".
+    assert "have no pdb in the store" not in status(store, BUDGET, keep, pending)
+    m_binaries, _ = build("m", ["Executor"])
+    assert "m: its pdbs are in the store" in run("m", m_binaries)
+    with open(m_binaries[0], "rb") as file:
+        m_guid, m_age, m_pdb = codeview(file.read())
+    m_folder = os.path.join(store, m_pdb, index_key(m_guid, m_age))
+    for name in os.listdir(m_folder):
+        if name.lower() != "refs.ptr":
+            os.remove(os.path.join(m_folder, name))
+    shown = status(store, BUDGET, keep, pending)
+    assert "have no pdb in the store" in shown and entry_id(m_pdb, index_key(m_guid, m_age)) in shown, shown
+    line = run("m", m_binaries)
+    assert line.startswith("symbols: +1,") and "in the store" not in line, line
+    assert stored(store, entry_id(m_pdb, index_key(m_guid, m_age))) and missing(store, transactions(store)) == []
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -593,7 +747,12 @@ def main():
     elif args.command == "pending":
         print(add(None, []))
     elif args.command == "status":
-        print(status(harness.SYMBOL_STORE, BUDGET, KEEP_LIST))
+        try:
+            store = symbol_store()
+        except ImportError as error:
+            print("symbols: no harness at %s: %s" % (HARNESS_DIR, error))
+            return 1
+        print(status(store, BUDGET, KEEP_LIST) if store else "symbols: the harness at %s names no SYMBOL_STORE" % HARNESS_DIR)
     else:
         parser.error("it needs a command, or --self-test")
     return 0

@@ -1804,8 +1804,54 @@ def self_test_use_instance():
         session.MGE_LOGS = saved_mge
 
 
+def add_symbols(mge_build, plugin_dll, add=symbols.add):
+    """The symbol store (W345): the pdbs of the run's build, beside its binaries or kept by the play set of its name;
+    a timing run puts the add off until its game slot is free (D297). The run's plugin can be of another tree than the
+    build, so it goes in as a build of its own, "plugin-<md5 8>" (W352): the build's name pins only the build's pdbs.
+    A play set's own plugin is in the set's transaction already, and its add is "in the store". A build folder that is
+    not a play set f<N> is named with the md5 of its d3d8.dll (symbols.build_name). Returns the lines."""
+    folder_name = os.path.basename(os.path.normpath(mge_build))
+    binaries = [os.path.join(mge_build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")]
+    lines = [add(symbols.build_name(mge_build), binaries, [os.path.join(PDB_KEEP, folder_name)])]
+    if plugin_dll and os.path.isfile(plugin_dll):
+        lines.append(add("plugin-" + symbols.md5_of(plugin_dll)[:8], [plugin_dll], [os.path.join(PDB_KEEP, folder_name)]))
+    return lines
+
+
+def self_test_add_symbols():
+    """The two adds of a run: the build under its name, the plugin under its md5."""
+    with tempfile.TemporaryDirectory() as folder:
+        plugin = os.path.join(folder, "akulakhan.dll")
+        with open(plugin, "wb") as file:
+            file.write(b"abc")
+        calls = []
+
+        def add(*call):
+            calls.append(call)
+            return "symbols: +0"
+
+        build = os.path.join(folder, "f231")
+        assert add_symbols(build + os.sep, plugin, add) == ["symbols: +0", "symbols: +0"]
+        assert calls[0] == ("f231", [os.path.join(build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")],
+                            [os.path.join(PDB_KEEP, "f231")]), calls[0]
+        # A play set's plugin pdb is in the set's pdb folder, not beside its dll (the Reviewer's verdict 204).
+        assert calls[1] == ("plugin-90015098", [plugin], [os.path.join(PDB_KEEP, "f231")]), calls[1]
+        # A run without the plugin, or with no file at its path, adds the build only.
+        calls.clear()
+        assert len(add_symbols(build, None, add)) == 1 and len(add_symbols(build, plugin + "x", add)) == 1 and len(calls) == 2
+        # A build folder that is not a play set is named with its d3d8.dll's md5; its pdb folder keeps the plain name.
+        calls.clear()
+        other = os.path.join(folder, "build")
+        os.makedirs(other)
+        with open(os.path.join(other, "d3d8.dll"), "wb") as file:
+            file.write(b"abc")
+        add_symbols(other, None, add)
+        assert calls[0][0] == "build-90015098" and calls[0][2] == [os.path.join(PDB_KEEP, "build")], calls[0]
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
+    self_test_add_symbols()
     self_test_mge_log_problems()
     self_test_refusal()
     self_test_ring_problem()
@@ -2127,13 +2173,8 @@ def main():
         # switch off: Direct3D 9 with the d3d8.dll and the helper of that build (the helper as
         # the IPC host of distant land).
         mods[0] = (MGE_MOD, session.mge_build_files(args.mge_build))
-        # The symbol store (W345): the pdbs of the run's build, beside its binaries or kept by the play set of its
-        # name; a timing run puts the add off until its game slot is free (D297).
-        binaries = [os.path.join(args.mge_build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")]
-        if not no_plugin:
-            binaries.append(session.DLL)
-        print(symbols.add(os.path.basename(os.path.normpath(args.mge_build)), binaries,
-                          [os.path.join(PDB_KEEP, os.path.basename(os.path.normpath(args.mge_build)))]), flush=True)
+        for line in add_symbols(args.mge_build, None if no_plugin else session.DLL):
+            print(line, flush=True)
     elif args.reference:
         # MGE XE of the instance on Direct3D 9.
         mods.pop(0)
