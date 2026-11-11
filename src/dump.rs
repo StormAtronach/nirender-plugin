@@ -46,7 +46,12 @@ pub unsafe fn is_run_address(value: u32) -> bool {
         return false;
     }
     let mut info: MemoryBasicInformation = core::mem::zeroed();
-    if VirtualQuery(value as *const c_void, &mut info, core::mem::size_of::<MemoryBasicInformation>()) == 0 {
+    if VirtualQuery(
+        value as *const c_void,
+        &mut info,
+        core::mem::size_of::<MemoryBasicInformation>(),
+    ) == 0
+    {
         return false;
     }
     const MEM_COMMIT: u32 = 0x1000;
@@ -83,11 +88,31 @@ pub unsafe fn state(path: &str) -> std::io::Result<()> {
         return Ok(());
     }
     let member = |offset: usize| -> usize { rd(renderer, offset) };
-    write_object(&mut out, "NiDX8RenderState", member(NiDX8Renderer::renderState), NiDX8RenderState::SIZE)?;
-    write_object(&mut out, "NiDX8VertexBufferManager", member(NiDX8Renderer::vertexBufferManager), 0x3C)?;
-    write_object(&mut out, "NiDX8IndexBufferManager", member(NiDX8Renderer::indexBufferManager), 0x4C)?;
+    write_object(
+        &mut out,
+        "NiDX8RenderState",
+        member(NiDX8Renderer::renderState),
+        NiDX8RenderState::SIZE,
+    )?;
+    write_object(
+        &mut out,
+        "NiDX8VertexBufferManager",
+        member(NiDX8Renderer::vertexBufferManager),
+        0x3C,
+    )?;
+    write_object(
+        &mut out,
+        "NiDX8IndexBufferManager",
+        member(NiDX8Renderer::indexBufferManager),
+        0x4C,
+    )?;
     write_object(&mut out, "NiDX8TextureManager", member(NiDX8Renderer::textureManager), 0x40)?;
-    write_object(&mut out, "NiDX8LightManager", member(NiDX8Renderer::lightManager), NiDX8LightManager::SIZE)?;
+    write_object(
+        &mut out,
+        "NiDX8LightManager",
+        member(NiDX8Renderer::lightManager),
+        NiDX8LightManager::SIZE,
+    )?;
     write_object(
         &mut out,
         "NiDX8ConfigurableTexturePipeline",
@@ -120,7 +145,14 @@ pub unsafe fn frame(path: &str, log: &[u32]) -> std::io::Result<()> {
         let data = if record.payload.is_empty() {
             String::new()
         } else {
-            format!(" data {} {:08x}", record.payload.len(), crate::mem::fnv1a(core::slice::from_raw_parts(record.payload.as_ptr() as *const u8, record.payload.len() * 4)))
+            format!(
+                " data {} {:08x}",
+                record.payload.len(),
+                crate::mem::fnv1a(core::slice::from_raw_parts(
+                    record.payload.as_ptr() as *const u8,
+                    record.payload.len() * 4
+                ))
+            )
         };
         writeln!(out, "{}({}){}", method, args.join(", "), data)?;
     }

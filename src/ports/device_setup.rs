@@ -12,26 +12,27 @@
 
 use core::mem::transmute;
 
+use crate::d3d::{
+    com_release, d3d_check_device_format, d3d_check_device_multi_sample_type, d3d_create_device, d3d_get_adapter_identifier,
+    device_get_depth_stencil_surface, device_get_render_target, device_reset, device_set_indices, device_set_stream_source,
+    device_set_texture, surface_get_desc, D3DCREATE_MULTITHREADED, D3DDEVTYPE_HAL, D3DDEVTYPE_REF, D3DFMT_D15S1,
+    D3DFMT_D24S8, D3DFMT_D24X4S4, D3DFMT_DXT1, D3DFMT_DXT2, D3DFMT_DXT3, D3DFMT_DXT4, D3DFMT_DXT5, D3DFMT_P8, D3DFMT_UYVY,
+    D3DFMT_YUY2,
+};
+use crate::engine::{
+    cdecl1, debug_print0, debug_print1, eh_vector_destructor_iterator, ni_bound_dtor, ni_object_release, operator_delete,
+    operator_new, pixel_data_ctor_args, pixel_format_copy, pixel_format_ctor_bump_luma, pixel_format_ctor_format,
+    pixel_format_ctor_palette, pixel_format_ctor_rgba, texture_manager_clear_hash_map, thiscall0, thiscall1, thiscall2,
+    thiscall3, thiscall4, thiscall5, vcall1, virtual_at, EMPTY_STRING, MAX_STREAMS, MAX_TEXTURE_BLEND_STAGES,
+    NI_POINTER_DTOR, PIXEL_FORMAT_MASK_A, PIXEL_FORMAT_MASK_B, PIXEL_FORMAT_SHIFT_A, PIXEL_FORMAT_SHIFT_B, VEC3_X_AXIS,
+    VEC3_Y_AXIS, VEC3_ZERO, VTBL_NI_DX8_RENDERER, VTBL_RENDERER_MAP_CUBE_MAPS, VTBL_RENDERER_MAP_GEOM_BUFFERS,
+    VTBL_RENDERER_MAP_SKIN_PARTITIONS, VTBL_RENDERER_MAP_TEXTURES,
+};
 use crate::gen::layouts;
 use crate::gen::layouts::{
     NiDX8AdapterDesc as Adapter, NiDX8DeviceDesc as DeviceDesc, NiDX8PixelFormat as PF, NiDX8RenderState as RS,
     NiDX8RenderTarget as RT, NiDX8Renderer as R, NiDX8Renderer_BatchedObject as Batched, NiDX8SystemDesc as SystemDesc,
     NiPixelData, THashMap as Map, THashMap_Node as Node, D3DCAPS8 as Caps,
-};
-use crate::d3d::{
-    com_release, d3d_check_device_format, d3d_check_device_multi_sample_type, d3d_create_device, d3d_get_adapter_identifier,
-    device_get_depth_stencil_surface, device_get_render_target, device_reset, device_set_indices, device_set_stream_source,
-    device_set_texture, surface_get_desc, D3DCREATE_MULTITHREADED, D3DDEVTYPE_HAL, D3DDEVTYPE_REF, D3DFMT_D15S1, D3DFMT_D24S8,
-    D3DFMT_D24X4S4, D3DFMT_DXT1, D3DFMT_DXT2, D3DFMT_DXT3, D3DFMT_DXT4, D3DFMT_DXT5, D3DFMT_P8, D3DFMT_UYVY, D3DFMT_YUY2,
-};
-use crate::engine::{
-    cdecl1, debug_print0, debug_print1, eh_vector_destructor_iterator, ni_bound_dtor, ni_object_release, operator_delete,
-    operator_new, pixel_data_ctor_args, pixel_format_copy, pixel_format_ctor_bump_luma, pixel_format_ctor_format,
-    pixel_format_ctor_palette, pixel_format_ctor_rgba, texture_manager_clear_hash_map, thiscall0, thiscall1, thiscall2, thiscall3,
-    thiscall4, thiscall5, vcall1, virtual_at, EMPTY_STRING, MAX_STREAMS, MAX_TEXTURE_BLEND_STAGES, NI_POINTER_DTOR,
-    PIXEL_FORMAT_MASK_A, PIXEL_FORMAT_MASK_B, PIXEL_FORMAT_SHIFT_A, PIXEL_FORMAT_SHIFT_B, VEC3_X_AXIS, VEC3_Y_AXIS, VEC3_ZERO,
-    VTBL_NI_DX8_RENDERER, VTBL_RENDERER_MAP_CUBE_MAPS, VTBL_RENDERER_MAP_GEOM_BUFFERS, VTBL_RENDERER_MAP_SKIN_PARTITIONS,
-    VTBL_RENDERER_MAP_TEXTURES,
 };
 use crate::mem::{rd, wr};
 use crate::ports::{hash_map, light_manager, ni, render_state, texture_pipeline};
@@ -143,7 +144,9 @@ unsafe fn strncpy(to: usize, from: usize, count: usize) -> usize {
 
 /// `sprintf` (import slot 0x746274) with three string arguments.
 unsafe fn sprintf3(to: usize, format: usize, a: usize, b: usize, c: usize) -> u32 {
-    transmute::<usize, unsafe extern "C" fn(usize, usize, usize, usize, usize) -> u32>(rd::<usize>(0x746274, 0))(to, format, a, b, c)
+    transmute::<usize, unsafe extern "C" fn(usize, usize, usize, usize, usize) -> u32>(rd::<usize>(0x746274, 0))(
+        to, format, a, b, c,
+    )
 }
 
 /// `LoadLibraryA` (import slot 0x7460E4)
@@ -210,12 +213,24 @@ unsafe fn device_desc_get_screen_format_enum(desc: usize, windowed: u32, depth: 
 }
 
 /// 0x6B21D0 `NiDX8DeviceDesc::findClosestDepthStencilForScreenFormat`
-unsafe fn device_desc_find_depth_stencil(desc: usize, format: u32, target_format: u32, depth_bits: u32, stencil_bits: u32) -> u32 {
+unsafe fn device_desc_find_depth_stencil(
+    desc: usize,
+    format: u32,
+    target_format: u32,
+    depth_bits: u32,
+    stencil_bits: u32,
+) -> u32 {
     thiscall4(0x6B21D0, desc, format, target_format, depth_bits, stencil_bits)
 }
 
 /// 0x6B25D0 `NiDX8AdapterDesc::findClosestMode`. Returns the mode or 0. It changes the rate.
-unsafe fn adapter_desc_find_closest_mode(adapter: usize, format: u32, width: u32, height: u32, refresh_rate: usize) -> usize {
+unsafe fn adapter_desc_find_closest_mode(
+    adapter: usize,
+    format: u32,
+    width: u32,
+    height: u32,
+    refresh_rate: usize,
+) -> usize {
     thiscall4(0x6B25D0, adapter, format, width, height, refresh_rate as u32) as usize
 }
 
@@ -618,7 +633,8 @@ unsafe fn initialize_present_params_on(
 
     let mut depth_stencil = depth_stencil_format;
     if depth_stencil == 0 {
-        depth_stencil = device_desc_find_depth_stencil(rd(this, R::maybe_currentDeviceDesc), d3d_format, d3d_format, depth, flags & 8);
+        depth_stencil =
+            device_desc_find_depth_stencil(rd(this, R::maybe_currentDeviceDesc), d3d_format, d3d_format, depth, flags & 8);
         if depth_stencil == 0 {
             creation_failed(ERR_NO_DEPTH_FORMAT, 0x7C3318);
             return 0;
@@ -638,14 +654,22 @@ unsafe fn initialize_present_params_on(
     wr(this, R::d3dPresentParameters_EnableAutoDepthStencil, !flags & 1);
     wr(this, R::d3dPresentParameters_BackBufferCount, backbuffer_count);
     wr(this, R::d3dPresentParameters_Windowed, windowed);
-    wr(this, R::d3dPresentParameters_SwapEffect, swap_effect_value(samples, swap_effect));
+    wr(
+        this,
+        R::d3dPresentParameters_SwapEffect,
+        swap_effect_value(samples, swap_effect),
+    );
     // The flag is D3DPRESENTFLAG_LOCKABLE_BACKBUFFER when the sample count is exactly 1.
     wr(this, R::d3dPresentParameters_Flags, (samples == 1) as u32);
     wr::<u32>(this, R::d3dPresentParameters_hDeviceWindow, rd(this, R::windowDevice));
     let rate_slot = this + R::d3dPresentParameters_FullScreen_RefreshRateInHz;
     wr(rate_slot, 0, refresh_rate_value(refresh_rate));
     let adapter: u32 = rd(this, R::currentAdapterIndex);
-    wr(this, R::d3dPresentParameters_PresentationInterval, presentation_interval_value(presentation_interval));
+    wr(
+        this,
+        R::d3dPresentParameters_PresentationInterval,
+        presentation_interval_value(presentation_interval),
+    );
 
     let d3d: usize = rd(direct3d, 0);
     if d3d_check_device_multi_sample_type(d3d, adapter, rd(this, R::d3dDeviceType), d3d_format, windowed, sample_type) != 0 {
@@ -865,7 +889,13 @@ pub unsafe fn get_driver_info(this: usize) -> usize {
         3 => STR_SW,
         _ => STR_UNKNOWN_DEVICE,
     };
-    sprintf3(description, STR_DRIVER_FORMAT, identifier + ADAPTER_IDENTIFIER_DESCRIPTION, device_type, this + R::field_28C);
+    sprintf3(
+        description,
+        STR_DRIVER_FORMAT,
+        identifier + ADAPTER_IDENTIFIER_DESCRIPTION,
+        device_type,
+        this + R::field_28C,
+    );
     description
 }
 
@@ -1020,7 +1050,11 @@ pub unsafe fn create_default_textures(this: usize) -> u8 {
         }
         if rd::<usize>(format_slot, 0) != 0 {
             let block = operator_new(NiPixelData::SIZE);
-            let pixel_data = if block != 0 { pixel_data_ctor_args(block, 4, 4, rd(format_slot, 0), 1) } else { 0 };
+            let pixel_data = if block != 0 {
+                pixel_data_ctor_args(block, 4, 4, rd(format_slot, 0), 1)
+            } else {
+                0
+            };
             ni::pointer_assign(slot, pixel_data);
             // Sets all bits of the pixels of the first mip map level.
             let pixel_data: usize = rd(slot, 0);
@@ -1233,8 +1267,14 @@ unsafe fn read_back_buffer(this: usize, make_format: unsafe fn(usize, u32), log:
         wr(this, R::backbufferRenderTarget_DX8PixelFormat, format);
         debug_print1(log[0], d3dformat_to_string(desc[SURFACE_DESC_FORMAT]));
     }
-    device_get_depth_stencil_surface(rd(this, R::d3dDevice), this + R::backbufferRenderTarget_d3dSurfaceDepthStencil);
-    debug_print1(log[1], d3dformat_to_string(rd(this, R::d3dPresentParameters_AutoDepthStencilFormat)));
+    device_get_depth_stencil_surface(
+        rd(this, R::d3dDevice),
+        this + R::backbufferRenderTarget_d3dSurfaceDepthStencil,
+    );
+    debug_print1(
+        log[1],
+        d3dformat_to_string(rd(this, R::d3dPresentParameters_AutoDepthStencilFormat)),
+    );
     wr(target, RT::width, desc[SURFACE_DESC_WIDTH]);
     wr(this, R::backbufferRenderTarget_height, desc[SURFACE_DESC_HEIGHT]);
     wr(this, R::currentRenderTarget, target);
@@ -1285,7 +1325,11 @@ pub unsafe fn create(
     let block = operator_new(R::SIZE);
     let this = if block != 0 { renderer_ctor(block) } else { 0 };
     let block = operator_new(SystemDesc::SIZE);
-    let system = if block != 0 { system_desc_ctor(block, rd(DIRECT3D, 0)) } else { 0 };
+    let system = if block != 0 {
+        system_desc_ctor(block, rd(DIRECT3D, 0))
+    } else {
+        0
+    };
     wr(this, R::systemDesc, system);
     wr(this, R::windowDevice, window_device);
     wr(this, R::currentAdapterIndex, adapter);
@@ -1298,7 +1342,10 @@ pub unsafe fn create(
     }
     select_device(this, choice);
 
-    let adapter_desc: usize = rd(rd(rd::<usize>(this, R::systemDesc), SystemDesc::adapterList_storage), rd::<usize>(this, R::currentAdapterIndex) * 4);
+    let adapter_desc: usize = rd(
+        rd(rd::<usize>(this, R::systemDesc), SystemDesc::adapterList_storage),
+        rd::<usize>(this, R::currentAdapterIndex) * 4,
+    );
     wr(this, R::maybe_currentAdapter, adapter_desc);
     if adapter_desc == 0 {
         creation_failed(ERR_INVALID_ADAPTER, 0x7C3044);
@@ -1309,7 +1356,11 @@ pub unsafe fn create(
     } else {
         rd(adapter_desc, Adapter::REFDeviceDesc)
     };
-    let device_desc = if rd::<u32>(device_desc, DeviceDesc::caps) != 0 { device_desc } else { 0 };
+    let device_desc = if rd::<u32>(device_desc, DeviceDesc::caps) != 0 {
+        device_desc
+    } else {
+        0
+    };
     wr(this, R::maybe_currentDeviceDesc, device_desc);
     if device_desc == 0 {
         creation_failed(ERR_INVALID_DEVICE_TYPE, LOG_INVALID_DEVICE_ID);
@@ -1370,10 +1421,18 @@ pub unsafe fn create(
     let caps = device_desc + DeviceDesc::caps;
 
     let block = operator_new(SIZE_VERTEX_BUFFER_MANAGER);
-    let manager = if block != 0 { vertex_buffer_manager_ctor(block, rd(this, R::d3dDevice)) } else { 0 };
+    let manager = if block != 0 {
+        vertex_buffer_manager_ctor(block, rd(this, R::d3dDevice))
+    } else {
+        0
+    };
     wr(this, R::vertexBufferManager, manager);
     let block = operator_new(SIZE_INDEX_BUFFER_MANAGER);
-    let manager = if block != 0 { index_buffer_manager_ctor(block, rd(this, R::d3dDevice)) } else { 0 };
+    let manager = if block != 0 {
+        index_buffer_manager_ctor(block, rd(this, R::d3dDevice))
+    } else {
+        0
+    };
     wr(this, R::indexBufferManager, manager);
     let block = operator_new(SIZE_TEXTURE_MANAGER);
     let manager = if block != 0 { texture_manager_ctor(block, this) } else { 0 };
@@ -1397,11 +1456,24 @@ pub unsafe fn create(
     let frustum: [u32; 6] = [0xBF80_0000, 0x3F80_0000, 0x3F80_0000, 0xBF80_0000, 0x3DCC_CCCD, 0x3F80_0000];
     // left, right, top, bottom
     let port: [u32; 4] = [0, 0x3F80_0000, 0x3F80_0000, 0];
-    let set_camera_data: unsafe extern "thiscall" fn(usize, usize, usize, usize, usize, usize, usize) -> u32 = transmute(virtual_at(this, 0xB8));
-    set_camera_data(this, VEC3_ZERO, VEC3_X_AXIS, VEC3_Y_AXIS, VEC_Z_AXIS, frustum.as_ptr() as usize, port.as_ptr() as usize);
+    let set_camera_data: unsafe extern "thiscall" fn(usize, usize, usize, usize, usize, usize, usize) -> u32 =
+        transmute(virtual_at(this, 0xB8));
+    set_camera_data(
+        this,
+        VEC3_ZERO,
+        VEC3_X_AXIS,
+        VEC3_Y_AXIS,
+        VEC_Z_AXIS,
+        frustum.as_ptr() as usize,
+        port.as_ptr() as usize,
+    );
 
     let block = operator_new(SIZE_LIGHT_MANAGER);
-    let manager = if block != 0 { light_manager::ctor(block, rd(this, R::renderState), rd(this, R::d3dDevice)) } else { 0 };
+    let manager = if block != 0 {
+        light_manager::ctor(block, rd(this, R::renderState), rd(this, R::d3dDevice))
+    } else {
+        0
+    };
     wr(this, R::lightManager, manager);
 
     if initialize_texture_defaults(this) == 0 {
@@ -1459,7 +1531,11 @@ unsafe fn release_rendered_textures(map: usize, key_is_next_position: bool) {
         let texture: usize = rd(position, Node::key);
         let data: usize = rd(position, Node::data);
         let next: usize = rd(position, Node::nextNode);
-        position = if next != 0 { next } else { hash_map::next_bucket(map, texture as u32) };
+        position = if next != 0 {
+            next
+        } else {
+            hash_map::next_bucket(map, texture as u32)
+        };
 
         unlink_renderer_data(texture, data);
         if data != 0 {
@@ -1540,14 +1616,23 @@ pub unsafe fn recreate(this: usize) -> u8 {
     while position != 0 {
         let texture: usize = rd(position, Node::key);
         let next: usize = rd(position, Node::nextNode);
-        position = if next != 0 { next } else { hash_map::next_bucket(textures, texture as u32) };
+        position = if next != 0 {
+            next
+        } else {
+            hash_map::next_bucket(textures, texture as u32)
+        };
         vcall1(this, 0xF8, texture as u32);
     }
     let mut position = [hash_map::first(cube_maps)];
     while position[0] != 0 {
         let mut texture = [0usize];
         let mut value = [0usize];
-        hash_map_get_next(cube_maps, position.as_mut_ptr() as usize, texture.as_mut_ptr() as usize, value.as_mut_ptr() as usize);
+        hash_map_get_next(
+            cube_maps,
+            position.as_mut_ptr() as usize,
+            texture.as_mut_ptr() as usize,
+            value.as_mut_ptr() as usize,
+        );
         vcall1(this, 0xFC, texture[0] as u32);
     }
     render_state_initialize(rd(this, R::renderState));
@@ -1639,7 +1724,11 @@ pub unsafe fn dtor(this: usize) {
     while node != 0 {
         let next: usize = rd(node, Node::nextNode);
         let buffer: usize = rd(node, Node::data);
-        node = if next != 0 { next } else { hash_map::next_bucket(geom_buffers, rd(node, Node::key)) };
+        node = if next != 0 {
+            next
+        } else {
+            hash_map::next_bucket(geom_buffers, rd(node, Node::key))
+        };
         if buffer != 0 {
             free_geom_buffer(buffer);
         }
@@ -1846,114 +1935,202 @@ pub unsafe fn video_adapter_enum(game: usize) {
 // ---------------------------------------------------------------------------------------
 
 // The call is always a skip. It loads D3D8.DLL and makes the `IDirect3D8`.
-port_cdecl!(create_d3d_port, 0x6A99E0, "NiDX8Renderer::CreateD3D",
+port_cdecl!(
+    create_d3d_port,
+    0x6A99E0,
+    "NiDX8Renderer::CreateD3D",
     fn() -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = create_d3d);
+    rust = create_d3d
+);
 
 // The call is always a skip. It releases the `IDirect3D8`.
-port_cdecl!(release_d3d_port, 0x6A9A50, "NiDX8Renderer::ReleaseD3D",
+port_cdecl!(
+    release_d3d_port,
+    0x6A9A50,
+    "NiDX8Renderer::ReleaseD3D",
     fn() -> u32,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = release_d3d);
+    rust = release_d3d
+);
 
-port_thiscall!(get_rtti_port, 0x6A9C50, "NiDX8Renderer::GetRTTI",
+port_thiscall!(
+    get_rtti_port,
+    0x6A9C50,
+    "NiDX8Renderer::GetRTTI",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = get_rtti);
+    rust = get_rtti
+);
 
 // The call is always a skip. It destroys the device and the renderer.
-port_thiscall!(deleting_dtor_port, 0x6A9D80, "NiDX8Renderer::deleting_dtor",
+port_thiscall!(
+    deleting_dtor_port,
+    0x6A9D80,
+    "NiDX8Renderer::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = deleting_dtor);
+    rust = deleting_dtor
+);
 
 // The call is always a skip. It destroys the device and frees D3D8.DLL.
-port_thiscall!(dtor_port, 0x6A9E10, "NiDX8Renderer::dtor",
+port_thiscall!(
+    dtor_port,
+    0x6A9E10,
+    "NiDX8Renderer::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = dtor);
+    rust = dtor
+);
 
 // The call is always a skip. It creates the device.
-port_cdecl!(create_port, 0x6AA3F0, "NiDX8Renderer::Create",
-    fn(width: u32, height: u32, flags: u32, window_device: u32, window_focus: u32, adapter: u32, device_caps: u32,
-       backbuffer_format: u32, depth_stencil_format: u32, presentation_interval: u32, swap_effect: u32, samples: u32,
-       backbuffer_count: u32, refresh_rate: u32) -> usize,
+port_cdecl!(
+    create_port,
+    0x6AA3F0,
+    "NiDX8Renderer::Create",
+    fn(
+        width: u32,
+        height: u32,
+        flags: u32,
+        window_device: u32,
+        window_focus: u32,
+        adapter: u32,
+        device_caps: u32,
+        backbuffer_format: u32,
+        depth_stencil_format: u32,
+        presentation_interval: u32,
+        swap_effect: u32,
+        samples: u32,
+        backbuffer_count: u32,
+        refresh_rate: u32,
+    ) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = create);
+    rust = create
+);
 
 // The call is always a skip. It resets the device.
-port_thiscall!(recreate_port, 0x6AAE80, "NiDX8Renderer::Recreate",
+port_thiscall!(
+    recreate_port,
+    0x6AAE80,
+    "NiDX8Renderer::Recreate",
     fn(this) -> u8,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = recreate);
+    rust = recreate
+);
 
-port_thiscall!(initialize_present_params_port, 0x6AB470, "NiDX8Renderer::InitializePresentParams",
-    fn(this, width: u32, height: u32, flags: u32, samples: u32, backbuffer_format: u32, depth_stencil_format: u32,
-       backbuffer_count: u32, swap_effect: u32, refresh_rate: u32, presentation_interval: u32) -> u8,
+port_thiscall!(
+    initialize_present_params_port,
+    0x6AB470,
+    "NiDX8Renderer::InitializePresentParams",
+    fn(
+        this,
+        width: u32,
+        height: u32,
+        flags: u32,
+        samples: u32,
+        backbuffer_format: u32,
+        depth_stencil_format: u32,
+        backbuffer_count: u32,
+        swap_effect: u32,
+        refresh_rate: u32,
+        presentation_interval: u32,
+    ) -> u8,
     compare_eax = true,
     regions = |set| initialize_present_params_regions(set, this),
-    rust = initialize_present_params);
+    rust = initialize_present_params
+);
 
 // The call is always a skip. The default textures are engine objects with a constructor that
 // cannot run twice. The call can also delete an old texture through its virtual destructor.
-port_thiscall!(initialize_texture_defaults_port, 0x6AB8C0, "NiDX8Renderer::initializeTextureDefaults",
+port_thiscall!(
+    initialize_texture_defaults_port,
+    0x6AB8C0,
+    "NiDX8Renderer::initializeTextureDefaults",
     fn(this) -> u8,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = initialize_texture_defaults);
+    rust = initialize_texture_defaults
+);
 
-port_thiscall!(validate_device_caps_port, 0x6AB960, "NiDX8Renderer::validateDeviceCaps",
+port_thiscall!(
+    validate_device_caps_port,
+    0x6AB960,
+    "NiDX8Renderer::validateDeviceCaps",
     fn(this) -> u8,
     compare_eax = true,
     regions = |set| validate_device_caps_regions(set, this),
-    rust = validate_device_caps);
+    rust = validate_device_caps
+);
 
 // The call is always a skip. See `initializeTextureDefaults`.
-port_thiscall!(create_default_textures_port, 0x6ABA70, "NiDX8Renderer::createDefaultTextures",
+port_thiscall!(
+    create_default_textures_port,
+    0x6ABA70,
+    "NiDX8Renderer::createDefaultTextures",
     fn(this) -> u8,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = create_default_textures);
+    rust = create_default_textures
+);
 
-port_thiscall!(get_driver_info_port, 0x6ABBA0, "NiDX8Renderer::GetDriverInfo",
+port_thiscall!(
+    get_driver_info_port,
+    0x6ABBA0,
+    "NiDX8Renderer::GetDriverInfo",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| set.add(this, R::SIZE),
-    rust = get_driver_info);
+    rust = get_driver_info
+);
 
-port_thiscall!(probe_texture_formats_port, 0x6B05E0, "NiDX8Renderer::probeTextureFormats",
+port_thiscall!(
+    probe_texture_formats_port,
+    0x6B05E0,
+    "NiDX8Renderer::probeTextureFormats",
     fn(this, formats: usize, unused: u32, resource_type: u32) -> (),
     compare_eax = false,
     regions = |set| probe_texture_formats_regions(set, this, formats),
-    rust = probe_texture_formats);
+    rust = probe_texture_formats
+);
 
-port_cdecl!(get_adapters_port, 0x6B0FC0, "NiDX8Renderer_static::GetAdapters",
+port_cdecl!(
+    get_adapters_port,
+    0x6B0FC0,
+    "NiDX8Renderer_static::GetAdapters",
     fn() -> usize,
     compare_eax = true,
     regions = |set| get_adapters_regions(set),
-    rust = get_adapters);
+    rust = get_adapters
+);
 
-port_cdecl!(d3dformat_to_string_port, 0x6B2920, "NiDX8Renderer_static::D3DFORMAT_toString",
+port_cdecl!(
+    d3dformat_to_string_port,
+    0x6B2920,
+    "NiDX8Renderer_static::D3DFORMAT_toString",
     fn(format: u32) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = d3dformat_to_string);
+    rust = d3dformat_to_string
+);
 
 // The call is always a skip. The map and the strings use the allocator of MSVCP60, and the
 // heap tracking does not see that allocator. The function can also load D3D8.DLL.
-port_cdecl!(video_adapter_enum_port, 0x429E20, "NiDX8Renderer_static::videoAdapterEnum",
+port_cdecl!(
+    video_adapter_enum_port,
+    0x429E20,
+    "NiDX8Renderer_static::videoAdapterEnum",
     fn(game: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = video_adapter_enum);
+    rust = video_adapter_enum
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &create_d3d_port::STATE,
@@ -2004,7 +2181,10 @@ mod tests {
         let func = crate::hook::find(0x6A9D80).unwrap();
         let mut live = crate::census::expected(func).to_vec();
         live[4..8].copy_from_slice(&[0x38, 0xE5, 0x50, 0x03]);
-        assert_eq!(crate::site::classify(func, &live, 4, 4), crate::site::Kind::RedirectedCall(DTOR_SITE));
+        assert_eq!(
+            crate::site::classify(func, &live, 4, 4),
+            crate::site::Kind::RedirectedCall(DTOR_SITE)
+        );
     }
 
     #[test]
@@ -2015,20 +2195,40 @@ mod tests {
         assert_eq!(NiPixelData::SIZE, 0x48);
         assert_eq!(Node::SIZE, 0x0C);
         assert_eq!(RT::SIZE, 9 * 4);
-        assert_eq!((PF::extraData, PF::d3dFormat, PF::bitsPerPixel, PF::compareBits), (0x20, 0x24, 0x14, 0x18));
+        assert_eq!(
+            (PF::extraData, PF::d3dFormat, PF::bitsPerPixel, PF::compareBits),
+            (0x20, 0x24, 0x14, 0x18)
+        );
         assert_eq!((Adapter::HALDeviceDesc, Adapter::REFDeviceDesc), (0x44C, 0x450));
         assert_eq!(Adapter::d3dAdapterIdentifier_description, 0x204);
         assert_eq!(DeviceDesc::caps + Caps::PresentationIntervals, 0x18);
-        assert_eq!((Caps::MaxTextureBlendStages, Caps::MaxSimultaneousTextures, Caps::MaxVertexBlendMatrices), (0x94, 0x98, 0xA8));
+        assert_eq!(
+            (
+                Caps::MaxTextureBlendStages,
+                Caps::MaxSimultaneousTextures,
+                Caps::MaxVertexBlendMatrices
+            ),
+            (0x94, 0x98, 0xA8)
+        );
         assert_eq!((Caps::RasterCaps, Caps::TextureCaps), (0x24, 0x3C));
         assert_eq!(RS::texturePerStage, 0x1208);
         assert_eq!(RS::device, 8);
         assert_eq!(Batched::nextBatch, 0x18);
-        assert_eq!((NiPixelData::pixelsAllMips, NiPixelData::mipmapOffsets, NiPixelData::bytesPerPixel), (0x2C, 0x38, 0x40));
+        assert_eq!(
+            (
+                NiPixelData::pixelsAllMips,
+                NiPixelData::mipmapOffsets,
+                NiPixelData::bytesPerPixel
+            ),
+            (0x2C, 0x38, 0x40)
+        );
         assert_eq!(R::arrayArrayTextureFormats, 0x3E8);
         assert_eq!(R::defaultTextureFormats, R::defaultTexturePixelData - 0x10);
         // The second group of formats, as initializeTextureDefaults reaches it.
-        assert_eq!(R::depthStencilFormats - 0xC8, R::arrayArrayTextureFormats + FORMATS_PER_GROUP * 4);
+        assert_eq!(
+            R::depthStencilFormats - 0xC8,
+            R::arrayArrayTextureFormats + FORMATS_PER_GROUP * 4
+        );
         assert_eq!(R::field_28C - R::capabilityFlags, 4);
         assert_eq!(ADAPTER_IDENTIFIER_WORDS * 4, 0x42C);
     }
@@ -2065,7 +2265,22 @@ mod tests {
             assert_eq!(d3dformat_to_string(u32::from_le_bytes(*b"UYVY")), 0x7C353C);
             // Values that are not in the list: in a gap of a table, between the tables, and
             // negative.
-            for format in [1, 19, 31, 42, 53, 66, 72, 81, 99, 103, 0x3154_5845, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFFF] {
+            for format in [
+                1,
+                19,
+                31,
+                42,
+                53,
+                66,
+                72,
+                81,
+                99,
+                103,
+                0x3154_5845,
+                0x7FFF_FFFF,
+                0x8000_0000,
+                0xFFFF_FFFF,
+            ] {
                 assert_eq!(d3dformat_to_string(format), 0x7941B8, "{format:#x}");
             }
         }
@@ -2084,7 +2299,10 @@ mod tests {
         assert_eq!([2, 3, 4].map(|s| swap_effect_value(1, s)), [2, 3, 4]);
         assert_eq!([2, 3, 4].map(|s| swap_effect_value(2, s)), [1, 1, 1]);
         assert_eq!([0, 60, 0xFFFF_FFFF].map(refresh_rate_value), [0, 60, 0x7FFF_FFFF]);
-        assert_eq!([0, 1, 2, 3, 4, 5].map(presentation_interval_value), [0x8000_0000, 1, 2, 4, 8, 0]);
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5].map(presentation_interval_value),
+            [0x8000_0000, 1, 2, 4, 8, 0]
+        );
     }
 
     // An IDirect3D8 that answers CheckDeviceMultiSampleType.
@@ -2093,7 +2311,14 @@ mod tests {
         static MULTI_SAMPLE_RESULT: RefCell<u32> = const { RefCell::new(0) };
     }
 
-    unsafe extern "system" fn fake_check_multi_sample(_this: usize, adapter: u32, device_type: u32, format: u32, windowed: u32, samples: u32) -> u32 {
+    unsafe extern "system" fn fake_check_multi_sample(
+        _this: usize,
+        adapter: u32,
+        device_type: u32,
+        format: u32,
+        windowed: u32,
+        samples: u32,
+    ) -> u32 {
         MULTI_SAMPLE_CALLS.with(|calls| calls.borrow_mut().push([adapter, device_type, format, windowed, samples]));
         MULTI_SAMPLE_RESULT.with(|result| *result.borrow())
     }
@@ -2121,16 +2346,28 @@ mod tests {
             assert_eq!(ok, 1);
             // Width, height, format, count, samples, swap effect, window, windowed,
             // auto depth, depth format, flags, rate, interval.
-            assert_eq!(rd::<[u32; 13]>(r, R::d3dPresentParameters), [800, 600, 22, 1, 4, 1, 0x1234, 1, 1, 75, 0, 0, 0]);
-            assert_eq!(MULTI_SAMPLE_CALLS.with(|calls| calls.borrow_mut().drain(..).collect::<Vec<_>>()), vec![[2, 1, 22, 1, 4]]);
+            assert_eq!(
+                rd::<[u32; 13]>(r, R::d3dPresentParameters),
+                [800, 600, 22, 1, 4, 1, 0x1234, 1, 1, 75, 0, 0, 0]
+            );
+            assert_eq!(
+                MULTI_SAMPLE_CALLS.with(|calls| calls.borrow_mut().drain(..).collect::<Vec<_>>()),
+                vec![[2, 1, 22, 1, 4]]
+            );
 
             // One sample gives a lockable back buffer and the swap effect that the caller
             // asked for. Five back buffers become three. Bit 0 of the flags means no depth
             // buffer. A rate has no effect in a window.
             let ok = initialize_present_params_on(r, slot, 640, 480, 0x101, 1, 4, 80, 5, 3, 0xFFFF_FFFF, 0);
             assert_eq!(ok, 1);
-            assert_eq!(rd::<[u32; 13]>(r, R::d3dPresentParameters), [640, 480, 23, 3, 0, 3, 0x1234, 1, 0, 80, 1, 0, 0]);
-            assert_eq!(MULTI_SAMPLE_CALLS.with(|calls| calls.borrow_mut().drain(..).collect::<Vec<_>>()), vec![[2, 1, 23, 1, 0]]);
+            assert_eq!(
+                rd::<[u32; 13]>(r, R::d3dPresentParameters),
+                [640, 480, 23, 3, 0, 3, 0x1234, 1, 0, 80, 1, 0, 0]
+            );
+            assert_eq!(
+                MULTI_SAMPLE_CALLS.with(|calls| calls.borrow_mut().drain(..).collect::<Vec<_>>()),
+                vec![[2, 1, 23, 1, 0]]
+            );
         }
     }
 
@@ -2149,14 +2386,28 @@ mod tests {
         let mut storage = vec![0usize; 2];
         let mut system = vec![0u32; SystemDesc::SIZE / 4];
         unsafe {
-            wr(adapter.as_mut_ptr() as usize, Adapter::HALDeviceDesc, device.as_mut_ptr() as usize);
+            wr(
+                adapter.as_mut_ptr() as usize,
+                Adapter::HALDeviceDesc,
+                device.as_mut_ptr() as usize,
+            );
             storage[1] = adapter.as_ptr() as usize;
-            wr(system.as_mut_ptr() as usize, SystemDesc::adapterList_storage, storage.as_ptr() as usize);
+            wr(
+                system.as_mut_ptr() as usize,
+                SystemDesc::adapterList_storage,
+                storage.as_ptr() as usize,
+            );
             // D3DCAPS8::DeviceType
             wr::<u32>(device.as_mut_ptr() as usize, DeviceDesc::caps, 1);
         }
         let system_address = system.as_ptr() as usize;
-        Descriptions { _system: system, _storage: storage, _adapter: adapter, device, system_address }
+        Descriptions {
+            _system: system,
+            _storage: storage,
+            _adapter: adapter,
+            device,
+            system_address,
+        }
     }
 
     #[test]
@@ -2203,7 +2454,14 @@ mod tests {
         let mut this = vec![0xEEu8; R::SIZE];
         let r = this.as_mut_ptr() as usize;
         let empty = b"\0";
-        let texts = [b"PURE\0".as_ptr(), b" MT\0".as_ptr(), b" HWVP\0".as_ptr(), b" MIXVP\0".as_ptr(), b" SWVP\0".as_ptr()].map(|p| p as usize);
+        let texts = [
+            b"PURE\0".as_ptr(),
+            b" MT\0".as_ptr(),
+            b" HWVP\0".as_ptr(),
+            b" MIXVP\0".as_ptr(),
+            b" SWVP\0".as_ptr(),
+        ]
+        .map(|p| p as usize);
         let text = |r: usize| unsafe {
             let length = c_string_length(r + R::field_28C);
             String::from_utf8(core::slice::from_raw_parts((r + R::field_28C) as *const u8, length).to_vec()).unwrap()
@@ -2288,14 +2546,20 @@ mod tests {
             assert_eq!(rd::<usize>(t, TEXTURE_RENDERER_DATA), pb);
             link(t);
             unlink_renderer_data(t, pb);
-            assert_eq!((rd::<usize>(t, TEXTURE_RENDERER_DATA), rd::<usize>(pa, RENDERER_DATA_NEXT)), (pa, pc));
+            assert_eq!(
+                (rd::<usize>(t, TEXTURE_RENDERER_DATA), rd::<usize>(pa, RENDERER_DATA_NEXT)),
+                (pa, pc)
+            );
             link(t);
             unlink_renderer_data(t, pc);
             assert_eq!(rd::<usize>(pb, RENDERER_DATA_NEXT), 0);
             // Data that is not in the list changes nothing.
             link(t);
             unlink_renderer_data(t, 0x1234);
-            assert_eq!((rd::<usize>(pa, RENDERER_DATA_NEXT), rd::<usize>(pb, RENDERER_DATA_NEXT)), (pb, pc));
+            assert_eq!(
+                (rd::<usize>(pa, RENDERER_DATA_NEXT), rd::<usize>(pb, RENDERER_DATA_NEXT)),
+                (pb, pc)
+            );
             wr::<usize>(t, TEXTURE_RENDERER_DATA, 0);
             unlink_renderer_data(t, pa);
             assert_eq!(rd::<usize>(t, TEXTURE_RENDERER_DATA), 0);

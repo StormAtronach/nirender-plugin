@@ -47,7 +47,11 @@ pub fn one_buffer() -> bool {
 /// 1 - n / z`; reversed, `d = n / z`), so that every pass compares depths with one rule and
 /// its own near plane. An orthographic projection stays as it is.
 pub fn world_projection(projection: &[f32; 16]) -> [f32; 16] {
-    if one_buffer() { infinite_far(projection) } else { *projection }
+    if one_buffer() {
+        infinite_far(projection)
+    } else {
+        *projection
+    }
 }
 
 /// The projection with the same near plane and an infinite far plane, for a perspective; an
@@ -96,7 +100,11 @@ pub struct Control {
 
 impl Default for Control {
     fn default() -> Self {
-        Control { near_scale: None, sink: true, raise: 0.0 }
+        Control {
+            near_scale: None,
+            sink: true,
+            raise: 0.0,
+        }
     }
 }
 
@@ -138,7 +146,11 @@ pub fn control() -> Control {
 /// The depth terms as the GPU draws with them for the terms `a`, `b` of a projection with the
 /// layout of Direct3D (`d = a + b / z`): `[1 - a, -b]` when the depth is reversed.
 pub fn plane_terms(a: f32, b: f32) -> [f32; 2] {
-    if reversed() { [1.0 - a, -b] } else { [a, b] }
+    if reversed() {
+        [1.0 - a, -b]
+    } else {
+        [a, b]
+    }
 }
 
 /// The compare of a depth test of the world view, given for the plain convention (less is
@@ -163,12 +175,20 @@ pub fn bias(bias: wgpu::DepthBiasState) -> wgpu::DepthBiasState {
     if !reversed() {
         return bias;
     }
-    wgpu::DepthBiasState { constant: -bias.constant, slope_scale: -bias.slope_scale, clamp: -bias.clamp }
+    wgpu::DepthBiasState {
+        constant: -bias.constant,
+        slope_scale: -bias.slope_scale,
+        clamp: -bias.clamp,
+    }
 }
 
 /// The value of a clear of the depth of the world view, given for the plain convention.
 pub fn clear(value: f32) -> f32 {
-    if reversed() { 1.0 - value } else { value }
+    if reversed() {
+        1.0 - value
+    } else {
+        value
+    }
 }
 
 /// The WGSL functions of the depth. `t` is the depth terms of a projection ([`terms`]).
@@ -261,7 +281,14 @@ mod tests {
     fn the_depth_control_reads_its_parts() {
         use super::Control;
         assert_eq!(Control::parse("").unwrap(), Control::default());
-        assert_eq!(Control::parse("k=1,sink=off,raise=50").unwrap(), Control { near_scale: Some(1.0), sink: false, raise: 50.0 });
+        assert_eq!(
+            Control::parse("k=1,sink=off,raise=50").unwrap(),
+            Control {
+                near_scale: Some(1.0),
+                sink: false,
+                raise: 50.0
+            }
+        );
         assert_eq!(Control::parse(" k=0.9975 ").unwrap().near_scale, Some(0.9975));
         assert!(Control::parse("sink=maybe").is_err());
         assert!(Control::parse("depth=1").is_err());

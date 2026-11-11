@@ -55,7 +55,10 @@ pub fn backtrace() -> Vec<String> {
     let mut frames = [core::ptr::null_mut(); MOST_FRAMES];
     // SAFETY: the array has room for `MOST_FRAMES` addresses, and the call writes at most that many.
     let count = unsafe { RtlCaptureStackBackTrace(1, MOST_FRAMES as u32, frames.as_mut_ptr(), core::ptr::null_mut()) };
-    frames[..count as usize].iter().map(|&address| place(address as usize)).collect()
+    frames[..count as usize]
+        .iter()
+        .map(|&address| place(address as usize))
+        .collect()
 }
 
 /// `module+offset` for an address, or the address alone when no module holds it.

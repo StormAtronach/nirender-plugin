@@ -42,7 +42,10 @@ unsafe fn effect_state_print(shape: usize) -> u64 {
         let mut iter: usize = rd(state, list);
         let mut seen = 0;
         while iter != 0 && seen < 256 {
-            mix(&mut print, rd::<u32>(iter, crate::gen::layouts::NiDynamicEffectState_InternalList::effect));
+            mix(
+                &mut print,
+                rd::<u32>(iter, crate::gen::layouts::NiDynamicEffectState_InternalList::effect),
+            );
             iter = rd(iter, crate::gen::layouts::NiDynamicEffectState_InternalList::next);
             seen += 1;
         }
@@ -56,11 +59,15 @@ unsafe fn effect_state_print(shape: usize) -> u64 {
 
 use crate::main_thread::MainThread;
 
-port_thiscall!(update_properties_downward_port, 0x6F41B0, "NiGeometry::UpdatePropertiesDownward",
+port_thiscall!(
+    update_properties_downward_port,
+    0x6F41B0,
+    "NiGeometry::UpdatePropertiesDownward",
     fn(this, state: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust_main = update_properties_downward);
+    rust_main = update_properties_downward
+);
 
 /// The engine's update of the shape's property state; a new content asks for a recheck.
 ///
@@ -78,11 +85,15 @@ pub unsafe fn update_properties_downward(t: &MainThread, this: usize, state: usi
     }
 }
 
-port_thiscall!(update_effects_downward_port, 0x6F4270, "NiGeometry::UpdateEffectsDownward",
+port_thiscall!(
+    update_effects_downward_port,
+    0x6F4270,
+    "NiGeometry::UpdateEffectsDownward",
     fn(this, state: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust_main = update_effects_downward);
+    rust_main = update_effects_downward
+);
 
 /// The engine's update of the shape's effect state; a new content asks for a recheck. The
 /// engine shares an equal state between shapes (`IsEqual` with the last state), so a new
@@ -102,7 +113,5 @@ pub unsafe fn update_effects_downward(t: &MainThread, this: usize, state: usize)
     }
 }
 
-pub static PORTS: &[&crate::shadow::PortState] = &[
-    &update_properties_downward_port::STATE,
-    &update_effects_downward_port::STATE,
-];
+pub static PORTS: &[&crate::shadow::PortState] =
+    &[&update_properties_downward_port::STATE, &update_effects_downward_port::STATE];

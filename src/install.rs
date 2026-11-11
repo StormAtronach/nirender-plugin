@@ -20,7 +20,10 @@ unsafe fn before_begin_paint(args: &[usize]) {
     let device_ptr: usize = crate::mem::rd(args[0], NiDX8Renderer::d3dDevice);
     if device_ptr != 0 && device::attach(device_ptr).is_ok() {
         ATTACHED.store(true, Ordering::Relaxed);
-        crate::log!("first frame: renderer {:#x}, device {device_ptr:#x} with the recorder", args[0]);
+        crate::log!(
+            "first frame: renderer {:#x}, device {device_ptr:#x} with the recorder",
+            args[0]
+        );
         if let Some(port) = ports::all().find(|p| p.addr == BEGIN_PAINT) {
             port.before.store(0, Ordering::Relaxed);
         }
@@ -56,7 +59,14 @@ fn module_name_of(address: usize) -> String {
 /// True when a port follows the run of `len` changed bytes at `offset` of `func`. `live` is
 /// the function in memory, `read` gives the byte in memory at an address, and `module_of` the module that
 /// holds an address.
-fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, len: usize, read: impl Fn(usize) -> u8, module_of: impl Fn(usize) -> String) -> bool {
+fn follows_change(
+    func: &crate::gen::funcs::Func,
+    live: &[u8],
+    offset: usize,
+    len: usize,
+    read: impl Fn(usize) -> u8,
+    module_of: impl Fn(usize) -> String,
+) -> bool {
     // A port that runs the whole engine function keeps a change past its stolen bytes.
     if ports::wraps_engine(func.ea) && offset >= func.steal {
         return true;
@@ -65,7 +75,9 @@ fn follows_change(func: &crate::gen::funcs::Func, live: &[u8], offset: usize, le
         return ports::serves_site(at);
     }
     let expected = census::expected(func);
-    (offset..offset + len).filter(|&i| live[i] != expected[i]).all(|i| ports::follows(func.ea + i, &read, &module_of))
+    (offset..offset + len)
+        .filter(|&i| live[i] != expected[i])
+        .all(|i| ports::follows(func.ea + i, &read, &module_of))
 }
 
 /// Does the census and writes it to the log. It locks the port of a function that another
@@ -80,7 +92,11 @@ pub unsafe fn census(hooked: bool) -> usize {
         }
         let port = ports::all().find(|p| p.addr == change.func.ea);
         changed.push(change.func.ea);
-        let jump = if change.own_jump_changed { " (the plugin's jump at the entry is changed by another module)" } else { "" };
+        let jump = if change.own_jump_changed {
+            " (the plugin's jump at the entry is changed by another module)"
+        } else {
+            ""
+        };
         let note = match port {
             None => "",
             Some(_) if !change.own_jump_changed && port_follows(change) => " (the port follows the change)",
@@ -109,7 +125,11 @@ pub unsafe fn census(hooked: bool) -> usize {
         crate::log!("census: {}{}{}", census::describe(change), jump, note);
     }
     changed.dedup();
-    crate::log!("census: {} of {} functions differ from the database", changed.len(), FUNCS.len());
+    crate::log!(
+        "census: {} of {} functions differ from the database",
+        changed.len(),
+        FUNCS.len()
+    );
     changed.len()
 }
 
@@ -146,7 +166,10 @@ pub fn refusal_cause() -> Option<String> {
 /// The features of the Code Patch that locked a port: the cause of a refusal that the player
 /// can change.
 pub fn locked_by_options() -> Vec<u32> {
-    LOCKED_BY_OPTIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    LOCKED_BY_OPTIONS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// True when the renderer is refused for this session.
@@ -155,13 +178,16 @@ pub fn refused() -> bool {
 }
 
 /// The message of a later call of `install` after a refusal: the first message has the cause.
-const REFUSED_AGAIN: &str = "the renderer is refused for this session (the cause is in the first install line); the game keeps MGE XE on Direct3D 9";
+const REFUSED_AGAIN: &str =
+    "the renderer is refused for this session (the cause is in the first install line); the game keeps MGE XE on Direct3D 9";
 
 /// The message of a refusal: its cause, and the options of the Code Patch that caused it.
 fn refused_message() -> String {
     let cause = REFUSAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-    let options: Vec<String> =
-        locked_by_options().iter().map(|&feature| format!("\"{}\" (feature {feature})", ports::code_patch_option(feature))).collect();
+    let options: Vec<String> = locked_by_options()
+        .iter()
+        .map(|&feature| format!("\"{}\" (feature {feature})", ports::code_patch_option(feature)))
+        .collect();
     let mut message = format!("the renderer is refused for this session: {cause}; the game keeps MGE XE on Direct3D 9");
     if !options.is_empty() {
         message += &format!("; the cause is the Morrowind Code Patch option {}", options.join(", "));
@@ -180,7 +206,10 @@ pub fn refuse_without_ports() -> bool {
     if ports::all().any(|p| p.installed()) {
         return false;
     }
-    let message = refuse("no port is installed when the game asks for its Direct3D 8: the Lua side of the plugin did not run (see MWSE.log)".to_string());
+    let message = refuse(
+        "no port is installed when the game asks for its Direct3D 8: the Lua side of the plugin did not run (see MWSE.log)"
+            .to_string(),
+    );
     crate::log!("{message}");
     true
 }
@@ -255,10 +284,18 @@ pub unsafe fn install() -> Result<String, String> {
     // mod changed in a way the port does not follow, or a detour that failed, refuses the
     // renderer for the session, and MGE XE goes on with Direct3D 9.
     if crate::link_client::own_d3d8() {
-        let cannot: Vec<&str> = ports::all().filter(|p| (p.locked() || !p.installed()) && skipped.as_deref() != Some(p.name)).map(|p| p.name).collect();
+        let cannot: Vec<&str> = ports::all()
+            .filter(|p| (p.locked() || !p.installed()) && skipped.as_deref() != Some(p.name))
+            .map(|p| p.name)
+            .collect();
         if !cannot.is_empty() {
             let causes = CAUSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).join("; ");
-            return Err(refuse(format!("{} of {} ports cannot run as Rust ({}): {causes}", cannot.len(), ports::all().count(), cannot.join(", "))));
+            return Err(refuse(format!(
+                "{} of {} ports cannot run as Rust ({}): {causes}",
+                cannot.len(),
+                ports::all().count(),
+                cannot.join(", ")
+            )));
         }
     }
     let attached = match attach_device()? {
@@ -307,13 +344,16 @@ pub unsafe fn attach_device() -> Result<Option<String>, String> {
     }
     device::attach(device_ptr)?;
     ATTACHED.store(true, Ordering::Relaxed);
-    Ok(Some(format!("renderer {renderer:#x}, device {device_ptr:#x} with the recorder")))
+    Ok(Some(format!(
+        "renderer {renderer:#x}, device {device_ptr:#x} with the recorder"
+    )))
 }
 
 /// One line for each port. A line has the name, the address, the mode and the counts of the
 /// port. Tabs separate the columns. The log and the tools use this text.
 pub fn report() -> String {
-    let mut text = String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\tlocked\trust_runs\n");
+    let mut text =
+        String::from("port\taddr\tinstalled\tmode\tshadow_calls\tmismatches\tskipped\tlive_calls\tlocked\trust_runs\n");
     for port in ports::all() {
         text.push_str(&format!(
             "{}\t{:#x}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\n",
@@ -347,14 +387,21 @@ mod tests {
         // NiDX8Renderer::RenderLines
         (11, 0x6ADC91, &[0xFF, 0x92, 0x1C, 0x01, 0x00]),
         // NiDX8Renderer::DrawPrimitive
-        (11, 0x6AEF05, &[0x4E, 0x24, 0x8B, 0x40, 0x2C, 0x57, 0x8B, 0x11, 0x55, 0x53, 0x6A, 0x00, 0x50, 0x51, 0xFF, 0x92, 0x1C, 0x01, 0x00]),
+        (
+            11,
+            0x6AEF05,
+            &[
+                0x4E, 0x24, 0x8B, 0x40, 0x2C, 0x57, 0x8B, 0x11, 0x55, 0x53, 0x6A, 0x00, 0x50, 0x51, 0xFF, 0x92, 0x1C, 0x01,
+                0x00,
+            ],
+        ),
         // NiDX8Renderer::DrawSkinnedPrimitive2
         (
             11,
             0x6AF231,
             &[
-                0x17, 0x33, 0xD2, 0x66, 0x8B, 0x55, 0xF4, 0x52, 0x8B, 0x54, 0x24, 0x44, 0x6A, 0x00, 0x52, 0x50, 0xFF, 0x91, 0x1C, 0x01, 0x00, 0x00, 0xEB,
-                0x0C, 0x8B, 0x54, 0x24, 0x40, 0x52, 0x50, 0xFF, 0x91, 0x18, 0x01, 0x00,
+                0x17, 0x33, 0xD2, 0x66, 0x8B, 0x55, 0xF4, 0x52, 0x8B, 0x54, 0x24, 0x44, 0x6A, 0x00, 0x52, 0x50, 0xFF, 0x91,
+                0x1C, 0x01, 0x00, 0x00, 0xEB, 0x0C, 0x8B, 0x54, 0x24, 0x40, 0x52, 0x50, 0xFF, 0x91, 0x18, 0x01, 0x00,
             ],
         ),
         // NiDX8TexturePass::setBlendingState
@@ -367,11 +414,21 @@ mod tests {
         // NiDX8TextureStage::updateRenderer
         (131, 0x6C1BA5, &[0x37, 0xD2, 0xF9, 0xFF]),
         // NiDX8MaterialManager::UpdateToDevice
-        (11, 0x6C2686, &[0x15, 0x8B, 0x44, 0x24, 0x04, 0xC6, 0x41, 0x1C, 0x00, 0x8B, 0x49, 0x18, 0x8B, 0x10, 0x51, 0x50, 0xFF, 0x92, 0xA8, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00]),
+        (
+            11,
+            0x6C2686,
+            &[
+                0x15, 0x8B, 0x44, 0x24, 0x04, 0xC6, 0x41, 0x1C, 0x00, 0x8B, 0x49, 0x18, 0x8B, 0x10, 0x51, 0x50, 0xFF, 0x92,
+                0xA8, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00,
+            ],
+        ),
     ];
 
     fn containing(va: usize) -> &'static crate::gen::funcs::Func {
-        crate::gen::funcs::FUNCS.iter().find(|f| f.ea <= va && va < f.ea + f.size).expect("a ported function")
+        crate::gen::funcs::FUNCS
+            .iter()
+            .find(|f| f.ea <= va && va < f.ea + f.size)
+            .expect("a ported function")
     }
 
     /// The function as the census sees it with `bytes` written at `at`. A record of the Code
@@ -392,20 +449,35 @@ mod tests {
     fn followed(func: &crate::gen::funcs::Func, live: &[u8], at: usize, bytes: &[u8]) -> bool {
         let runs = census::runs(live, census::expected(func));
         assert!(!runs.is_empty(), "{}: the bytes are those of the database", func.name);
-        let read = |addr: usize| if (at..at + bytes.len()).contains(&addr) { bytes[addr - at] } else { live[addr - func.ea] };
-        runs.iter().all(|&(offset, len)| follows_change(func, live, offset, len, read, fake_module))
+        let read = |addr: usize| {
+            if (at..at + bytes.len()).contains(&addr) {
+                bytes[addr - at]
+            } else {
+                live[addr - func.ea]
+            }
+        };
+        runs.iter()
+            .all(|&(offset, len)| follows_change(func, live, offset, len, read, fake_module))
     }
 
     /// The modules of the tests: MWSE.dll at 0x2000_0000 and above, the game below.
     fn fake_module(address: usize) -> String {
-        if address >= 0x2000_0000 { "MWSE.dll".to_string() } else { "Morrowind.exe".to_string() }
+        if address >= 0x2000_0000 {
+            "MWSE.dll".to_string()
+        } else {
+            "Morrowind.exe".to_string()
+        }
     }
 
     #[test]
     fn each_code_patch_feature_in_a_port_can_be_off() {
         for &(feature, at, bytes) in VANILLA {
             let func = containing(at);
-            assert!(followed(func, &live_with(func, at, bytes), at, bytes), "feature {feature} off at {at:#x} in {}: a port does not follow it", func.name);
+            assert!(
+                followed(func, &live_with(func, at, bytes), at, bytes),
+                "feature {feature} off at {at:#x} in {}: a port does not follow it",
+                func.name
+            );
         }
     }
 
@@ -433,14 +505,19 @@ mod tests {
     fn followed_in(func: &crate::gen::funcs::Func, live: &[u8]) -> bool {
         let runs = census::runs(live, census::expected(func));
         assert!(!runs.is_empty(), "{}: the bytes are those of the database", func.name);
-        runs.iter().all(|&(offset, len)| follows_change(func, live, offset, len, |addr| live[addr - func.ea], fake_module))
+        runs.iter()
+            .all(|&(offset, len)| follows_change(func, live, offset, len, |addr| live[addr - func.ea], fake_module))
     }
 
     #[test]
     fn the_patch_of_mwse_for_a_null_default_material_is_followed() {
         let (func, live) = material_manager_dtor_patched();
         let (call, write) = (0x6C2578 - func.ea, 0x6C259B - func.ea);
-        assert_eq!(census::runs(&live, census::expected(func)), vec![(call, 30), (write, 3)], "the two runs of the patch");
+        assert_eq!(
+            census::runs(&live, census::expected(func)),
+            vec![(call, 30), (write, 3)],
+            "the two runs of the patch"
+        );
         assert!(followed_in(func, &live));
         // The call alone (the write as in the database) is followed too.
         let mut call_only = live.clone();
@@ -454,7 +531,13 @@ mod tests {
         let call = 0x6C2578 - func.ea;
         let write = 0x6C259B - func.ea;
         // A jump in place of the call, a changed nop, a write that is only partly removed.
-        for (name, at, byte) in [("jmp for call", call, 0xE9u8), ("tail", call + 17, 0xCC), ("end of tail", call + 29, 0xCC), ("write", write + 2, 0x18), ("write 1", write, 0x89)] {
+        for (name, at, byte) in [
+            ("jmp for call", call, 0xE9u8),
+            ("tail", call + 17, 0xCC),
+            ("end of tail", call + 29, 0xCC),
+            ("write", write + 2, 0x18),
+            ("write 1", write, 0x89),
+        ] {
             let mut changed = live.clone();
             changed[at] = byte;
             assert!(!followed_in(func, &changed), "{name}: not followed");
@@ -467,7 +550,10 @@ mod tests {
         for target in [0x0040_1000u32, 0x1000_0000] {
             let mut wrong_target = live.clone();
             wrong_target[call..call + 5].copy_from_slice(&dtor_call_to(target));
-            assert!(!followed_in(func, &wrong_target), "a call to {target:#x} is not the patch of MWSE");
+            assert!(
+                !followed_in(func, &wrong_target),
+                "a call to {target:#x} is not the patch of MWSE"
+            );
         }
         // The nops of the patch without the call: not followed.
         let mut no_call = live.clone();
@@ -537,19 +623,28 @@ mod tests {
             for (feature, offset, data) in code_patch_records(&blob) {
                 let va = 0x400000 + offset;
                 for port in ports::all() {
-                    let func = crate::gen::funcs::FUNCS.iter().find(|f| f.ea == port.addr).expect("a port is in the function table");
+                    let func = crate::gen::funcs::FUNCS
+                        .iter()
+                        .find(|f| f.ea == port.addr)
+                        .expect("a port is in the function table");
                     let (lo, hi) = (va.max(func.ea), (va + data.len()).min(func.ea + func.size));
                     if lo >= hi {
                         continue;
                     }
-                    let known = ports::CODE_PATCH_RECORDS.iter().any(|&(f, start, len)| f == feature && start <= lo && hi <= start + len);
+                    let known = ports::CODE_PATCH_RECORDS
+                        .iter()
+                        .any(|&(f, start, len)| f == feature && start <= lo && hi <= start + len);
                     assert!(known, "{path}: feature {feature} writes {lo:#x}..{hi:#x} in {}, and ports::CODE_PATCH_RECORDS has no such record", func.name);
                     for (state, bytes) in [("on", data), ("off", &vanilla[offset..offset + data.len()])] {
                         let live = live_with(func, va, bytes);
                         if census::runs(&live, census::expected(func)).is_empty() {
                             continue;
                         }
-                        assert!(followed(func, &live, va, bytes), "{path}: feature {feature} {state} at {lo:#x} in {}: a port does not follow it", func.name);
+                        assert!(
+                            followed(func, &live, va, bytes),
+                            "{path}: feature {feature} {state} at {lo:#x} in {}: a port does not follow it",
+                            func.name
+                        );
                     }
                     checked += 1;
                 }
@@ -566,7 +661,10 @@ mod tests {
         for &(feature, at, bytes) in VANILLA.iter().filter(|(feature, _, _)| *feature == 11) {
             let func = containing(at);
             let other: Vec<u8> = bytes.iter().map(|b| b ^ 0x5A).collect();
-            assert!(!followed(func, &live_with(func, at, &other), at, &other), "feature {feature} at {at:#x}: other bytes are followed");
+            assert!(
+                !followed(func, &live_with(func, at, &other), at, &other),
+                "feature {feature} at {at:#x}: other bytes are followed"
+            );
         }
     }
 }

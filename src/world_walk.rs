@@ -55,7 +55,10 @@ pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;
     }
-    if let Err(error) = crate::mwse_native::claim(crate::mwse_native::NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW, click_cull_show as *const () as usize) {
+    if let Err(error) = crate::mwse_native::claim(
+        crate::mwse_native::NATIVE_OVERRIDE_CAMERA_ROOT_CULL_SHOW,
+        click_cull_show as *const () as usize,
+    ) {
         crate::log!("world walk: {error}: the helper finds the world's start as before");
         INSTALLED.finish(false);
         return;
@@ -66,7 +69,11 @@ pub unsafe fn install() {
 
 /// The report line.
 pub fn report() -> String {
-    format!("world walk: {} walks of the world root, {} events", WALKS.load(Ordering::Relaxed), EVENTS.load(Ordering::Relaxed))
+    format!(
+        "world walk: {} walks of the world root, {} events",
+        WALKS.load(Ordering::Relaxed),
+        EVENTS.load(Ordering::Relaxed)
+    )
 }
 
 /// The call of `CullShow` for the root of a camera's Click (thiscall: the root, the camera).
@@ -148,7 +155,8 @@ unsafe fn node_display(t: &MainThread, root: usize, camera: usize) {
     }
     let sky = crate::link_client::sky_root_now(t);
     let children: usize = rd(root, N::kChildren_storage);
-    let sky_is_child = sky != 0 && (0..rd::<u32>(root, N::kChildren_endIndex) as usize).any(|i| rd::<usize>(children, i * 4) == sky);
+    let sky_is_child =
+        sky != 0 && (0..rd::<u32>(root, N::kChildren_endIndex) as usize).any(|i| rd::<usize>(children, i * 4) == sky);
     if !sky_is_child {
         world_walk_event();
     }

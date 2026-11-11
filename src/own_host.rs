@@ -19,8 +19,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use crate::sync::{DeviceLock, LockCell};
 use crate::link::*;
+use crate::sync::{DeviceLock, LockCell};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -110,7 +110,10 @@ static LIVE: LockCell<Vec<usize>> = LockCell::new(Vec::new());
 pub unsafe fn snapshot() {
     let lock = crate::sync::device_lock();
     let live: Vec<usize> = LIVE.get(&lock).clone();
-    let (back, depth) = (BACK_BUFFER.load(Ordering::Relaxed) as usize, DEPTH_BUFFER.load(Ordering::Relaxed) as usize);
+    let (back, depth) = (
+        BACK_BUFFER.load(Ordering::Relaxed) as usize,
+        DEPTH_BUFFER.load(Ordering::Relaxed) as usize,
+    );
     // The textures before their level surfaces.
     let order = |kind: &Kind| match kind {
         Kind::Texture => 0,
@@ -137,10 +140,21 @@ pub unsafe fn snapshot() {
             }
             Kind::LevelSurface if o.owner.is_null() || !in_file(&*o.owner) => {}
             Kind::Texture => {
-                crate::capture::call(CALL_CREATE_TEXTURE, &[o.width, o.height, o.levels, o.usage, o.format, o.pool, address], 0);
+                crate::capture::call(
+                    CALL_CREATE_TEXTURE,
+                    &[o.width, o.height, o.levels, o.usage, o.format, o.pool, address],
+                    0,
+                );
                 for (level, memory) in o.level_memory.iter().enumerate() {
                     if !memory.is_empty() {
-                        crate::capture::texture_update(object, level as u32, (o.width >> level).max(1), (o.height >> level).max(1), o.format, memory);
+                        crate::capture::texture_update(
+                            object,
+                            level as u32,
+                            (o.width >> level).max(1),
+                            (o.height >> level).max(1),
+                            o.format,
+                            memory,
+                        );
                     }
                 }
                 count[0] += 1;
@@ -150,7 +164,11 @@ pub unsafe fn snapshot() {
                 count[1] += 1;
             }
             Kind::VertexBuffer | Kind::IndexBuffer => {
-                let index = if o.kind == Kind::VertexBuffer { CALL_CREATE_VERTEX_BUFFER } else { CALL_CREATE_INDEX_BUFFER };
+                let index = if o.kind == Kind::VertexBuffer {
+                    CALL_CREATE_VERTEX_BUFFER
+                } else {
+                    CALL_CREATE_INDEX_BUFFER
+                };
                 crate::capture::call(index, &[o.length, o.usage, o.format, o.pool, address], 0);
                 count[2] += 1;
             }
@@ -163,7 +181,13 @@ pub unsafe fn snapshot() {
             }
         }
     }
-    crate::log!("own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces", count[0], count[1], count[2], count[3]);
+    crate::log!(
+        "own host: snapshot of {} textures, {} level surfaces, {} buffers, {} surfaces",
+        count[0],
+        count[1],
+        count[2],
+        count[3]
+    );
     crate::log!("own host: {freed} textures with a freed level are not in the snapshot: each comes into the file at its first naming");
 }
 
@@ -205,27 +229,52 @@ pub struct RenderedPicture {
 /// the caller does not hold the state open. Each read waits for the helper.
 pub unsafe fn rendered_pictures() -> Vec<RenderedPicture> {
     let lock = crate::sync::device_lock();
-    let mut textures: Vec<usize> = LIVE.get(&lock).iter().copied().filter(|&o| (*(o as *const Object)).kind == Kind::Texture && is_rendered(&*(o as *const Object))).collect();
+    let mut textures: Vec<usize> = LIVE
+        .get(&lock)
+        .iter()
+        .copied()
+        .filter(|&o| (*(o as *const Object)).kind == Kind::Texture && is_rendered(&*(o as *const Object)))
+        .collect();
     textures.sort_by_key(|&o| std::cmp::Reverse((*(o as *const Object)).width * (*(o as *const Object)).height));
     let mut sizes = std::collections::BTreeMap::<(u32, u32), u32>::new();
     for &o in &textures {
         let o = &*(o as *const Object);
         *sizes.entry((o.width, o.height)).or_default() += 1;
     }
-    let sizes: Vec<String> = sizes.iter().map(|((width, height), count)| format!("{count} of {width} x {height}")).collect();
+    let sizes: Vec<String> = sizes
+        .iter()
+        .map(|((width, height), count)| format!("{count} of {width} x {height}"))
+        .collect();
 
     let start = crate::capture::ticks();
-    let budget = crate::switches::number("NIRENDER_CAPTURE_READS_MS", READS_BUDGET_MS) as i64 * crate::capture::ticks_per_second() / 1000;
+    let budget = crate::switches::number("NIRENDER_CAPTURE_READS_MS", READS_BUDGET_MS) as i64
+        * crate::capture::ticks_per_second()
+        / 1000;
     let count = textures.len();
-    let (pictures, ended) = read_within(textures, budget, || crate::capture::ticks() - start, |object| {
-        let (width, height, pixels) = crate::capture::read_pixels(object as u32)?;
-        Some(RenderedPicture { texture: object as u32, format: (*(object as *const Object)).format, width, height, pixels: pixels.to_vec() })
-    });
+    let (pictures, ended) = read_within(
+        textures,
+        budget,
+        || crate::capture::ticks() - start,
+        |object| {
+            let (width, height, pixels) = crate::capture::read_pixels(object as u32)?;
+            Some(RenderedPicture {
+                texture: object as u32,
+                format: (*(object as *const Object)).format,
+                width,
+                height,
+                pixels: pixels.to_vec(),
+            })
+        },
+    );
 
     // A file that holds does not count this frame in its worst frame: this line has the time.
     let spent = (crate::capture::ticks() - start) as f64 * 1000.0 / crate::capture::ticks_per_second() as f64;
     let end = if ended { ", the budget ended the reads" } else { "" };
-    crate::log!("capture: {count} rendered textures ({}), {} with their pictures read in {spent:.1} ms{end}", sizes.join(", "), pictures.len());
+    crate::log!(
+        "capture: {count} rendered textures ({}), {} with their pictures read in {spent:.1} ms{end}",
+        sizes.join(", "),
+        pictures.len()
+    );
     pictures
 }
 
@@ -235,7 +284,12 @@ const READS_BUDGET_MS: u32 = 500;
 
 /// Reads the items in their order while `elapsed` is under `budget`, looked at before each read.
 /// Gives what the reads gave, and true when the budget left items unread.
-fn read_within<T, R>(items: Vec<T>, budget: i64, elapsed: impl Fn() -> i64, mut read: impl FnMut(T) -> Option<R>) -> (Vec<R>, bool) {
+fn read_within<T, R>(
+    items: Vec<T>,
+    budget: i64,
+    elapsed: impl Fn() -> i64,
+    mut read: impl FnMut(T) -> Option<R>,
+) -> (Vec<R>, bool) {
     let mut done = Vec::new();
     for item in items {
         if elapsed() >= budget {
@@ -253,7 +307,13 @@ fn read_within<T, R>(items: Vec<T>, budget: i64, elapsed: impl Fn() -> i64, mut 
 ///
 /// Under the device lock since [`rendered_pictures`], so that the picture's texture is alive.
 pub unsafe fn write_picture(picture: &RenderedPicture) {
-    crate::capture::rendered_picture(picture.texture, picture.width, picture.height, picture.format, &picture.pixels);
+    crate::capture::rendered_picture(
+        picture.texture,
+        picture.width,
+        picture.height,
+        picture.format,
+        &picture.pixels,
+    );
 }
 
 /// The CPU copies of the locked texture levels that the objects alive hold (risk 42): the
@@ -263,7 +323,11 @@ pub fn level_copies() -> LevelCopies {
     let lock = crate::sync::device_lock();
     // SAFETY: an object in LIVE is alive until its release takes it out, which needs the
     // device lock that this function holds.
-    let copies = LevelCopies::of(LIVE.get(&lock).iter().map(|&o| unsafe { (*(o as *const Object)).level_memory.as_slice() }));
+    let copies = LevelCopies::of(
+        LIVE.get(&lock)
+            .iter()
+            .map(|&o| unsafe { (*(o as *const Object)).level_memory.as_slice() }),
+    );
     copies
 }
 
@@ -312,7 +376,14 @@ impl LevelCopies {
 /// serial ([`serial_of`]). For a capture file that holds between its frames.
 pub unsafe fn write_texture(serial: u32) {
     let lock = crate::sync::device_lock();
-    let Some(handle) = LIVE.get(&lock).iter().copied().find(|&o| (*(o as *const Object)).serial == serial) else { return };
+    let Some(handle) = LIVE
+        .get(&lock)
+        .iter()
+        .copied()
+        .find(|&o| (*(o as *const Object)).serial == serial)
+    else {
+        return;
+    };
     write_resource(handle);
 }
 
@@ -330,7 +401,14 @@ unsafe fn write_resource(handle: usize) {
         Kind::Texture => {
             for (level, memory) in o.level_memory.iter().enumerate() {
                 if !memory.is_empty() {
-                    crate::capture::texture_update(handle, level as u32, (o.width >> level).max(1), (o.height >> level).max(1), o.format, memory);
+                    crate::capture::texture_update(
+                        handle,
+                        level as u32,
+                        (o.width >> level).max(1),
+                        (o.height >> level).max(1),
+                        o.format,
+                        memory,
+                    );
                 }
             }
         }
@@ -395,7 +473,10 @@ pub unsafe fn object_serial(address: u32) -> u32 {
 ///
 /// The plugin runs in the game, and the two objects live as long as the device.
 pub unsafe fn target_serials() -> [u32; 2] {
-    [serial_of(BACK_BUFFER.load(Ordering::Relaxed)), serial_of(DEPTH_BUFFER.load(Ordering::Relaxed))]
+    [
+        serial_of(BACK_BUFFER.load(Ordering::Relaxed)),
+        serial_of(DEPTH_BUFFER.load(Ordering::Relaxed)),
+    ]
 }
 
 /// A handle that a device keeps from a Set call (a stage texture, a stream, the indices, a
@@ -415,7 +496,10 @@ impl Kept {
     /// A handle that the game sets now: its object is alive (0 for a value that is not an
     /// object of this host).
     pub unsafe fn of(handle: u32) -> Kept {
-        Kept { handle, serial: own(handle).map_or(0, |o| o.serial) }
+        Kept {
+            handle,
+            serial: own(handle).map_or(0, |o| o.serial),
+        }
     }
 
     /// The handle while the object of the Set call is alive, else 0.
@@ -424,8 +508,13 @@ impl Kept {
             return 0;
         }
         let lock = crate::sync::device_lock();
-        let alive = LIVE.get(&lock).contains(&(self.handle as usize)) && (*(self.handle as usize as *const Object)).serial == self.serial;
-        if alive { self.handle } else { 0 }
+        let alive = LIVE.get(&lock).contains(&(self.handle as usize))
+            && (*(self.handle as usize as *const Object)).serial == self.serial;
+        if alive {
+            self.handle
+        } else {
+            0
+        }
     }
 }
 
@@ -523,7 +612,13 @@ unsafe extern "system" fn buffer_description(this: *mut Object, description: *mu
     let object = &*this;
     let vertex = object.kind == Kind::VertexBuffer;
     // D3DFMT_VERTEXDATA is 100. D3DRTYPE_VERTEXBUFFER is 6 and D3DRTYPE_INDEXBUFFER is 7.
-    let words = [if vertex { 100 } else { object.format }, if vertex { 6 } else { 7 }, object.usage, object.pool, object.length];
+    let words = [
+        if vertex { 100 } else { object.format },
+        if vertex { 6 } else { 7 },
+        object.usage,
+        object.pool,
+        object.length,
+    ];
     core::ptr::copy_nonoverlapping(words.as_ptr(), description, 5);
     if vertex {
         *description.add(5) = object.format;
@@ -538,7 +633,16 @@ unsafe extern "system" fn texture_level_count(this: *mut Object) -> u32 {
 /// A D3DSURFACE_DESC: format, type, usage, pool, size, multisample type, width, height.
 unsafe fn write_surface_description(object: &Object, level: u32, description: *mut u32) {
     let (width, height) = ((object.width >> level).max(1), (object.height >> level).max(1));
-    let words = [object.format, 1, object.usage, object.pool, level_size(object.format, width, height).0 as u32, 0, width, height];
+    let words = [
+        object.format,
+        1,
+        object.usage,
+        object.pool,
+        level_size(object.format, width, height).0 as u32,
+        0,
+        width,
+        height,
+    ];
     core::ptr::copy_nonoverlapping(words.as_ptr(), description, 8);
 }
 
@@ -622,11 +726,18 @@ unsafe fn unlock_level(texture: *mut Object, level: u32) -> u32 {
 
 /// [`unlock_level`] with the open file and the stream as arguments, for a test: `send` gets the
 /// level's width, height, format and bytes.
-unsafe fn unlock_level_into(texture: *mut Object, level: u32, file_open: bool, send: impl FnOnce(u32, u32, u32, &[u8])) -> u32 {
+unsafe fn unlock_level_into(
+    texture: *mut Object,
+    level: u32,
+    file_open: bool,
+    send: impl FnOnce(u32, u32, u32, &[u8]),
+) -> u32 {
     let object = &mut *texture;
     let (width, height, format) = ((object.width >> level).max(1), (object.height >> level).max(1), object.format);
     let keep = file_open || object.dynamic;
-    let Some(memory) = object.level_memory.get_mut(level as usize) else { return OK };
+    let Some(memory) = object.level_memory.get_mut(level as usize) else {
+        return OK;
+    };
     if memory.is_empty() {
         return OK;
     }
@@ -709,7 +820,13 @@ unsafe fn note_lock(texture: *const Object, level: u32, rectangle: usize, flags:
     }
 }
 
-unsafe extern "system" fn texture_lock(this: *mut Object, level: u32, locked: *mut u32, rectangle: usize, flags: u32) -> u32 {
+unsafe extern "system" fn texture_lock(
+    this: *mut Object,
+    level: u32,
+    locked: *mut u32,
+    rectangle: usize,
+    flags: u32,
+) -> u32 {
     let _lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "texture LockRect");
     if level < (*this).levels {
@@ -736,7 +853,10 @@ unsafe fn own(object: u32) -> Option<&'static mut Object> {
     }
     let object = object as usize as *mut Object;
     let table = (*object).table;
-    [&BUFFER_TABLE, &TEXTURE_TABLE, &SURFACE_TABLE].iter().any(|t| t.methods() == table).then(|| &mut *object)
+    [&BUFFER_TABLE, &TEXTURE_TABLE, &SURFACE_TABLE]
+        .iter()
+        .any(|t| t.methods() == table)
+        .then(|| &mut *object)
 }
 
 /// The target that a surface is, as the stream names it: the texture of a level 0 surface
@@ -745,7 +865,8 @@ unsafe fn target_of(surface: &Object) -> Option<u32> {
     if surface as *const Object as u32 == BACK_BUFFER.load(Ordering::Relaxed) {
         return Some(0);
     }
-    (surface.kind == Kind::LevelSurface && surface.level == 0 && (*surface.owner).usage & 1 != 0).then_some(surface.owner as u32)
+    (surface.kind == Kind::LevelSurface && surface.level == 0 && (*surface.owner).usage & 1 != 0)
+        .then_some(surface.owner as u32)
 }
 
 /// The rendered texture that a surface of this host is level 0 of, or 0. This host makes a
@@ -753,7 +874,9 @@ unsafe fn target_of(surface: &Object) -> Option<u32> {
 /// the texture.
 /// The width and the height of a texture of this host, or [`None`] for another object.
 pub unsafe fn texture_size(handle: u32) -> Option<(u32, u32)> {
-    own(handle).filter(|object| object.kind == Kind::Texture).map(|object| (object.width, object.height))
+    own(handle)
+        .filter(|object| object.kind == Kind::Texture)
+        .map(|object| (object.width, object.height))
 }
 
 pub unsafe fn texture_of(surface: u32) -> u32 {
@@ -854,7 +977,9 @@ fn forget_read(lock: &DeviceLock, target: u32) {
 
 /// `IDirect3DDevice8::CopyRects` for all of a surface.
 unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
-    let (Some(source), Some(destination)) = (own(source), own(destination)) else { return OK };
+    let (Some(source), Some(destination)) = (own(source), own(destination)) else {
+        return OK;
+    };
     if let Some(target) = target_of(destination) {
         // Into a target: its kept read is old now.
         forget_read(lock, target);
@@ -863,7 +988,9 @@ unsafe fn copy_pixels(lock: &DeviceLock, source: u32, destination: u32) -> u32 {
     if let Some(target) = target_of(source) {
         // Out of a target: the pixels come from the host program.
         read_target(&lock, target, destination);
-    } else if target_of(destination).is_none() && (source.width, source.height, source.format) == (destination.width, destination.height, destination.format) {
+    } else if target_of(destination).is_none()
+        && (source.width, source.height, source.format) == (destination.width, destination.height, destination.format)
+    {
         // Between two surfaces with memory here. Out of a level surface, the count shows a
         // reader of a level after its unlock (risk 42): no engine caller is known \[I\].
         if source.kind == Kind::LevelSurface {
@@ -885,7 +1012,8 @@ static PIXEL_READS: LockCell<u32> = LockCell::new(0);
 /// into: the game's memory stays as it was, and the game's call still returns success.
 static FAILED_READS: LockCell<u32> = LockCell::new(0);
 /// The reads by (width, height, from the back buffer): the count and the wait in ticks.
-static READS_BY_SIZE: LockCell<std::collections::BTreeMap<(u32, u32, bool), (u32, i64)>> = LockCell::new(std::collections::BTreeMap::new());
+static READS_BY_SIZE: LockCell<std::collections::BTreeMap<(u32, u32, bool), (u32, i64)>> =
+    LockCell::new(std::collections::BTreeMap::new());
 
 /// The offset of the first byte of a locked rectangle that starts at `left` and `top`, in a surface
 /// with rows of `row` bytes and pixels of `pixel` bytes: [`None`] when it starts outside the surface.
@@ -918,8 +1046,16 @@ unsafe extern "system" fn surface_lock(this: *mut Object, locked: *mut u32, rect
     }
     // A RECT: left, top, right, bottom. `NiDX8Renderer::TakeScreenshot` gives a width and a height as
     // the last two, so only the first two count here.
-    let (left, top) = if rectangle != 0 { (crate::mem::rd::<u32>(rectangle, 0), crate::mem::rd::<u32>(rectangle, 4)) } else { (0, 0) };
-    let pixel = if object.format >= 0x100 { 0 } else { row / object.width.max(1) };
+    let (left, top) = if rectangle != 0 {
+        (crate::mem::rd::<u32>(rectangle, 0), crate::mem::rd::<u32>(rectangle, 4))
+    } else {
+        (0, 0)
+    };
+    let pixel = if object.format >= 0x100 {
+        0
+    } else {
+        row / object.width.max(1)
+    };
     let Some(offset) = lock_offset(left, top, object.width, object.height, row, pixel) else {
         return FAIL;
     };
@@ -954,7 +1090,11 @@ unsafe impl Sync for Table {}
 
 impl Table {
     const fn new(fill: unsafe fn(&mut [usize])) -> Table {
-        Table { words: core::cell::UnsafeCell::new([0; TABLE_WORDS]), made: AtomicBool::new(false), fill }
+        Table {
+            words: core::cell::UnsafeCell::new([0; TABLE_WORDS]),
+            made: AtomicBool::new(false),
+            fill,
+        }
     }
 
     /// The address of the first method.
@@ -1141,7 +1281,11 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
         CALL_CREATE_VERTEX_BUFFER | CALL_CREATE_INDEX_BUFFER => {
             // Length, usage, vertex format or index format, pool, address for the handle.
             let vertex = index == CALL_CREATE_VERTEX_BUFFER;
-            let object = new_object(&lock, if vertex { Kind::VertexBuffer } else { Kind::IndexBuffer }, &BUFFER_TABLE);
+            let object = new_object(
+                &lock,
+                if vertex { Kind::VertexBuffer } else { Kind::IndexBuffer },
+                &BUFFER_TABLE,
+            );
             (*object).length = a(0);
             (*object).usage = a(1);
             (*object).format = a(2);
@@ -1175,16 +1319,24 @@ unsafe extern "C" fn call(index: u32, arguments: *const u32) -> u32 {
         // The calls on a resource go through its table.
         CALL_ADD_REF => core::mem::transmute::<usize, unsafe extern "system" fn(u32) -> u32>(method(a(0), 1))(a(0)),
         CALL_RELEASE => core::mem::transmute::<usize, unsafe extern "system" fn(u32) -> u32>(method(a(0), 2))(a(0)),
-        CALL_BUFFER_LOCK => {
-            core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32, u32, u32, u32) -> u32>(method(a(0), 11))(a(0), a(1), a(2), a(3), a(4))
-        }
+        CALL_BUFFER_LOCK => core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32, u32, u32, u32) -> u32>(
+            method(a(0), 11),
+        )(a(0), a(1), a(2), a(3), a(4)),
         CALL_BUFFER_UNLOCK => core::mem::transmute::<usize, unsafe extern "system" fn(u32) -> u32>(method(a(0), 12))(a(0)),
-        CALL_BUFFER_DESCRIPTION => core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32) -> u32>(method(a(0), 13))(a(0), a(1)),
-        CALL_TEXTURE_LEVEL => core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32, u32) -> u32>(method(a(0), 15))(a(0), a(1), a(2)),
-        CALL_SURFACE_DESCRIPTION => core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32) -> u32>(method(a(0), 8))(a(0), a(1)),
-        CALL_SURFACE_LOCK => {
-            core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32, u32, u32) -> u32>(method(a(0), 9))(a(0), a(1), a(2), a(3))
+        CALL_BUFFER_DESCRIPTION => {
+            core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32) -> u32>(method(a(0), 13))(a(0), a(1))
         }
+        CALL_TEXTURE_LEVEL => core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32, u32) -> u32>(method(
+            a(0),
+            15,
+        ))(a(0), a(1), a(2)),
+        CALL_SURFACE_DESCRIPTION => {
+            core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32) -> u32>(method(a(0), 8))(a(0), a(1))
+        }
+        CALL_SURFACE_LOCK => core::mem::transmute::<usize, unsafe extern "system" fn(u32, u32, u32, u32) -> u32>(method(
+            a(0),
+            9,
+        ))(a(0), a(1), a(2), a(3)),
         CALL_SURFACE_UNLOCK => core::mem::transmute::<usize, unsafe extern "system" fn(u32) -> u32>(method(a(0), 10))(a(0)),
         CALL_CUBE_FACE => FAIL,
         // Source surface, rectangles, their number, destination surface, points.
@@ -1233,7 +1385,8 @@ static TABLE: HostV1 = HostV1 {
 /// The device calls of other code that this host took and did not do, by the method.
 static TAKEN: LockCell<[u32; 100]> = LockCell::new([0; 100]);
 /// The same calls by the method and by the code that made the call (its return address).
-static TAKEN_BY: LockCell<std::collections::BTreeMap<(usize, usize), u32>> = LockCell::new(std::collections::BTreeMap::new());
+static TAKEN_BY: LockCell<std::collections::BTreeMap<(usize, usize), u32>> =
+    LockCell::new(std::collections::BTreeMap::new());
 /// The lines of the log for a method and a caller seen for the first time, at most.
 const TAKEN_LINES: usize = 32;
 
@@ -1272,7 +1425,11 @@ pub unsafe fn take(slot: usize) {
     *count += 1;
     let first = *count == 1;
     if first && by.len() <= TAKEN_LINES {
-        crate::log!("own host: a device call taken and not done: {} from {}", crate::device::NAMES.get(slot).copied().unwrap_or("?"), module_and_offset(crate::device::caller()));
+        crate::log!(
+            "own host: a device call taken and not done: {} from {}",
+            crate::device::NAMES.get(slot).copied().unwrap_or("?"),
+            module_and_offset(crate::device::caller())
+        );
     }
 }
 
@@ -1365,8 +1522,17 @@ pub unsafe fn report() -> String {
     let mut text = String::new();
     for (slot, count) in taken.iter().enumerate() {
         if *count != 0 {
-            text.push_str(&format!(" {}:{}", crate::device::NAMES.get(slot).copied().unwrap_or("?"), count));
-            let callers: Vec<String> = TAKEN_BY.get(&lock).iter().filter(|((method, _), _)| *method == slot).map(|((_, caller), count)| format!("{} {count}", module_and_offset(*caller))).collect();
+            text.push_str(&format!(
+                " {}:{}",
+                crate::device::NAMES.get(slot).copied().unwrap_or("?"),
+                count
+            ));
+            let callers: Vec<String> = TAKEN_BY
+                .get(&lock)
+                .iter()
+                .filter(|((method, _), _)| *method == slot)
+                .map(|((_, caller), count)| format!("{} {count}", module_and_offset(*caller)))
+                .collect();
             text.push_str(&format!(" ({})", callers.join(", ")));
         }
     }
@@ -1376,7 +1542,11 @@ pub unsafe fn report() -> String {
     let per_second = crate::capture::ticks_per_second() as f64;
     let mut sizes = String::new();
     for ((width, height, back), (count, ticks)) in READS_BY_SIZE.get(&lock).iter() {
-        sizes.push_str(&format!(" {width}x{height}{}: {count} reads, {:.1} ms;", if *back { " (back buffer)" } else { "" }, *ticks as f64 * 1000.0 / per_second));
+        sizes.push_str(&format!(
+            " {width}x{height}{}: {count} reads, {:.1} ms;",
+            if *back { " (back buffer)" } else { "" },
+            *ticks as f64 * 1000.0 / per_second
+        ));
     }
     format!(
         "own host: {} pixel reads from the host program, {} failed, by target size:{sizes} {} reads from the kept pixels; device calls without a call of the link, taken and not done:{text}",
@@ -1389,7 +1559,8 @@ pub unsafe fn report() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_pixels, in_snapshot, level_bit, lock_level, lock_offset, new_object, note_lock, nothing_to_do, read_within, release, surface_lock, texture_lock, texture_surface_level, unlock_level_into, Kind, LevelCopies, Object,
+        copy_pixels, in_snapshot, level_bit, lock_level, lock_offset, new_object, note_lock, nothing_to_do, read_within,
+        release, surface_lock, texture_lock, texture_surface_level, unlock_level_into, Kind, LevelCopies, Object,
         BACK_BUFFER, CUTSCENE_SHADER_CALLS, LEVEL_FREES, OK, REMOVE_LIGHT_CALL, SURFACE_TABLE, TEXTURE_TABLE,
     };
     use crate::d3d::{D3DLOCK_READONLY, DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
@@ -1408,7 +1579,12 @@ mod tests {
     }
 
     /// No count.
-    const NONE: Counts = Counts { levels: 0, locks_after_free: 0, read_only: 0, part: 0 };
+    const NONE: Counts = Counts {
+        levels: 0,
+        locks_after_free: 0,
+        read_only: 0,
+        part: 0,
+    };
 
     impl Counts {
         /// The global counters now.
@@ -1602,7 +1778,10 @@ mod tests {
     /// went into the stream.
     unsafe fn unlock(texture: *mut Object, level: u32, file_open: bool) -> Vec<u8> {
         let mut sent = Vec::new();
-        assert_eq!(unlock_level_into(texture, level, file_open, |_, _, _, bytes| sent = bytes.to_vec()), OK);
+        assert_eq!(
+            unlock_level_into(texture, level, file_open, |_, _, _, bytes| sent = bytes.to_vec()),
+            OK
+        );
         sent
     }
 
@@ -1615,17 +1794,35 @@ mod tests {
             lock_and_fill(texture, 0, 7);
             lock_and_fill(texture, 1, 9);
             assert_counts(Counts { levels: 1, ..NONE }, "the unlock frees the level", || {
-                assert_eq!(unlock(texture, 0, false), vec![7u8; 8 * 8 * 4], "the stream gets the bytes before the free");
+                assert_eq!(
+                    unlock(texture, 0, false),
+                    vec![7u8; 8 * 8 * 4],
+                    "the stream gets the bytes before the free"
+                );
             });
             assert!((&(*texture).level_memory)[0].is_empty() && (&(*texture).level_memory)[0].capacity() == 0);
             assert_eq!((*texture).freed_levels, level_bit(0));
             // The other level is still locked: it keeps its bytes.
             assert_eq!((&(*texture).level_memory)[1], vec![9u8; 4 * 4 * 4]);
-            assert_eq!(LevelCopies::of([(*texture).level_memory.as_slice()].into_iter()), LevelCopies { levels: 1, textures: 1, bytes: 64 });
+            assert_eq!(
+                LevelCopies::of([(*texture).level_memory.as_slice()].into_iter()),
+                LevelCopies {
+                    levels: 1,
+                    textures: 1,
+                    bytes: 64
+                }
+            );
 
-            assert_counts(Counts { locks_after_free: 1, ..NONE }, "the lock of the freed level", || {
-                assert_eq!(lock_and_fill(texture, 0, 3), vec![0u8; 8 * 8 * 4]);
-            });
+            assert_counts(
+                Counts {
+                    locks_after_free: 1,
+                    ..NONE
+                },
+                "the lock of the freed level",
+                || {
+                    assert_eq!(lock_and_fill(texture, 0, 3), vec![0u8; 8 * 8 * 4]);
+                },
+            );
             assert_eq!((*texture).freed_levels, 0);
             release(texture);
         }
@@ -1639,14 +1836,21 @@ mod tests {
             let texture = test_texture();
             lock_and_fill(texture, 0, 1);
             unlock(texture, 0, false);
-            assert!((&(*texture).level_memory)[0].is_empty() && !(*texture).dynamic, "the first unlock frees");
+            assert!(
+                (&(*texture).level_memory)[0].is_empty() && !(*texture).dynamic,
+                "the first unlock frees"
+            );
             lock_and_fill(texture, 0, 2);
             assert!((*texture).dynamic, "the lock of a freed level makes the texture dynamic");
             unlock(texture, 0, false);
             assert_eq!((&(*texture).level_memory)[0], vec![2u8; 8 * 8 * 4], "the second unlock keeps");
             let block = (&(*texture).level_memory)[0].as_ptr();
             assert_eq!(lock_and_fill(texture, 0, 3), vec![2u8; 8 * 8 * 4]);
-            assert_eq!((&(*texture).level_memory)[0].as_ptr(), block, "the third lock reuses the block");
+            assert_eq!(
+                (&(*texture).level_memory)[0].as_ptr(),
+                block,
+                "the third lock reuses the block"
+            );
             unlock(texture, 0, false);
             // Another level of a dynamic texture keeps its block at its first unlock too.
             lock_and_fill(texture, 1, 4);
@@ -1667,10 +1871,16 @@ mod tests {
             unlock(texture, 0, true);
             lock_and_fill(texture, 0, 2);
             unlock(texture, 0, true);
-            assert!(!(*texture).dynamic && !(&(*texture).level_memory)[0].is_empty(), "a file is open: kept, not dynamic");
+            assert!(
+                !(*texture).dynamic && !(&(*texture).level_memory)[0].is_empty(),
+                "a file is open: kept, not dynamic"
+            );
             lock_and_fill(texture, 0, 3);
             unlock(texture, 0, false);
-            assert!(!(*texture).dynamic && (&(*texture).level_memory)[0].is_empty(), "the file closed: the unlock frees");
+            assert!(
+                !(*texture).dynamic && (&(*texture).level_memory)[0].is_empty(),
+                "the file closed: the unlock frees"
+            );
             lock_and_fill(texture, 0, 4);
             assert!((*texture).dynamic, "the lock after the free makes it dynamic");
             release(texture);
@@ -1724,7 +1934,9 @@ mod tests {
             let rectangle = rectangle.as_ptr() as usize;
 
             lock_and_fill(texture, 0, 1);
-            assert_counts(NONE, "a level that holds its bytes", || note_lock(texture, 0, rectangle, D3DLOCK_READONLY));
+            assert_counts(NONE, "a level that holds its bytes", || {
+                note_lock(texture, 0, rectangle, D3DLOCK_READONLY)
+            });
             unlock(texture, 0, false);
 
             assert_counts(Counts { read_only: 1, ..NONE }, "a read-only lock of a freed level", || {
@@ -1752,16 +1964,35 @@ mod tests {
             assert_eq!((*texture).freed_levels, level_bit(0) | level_bit(1));
 
             let mut locked = [0u32; 2];
-            assert_counts(Counts { read_only: 1, locks_after_free: 1, ..NONE }, "texture_lock", || {
-                assert_eq!(texture_lock(texture, 0, locked.as_mut_ptr(), 0, D3DLOCK_READONLY), OK);
-            });
+            assert_counts(
+                Counts {
+                    read_only: 1,
+                    locks_after_free: 1,
+                    ..NONE
+                },
+                "texture_lock",
+                || {
+                    assert_eq!(texture_lock(texture, 0, locked.as_mut_ptr(), 0, D3DLOCK_READONLY), OK);
+                },
+            );
 
             let mut surface = 0usize;
             assert_eq!(texture_surface_level(texture, 1, &mut surface), OK);
             let rectangle = [0u32, 0, 2, 2];
-            assert_counts(Counts { part: 1, locks_after_free: 1, ..NONE }, "surface_lock of a level surface", || {
-                assert_eq!(surface_lock(surface as *mut Object, locked.as_mut_ptr(), rectangle.as_ptr() as usize, 0), OK);
-            });
+            assert_counts(
+                Counts {
+                    part: 1,
+                    locks_after_free: 1,
+                    ..NONE
+                },
+                "surface_lock of a level surface",
+                || {
+                    assert_eq!(
+                        surface_lock(surface as *mut Object, locked.as_mut_ptr(), rectangle.as_ptr() as usize, 0),
+                        OK
+                    );
+                },
+            );
             release(surface as *mut Object);
             release(texture);
         }
@@ -1770,7 +2001,10 @@ mod tests {
     /// The bit of a level past the 32 bits is none, not a panic.
     #[test]
     fn a_level_has_its_bit() {
-        assert_eq!((level_bit(0), level_bit(12), level_bit(31), level_bit(32)), (1, 1 << 12, 1 << 31, 0));
+        assert_eq!(
+            (level_bit(0), level_bit(12), level_bit(31), level_bit(32)),
+            (1, 1 << 12, 1 << 31, 0)
+        );
     }
 
     #[test]
@@ -1779,6 +2013,13 @@ mod tests {
         let never_locked: Vec<Vec<u8>> = vec![Vec::new(); 3];
         let other = vec![vec![0u8; 4]];
         let objects: [&[Vec<u8>]; 4] = [&texture, &never_locked, &[], &other];
-        assert_eq!(LevelCopies::of(objects.into_iter()), LevelCopies { levels: 3, textures: 2, bytes: 84 });
+        assert_eq!(
+            LevelCopies::of(objects.into_iter()),
+            LevelCopies {
+                levels: 3,
+                textures: 2,
+                bytes: 84
+            }
+        );
     }
 }

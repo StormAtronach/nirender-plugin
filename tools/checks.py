@@ -25,6 +25,8 @@ The checks of each list:
   `u.view_projection`.
 - `build_module_map.py` (docs): every module of ours has a `//!` header.
 - `check_names.py` (docs): no skill names a switch or a Lua call the code lost.
+- `check_format.py`: the Rust code is formatted as `cargo fmt` writes it, in each Rust root of
+  this repository; with `--mge` (the MGE XE list): in the MGE XE workspace.
 
 The docs and MWSE are the siblings of this tree, else the siblings of its main checkout
 (`common.sibling`): a group of worktrees in C:/tmp has neither beside it. The docs checks read
@@ -115,21 +117,25 @@ CHECKS = {
     "clean results": (PLUGIN / "tools" / "clean_results.py", PLUGIN, ["--self-test"]),
     # The hook texts: the checks of the tree the commit is in.
     "hooks": (PLUGIN / "tools" / "install_hooks.py", PLUGIN, ["--self-test"]),
+    # cargo fmt --check in each Rust root of this repository, and in the MGE XE workspace.
+    "format": (PLUGIN / "tools" / "check_format.py", PLUGIN),
+    "mge format": (PLUGIN / "tools" / "check_format.py", REPOS / "MGE-XE-G7-render-link", ["--mge", str(REPOS / "MGE-XE-G7-render-link")]),
+    "format self-test": (PLUGIN / "tools" / "check_format.py", PLUGIN, ["--self-test"]),
     # The places of the docs and MWSE for a tree with no siblings.
     "check places": (PLUGIN / "tools" / "checks.py", PLUGIN, ["--self-test"]),
     # The pure parts of the corrupted-capture tool (the record walk, the mutations, the verdicts).
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz"],
-    "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names"],
+    "plugin": ["readme", "contract", "contract parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test"],
+    "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 
 # The option that gives each check of the MGE XE tree another tree than the render-link sibling
 # (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
-MGE_OPTION = {"mge readme": "--mge-dir", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge"}
+MGE_OPTION = {"mge readme": "--mge-dir", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge"}
 
 
 def self_test():

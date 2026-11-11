@@ -97,7 +97,15 @@ impl Plan {
     /// the kind that the plugin's scene kind gives.
     #[cfg(test)]
     pub(crate) fn scene_begin(&mut self, kind: u32) -> Vec<Step> {
-        self.scene_begin_view(kind, if kind == scene::SCENE_OTHER { ViewKind::OtherScreen } else { ViewKind::Main }, true)
+        self.scene_begin_view(
+            kind,
+            if kind == scene::SCENE_OTHER {
+                ViewKind::OtherScreen
+            } else {
+                ViewKind::Main
+            },
+            true,
+        )
     }
 
     /// The start of a scene whose view has the kind `view` (from its camera and its target).
@@ -188,7 +196,14 @@ impl Plan {
     /// drawn; `queue_open`: the engine's sorted queue stays open after the scene;
     /// `flush_marked`: the stream marks the end of the engine's flush with an event
     /// (`queue_flushed`): the sorted blends go there, not at a scene's end.
-    pub(crate) fn scene_end(&mut self, extension: bool, in_back_buffer: bool, drawing: bool, queue_open: bool, flush_marked: bool) -> Vec<Step> {
+    pub(crate) fn scene_end(
+        &mut self,
+        extension: bool,
+        in_back_buffer: bool,
+        drawing: bool,
+        queue_open: bool,
+        flush_marked: bool,
+    ) -> Vec<Step> {
         let mut steps = Vec::new();
         let kind = self.scene_kind;
         let main_other = self.main_other_root();
@@ -213,7 +228,11 @@ impl Plan {
         // blends that wait for the flush go into the same item.
         // With the flush marked, the item is at the flush; a draw deferred after it still gets
         // one here.
-        let due = if flush_marked { self.waiting } else { self.waiting || self.queue_open };
+        let due = if flush_marked {
+            self.waiting
+        } else {
+            self.waiting || self.queue_open
+        };
         if scene::later_world_scene(kind) && in_back_buffer && self.world_begun && due && !queue_open {
             steps.push(self.sorted_blends());
         }
@@ -280,7 +299,14 @@ impl Plan {
     /// draw.
     /// `walk_marked`: the stream marks the world's start with an event (`world_walk`); no
     /// draw starts the world then, and a draw before the event that is not the sky is held.
-    pub(crate) fn world_draw(&mut self, extension: bool, in_back_buffer: bool, sky: bool, sky_hidden: bool, walk_marked: bool) -> (Vec<Step>, bool) {
+    pub(crate) fn world_draw(
+        &mut self,
+        extension: bool,
+        in_back_buffer: bool,
+        sky: bool,
+        sky_hidden: bool,
+        walk_marked: bool,
+    ) -> (Vec<Step>, bool) {
         let main_other = self.main_other_root();
         let world_scene = in_back_buffer && (self.scene_kind == scene::SCENE_WORLD || main_other);
         if world_scene && sky {
@@ -353,14 +379,20 @@ mod tests {
     fn world_scene(plan: &mut Plan) -> Vec<Step> {
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
         assert_eq!(plan.world_draw(true, true, true, false, false), (vec![], false));
-        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(
+            plan.world_draw(true, true, false, false, false),
+            (vec![Step::StartWorld, Step::ReleaseHeld], false)
+        );
         plan.scene_end(true, true, true, false, false)
     }
 
     #[test]
     fn the_world_ends_with_its_sorted_blends() {
         let mut plan = Plan::default();
-        assert_eq!(world_scene(&mut plan), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        assert_eq!(
+            world_scene(&mut plan),
+            vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]
+        );
         assert!(plan.world_begun && plan.world_ended && plan.scene_kind == 0);
     }
 
@@ -390,7 +422,10 @@ mod tests {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
-        assert_eq!(plan.scene_end(true, true, true, true, false), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, true, false),
+            vec![Step::ReleaseHeld, Step::EndWorld]
+        );
         plan.scene_begin(SCENE_WATER);
         assert_eq!(plan.defer(), 0);
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::SortedBlends(0)]);
@@ -422,7 +457,10 @@ mod tests {
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
         plan.scene_end(true, true, true, true, false);
-        assert_eq!(plan.scene_begin(SCENE_FIRST_PERSON), vec![Step::MissingClasses, Step::SortedBlends(0)]);
+        assert_eq!(
+            plan.scene_begin(SCENE_FIRST_PERSON),
+            vec![Step::MissingClasses, Step::SortedBlends(0)]
+        );
         assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::FirstPersonEnd]);
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::Post]);
     }
@@ -462,7 +500,10 @@ mod tests {
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
         // The world scene ends with the engine's queue open: the blends wait.
-        assert_eq!(plan.scene_end(true, true, true, true, false), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, true, false),
+            vec![Step::ReleaseHeld, Step::EndWorld]
+        );
         // A clear in a scene of the world camera does not take them.
         plan.scene_begin(SCENE_WATER);
         assert_eq!(plan.depth_clear(), vec![Step::MissingClasses]);
@@ -479,7 +520,10 @@ mod tests {
         plan.scene_begin(SCENE_WORLD);
         plan.world_draw(true, true, false, true, false);
         assert_eq!(plan.defer(), 0);
-        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, false, false),
+            vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]
+        );
     }
 
     #[test]
@@ -488,7 +532,10 @@ mod tests {
         plan.scene_begin(SCENE_WORLD);
         assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], true));
         assert_eq!(plan.world_draw(true, true, true, false, false), (vec![], false));
-        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(
+            plan.world_draw(true, true, false, false, false),
+            (vec![Step::StartWorld, Step::ReleaseHeld], false)
+        );
         // A draw into a rendered texture is never the world's.
         assert_eq!(plan.world_draw(true, false, false, false, false), (vec![], false));
     }
@@ -527,14 +574,20 @@ mod tests {
     fn the_sky_hidden_starts_the_world_at_the_first_draw() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        assert_eq!(plan.world_draw(true, true, false, true, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(
+            plan.world_draw(true, true, false, true, false),
+            (vec![Step::StartWorld, Step::ReleaseHeld], false)
+        );
     }
 
     #[test]
     fn an_empty_world_scene_starts_the_world_at_its_end() {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
-        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::StartWorld, Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, false, false),
+            vec![Step::StartWorld, Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]
+        );
     }
 
     #[test]
@@ -570,7 +623,10 @@ mod tests {
         assert_eq!(plan.world_walk(true, true), vec![Step::StartWorld, Step::ReleaseHeld]);
         assert_eq!(plan.defer(), 0);
         assert_eq!(plan.queue_flushed(true), vec![Step::SortedBlends(0)]);
-        assert_eq!(plan.scene_end(true, true, true, false, true), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, false, true),
+            vec![Step::ReleaseHeld, Step::EndWorld]
+        );
     }
 
     /// The water shown: the world Click keeps the queue open, and the water Click flushes it.
@@ -581,7 +637,10 @@ mod tests {
         let mut plan = Plan::default();
         plan.scene_begin(SCENE_WORLD);
         plan.world_walk(true, true);
-        assert_eq!(plan.scene_end(true, true, true, true, true), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, true, true),
+            vec![Step::ReleaseHeld, Step::EndWorld]
+        );
         plan.scene_begin(SCENE_WATER);
         assert_eq!(plan.defer(), 0);
         assert_eq!(plan.queue_flushed(true), vec![Step::SortedBlends(0)]);
@@ -601,7 +660,10 @@ mod tests {
         assert_eq!(plan.queue_flushed(false), vec![]);
         assert_eq!(plan.queue_flushed(true), vec![Step::SortedBlends(0)]);
         assert_eq!(plan.defer(), 1);
-        assert_eq!(plan.scene_end(true, true, true, false, true), vec![Step::ReleaseHeld, Step::SortedBlends(1), Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, false, true),
+            vec![Step::ReleaseHeld, Step::SortedBlends(1), Step::EndWorld]
+        );
         plan.scene_begin(SCENE_FIRST_PERSON);
         assert_eq!(plan.queue_flushed(true), vec![]);
     }
@@ -619,7 +681,10 @@ mod tests {
         assert_eq!(target.scene_begin(SCENE_FIRST_PERSON), vec![]);
         assert_eq!(target.scene_end(true, false, true, false, true), vec![]);
         assert!(!target.world_begun && !main.world_begun);
-        assert_eq!(world_scene(&mut main), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        assert_eq!(
+            world_scene(&mut main),
+            vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]
+        );
     }
 
     /// An interface scene drawn into a texture (the menu camera of a mod's own render) is not the
@@ -645,7 +710,10 @@ mod tests {
     fn an_interface_scene_into_a_texture_that_is_not_known_gives_no_post() {
         let mut main = Plan::default();
         world_scene(&mut main);
-        assert_eq!(main.scene_begin_view(SCENE_UI, ViewKind::Main, false), vec![Step::MissingClasses]);
+        assert_eq!(
+            main.scene_begin_view(SCENE_UI, ViewKind::Main, false),
+            vec![Step::MissingClasses]
+        );
         main.scene_end(true, false, true, false, false);
         assert_eq!(main.scene_begin_view(SCENE_UI, ViewKind::Main, true), vec![Step::Post]);
     }
@@ -668,9 +736,15 @@ mod tests {
         let (mut main, mut target) = (Plan::default(), Plan::default());
         main.scene_begin(SCENE_WORLD);
         main.world_draw(true, true, false, true, false);
-        assert_eq!(main.scene_end(true, true, true, true, false), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(
+            main.scene_end(true, true, true, true, false),
+            vec![Step::ReleaseHeld, Step::EndWorld]
+        );
         assert_eq!(target.depth_clear(), vec![]);
-        assert_eq!(main.scene_begin(SCENE_FIRST_PERSON), vec![Step::MissingClasses, Step::SortedBlends(0)]);
+        assert_eq!(
+            main.scene_begin(SCENE_FIRST_PERSON),
+            vec![Step::MissingClasses, Step::SortedBlends(0)]
+        );
     }
 
     /// The world scene of a second picture: its sky, its world, its end.
@@ -678,8 +752,14 @@ mod tests {
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![Step::NewPicture]);
         assert!(!plan.world_begun && !plan.world_ended);
         assert_eq!(plan.world_draw(true, true, true, false, false), (vec![], false));
-        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
-        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        assert_eq!(
+            plan.world_draw(true, true, false, false, false),
+            (vec![Step::StartWorld, Step::ReleaseHeld], false)
+        );
+        assert_eq!(
+            plan.scene_end(true, true, true, false, false),
+            vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]
+        );
     }
 
     /// The screenshot key: `takeScreenshot` reads the back buffer, then `renderNextFrame` draws
@@ -724,7 +804,10 @@ mod tests {
         plan.scene_begin(SCENE_UI);
         // The Present; the next frame's records.
         plan.frame_start();
-        assert_eq!(world_scene(&mut plan), vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]);
+        assert_eq!(
+            world_scene(&mut plan),
+            vec![Step::ReleaseHeld, Step::SortedBlends(0), Step::EndWorld]
+        );
         // Its water scene, a later scene of the world camera, starts nothing.
         assert_eq!(plan.scene_begin(SCENE_WATER), vec![]);
         assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], false));
@@ -764,7 +847,10 @@ mod tests {
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
         assert_eq!(plan.scene_begin_view(SCENE_UI, ViewKind::Main, true), vec![Step::Post]);
         plan.back_buffer_read();
-        assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true), vec![Step::NewPicture]);
+        assert_eq!(
+            plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true),
+            vec![Step::NewPicture]
+        );
         // The new picture gets its own post.
         assert_eq!(plan.scene_begin_view(SCENE_UI, ViewKind::Main, true), vec![Step::Post]);
     }
@@ -778,7 +864,9 @@ mod tests {
         plan.scene_begin(SCENE_WORLD);
         plan.back_buffer_read();
         assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true), vec![]);
-        assert!(!plan.scene_begin_view(SCENE_UI, ViewKind::Main, true).contains(&Step::NewPicture));
+        assert!(!plan
+            .scene_begin_view(SCENE_UI, ViewKind::Main, true)
+            .contains(&Step::NewPicture));
     }
 
     /// Test 4: a read, then a user interface scene, starts no picture; nor do the water scene
@@ -792,7 +880,9 @@ mod tests {
         plan.scene_begin(SCENE_UI);
         plan.back_buffer_read();
         assert!(!plan.scene_begin(SCENE_WATER).contains(&Step::NewPicture));
-        assert!(!plan.scene_begin_view(SCENE_OTHER, ViewKind::OtherScreen, true).contains(&Step::NewPicture));
+        assert!(!plan
+            .scene_begin_view(SCENE_OTHER, ViewKind::OtherScreen, true)
+            .contains(&Step::NewPicture));
     }
 
     #[test]
@@ -825,10 +915,16 @@ mod tests {
         let mut plan = Plan::default();
         assert_eq!(plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true), vec![]);
         assert!(plan.main_other_root());
-        assert_eq!(plan.view_first_place(true, true, false), vec![Step::StartWorld, Step::ReleaseHeld]);
+        assert_eq!(
+            plan.view_first_place(true, true, false),
+            vec![Step::StartWorld, Step::ReleaseHeld]
+        );
         assert_eq!(plan.view_first_place(true, true, false), vec![]);
         // Its sorted blends belong to its view: no item of the plan, the world ends.
-        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, false, false),
+            vec![Step::ReleaseHeld, Step::EndWorld]
+        );
         assert!(plan.world_begun && plan.world_ended);
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
     }
@@ -839,7 +935,10 @@ mod tests {
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
         // The stream does not walk this root (its record has no SCENE_WALK_DUE: a root with a
         // `Display` of a mod): its first draw starts the world.
-        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::StartWorld, Step::ReleaseHeld], false));
+        assert_eq!(
+            plan.world_draw(true, true, false, false, false),
+            (vec![Step::StartWorld, Step::ReleaseHeld], false)
+        );
         assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], false));
     }
 
@@ -847,7 +946,10 @@ mod tests {
     fn an_empty_main_view_with_a_root_of_its_own_starts_the_world_at_its_end() {
         let mut plan = Plan::default();
         plan.scene_begin_view(SCENE_OTHER, ViewKind::Main, true);
-        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::StartWorld, Step::ReleaseHeld, Step::EndWorld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, false, false),
+            vec![Step::StartWorld, Step::ReleaseHeld, Step::EndWorld]
+        );
     }
 
     /// A world scene that comes after a main view with a root of its own: the world began in
@@ -861,7 +963,10 @@ mod tests {
         // The step comes where the world would start: after the sky, at its first draw.
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
         assert_eq!(plan.world_draw(true, true, true, false, false), (vec![], false));
-        assert_eq!(plan.world_draw(true, true, false, false, false), (vec![Step::MainView], false));
+        assert_eq!(
+            plan.world_draw(true, true, false, false, false),
+            (vec![Step::MainView], false)
+        );
         assert_eq!(plan.world_draw(true, true, false, false, false), (vec![], false));
         plan.scene_end(true, true, true, false, false);
         // Once in a frame.
@@ -884,7 +989,10 @@ mod tests {
         plan.view_first_place(true, true, false);
         plan.scene_end(true, true, true, false, false);
         plan.scene_begin(SCENE_WORLD);
-        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::MainView, Step::ReleaseHeld]);
+        assert_eq!(
+            plan.scene_end(true, true, true, false, false),
+            vec![Step::MainView, Step::ReleaseHeld]
+        );
         // A world scene that began the world itself needs no such step.
         plan.frame_start();
         assert_eq!(plan.scene_begin(SCENE_WORLD), vec![]);
@@ -899,7 +1007,10 @@ mod tests {
         let kind = ViewKind::classify(false, Views::camera_is_world(SCENE_OTHER, true));
         assert_eq!(kind, ViewKind::Main);
         // Without the flag (a mod's camera), another screen.
-        assert_ne!(ViewKind::classify(false, Views::camera_is_world(SCENE_OTHER, false)), ViewKind::Main);
+        assert_ne!(
+            ViewKind::classify(false, Views::camera_is_world(SCENE_OTHER, false)),
+            ViewKind::Main
+        );
     }
 
     /// The additions of MGE XE are the main view's: another screen, a picture and a frame

@@ -15,14 +15,14 @@ use std::collections::HashMap;
 use crate::ptr_hash::HashSet;
 
 use crate::checked::Open;
-use crate::main_thread::{MainCell, MainThread};
 use crate::engine;
 use crate::gen::layouts;
 use crate::gen::layouts::{
     NiAlphaProperty as AP, NiDX8Renderer as R, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as LIST,
-    NiPropertyState as PS, NiStencilProperty as SP, NiTexturingProperty as NTP,
-    NiTexturingProperty_BumpMap as BUMP, NiTexturingProperty_Map as MAP, NiVertexColorProperty as VC, NiZBufferProperty as ZP,
+    NiPropertyState as PS, NiStencilProperty as SP, NiTexturingProperty as NTP, NiTexturingProperty_BumpMap as BUMP,
+    NiTexturingProperty_Map as MAP, NiVertexColorProperty as VC, NiZBufferProperty as ZP,
 };
+use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 
 /// The number of words of a record: 91 for the properties and the textures and modes of the
@@ -194,7 +194,10 @@ unsafe fn note_no_stage(t: &MainThread, effect: usize, stage: crate::ports::text
     let counts = &mut *NO_STAGE.get(t);
     counts[condition] += 1;
     if counts[condition] <= MOST_NO_STAGE_LINES {
-        crate::log!("material: the texture effect {effect:#x} (texture {:#x}) gives no stage: {what}", rd::<usize>(effect, EFFECT_TEXTURE));
+        crate::log!(
+            "material: the texture effect {effect:#x} (texture {:#x}) gives no stage: {what}",
+            rd::<usize>(effect, EFFECT_TEXTURE)
+        );
     }
 }
 /// The words of a record that hold a device texture: the 8 maps, the environment map, the
@@ -259,7 +262,9 @@ pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
 /// Takes the record of a handle off the sent ones. True when it was sent.
 fn unsend(t: &MainThread, handle: u32) -> bool {
     sent_groups(t).remove(&handle);
-    handles(t).get_mut(&handle).is_some_and(|h| core::mem::replace(&mut h.sent, false))
+    handles(t)
+        .get_mut(&handle)
+        .is_some_and(|h| core::mem::replace(&mut h.sent, false))
 }
 
 /// Forgets the records that were sent: for a capture file from the stream. The handles keep
@@ -306,7 +311,14 @@ fn handle_of(t: &MainThread, first: u32, check: u32) -> (u32, bool) {
                 handle = handle.wrapping_add(1).max(1);
             }
             None => {
-                table.insert(handle, Handle { check, sent: true, gone_since: 0 });
+                table.insert(
+                    handle,
+                    Handle {
+                        check,
+                        sent: true,
+                        gone_since: 0,
+                    },
+                );
                 return (handle, true);
             }
         }
@@ -315,7 +327,9 @@ fn handle_of(t: &MainThread, first: u32, check: u32) -> (u32, bool) {
 
 #[track_caller]
 fn by_texture<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Vec<u32>>> {
-    BY_TEXTURE.get(t).map(|by_texture| by_texture.get_or_insert_with(HashMap::new))
+    BY_TEXTURE
+        .get(t)
+        .map(|by_texture| by_texture.get_or_insert_with(HashMap::new))
 }
 
 /// The records that name a device texture that was freed go: each gets a `MATERIAL_GONE`
@@ -332,7 +346,9 @@ pub unsafe fn drain_freed_textures(t: &MainThread) {
     let freed = crate::own_host::take_freed_textures();
     let mut gone = Vec::new();
     for texture in freed {
-        let Some(materials) = by_texture(t).remove(&texture) else { continue };
+        let Some(materials) = by_texture(t).remove(&texture) else {
+            continue;
+        };
         for handle in materials {
             if unsend(t, handle) {
                 crate::capture::material_gone(handle);
@@ -430,7 +446,8 @@ unsafe fn device_texture_address(renderer: usize, texture: usize) -> u32 {
     }
     let manager: usize = rd(renderer, R::textureManager);
     let (mut created, mut mipmapped) = (0u32, 0u32);
-    let prepare: unsafe extern "thiscall" fn(usize, usize, *mut u32, *mut u32) -> usize = transmute(rd::<usize>(rd::<usize>(manager, 0), 8));
+    let prepare: unsafe extern "thiscall" fn(usize, usize, *mut u32, *mut u32) -> usize =
+        transmute(rd::<usize>(rd::<usize>(manager, 0), 8));
     prepare(manager, texture, &mut created, &mut mipmapped) as u32
 }
 
@@ -460,7 +477,13 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     if !crate::capture::recording() || property_state == 0 {
         return 0;
     }
-    let flags_of = |property: usize| if property != 0 { rd::<u16>(property, PROPERTY_FLAGS) as u32 } else { 0 };
+    let flags_of = |property: usize| {
+        if property != 0 {
+            rd::<u16>(property, PROPERTY_FLAGS) as u32
+        } else {
+            0
+        }
+    };
     let mut w = [0u32; WORDS];
     w[0] = WORDS as u32;
     let mut flags = 0;
@@ -481,7 +504,11 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
     w[2] = (af >> 1) & 0xF;
     w[3] = (af >> 5) & 0xF;
     w[4] = (af >> 10) & 7;
-    w[5] = if alpha != 0 { rd::<u8>(alpha, AP::alphaTestRef) as u32 } else { 0 };
+    w[5] = if alpha != 0 {
+        rd::<u8>(alpha, AP::alphaTestRef) as u32
+    } else {
+        0
+    };
 
     // Texturing: the apply mode, the decal count as the pipeline counts it, the maps.
     let texturing: usize = rd(property_state, PS::propTexturing);
@@ -496,7 +523,13 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
         w[7] = if end >= 6 { decals } else { 0 };
         let map_words = |map: usize| -> [u32; 5] {
             let texture: usize = rd(map, MAP::texture);
-            [device_texture(renderer, texture), rd(map, MAP::clampMode), rd(map, MAP::filterMode), rd(map, MAP::texCoordSet), (texture != 0) as u32]
+            [
+                device_texture(renderer, texture),
+                rd(map, MAP::clampMode),
+                rd(map, MAP::filterMode),
+                rd(map, MAP::texCoordSet),
+                (texture != 0) as u32,
+            ]
         };
         for i in 8..end as usize {
             let map: usize = rd(maps, i * 4);
@@ -546,7 +579,18 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
         if rd::<u8>(stencil, SP::enabled) != 0 {
             flags |= STENCIL;
         }
-        for (k, field) in [SP::testFunc, SP::reference, SP::mask, SP::failAction, SP::zFailAction, SP::passAction, SP::drawMode].into_iter().enumerate() {
+        for (k, field) in [
+            SP::testFunc,
+            SP::reference,
+            SP::mask,
+            SP::failAction,
+            SP::zFailAction,
+            SP::passAction,
+            SP::drawMode,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             w[71 + k] = rd(stencil, field);
         }
     }
@@ -589,13 +633,28 @@ pub unsafe fn note(t: &MainThread, renderer: usize, property_state: usize, effec
             global
         }
     };
-    if flags_of(own_or_global(0x30, engine::property_state_global_shade_property(property_state))) & 1 != 0 {
+    if flags_of(own_or_global(
+        0x30,
+        engine::property_state_global_shade_property(property_state),
+    )) & 1
+        != 0
+    {
         flags |= SMOOTH;
     }
-    if flags_of(own_or_global(0x28, engine::property_state_global_dither_property(property_state))) & 1 != 0 {
+    if flags_of(own_or_global(
+        0x28,
+        engine::property_state_global_dither_property(property_state),
+    )) & 1
+        != 0
+    {
         flags |= DITHER;
     }
-    if flags_of(own_or_global(0x2C, engine::property_state_global_specular_property(property_state))) & 1 != 0 {
+    if flags_of(own_or_global(
+        0x2C,
+        engine::property_state_global_specular_property(property_state),
+    )) & 1
+        != 0
+    {
         flags |= SPECULAR;
     }
 
@@ -679,7 +738,11 @@ const EFFECT_TURNS: u32 = 0x8000_0000;
 
 /// The projection words of an effect in a record. An effect under a turning billboard names its
 /// chain in place of them: its projection changes with the camera, and the helper makes it.
-unsafe fn effect_projection_words(t: &MainThread, renderer: usize, effect: usize) -> [u32; crate::ports::texture_pass_b::EFFECT_STATIC_WORDS] {
+unsafe fn effect_projection_words(
+    t: &MainThread,
+    renderer: usize,
+    effect: usize,
+) -> [u32; crate::ports::texture_pass_b::EFFECT_STATIC_WORDS] {
     let mut words = crate::ports::texture_pass_b::effect_static_words(renderer, effect);
     if crate::effect_chain::note(t, effect) {
         let flags = words[12];
@@ -724,7 +787,11 @@ mod tests {
     use super::*;
 
     fn handle(sent: bool, gone_since: u32) -> Handle {
-        Handle { check: 1, sent, gone_since }
+        Handle {
+            check: 1,
+            sent,
+            gone_since,
+        }
     }
 
     #[test]

@@ -73,7 +73,7 @@ macro_rules! port_impl {
 macro_rules! port_thiscall {
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($this:ident $(, $a:ident : $t:ty)*) -> $r:ty,
+        fn($this:ident $(, $a:ident : $t:ty)* $(,)?) -> $r:ty,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust = $rust:path
@@ -86,7 +86,7 @@ macro_rules! port_thiscall {
     };
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($this:ident $(, $a:ident : $t:ty)*) -> $r:ty,
+        fn($this:ident $(, $a:ident : $t:ty)* $(,)?) -> $r:ty,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust_main = $rust:path
@@ -105,7 +105,7 @@ macro_rules! port_thiscall {
 macro_rules! port_thiscall_float {
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($this:ident) -> f32,
+        fn($this:ident $(,)?) -> f32,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust = $rust:path
@@ -165,7 +165,7 @@ macro_rules! port_thiscall_float {
 macro_rules! port_cdecl {
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($($a:ident : $t:ty),*) -> $r:ty,
+        fn($($a:ident : $t:ty),* $(,)?) -> $r:ty,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust = $rust:path
@@ -178,7 +178,7 @@ macro_rules! port_cdecl {
     };
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($($a:ident : $t:ty),*) -> $r:ty,
+        fn($($a:ident : $t:ty),* $(,)?) -> $r:ty,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust_main = $rust:path
@@ -191,6 +191,7 @@ macro_rules! port_cdecl {
     };
 }
 
+pub mod animation;
 pub mod base;
 pub mod buffers;
 pub mod ct_pipeline_state;
@@ -204,10 +205,9 @@ pub mod material;
 pub mod ni;
 pub mod render_state;
 pub mod rendered;
-pub mod animation;
-pub mod state_update;
-pub mod scene;
 pub mod renderer_frame;
+pub mod scene;
+pub mod state_update;
 pub mod system_desc;
 #[cfg(not(test))]
 pub mod texture_link;
@@ -277,7 +277,12 @@ enum Followed {
     /// bytes of address, `tail`. The port calls that function. The function must lie in the
     /// module of the patch (`callee`): a patch of the same shape with another target is not
     /// known.
-    CallOfPatch { at: usize, head: &'static [u8], tail: &'static [u8], callee: Callee },
+    CallOfPatch {
+        at: usize,
+        head: &'static [u8],
+        tail: &'static [u8],
+        callee: Callee,
+    },
 }
 
 /// The name that [`follows`] gets for an address in this plugin's own DLL (its file name changes
@@ -310,7 +315,10 @@ impl Callee {
 static FOLLOWED: &[Followed] = &[
     // `NiDX8Renderer::RenderShape`: the software skinning flag of MWSE
     // (PatchNIDX8Renderer_RenderShape). `draw::render_shape` reads the bytes.
-    Followed::Patch { at: 0x6ACF1F, bytes: &[0x90, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75] },
+    Followed::Patch {
+        at: 0x6ACF1F,
+        bytes: &[0x90, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75],
+    },
     // `NiDX8TexturePass::setCTPipelineState`: the base map texture coordinate fix of MWSE
     // (PatchNiDX8TexturePass_BaseMapTexcoord).
     Followed::InsertedCall { at: 0x6B42AC },
@@ -325,50 +333,88 @@ static FOLLOWED: &[Followed] = &[
     // MGE XE (`patchLoadTexture2D`). `texture_link::create` calls the two functions.
     // The two functions are in MGE XE's d3d8.dll, or in this plugin when it writes the same patch
     // itself (`texture_link`).
-    Followed::CallOfPatch { at: 0x6BFC4B, head: &[0x52, 0x55, 0x56, 0x53, 0xB8], tail: &[0xFF, 0xD0, 0xEB, 0x0E], callee: Callee::Address(&["d3d8.dll", THIS_PLUGIN]) },
+    Followed::CallOfPatch {
+        at: 0x6BFC4B,
+        head: &[0x52, 0x55, 0x56, 0x53, 0xB8],
+        tail: &[0xFF, 0xD0, 0xEB, 0x0E],
+        callee: Callee::Address(&["d3d8.dll", THIS_PLUGIN]),
+    },
     Followed::CallOfPatch {
         at: 0x6BFD3B,
         head: &[0x8B, 0x54, 0x24, 0x10, 0x52, 0x55, 0x56, 0xB8],
         tail: &[0xFF, 0xD0, 0xEB, 0x08],
         callee: Callee::Address(&["d3d8.dll", THIS_PLUGIN]),
     },
-    Followed::Patch { at: 0x6BFCC7, bytes: &[0x18] },
-    Followed::Patch { at: 0x6BFCD7, bytes: &[0x18] },
-    Followed::Patch { at: 0x6BFCE3, bytes: &[0x24] },
+    Followed::Patch {
+        at: 0x6BFCC7,
+        bytes: &[0x18],
+    },
+    Followed::Patch {
+        at: 0x6BFCD7,
+        bytes: &[0x18],
+    },
+    Followed::Patch {
+        at: 0x6BFCE3,
+        bytes: &[0x24],
+    },
     // The draw calls of the device that the Morrowind Code Patch option "Show transparent
     // clothes in the inventory" (feature 11) replaces with calls of its draw functions. The
     // database has the calls of the Code Patch. These are the bytes of the game without the
     // option: `site_draw_indexed_primitive` and `site_draw_primitive` of `draw` and
     // `draw_misc` call the device when the site has no `call rel32`.
     // `NiDX8Renderer::RenderPoints` and `NiDX8Renderer::RenderLines`: `call [edx+11Ch]`.
-    Followed::Patch { at: 0x6AD84A, bytes: &[0xFF, 0x92, 0x1C, 0x01, 0x00, 0x00] },
-    Followed::Patch { at: 0x6ADC91, bytes: &[0xFF, 0x92, 0x1C, 0x01, 0x00, 0x00] },
+    Followed::Patch {
+        at: 0x6AD84A,
+        bytes: &[0xFF, 0x92, 0x1C, 0x01, 0x00, 0x00],
+    },
+    Followed::Patch {
+        at: 0x6ADC91,
+        bytes: &[0xFF, 0x92, 0x1C, 0x01, 0x00, 0x00],
+    },
     // `NiDX8Renderer::DrawPrimitive`: the device and the vtable in other registers, then
     // `call [edx+11Ch]`.
     Followed::Patch {
         at: 0x6AEF04,
-        bytes: &[0x8B, 0x4E, 0x24, 0x8B, 0x40, 0x2C, 0x57, 0x8B, 0x11, 0x55, 0x53, 0x6A, 0x00, 0x50, 0x51, 0xFF, 0x92, 0x1C, 0x01, 0x00, 0x00],
+        bytes: &[
+            0x8B, 0x4E, 0x24, 0x8B, 0x40, 0x2C, 0x57, 0x8B, 0x11, 0x55, 0x53, 0x6A, 0x00, 0x50, 0x51, 0xFF, 0x92, 0x1C,
+            0x01, 0x00, 0x00,
+        ],
     },
     // `NiDX8Renderer::DrawSkinnedPrimitive2`: `call [ecx+11Ch]` and `call [ecx+118h]`, and the
     // jumps around them.
     Followed::Patch {
         at: 0x6AF230,
         bytes: &[
-            0x74, 0x17, 0x33, 0xD2, 0x66, 0x8B, 0x55, 0xF4, 0x52, 0x8B, 0x54, 0x24, 0x44, 0x6A, 0x00, 0x52, 0x50, 0xFF, 0x91, 0x1C, 0x01, 0x00, 0x00,
-            0xEB, 0x0C, 0x8B, 0x54, 0x24, 0x40, 0x52, 0x50, 0xFF, 0x91, 0x18, 0x01, 0x00, 0x00,
+            0x74, 0x17, 0x33, 0xD2, 0x66, 0x8B, 0x55, 0xF4, 0x52, 0x8B, 0x54, 0x24, 0x44, 0x6A, 0x00, 0x52, 0x50, 0xFF,
+            0x91, 0x1C, 0x01, 0x00, 0x00, 0xEB, 0x0C, 0x8B, 0x54, 0x24, 0x40, 0x52, 0x50, 0xFF, 0x91, 0x18, 0x01, 0x00,
+            0x00,
         ],
     },
     // `NiDX8MaterialManager::UpdateToDevice`: the database has the call that the Morrowind
     // Code Patch puts there (MCP-011). These are the bytes of the game without the patch.
     // `material::update_to_device` reads the bytes.
-    Followed::Patch { at: 0x6C2686, bytes: &[0x15] },
-    Followed::Patch { at: 0x6C2696, bytes: &[0xFF, 0x92, 0xA8, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00] },
+    Followed::Patch {
+        at: 0x6C2686,
+        bytes: &[0x15],
+    },
+    Followed::Patch {
+        at: 0x6C2696,
+        bytes: &[0xFF, 0x92, 0xA8, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00],
+    },
     // `NiDX8MaterialManager::dtor`: the patch of MWSE for a default material that is null (the
     // engine's exit handlers released it). A `call` and 25 `nop` in place of 30 bytes of code,
     // and 3 `nop` in place of the write `mov [eax+18h], ebp`. `base::clear_default_material_entry`
     // does the same: it skips the write when the default material is null. The function is in MWSE.dll.
-    Followed::CallOfPatch { at: 0x6C2578, head: &[0xE8], tail: &[0x90; 25], callee: Callee::Distance(&["MWSE.dll"]) },
-    Followed::Patch { at: 0x6C259B, bytes: &[0x90, 0x90, 0x90] },
+    Followed::CallOfPatch {
+        at: 0x6C2578,
+        head: &[0xE8],
+        tail: &[0x90; 25],
+        callee: Callee::Distance(&["MWSE.dll"]),
+    },
+    Followed::Patch {
+        at: 0x6C259B,
+        bytes: &[0x90, 0x90, 0x90],
+    },
     // `NiDX8TextureData::FindMatchingPixelFormat`: four displacements that the Morrowind Code
     // Patch changes (MCP-039). `textures` reads them.
     Followed::Operand { at: 0x6B70A8, len: 1 },
@@ -377,7 +423,10 @@ static FOLLOWED: &[Followed] = &[
     Followed::Operand { at: 0x6B737A, len: 1 },
     // `NiRenderer::MapWindowPointToBufferPoint`: the UI scale patch of MWSE (at a request) or of
     // MGE XE on Direct3D 9. `base::renderer_map_window_point_to_buffer_point` asks MWSE.
-    Followed::Patch { at: base::UI_SCALE_PATCH_AT, bytes: &base::UI_SCALE_PATCH },
+    Followed::Patch {
+        at: base::UI_SCALE_PATCH_AT,
+        bytes: &base::UI_SCALE_PATCH,
+    },
 ];
 
 /// The records of the Morrowind Code Patch that write inside a ported function: the feature,
@@ -412,7 +461,10 @@ pub fn code_patch_option(feature: u32) -> &'static str {
 
 /// The feature of the Code Patch whose record has bytes in the `len` bytes from `at`.
 pub fn code_patch_feature(at: usize, len: usize) -> Option<u32> {
-    CODE_PATCH_RECORDS.iter().find(|&&(_, start, count)| at < start + count && start < at + len).map(|&(feature, _, _)| feature)
+    CODE_PATCH_RECORDS
+        .iter()
+        .find(|&&(_, start, count)| at < start + count && start < at + len)
+        .map(|&(feature, _, _)| feature)
 }
 
 /// True when a port follows a change of the byte at `addr`. `read` gives the byte that is in
@@ -426,7 +478,12 @@ pub fn follows(addr: usize, read: impl Fn(usize) -> u8, module_of: impl Fn(usize
             (at..at + bytes.len()).contains(&addr) && bytes.iter().enumerate().all(|(i, &b)| read(at + i) == b)
         }
         Followed::InsertedCall { at } => (at..at + 6).contains(&addr) && read(at) == 0xE8 && read(at + 5) == 0x90,
-        Followed::CallOfPatch { at, head, tail, ref callee } => {
+        Followed::CallOfPatch {
+            at,
+            head,
+            tail,
+            ref callee,
+        } => {
             let tail_at = at + head.len() + 4;
             (at..tail_at + tail.len()).contains(&addr)
                 && head.iter().enumerate().all(|(i, &b)| read(at + i) == b)
@@ -476,11 +533,18 @@ mod tests {
         // An operand: any value.
         assert!(follows(0x6A9AED, database, no_module));
         assert!(follows(0x6A9AF5, database, no_module));
-        assert!(!follows(0x6A9AF1, database, no_module), "the opcode between two operands is not an operand");
+        assert!(
+            !follows(0x6A9AF1, database, no_module),
+            "the opcode between two operands is not an operand"
+        );
         // The skinning check: only the bytes of MWSE.
         let mwse = [0x90u8, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75];
         assert!(follows(0x6ACF20, |addr| mwse[addr - 0x6ACF1F], no_module));
-        assert!(!follows(0x6ACF20, |addr| if addr == 0x6ACF20 { 0x67 } else { mwse[addr - 0x6ACF1F] }, no_module));
+        assert!(!follows(
+            0x6ACF20,
+            |addr| if addr == 0x6ACF20 { 0x67 } else { mwse[addr - 0x6ACF1F] },
+            no_module
+        ));
         // The inserted call: a call and a nop.
         let call = [0xE8u8, 1, 2, 3, 4, 0x90];
         assert!(follows(0x6B42AD, |addr| call[addr - 0x6B42AC], no_module));
@@ -521,20 +585,40 @@ mod tests {
             (0, false, "a null target"),
             (0x0010_0000, false, "a target in no module"),
         ] {
-            assert_eq!(follows(at + 5, patch_bytes(at, head, target, tail), module_at), wanted, "{what}");
+            assert_eq!(
+                follows(at + 5, patch_bytes(at, head, target, tail), module_at),
+                wanted,
+                "{what}"
+            );
         }
         // The second call has its own head.
-        let (head, tail) = (&[0x8B, 0x54, 0x24, 0x10, 0x52, 0x55, 0x56, 0xB8][..], &[0xFF, 0xD0, 0xEB, 0x08][..]);
-        assert!(follows(0x6BFD3B + 8, patch_bytes(0x6BFD3B, head, 0x1000_2000, tail), module_at));
-        assert!(!follows(0x6BFD3B + 8, patch_bytes(0x6BFD3B, head, 0x0040_2000, tail), module_at), "the second call with a target in the game");
+        let (head, tail) = (
+            &[0x8B, 0x54, 0x24, 0x10, 0x52, 0x55, 0x56, 0xB8][..],
+            &[0xFF, 0xD0, 0xEB, 0x08][..],
+        );
+        assert!(follows(
+            0x6BFD3B + 8,
+            patch_bytes(0x6BFD3B, head, 0x1000_2000, tail),
+            module_at
+        ));
+        assert!(
+            !follows(0x6BFD3B + 8, patch_bytes(0x6BFD3B, head, 0x0040_2000, tail), module_at),
+            "the second call with a target in the game"
+        );
         // The patch of MWSE: a `call rel32` in place of 30 bytes; the distance is counted from the end of the 4 bytes.
         let at = 0x6C2578;
         let distance_to = |target: u32| target.wrapping_sub(at as u32 + 5);
         let mwse = |target: u32| patch_bytes(at, &[0xE8], distance_to(target), &[0x90; 25]);
         assert!(follows(at, mwse(0x2000_1000), module_at), "a function of MWSE.dll");
         assert!(follows(at + 4, mwse(0x2000_1000), module_at), "any byte of the run");
-        assert!(!follows(at, mwse(0x1000_1000), module_at), "a call into d3d8.dll is not the patch of MWSE");
-        assert!(!follows(at, mwse(0x0040_1000), module_at), "the right opcode and a target in the game");
+        assert!(
+            !follows(at, mwse(0x1000_1000), module_at),
+            "a call into d3d8.dll is not the patch of MWSE"
+        );
+        assert!(
+            !follows(at, mwse(0x0040_1000), module_at),
+            "the right opcode and a target in the game"
+        );
         assert!(!follows(at, mwse(0), module_at), "a call to address 0");
         // The bytes around the 4 still count.
         let bad_tail = |addr: usize| if addr == at + 17 { 0x91 } else { mwse(0x2000_1000)(addr) };
@@ -551,11 +635,19 @@ mod tests {
     #[test]
     fn a_change_in_a_record_of_the_code_patch_names_its_option() {
         assert_eq!(code_patch_feature(0x6B5665, 1), Some(12));
-        assert_eq!(code_patch_feature(0x6B5660, 6), Some(12), "a run that starts before the record");
+        assert_eq!(
+            code_patch_feature(0x6B5660, 6),
+            Some(12),
+            "a run that starts before the record"
+        );
         assert_eq!(code_patch_feature(0x6B5667, 2), None, "after the record");
         assert_eq!(code_patch_option(12), "Enchant glow in fog fix");
         for &(feature, _, _) in CODE_PATCH_RECORDS {
-            assert_ne!(code_patch_option(feature), code_patch_option(0), "feature {feature} has a name");
+            assert_ne!(
+                code_patch_option(feature),
+                code_patch_option(0),
+                "feature {feature} has a name"
+            );
         }
     }
 
@@ -565,7 +657,11 @@ mod tests {
         for port in all() {
             let func = hook::find(port.addr).unwrap_or_else(|| panic!("{} is not in the function table", port.name));
             assert_eq!(func.name, port.name);
-            assert!(func.pic && (func.steal >= 5 || func.steal == func.size), "{} cannot take a detour", port.name);
+            assert!(
+                func.pic && (func.steal >= 5 || func.steal == func.size),
+                "{} cannot take a detour",
+                port.name
+            );
             if port.cleanup == crate::hook::Cleanup::Caller {
                 assert_eq!(func.argsize, 0, "{}: a cdecl function removes no arguments", port.name);
             } else {

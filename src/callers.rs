@@ -28,7 +28,10 @@ static COUNTS: Mutex<Option<HashMap<(usize, Caller), u64>>> = Mutex::new(None);
 /// The function of the renderer subsystem that `address` is in.
 fn renderer_function(address: usize) -> Option<usize> {
     // The table has the functions in the order of the database, not of the addresses.
-    FUNCS.iter().find(|f| address >= f.ea && address < f.ea + f.size).map(|f| f.ea)
+    FUNCS
+        .iter()
+        .find(|f| address >= f.ea && address < f.ea + f.size)
+        .map(|f| f.ea)
 }
 
 /// True when `address` is in a function of the renderer subsystem.
@@ -115,7 +118,13 @@ pub unsafe fn report() -> String {
     renderer.sort();
     for (function, slot, n) in renderer {
         let name = FUNCS.iter().find(|f| f.ea == function).map_or("?", |f| f.name);
-        text.push_str(&format!("{}\trenderer {}\t{:#x}\t{}\n", crate::device::slot_name(slot), name, function, n));
+        text.push_str(&format!(
+            "{}\trenderer {}\t{:#x}\t{}\n",
+            crate::device::slot_name(slot),
+            name,
+            function,
+            n
+        ));
     }
     // The calls of the Rust code, for each method: the D3D8 calls that the plugin still makes.
     let mut plugin: Vec<(usize, u64)> = counts
@@ -140,7 +149,13 @@ pub unsafe fn report() -> String {
     for (slot, address, n) in other {
         let module = crate::census::module_of(address);
         let name = module.rsplit(['\\', '/']).next().unwrap_or("?").to_string();
-        text.push_str(&format!("{}\t{}\t{:#x}\t{}\n", crate::device::slot_name(slot), name, address, n));
+        text.push_str(&format!(
+            "{}\t{}\t{:#x}\t{}\n",
+            crate::device::slot_name(slot),
+            name,
+            address,
+            n
+        ));
     }
     text
 }

@@ -20,10 +20,10 @@
 use core::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 
 use crate::checked::Open;
+use crate::link::*;
 use crate::monitors::{self, Monitor};
 use crate::own_host::Kept;
 use crate::sync::{DeviceLock, LockCell};
-use crate::link::*;
 
 const OK: u32 = 0;
 const NO_INTERFACE: u32 = 0x8000_4002;
@@ -195,22 +195,24 @@ static DEVICE: AtomicUsize = AtomicUsize::new(0);
 
 #[track_caller]
 fn state<'a>(lock: &'a DeviceLock) -> Open<'a, State> {
-    STATE.get(lock).map(|state| state.get_or_insert_with(|| State {
-        parameters: [0; 13],
-        focus_window: 0,
-        behavior: 0,
-        viewport: [0, 0, 640, 480, 0, 1.0f32.to_bits()],
-        render_states: [0; 256],
-        stage_states: [[0; 32]; 8],
-        textures: [Kept::default(); 8],
-        transforms: Vec::new(),
-        vertex_shader: 0,
-        stream: (Kept::default(), 0),
-        indices: (Kept::default(), 0),
-        render_target: Kept::default(),
-        monitors: Vec::new(),
-        adapter: 0,
-    }))
+    STATE.get(lock).map(|state| {
+        state.get_or_insert_with(|| State {
+            parameters: [0; 13],
+            focus_window: 0,
+            behavior: 0,
+            viewport: [0, 0, 640, 480, 0, 1.0f32.to_bits()],
+            render_states: [0; 256],
+            stage_states: [[0; 32]; 8],
+            textures: [Kept::default(); 8],
+            transforms: Vec::new(),
+            vertex_shader: 0,
+            stream: (Kept::default(), 0),
+            indices: (Kept::default(), 0),
+            render_target: Kept::default(),
+            monitors: Vec::new(),
+            adapter: 0,
+        })
+    })
 }
 
 /// True when the game got its Direct3D from this module.
@@ -246,7 +248,10 @@ unsafe fn new_object(table: &'static Table, methods: &[usize]) -> usize {
     // A method past the interface must not be a jump to 0.
     words.fill(d3d_nothing as *const () as usize);
     words[1..1 + methods.len()].copy_from_slice(methods);
-    Box::into_raw(Box::new(Object { table: words.as_ptr().add(1), references: 1 })) as usize
+    Box::into_raw(Box::new(Object {
+        table: words.as_ptr().add(1),
+        references: 1,
+    })) as usize
 }
 
 unsafe fn put(out: u32, words: &[u32]) -> u32 {
@@ -294,7 +299,10 @@ unsafe extern "system" fn d3d_adapter_count(_this: usize) -> u32 {
     let wanted = game_adapter();
     let count = monitors::adapter_count(s.monitors.len(), wanted);
     if wanted >= s.monitors.len() as u32 && count > wanted && !ADAPTER_PAST_LOGGED.swap(true, Ordering::Relaxed) {
-        crate::log!("own device: the game's Adapter value {wanted} is past the {} monitors: adapter {wanted} is the primary monitor", s.monitors.len());
+        crate::log!(
+            "own device: the game's Adapter value {wanted} is past the {} monitors: adapter {wanted} is the primary monitor",
+            s.monitors.len()
+        );
     }
     count
 }
@@ -344,7 +352,8 @@ unsafe fn read_monitors(s: &mut State) {
     if !DPI_LOGGED.swap(true, Ordering::Relaxed) {
         crate::log!(
             "own device: the DPI awareness of the game: {}",
-            monitors::dpi_awareness().unwrap_or("not known (no GetThreadDpiAwarenessContext before Windows 10, version 1607)")
+            monitors::dpi_awareness()
+                .unwrap_or("not known (no GetThreadDpiAwarenessContext before Windows 10, version 1607)")
         );
     }
     for (adapter, monitor) in s.monitors.iter().enumerate() {
@@ -405,7 +414,14 @@ unsafe extern "system" fn d3d_adapter_display_mode(_this: usize, adapter: u32, o
 }
 
 /// Only the hardware device, D3DDEVTYPE_HAL.
-unsafe extern "system" fn d3d_check_device_type(_this: usize, _adapter: u32, kind: u32, display: u32, back: u32, _windowed: u32) -> u32 {
+unsafe extern "system" fn d3d_check_device_type(
+    _this: usize,
+    _adapter: u32,
+    kind: u32,
+    display: u32,
+    back: u32,
+    _windowed: u32,
+) -> u32 {
     if kind == 1 && (display == 21 || display == 22) && (back == 21 || back == 22) {
         OK
     } else {
@@ -414,7 +430,15 @@ unsafe extern "system" fn d3d_check_device_type(_this: usize, _adapter: u32, kin
 }
 
 /// Usage: 1 is a target of draws and 2 is a depth buffer.
-unsafe extern "system" fn d3d_check_device_format(_this: usize, _adapter: u32, _kind: u32, _display: u32, usage: u32, _resource: u32, format: u32) -> u32 {
+unsafe extern "system" fn d3d_check_device_format(
+    _this: usize,
+    _adapter: u32,
+    _kind: u32,
+    _display: u32,
+    usage: u32,
+    _resource: u32,
+    format: u32,
+) -> u32 {
     let accepted = if usage & 2 != 0 {
         DEPTH_FORMATS.contains(&format)
     } else if usage & 1 != 0 {
@@ -430,7 +454,14 @@ unsafe extern "system" fn d3d_check_device_format(_this: usize, _adapter: u32, _
 }
 
 /// The host program draws without multisampling.
-unsafe extern "system" fn d3d_check_multisample(_this: usize, _adapter: u32, _kind: u32, _format: u32, _windowed: u32, samples: u32) -> u32 {
+unsafe extern "system" fn d3d_check_multisample(
+    _this: usize,
+    _adapter: u32,
+    _kind: u32,
+    _format: u32,
+    _windowed: u32,
+    samples: u32,
+) -> u32 {
     if samples <= 1 {
         OK
     } else {
@@ -438,7 +469,14 @@ unsafe extern "system" fn d3d_check_multisample(_this: usize, _adapter: u32, _ki
     }
 }
 
-unsafe extern "system" fn d3d_check_depth_match(_this: usize, _adapter: u32, _kind: u32, _display: u32, _target: u32, depth: u32) -> u32 {
+unsafe extern "system" fn d3d_check_depth_match(
+    _this: usize,
+    _adapter: u32,
+    _kind: u32,
+    _display: u32,
+    _target: u32,
+    depth: u32,
+) -> u32 {
     if DEPTH_FORMATS.contains(&depth) {
         OK
     } else {
@@ -461,7 +499,15 @@ unsafe extern "system" fn d3d_adapter_monitor(_this: usize, adapter: u32) -> u32
     }
 }
 
-unsafe extern "system" fn d3d_create_device(this: *mut Object, adapter: u32, _kind: u32, window: u32, behavior: u32, parameters: *mut u32, out: *mut usize) -> u32 {
+unsafe extern "system" fn d3d_create_device(
+    this: *mut Object,
+    adapter: u32,
+    _kind: u32,
+    window: u32,
+    behavior: u32,
+    parameters: *mut u32,
+    out: *mut usize,
+) -> u32 {
     if parameters.is_null() || out.is_null() {
         return INVALID_CALL;
     }
@@ -561,7 +607,13 @@ struct Placement {
 /// Puts the window of a fullscreen game over its monitor, without a border. Outside the
 /// state's guard ([`Placement`]).
 unsafe fn place(placement: Option<Placement>) {
-    let Some(Placement { window, rect: [left, top, right, bottom] }) = placement else { return };
+    let Some(Placement {
+        window,
+        rect: [left, top, right, bottom],
+    }) = placement
+    else {
+        return;
+    };
     // GWL_STYLE: WS_POPUP | WS_VISIBLE.
     SetWindowLongA(window, -16, 0x8000_0000 | 0x1000_0000);
     // SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
@@ -582,7 +634,15 @@ unsafe fn placement(s: &State, window: usize, size: [u32; 2]) -> Option<Placemen
         return None;
     }
     let [left, top_edge, right, bottom] = monitor.rect;
-    crate::log!("own device: fullscreen on adapter {} ({}): the window covers it, {} x {} at {}, {}", s.adapter, monitor.name(), right - left, bottom - top_edge, left, top_edge);
+    crate::log!(
+        "own device: fullscreen on adapter {} ({}): the window covers it, {} x {} at {}, {}",
+        s.adapter,
+        monitor.name(),
+        right - left,
+        bottom - top_edge,
+        left,
+        top_edge
+    );
     if size != monitor.size() && !FULLSCREEN_SIZE_LOGGED.swap(true, Ordering::Relaxed) {
         crate::log!(
             "own device: the fullscreen size {} x {} is not the size of the monitor, {} x {} (its mode {} x {}): the picture does not cover the monitor",
@@ -594,7 +654,10 @@ unsafe fn placement(s: &State, window: usize, size: [u32; 2]) -> Option<Placemen
             monitor.current[1]
         );
     }
-    Some(Placement { window: top, rect: monitor.rect })
+    Some(Placement {
+        window: top,
+        rect: monitor.rect,
+    })
 }
 
 /// The log line of a fullscreen size other than the monitor's mode, once.
@@ -632,15 +695,19 @@ unsafe fn start_stream(s: &State) {
         crate::log!("own device: no stream: {problem}");
         return;
     }
-    let program = crate::switches::text("NIRENDER_HOST_EXE").filter(|path| std::path::Path::new(path).is_file()).or_else(|| {
-        let mut module = 0usize;
-        let mut path = [0u8; 600];
-        // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
-        GetModuleHandleExA(4, start_stream as *const core::ffi::c_void, &mut module);
-        let length = GetModuleFileNameA(module, path.as_mut_ptr(), 512) as usize;
-        let folder = std::path::Path::new(core::str::from_utf8(&path[..length]).ok()?).parent()?.join("nirender-host.exe");
-        folder.is_file().then(|| folder.to_string_lossy().into_owned())
-    });
+    let program = crate::switches::text("NIRENDER_HOST_EXE")
+        .filter(|path| std::path::Path::new(path).is_file())
+        .or_else(|| {
+            let mut module = 0usize;
+            let mut path = [0u8; 600];
+            // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+            GetModuleHandleExA(4, start_stream as *const core::ffi::c_void, &mut module);
+            let length = GetModuleFileNameA(module, path.as_mut_ptr(), 512) as usize;
+            let folder = std::path::Path::new(core::str::from_utf8(&path[..length]).ok()?)
+                .parent()?
+                .join("nirender-host.exe");
+            folder.is_file().then(|| folder.to_string_lossy().into_owned())
+        });
     let Some(program) = program else {
         crate::log!("own device: no nirender-host.exe; the stream {name} waits for a host program");
         return;
@@ -656,7 +723,9 @@ unsafe fn start_stream(s: &State) {
     // The text of the host program goes into a file: the one that NIRENDER_HOST_LOG names, or
     // nirender-host.log in the folder of the game.
     let log = crate::switches::text("NIRENDER_HOST_LOG").unwrap_or_else(|| "nirender-host.log".into());
-    let log = std::path::absolute(&log).map(|path| path.to_string_lossy().into_owned()).unwrap_or(log);
+    let log = std::path::absolute(&log)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or(log);
     command.push_str(&format!(" --log \"{log}\""));
     let mut line = command.clone().into_bytes();
     line.push(0);
@@ -681,7 +750,10 @@ unsafe fn start_stream(s: &State) {
         HOST_PROCESS.store(information[0] as isize, Ordering::Relaxed);
         CloseHandle(information[1] as isize);
     }
-    crate::log!("own device: host program {}: {command}", if started != 0 { "started" } else { "NOT started" });
+    crate::log!(
+        "own device: host program {}: {command}",
+        if started != 0 { "started" } else { "NOT started" }
+    );
 }
 
 /// Puts data of another program into the stream, for its part in the renderer: `id` is a
@@ -815,7 +887,10 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         18 => {
             // SetGammaRamp(flags, ramp): the helper applies it to the picture of the window.
             if a[1] != 0 {
-                crate::capture::gamma_ramp(core::slice::from_raw_parts(a[1] as usize as *const u8, crate::capture::GAMMA_RAMP_BYTES));
+                crate::capture::gamma_ramp(core::slice::from_raw_parts(
+                    a[1] as usize as *const u8,
+                    crate::capture::GAMMA_RAMP_BYTES,
+                ));
             }
             OK
         }
@@ -873,7 +948,11 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
         }
         38 => {
             // GetTransform
-            let matrix = s.transforms.iter().find(|(state, _)| *state == a[0]).map_or(IDENTITY, |entry| entry.1);
+            let matrix = s
+                .transforms
+                .iter()
+                .find(|(state, _)| *state == a[0])
+                .map_or(IDENTITY, |entry| entry.1);
             if a[1] == 0 {
                 return Some(INVALID_CALL);
             }
@@ -926,10 +1005,21 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
             }
             OK
         }
-        62 => put(a[2], &[s.stage_states.get(a[0] as usize).and_then(|stage| stage.get(a[1] as usize)).copied().unwrap_or(0)]),
+        62 => put(
+            a[2],
+            &[s.stage_states
+                .get(a[0] as usize)
+                .and_then(|stage| stage.get(a[1] as usize))
+                .copied()
+                .unwrap_or(0)],
+        ),
         63 => {
             // SetTextureStageState(stage, state, value)
-            if let Some(value) = s.stage_states.get_mut(a[0] as usize).and_then(|stage| stage.get_mut(a[1] as usize)) {
+            if let Some(value) = s
+                .stage_states
+                .get_mut(a[0] as usize)
+                .and_then(|stage| stage.get_mut(a[1] as usize))
+            {
                 *value = a[2];
             }
             crate::capture::command(COMMAND_STAGE_STATE, a[0], a[1], a[2]);

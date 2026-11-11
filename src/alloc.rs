@@ -39,8 +39,13 @@ struct State {
     mismatch: bool,
 }
 
-static mut STATE: State =
-    State { blocks: Vec::new(), taken: 0, freed_rust: Vec::new(), freed_engine: Vec::new(), mismatch: false };
+static mut STATE: State = State {
+    blocks: Vec::new(),
+    taken: 0,
+    freed_rust: Vec::new(),
+    freed_engine: Vec::new(),
+    mismatch: false,
+};
 
 unsafe fn state() -> &'static mut State {
     &mut *core::ptr::addr_of_mut!(STATE)
@@ -102,11 +107,25 @@ pub unsafe fn install() -> Result<(), String> {
     if active() {
         return Ok(());
     }
-    let new = hook::install_raw(OPERATOR_NEW, &OPERATOR_NEW_HEAD, &[], new_detour as *const () as usize, 1, Cleanup::Caller)
-        .map_err(|e| format!("operator new: {e}"))?;
+    let new = hook::install_raw(
+        OPERATOR_NEW,
+        &OPERATOR_NEW_HEAD,
+        &[],
+        new_detour as *const () as usize,
+        1,
+        Cleanup::Caller,
+    )
+    .map_err(|e| format!("operator new: {e}"))?;
     ORIG_NEW.store(new, Ordering::Relaxed);
-    let delete = hook::install_raw(OPERATOR_DELETE, &OPERATOR_DELETE_HEAD, &[5], delete_detour as *const () as usize, 1, Cleanup::Caller)
-        .map_err(|e| format!("operator delete: {e}"))?;
+    let delete = hook::install_raw(
+        OPERATOR_DELETE,
+        &OPERATOR_DELETE_HEAD,
+        &[5],
+        delete_detour as *const () as usize,
+        1,
+        Cleanup::Caller,
+    )
+    .map_err(|e| format!("operator delete: {e}"))?;
     ORIG_DELETE.store(delete, Ordering::Relaxed);
     ACTIVE.store(true, Ordering::Relaxed);
     Ok(())
@@ -170,7 +189,11 @@ pub unsafe fn end(saved: &[u8]) -> String {
         }
     }
     if s.freed_rust != s.freed_engine {
-        text.push_str(&format!(" rust freed {} blocks, the engine {} (or in another order);", s.freed_rust.len(), s.freed_engine.len()));
+        text.push_str(&format!(
+            " rust freed {} blocks, the engine {} (or in another order);",
+            s.freed_rust.len(),
+            s.freed_engine.len()
+        ));
     }
     text
 }

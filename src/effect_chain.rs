@@ -125,7 +125,12 @@ unsafe fn turns_down(nodes: &[usize]) -> Vec<Option<u32>> {
         let parent = nodes.get(at + 1).copied();
         let selected = parent.is_none_or(|parent| selected_by(parent, node));
         let plain_parent = parent.filter(|&parent| !is_switch(parent));
-        shown = shown && child_displayed(rd(node, AV::flags), plain_parent.map(|parent| rd(parent, AV::flags)), selected);
+        shown = shown
+            && child_displayed(
+                rd(node, AV::flags),
+                plain_parent.map(|parent| rd(parent, AV::flags)),
+                selected,
+            );
         if shown && crate::ports::ni::is_kind_of(node, RTTI_BILLBOARD_NODE) {
             turns[at] = turn_mode(rd(node, AV::flags));
         }
@@ -145,8 +150,16 @@ unsafe fn read_chain(t: &MainThread, effect: usize, chain: &mut Chain) -> Vec<u3
     let turns = turns_down(&nodes);
     // Without a turn and with a controller, the chain is the effect under its parent's world.
     let controlled = nodes.iter().any(|&node| rd::<usize>(node, AV::controllers) != 0);
-    let Some(first) = turns.iter().rposition(|turn| turn.is_some()).or(controlled.then_some(0)) else { return Vec::new() };
-    chain.billboards.extend(nodes.iter().zip(&turns).filter(|(_, turn)| turn.is_some()).map(|(&node, _)| node));
+    let Some(first) = turns.iter().rposition(|turn| turn.is_some()).or(controlled.then_some(0)) else {
+        return Vec::new();
+    };
+    chain.billboards.extend(
+        nodes
+            .iter()
+            .zip(&turns)
+            .filter(|(_, turn)| turn.is_some())
+            .map(|(&node, _)| node),
+    );
 
     let mut words = vec![effect as u32, rd(effect, TE::coordMode), first as u32 + 1];
     let above = nodes.get(first + 1).copied();
@@ -249,16 +262,26 @@ pub unsafe fn send_checks(t: &MainThread, camera: usize) {
     }
     let frame = *FRAME.get(t);
     let table = chains(t);
-    let turning = || table.iter().filter(|(_, chain)| chain.frame == frame && !chain.words.is_empty());
+    let turning = || {
+        table
+            .iter()
+            .filter(|(_, chain)| chain.frame == frame && !chain.words.is_empty())
+    };
     for (&effect, chain) in turning() {
-        if chain.billboards.iter().all(|&node| rd::<u16>(node, AV::flags) & DISPLAYED != 0) {
+        if chain
+            .billboards
+            .iter()
+            .all(|&node| rd::<u16>(node, AV::flags) & DISPLAYED != 0)
+        {
             let mut words = vec![effect as u32];
             words.extend_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
             words.extend_from_slice(&rd::<[u32; 3]>(effect, TE::worldProjTrans));
             words.extend_from_slice(&rd::<[u32; 3]>(camera, AV::worldTransform_translation));
             // The check compares the turned projection only: no effect state, so no stage count
             // of a pass. The words are zeros when the effect has no device texture.
-            words.extend_from_slice(&crate::ports::texture_pass_b::effect_stage_words(crate::engine::renderer(), effect, 0)[2..]);
+            words.extend_from_slice(
+                &crate::ports::texture_pass_b::effect_stage_words(crate::engine::renderer(), effect, 0)[2..],
+            );
             crate::capture::effect_turn_check(&words);
         }
     }
@@ -327,7 +350,10 @@ mod tests {
     fn the_walk_up_stops_on_a_cycle() {
         let nodes = nodes_with_parents(&[Some(1), Some(2), Some(1)]);
         // SAFETY: as above; the cycle is the case under test.
-        assert_eq!(unsafe { nodes_up(nodes[0].as_ptr() as usize) }, Err(crate::parent_chain::ChainTooLong));
+        assert_eq!(
+            unsafe { nodes_up(nodes[0].as_ptr() as usize) },
+            Err(crate::parent_chain::ChainTooLong)
+        );
     }
 
     /// A switch displays its selected child with no geometry under it: `turns_down` gives it no

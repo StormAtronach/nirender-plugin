@@ -85,7 +85,15 @@ pub(crate) enum Phase {
 }
 
 impl Phase {
-    const ALL: [Phase; 7] = [Phase::Feed, Phase::Items, Phase::Finish, Phase::Submit, Phase::Pictures, Phase::AfterFrame, Phase::Present];
+    const ALL: [Phase; 7] = [
+        Phase::Feed,
+        Phase::Items,
+        Phase::Finish,
+        Phase::Submit,
+        Phase::Pictures,
+        Phase::AfterFrame,
+        Phase::Present,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -126,7 +134,12 @@ const NO_LOOK: u64 = u64::MAX;
 
 impl SampleRing {
     const fn new() -> SampleRing {
-        SampleRing { slots: [const { AtomicUsize::new(0) }; SAMPLES_KEPT], count: AtomicU64::new(0), costliest_us: AtomicU64::new(0), look_began_ms: AtomicU64::new(NO_LOOK) }
+        SampleRing {
+            slots: [const { AtomicUsize::new(0) }; SAMPLES_KEPT],
+            count: AtomicU64::new(0),
+            costliest_us: AtomicU64::new(0),
+            look_began_ms: AtomicU64::new(NO_LOOK),
+        }
     }
 
     /// From the sampler thread only.
@@ -146,7 +159,10 @@ impl SampleRing {
     fn evidence(&self, phase: u8) -> StallEvidence {
         let n = self.count.load(Ordering::Acquire);
         let held = n.min(SAMPLES_KEPT as u64);
-        let mut evidence = StallEvidence { phase, ..StallEvidence::default() };
+        let mut evidence = StallEvidence {
+            phase,
+            ..StallEvidence::default()
+        };
         for at in n - held..n {
             evidence.push(self.slots[(at % SAMPLES_KEPT as u64) as usize].load(Ordering::Relaxed));
         }
@@ -204,7 +220,11 @@ fn long_limit() -> bool {
 /// The seconds a step of the frame thread may take now: the word that the helper writes into
 /// the ring head for the plugin.
 pub(crate) fn allowance() -> u32 {
-    if long_limit() { LOADING_SECONDS as u32 } else { STALL_SECONDS as u32 }
+    if long_limit() {
+        LOADING_SECONDS as u32
+    } else {
+        STALL_SECONDS as u32
+    }
 }
 
 /// The ring is open: `word` is its word `RING_ALLOWANCE`, mapped for the process.
@@ -319,7 +339,11 @@ pub(crate) fn start() {
             let mut watch = Watch::default();
             while !DISARMED.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(LOOK_MS));
-                let look = Look { steps: STEPS.load(Ordering::Relaxed), in_step: IN_STEP.load(Ordering::Acquire), loading: long_limit() };
+                let look = Look {
+                    steps: STEPS.load(Ordering::Relaxed),
+                    in_step: IN_STEP.load(Ordering::Acquire),
+                    loading: long_limit(),
+                };
                 // A refusal that came during the look ends the program itself.
                 let stall = watch.look(look);
                 SAMPLING.store(watch.sampling(), Ordering::Release);
@@ -355,7 +379,8 @@ fn start_sampler(frame_thread: u32) {
             RING.look_began_ms.store(now_ms(), Ordering::Release);
             let rip = crate::crash::sample_rip(handle);
             RING.look_began_ms.store(NO_LOOK, Ordering::Release);
-            RING.costliest_us.fetch_max(began.elapsed().as_micros() as u64, Ordering::Relaxed);
+            RING.costliest_us
+                .fetch_max(began.elapsed().as_micros() as u64, Ordering::Relaxed);
             if let Some(rip) = rip {
                 RING.push(rip);
             }
@@ -366,7 +391,12 @@ fn start_sampler(frame_thread: u32) {
 /// The line that names what the stall left: the phase, the samples (the oldest first, a run of
 /// equal samples as one with its count), the longest look, and a look that is still waiting.
 /// `place` names an address (`module+offset`).
-fn evidence_line(evidence: &StallEvidence, costliest_us: u64, waiting_ms: Option<u64>, place: impl Fn(usize) -> String) -> String {
+fn evidence_line(
+    evidence: &StallEvidence,
+    costliest_us: u64,
+    waiting_ms: Option<u64>,
+    place: impl Fn(usize) -> String,
+) -> String {
     let phase = Phase::of(evidence.phase).map_or("unknown", Phase::name);
     let mut runs: Vec<(usize, usize)> = Vec::new();
     for &rip in evidence.held() {
@@ -375,7 +405,16 @@ fn evidence_line(evidence: &StallEvidence, costliest_us: u64, waiting_ms: Option
             _ => runs.push((rip, 1)),
         }
     }
-    let places: Vec<String> = runs.iter().map(|&(rip, times)| if times == 1 { place(rip) } else { format!("{} x{times}", place(rip)) }).collect();
+    let places: Vec<String> = runs
+        .iter()
+        .map(|&(rip, times)| {
+            if times == 1 {
+                place(rip)
+            } else {
+                format!("{} x{times}", place(rip))
+            }
+        })
+        .collect();
     let mut line = format!("stall evidence: phase {phase}; {} samples of the frame thread, the oldest first: [{}]; {} different; the longest look took {costliest_us} us", evidence.count, places.join(", "), distinct(evidence.held()));
     if let Some(waiting) = waiting_ms {
         line.push_str(&format!("; a look has waited {waiting} ms for the frame thread to suspend"));
@@ -411,7 +450,15 @@ fn write_stall_lines(seconds: u64, evidence: &StallEvidence) {
     crate::log_pipe::write_direct(stall.as_bytes());
     let began = RING.look_began_ms.load(Ordering::Acquire);
     let waiting = (began != NO_LOOK).then(|| now_ms().saturating_sub(began));
-    let line = format!("{}\n", evidence_line(evidence, RING.costliest_us.load(Ordering::Relaxed), waiting, crate::crash::place));
+    let line = format!(
+        "{}\n",
+        evidence_line(
+            evidence,
+            RING.costliest_us.load(Ordering::Relaxed),
+            waiting,
+            crate::crash::place
+        )
+    );
     crate::log_pipe::write_direct(line.as_bytes());
 }
 
@@ -433,7 +480,10 @@ mod tests {
     /// harness's capture of the output, which a print of a test uses in place of stdout.
     #[test]
     fn the_stall_lines_do_not_wait_for_the_lock_of_stdout() {
-        crate::crash::tests::in_child_of(module_path!(), "the_stall_lines_do_not_wait_for_the_lock_of_stdout_in_this_process");
+        crate::crash::tests::in_child_of(
+            module_path!(),
+            "the_stall_lines_do_not_wait_for_the_lock_of_stdout_in_this_process",
+        );
     }
 
     #[test]
@@ -453,7 +503,11 @@ mod tests {
     #[test]
     fn a_step_that_stays_for_the_limit_is_a_stall() {
         let mut watch = Watch::default();
-        let stuck = Look { steps: 7, in_step: true, loading: false };
+        let stuck = Look {
+            steps: 7,
+            in_step: true,
+            loading: false,
+        };
         // The first look sees the step; the next 19 looks are under 5 s; the 21st reaches it.
         assert_eq!(looks(&mut watch, 20, stuck), None);
         assert_eq!(watch.look(stuck), Some(5));
@@ -463,16 +517,38 @@ mod tests {
     fn steps_that_move_or_end_are_no_stall() {
         let mut watch = Watch::default();
         for steps in 0..100 {
-            assert_eq!(watch.look(Look { steps, in_step: true, loading: false }), None);
+            assert_eq!(
+                watch.look(Look {
+                    steps,
+                    in_step: true,
+                    loading: false
+                }),
+                None
+            );
         }
         // Between the steps nothing is in progress: a long wait for the game is no stall.
-        assert_eq!(looks(&mut watch, 100, Look { steps: 100, in_step: false, loading: false }), None);
+        assert_eq!(
+            looks(
+                &mut watch,
+                100,
+                Look {
+                    steps: 100,
+                    in_step: false,
+                    loading: false
+                }
+            ),
+            None
+        );
     }
 
     #[test]
     fn a_load_in_progress_gives_the_step_30_s() {
         let mut watch = Watch::default();
-        let loading = Look { steps: 1, in_step: true, loading: true };
+        let loading = Look {
+            steps: 1,
+            in_step: true,
+            loading: true,
+        };
         assert_eq!(looks(&mut watch, 120, loading), None);
         assert_eq!(watch.look(loading), Some(30));
     }
@@ -560,7 +636,11 @@ mod tests {
         // looks (over 6 s) inside a guard, then a look after its drop. The short limit counts
         // from the drop: a real hang after the guard reaches the 5 s at the 21st look. The same
         // for the end of a load.
-        let look = || Look { steps: STEPS.load(Ordering::Relaxed), in_step: true, loading: long_limit() };
+        let look = || Look {
+            steps: STEPS.load(Ordering::Relaxed),
+            in_step: true,
+            loading: long_limit(),
+        };
         let mut watch = Watch::default();
         let guard = LongStep::begin();
         assert_eq!(looks_of(&mut watch, 25, &look), None);
@@ -582,7 +662,11 @@ mod tests {
     #[test]
     fn a_step_is_sampled_from_one_second_and_never_before() {
         let mut watch = Watch::default();
-        let slow = Look { steps: 7, in_step: true, loading: false };
+        let slow = Look {
+            steps: 7,
+            in_step: true,
+            loading: false,
+        };
         // The first look sees the step (0 ms); each look after it adds 250 ms.
         assert_eq!(watch.look(slow), None);
         for _ in 0..3 {
@@ -593,13 +677,28 @@ mod tests {
         assert!(watch.sampling(), "1 s: {} ms", watch.stalled_ms);
         // A step that ends or moves stops the sampling at once, so that a quick step after a slow
         // one is never sampled.
-        assert_eq!(watch.look(Look { steps: 8, in_step: true, loading: false }), None);
+        assert_eq!(
+            watch.look(Look {
+                steps: 8,
+                in_step: true,
+                loading: false
+            }),
+            None
+        );
         assert!(!watch.sampling());
         for _ in 0..3 {
-            watch.look(Look { steps: 8, in_step: true, loading: false });
+            watch.look(Look {
+                steps: 8,
+                in_step: true,
+                loading: false,
+            });
         }
         assert!(!watch.sampling());
-        watch.look(Look { steps: 8, in_step: false, loading: false });
+        watch.look(Look {
+            steps: 8,
+            in_step: false,
+            loading: false,
+        });
         assert!(!watch.sampling());
     }
 
@@ -650,8 +749,15 @@ mod tests {
             "stall evidence: phase finish of the command encoder; 5 samples of the frame thread, the oldest first: [numidium+0x10 x3, numidium+0x20, numidium+0x10]; 2 different; the longest look took 42 us"
         );
         // A look that is still waiting, and a phase number that no phase has.
-        let line = evidence_line(&StallEvidence { phase: 200, ..StallEvidence::default() }, 0, Some(3100), place);
+        let line = evidence_line(
+            &StallEvidence {
+                phase: 200,
+                ..StallEvidence::default()
+            },
+            0,
+            Some(3100),
+            place,
+        );
         assert_eq!(line, "stall evidence: phase unknown; 0 samples of the frame thread, the oldest first: []; 0 different; the longest look took 0 us; a look has waited 3100 ms for the frame thread to suspend");
     }
-
 }

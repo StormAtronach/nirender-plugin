@@ -197,8 +197,20 @@ pub unsafe fn install() {
         return;
     }
     let hooks = [
-        ("NiRenderedTexture::dtor", RENDERED_TEXTURE_DTOR, &RENDERED_TEXTURE_DTOR_HEAD, rendered_texture_dtor as unsafe extern "C" fn(usize), &RENDERED_TEXTURE_DTOR_CALL),
-        ("NiCamera::dtor", CAMERA_DTOR, &CAMERA_DTOR_HEAD, camera_dtor as unsafe extern "C" fn(usize), &CAMERA_DTOR_CALL),
+        (
+            "NiRenderedTexture::dtor",
+            RENDERED_TEXTURE_DTOR,
+            &RENDERED_TEXTURE_DTOR_HEAD,
+            rendered_texture_dtor as unsafe extern "C" fn(usize),
+            &RENDERED_TEXTURE_DTOR_CALL,
+        ),
+        (
+            "NiCamera::dtor",
+            CAMERA_DTOR,
+            &CAMERA_DTOR_HEAD,
+            camera_dtor as unsafe extern "C" fn(usize),
+            &CAMERA_DTOR_CALL,
+        ),
     ];
     for (name, address, head, detour, call) in hooks {
         match hook::install_raw(address, head, &[], detour as usize, 0, Cleanup::Callee) {
@@ -218,7 +230,13 @@ mod tests {
     use super::*;
 
     fn click(target: Option<usize>, camera: usize, world_camera: bool) -> Click {
-        Click { kind: crate::link::SCENE_OTHER, camera, root: 1, target, world_camera }
+        Click {
+            kind: crate::link::SCENE_OTHER,
+            camera,
+            root: 1,
+            target,
+            world_camera,
+        }
     }
 
     /// The keys are separate for the two kinds; a freed object loses its options; a refused key
@@ -233,11 +251,17 @@ mod tests {
         assert!(set(KIND_RENDERED_TEXTURE, 0x7100_0000, Some(u32::MAX)));
         assert_eq!(get(KIND_RENDERED_TEXTURE, 0x7100_0000), Some(PARTS_ALL));
         let mut parts = 0u32;
-        assert_eq!(unsafe { nirender_view_options_get(KIND_RENDERED_TEXTURE, 0x7100_0000, &mut parts) }, 1);
+        assert_eq!(
+            unsafe { nirender_view_options_get(KIND_RENDERED_TEXTURE, 0x7100_0000, &mut parts) },
+            1
+        );
         assert_eq!(parts, PARTS_ALL);
         forget(KIND_RENDERED_TEXTURE, 0x7100_0000);
         assert_eq!(get(KIND_RENDERED_TEXTURE, 0x7100_0000), None);
-        assert_eq!(unsafe { nirender_view_options_get(KIND_RENDERED_TEXTURE, 0x7100_0000, &mut parts) }, 0);
+        assert_eq!(
+            unsafe { nirender_view_options_get(KIND_RENDERED_TEXTURE, 0x7100_0000, &mut parts) },
+            0
+        );
         assert!(set(KIND_CAMERA, 0x7100_0010, Some(1)));
         assert!(set(KIND_CAMERA, 0x7100_0010, None));
         assert_eq!(get(KIND_CAMERA, 0x7100_0010), None);

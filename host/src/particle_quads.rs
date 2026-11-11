@@ -131,16 +131,28 @@ pub(crate) struct ParticleQuads {
 }
 
 fn storage(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage,
+        mapped_at_creation: false,
+    })
 }
 
 impl ParticleQuads {
     pub(crate) fn new(device: &wgpu::Device) -> ParticleQuads {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("particle quads"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("particle quads"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
         let entry = |binding: u32, ty: wgpu::BufferBindingType, dynamic: bool| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: dynamic, min_binding_size: None },
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset: dynamic,
+                min_binding_size: None,
+            },
             count: None,
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -151,7 +163,11 @@ impl ParticleQuads {
                 entry(2, wgpu::BufferBindingType::Uniform, true),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("particle quads"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("particle quads"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let _long = crate::LongStep::begin();
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("particle quads"),
@@ -167,11 +183,26 @@ impl ParticleQuads {
         ParticleQuads {
             pipeline,
             layout,
-            input: storage(device, "particle quads, the particles", input_capacity, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST),
+            input: storage(
+                device,
+                "particle quads, the particles",
+                input_capacity,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            ),
             input_capacity,
-            vertices: Rc::new(storage(device, "particle quads, the vertices", vertex_capacity, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX)),
+            vertices: Rc::new(storage(
+                device,
+                "particle quads, the vertices",
+                vertex_capacity,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
+            )),
             vertex_capacity,
-            jobs_buffer: storage(device, "particle quads, the systems", jobs_capacity, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST),
+            jobs_buffer: storage(
+                device,
+                "particle quads, the systems",
+                jobs_capacity,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            ),
             jobs_capacity,
             staged: Vec::new(),
             staged_from: 0,
@@ -196,16 +227,35 @@ impl ParticleQuads {
     /// Takes the particles of a system and gives the vertex buffer of its quads and their
     /// place in it, with the values of its draw. `sum` and `difference` are `(right + up) *
     /// radius` and `(up - right) * radius`.
-    pub(crate) fn add(&mut self, device: &wgpu::Device, particles: &[u8], sum: [f32; 3], difference: [f32; 3]) -> (Rc<wgpu::Buffer>, QuadPlace) {
+    pub(crate) fn add(
+        &mut self,
+        device: &wgpu::Device,
+        particles: &[u8],
+        sum: [f32; 3],
+        difference: [f32; 3],
+    ) -> (Rc<wgpu::Buffer>, QuadPlace) {
         let count = (particles.len() as u64 / PARTICLE) as u32;
         let place = place_quads(self.vertices_used, self.vertex_capacity, count);
         if let Some(capacity) = place.grow_to {
             // A larger buffer for the rest of the frame; the jobs so far keep theirs.
-            self.vertices = Rc::new(storage(device, "particle quads, the vertices", capacity, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX));
+            self.vertices = Rc::new(storage(
+                device,
+                "particle quads, the vertices",
+                capacity,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
+            ));
             self.vertex_capacity = capacity;
         }
-        self.jobs.push(Job { first_particle: self.particles_used as u32, count, first_vertex: place.first_vertex, sum, difference, vertices: self.vertices.clone() });
-        self.staged.extend_from_slice(&particles[..count as usize * PARTICLE as usize]);
+        self.jobs.push(Job {
+            first_particle: self.particles_used as u32,
+            count,
+            first_vertex: place.first_vertex,
+            sum,
+            difference,
+            vertices: self.vertices.clone(),
+        });
+        self.staged
+            .extend_from_slice(&particles[..count as usize * PARTICLE as usize]);
         self.particles_used += count as u64;
         self.vertices_used = place.used_after;
         self.systems += 1;
@@ -224,7 +274,12 @@ impl ParticleQuads {
             // A larger input for the frame: the particles of the frame so far are written
             // again from the start, so every job of this flush reads one buffer.
             let capacity = end.next_power_of_two();
-            self.input = storage(device, "particle quads, the particles", capacity, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+            self.input = storage(
+                device,
+                "particle quads, the particles",
+                capacity,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            );
             self.input_capacity = capacity;
             self.rebase_jobs();
             queue.write_buffer(&self.input, 0, &self.staged);
@@ -236,7 +291,12 @@ impl ParticleQuads {
         let needed = self.jobs.len() as u64 * JOB_STRIDE;
         if needed > self.jobs_capacity {
             self.jobs_capacity = needed.next_power_of_two();
-            self.jobs_buffer = storage(device, "particle quads, the systems", self.jobs_capacity, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+            self.jobs_buffer = storage(
+                device,
+                "particle quads, the systems",
+                self.jobs_capacity,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            );
         }
         let mut values = vec![0u8; needed as usize];
         for (n, job) in self.jobs.iter().enumerate() {
@@ -258,9 +318,14 @@ impl ParticleQuads {
             values[at..at + 48].copy_from_slice(bytemuck::cast_slice(&words));
         }
         queue.write_buffer(&self.jobs_buffer, 0, &values);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("particle quads") });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("particle quads"),
+        });
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("particle quads"), timestamp_writes: None });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("particle quads"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(&self.pipeline);
             let mut bound: Option<(Rc<wgpu::Buffer>, wgpu::BindGroup)> = None;
             for (n, job) in self.jobs.iter().enumerate() {
@@ -269,11 +334,21 @@ impl ParticleQuads {
                         label: Some("particle quads"),
                         layout: &self.layout,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: self.input.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 1, resource: job.vertices.as_entire_binding() },
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: self.input.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: job.vertices.as_entire_binding(),
+                            },
                             wgpu::BindGroupEntry {
                                 binding: 2,
-                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.jobs_buffer, offset: 0, size: core::num::NonZeroU64::new(48) }),
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: &self.jobs_buffer,
+                                    offset: 0,
+                                    size: core::num::NonZeroU64::new(48),
+                                }),
                             },
                         ],
                     });

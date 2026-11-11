@@ -229,7 +229,9 @@ pub fn rotate_log(path: &Path) {
 /// The path of the minidump: the name of this program with `.dmp`, in the folder of the log
 /// at `log`, or in the current folder without a log.
 pub(crate) fn dump_path(log: Option<&str>) -> PathBuf {
-    let program = std::env::current_exe().ok().and_then(|exe| exe.file_stem().map(OsStr::to_os_string));
+    let program = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.file_stem().map(OsStr::to_os_string));
     let mut name = program.unwrap_or_else(|| "nirender-host".into());
     name.push(".dmp");
 
@@ -245,7 +247,9 @@ pub(crate) fn dump_path(log: Option<&str>) -> PathBuf {
 pub(crate) fn install(dump: PathBuf) {
     hold_dump_libraries();
     let _ = DUMP.set(dump);
-    let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
+    let program = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
     let _ = PROGRAM.set(program.unwrap_or_default().encode_utf16().map(lower).collect());
     std::panic::set_hook(Box::new(|info| {
         // First the exit for the plugin: a dump that hangs is then ended with this code.
@@ -269,7 +273,14 @@ pub(crate) fn install(dump: PathBuf) {
 
 /// The DLLs that the dump writer (dbgcore) loads at each dump and unloads after it, on
 /// Windows 11 (seen with cdb, 2026-10-27).
-const DUMP_LIBRARIES: [&str; 6] = ["advapi32.dll", "msvcrt.dll", "sechost.dll", "psapi.dll", "version.dll", "verifier.dll"];
+const DUMP_LIBRARIES: [&str; 6] = [
+    "advapi32.dll",
+    "msvcrt.dll",
+    "sechost.dll",
+    "psapi.dll",
+    "version.dll",
+    "verifier.dll",
+];
 
 /// Loads the DLLs of [`DUMP_LIBRARIES`] for the program's life, so that a dump finds them
 /// loaded. `MiniDumpWriteDump` of the own process suspends every other thread, then loads
@@ -306,7 +317,11 @@ unsafe extern "system" fn filter(pointers: *mut ExceptionPointers) -> i32 {
     if record.is_null() {
         lines.line("crash: an exception without a record");
     } else {
-        lines.line(&format!("crash: exception {:#x} at {}", (*record).code, place((*record).address as usize)));
+        lines.line(&format!(
+            "crash: exception {:#x} at {}",
+            (*record).code,
+            place((*record).address as usize)
+        ));
     }
     for line in backtrace() {
         lines.line(&format!("  {line}"));
@@ -355,7 +370,14 @@ impl StallEvidence {
 /// The exception record of a stall dump: the code, the place of the frame thread, and in the
 /// information words the phase (word 0) and the newest samples, the oldest first (words 1 to 14).
 fn stall_record(rip: usize, evidence: &StallEvidence) -> ExceptionRecord {
-    let mut record = ExceptionRecord { code: STALL_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 0, information: [0; 15] };
+    let mut record = ExceptionRecord {
+        code: STALL_EXCEPTION,
+        flags: 0,
+        record: core::ptr::null_mut(),
+        address: rip as *mut c_void,
+        parameters: 0,
+        information: [0; 15],
+    };
     let held = evidence.held();
     let newest = &held[held.len().saturating_sub(SAMPLES_IN_RECORD)..];
     record.information[0] = evidence.phase as usize;
@@ -431,7 +453,10 @@ pub(crate) fn stall_dump_and_end(frame_thread: u32, exit_code: u32, evidence: St
                 } else {
                     let rip = usize::from_le_bytes(context.0[RIP_AT..RIP_AT + 8].try_into().unwrap_or_default());
                     let mut record = stall_record(rip, &evidence);
-                    let mut pointers = ExceptionPointers { record: &mut record, context: &mut context as *mut Context as *mut c_void };
+                    let mut pointers = ExceptionPointers {
+                        record: &mut record,
+                        context: &mut context as *mut Context as *mut c_void,
+                    };
                     if dump_to(file.as_raw_handle(), frame_thread, &mut pointers) {
                         b"minidump: written (the frame thread's context)\n"
                     } else {
@@ -461,14 +486,29 @@ fn write_dump_here(path: &Path) -> Result<(), String> {
     unsafe { RtlCaptureContext(&mut context) };
     let rip = usize::from_le_bytes(context.0[RIP_AT..RIP_AT + 8].try_into().expect("8 bytes of the context"));
 
-    let mut record = ExceptionRecord { code: PANIC_EXCEPTION, flags: 0, record: core::ptr::null_mut(), address: rip as *mut c_void, parameters: 0, information: [0; 15] };
-    let pointers = ExceptionPointers { record: &mut record, context: &mut context as *mut Context as *mut c_void };
+    let mut record = ExceptionRecord {
+        code: PANIC_EXCEPTION,
+        flags: 0,
+        record: core::ptr::null_mut(),
+        address: rip as *mut c_void,
+        parameters: 0,
+        information: [0; 15],
+    };
+    let pointers = ExceptionPointers {
+        record: &mut record,
+        context: &mut context as *mut Context as *mut c_void,
+    };
     // SAFETY: a plain read of the id of this thread.
     let thread = unsafe { GetCurrentThreadId() };
     // Another thread writes the dump, so that the stack of this thread stays as the context
     // describes it: a dump of the calling thread with its own context fails (error 998).
     let pointers = &pointers as *const ExceptionPointers as usize;
-    std::thread::scope(|scope| scope.spawn(|| write_dump_at(path, thread, pointers as *mut ExceptionPointers)).join().unwrap_or_else(|_| Err("the thread of the dump panicked".to_string())))
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| write_dump_at(path, thread, pointers as *mut ExceptionPointers))
+            .join()
+            .unwrap_or_else(|_| Err("the thread of the dump panicked".to_string()))
+    })
 }
 
 /// The frames of the caller's stack, the nearest first, as `module+offset` lines.
@@ -476,7 +516,10 @@ fn backtrace() -> Vec<String> {
     let mut frames = [core::ptr::null_mut(); MOST_FRAMES];
     // SAFETY: the array has room for `MOST_FRAMES` addresses, and the call writes at most that many.
     let count = unsafe { RtlCaptureStackBackTrace(1, MOST_FRAMES as u32, frames.as_mut_ptr(), core::ptr::null_mut()) };
-    frames[..count as usize].iter().map(|&address| place(address as usize)).collect()
+    frames[..count as usize]
+        .iter()
+        .map(|&address| place(address as usize))
+        .collect()
 }
 
 /// `module+offset` for an address, or the address alone when no module holds it. When the
@@ -551,11 +594,13 @@ fn nearest_export(base: usize, offset: usize) -> Option<(String, usize)> {
     }
 
     let (function, name) = best?;
-    let bytes: Vec<u8> = (name..image.min(name + 256)).map_while(|rva| {
-        // SAFETY: `rva` is inside the image.
-        let byte = unsafe { *((base + rva) as *const u8) };
-        (byte != 0).then_some(byte)
-    }).collect();
+    let bytes: Vec<u8> = (name..image.min(name + 256))
+        .map_while(|rva| {
+            // SAFETY: `rva` is inside the image.
+            let byte = unsafe { *((base + rva) as *const u8) };
+            (byte != 0).then_some(byte)
+        })
+        .collect();
     Some((String::from_utf8_lossy(&bytes).into_owned(), offset - function))
 }
 
@@ -565,7 +610,9 @@ fn write_dump_at(path: &Path, thread: u32, pointers: *mut ExceptionPointers) -> 
     let file = std::fs::File::create(path).map_err(|problem| format!("{}: {problem}", path.display()))?;
     if !dump_to(file.as_raw_handle(), thread, pointers) {
         // SAFETY: a plain read of the thread's last error.
-        return Err(format!("{}: MiniDumpWriteDump failed, error {}", path.display(), unsafe { GetLastError() }));
+        return Err(format!("{}: MiniDumpWriteDump failed, error {}", path.display(), unsafe {
+            GetLastError()
+        }));
     }
     Ok(())
 }
@@ -577,17 +624,40 @@ fn dump_to(file: std::os::windows::io::RawHandle, thread: u32, pointers: *mut Ex
     // lives for the call, or null for a dump without an exception; the file is open for
     // writing; the callback is a plain function of this program.
     unsafe {
-        let information = MinidumpExceptionInformation { thread, pointers, client_pointers: 0 };
-        let exception = if pointers.is_null() { core::ptr::null() } else { &information as *const _ };
-        let callback = MinidumpCallbackInformation { routine: Some(module_data_of_this_program), parameter: core::ptr::null_mut() };
-        MiniDumpWriteDump(GetCurrentProcess() as *mut c_void, GetCurrentProcessId(), file, DUMP_KIND, exception, core::ptr::null(), &callback as *const _ as *const c_void) != 0
+        let information = MinidumpExceptionInformation {
+            thread,
+            pointers,
+            client_pointers: 0,
+        };
+        let exception = if pointers.is_null() {
+            core::ptr::null()
+        } else {
+            &information as *const _
+        };
+        let callback = MinidumpCallbackInformation {
+            routine: Some(module_data_of_this_program),
+            parameter: core::ptr::null_mut(),
+        };
+        MiniDumpWriteDump(
+            GetCurrentProcess() as *mut c_void,
+            GetCurrentProcessId(),
+            file,
+            DUMP_KIND,
+            exception,
+            core::ptr::null(),
+            &callback as *const _ as *const c_void,
+        ) != 0
     }
 }
 
 /// The callback of the dump writer: every thread and module goes in, but the data segments
 /// of the modules that are not this program stay out of the dump (the graphics driver's
 /// DLLs have tens of MB of them).
-unsafe extern "system" fn module_data_of_this_program(_parameter: *mut c_void, input: *const MinidumpCallbackInput, output: *mut MinidumpCallbackOutput) -> i32 {
+unsafe extern "system" fn module_data_of_this_program(
+    _parameter: *mut c_void,
+    input: *const MinidumpCallbackInput,
+    output: *mut MinidumpCallbackOutput,
+) -> i32 {
     if input.is_null() || output.is_null() {
         return 0;
     }
@@ -618,14 +688,21 @@ unsafe fn is_this_program(path: *const u16) -> bool {
 /// Whether the file part of `path` (after its last `\\` or `/`) is `program`, which is in
 /// lower case: the case of ASCII letters does not count.
 fn same_file(path: &[u16], program: &[u16]) -> bool {
-    let start = path.iter().rposition(|&unit| unit == u16::from(b'\\') || unit == u16::from(b'/')).map_or(0, |at| at + 1);
+    let start = path
+        .iter()
+        .rposition(|&unit| unit == u16::from(b'\\') || unit == u16::from(b'/'))
+        .map_or(0, |at| at + 1);
     let file = &path[start..];
     file.len() == program.len() && file.iter().zip(program).all(|(&unit, &want)| lower(unit) == want)
 }
 
 /// The lower case of an ASCII letter in UTF-16; any other unit as it is.
 fn lower(unit: u16) -> u16 {
-    if (u16::from(b'A')..=u16::from(b'Z')).contains(&unit) { unit + 32 } else { unit }
+    if (u16::from(b'A')..=u16::from(b'Z')).contains(&unit) {
+        unit + 32
+    } else {
+        unit
+    }
 }
 
 fn report(dump: Result<&Path, String>, lines: &mut ExitLines) {
@@ -659,7 +736,8 @@ pub(crate) mod tests {
         }
         let ntdll_name: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
         // SAFETY: ntdll is loaded in every process; both names end with a zero.
-        let write_file = unsafe { GetProcAddress(GetModuleHandleW(ntdll_name.as_ptr()), b"NtWriteFile\0".as_ptr()) } as usize;
+        let write_file =
+            unsafe { GetProcAddress(GetModuleHandleW(ntdll_name.as_ptr()), b"NtWriteFile\0".as_ptr()) } as usize;
         assert_ne!(write_file, 0);
         let text = place(write_file + 0x14);
         assert!(text.starts_with("ntdll.dll+0x"), "{text}");
@@ -681,16 +759,25 @@ pub(crate) mod tests {
 
     #[test]
     fn the_stall_record_carries_the_phase_and_the_newest_14_samples() {
-        let mut evidence = StallEvidence { phase: 2, ..StallEvidence::default() };
+        let mut evidence = StallEvidence {
+            phase: 2,
+            ..StallEvidence::default()
+        };
         for rip in 100..100 + 5 {
             evidence.push(rip);
         }
         let record = stall_record(0xABC, &evidence);
-        assert_eq!((record.code, record.address as usize, record.parameters), (STALL_EXCEPTION, 0xABC, 6));
+        assert_eq!(
+            (record.code, record.address as usize, record.parameters),
+            (STALL_EXCEPTION, 0xABC, 6)
+        );
         assert_eq!(&record.information[..6], &[2, 100, 101, 102, 103, 104]);
         assert!(record.information[6..].iter().all(|&word| word == 0));
         // 16 samples do not fit the 15 words: the phase and the newest 14.
-        let mut full = StallEvidence { phase: 6, ..StallEvidence::default() };
+        let mut full = StallEvidence {
+            phase: 6,
+            ..StallEvidence::default()
+        };
         for rip in 1..=SAMPLES_KEPT {
             full.push(rip);
         }
@@ -727,7 +814,10 @@ pub(crate) mod tests {
             id_sender_2.send(unsafe { GetCurrentThreadId() }).unwrap();
             let _ = wait_receiver.recv();
         });
-        for (name, id) in [("spinning", id_receiver.recv().unwrap()), ("waiting", id_receiver_2.recv().unwrap())] {
+        for (name, id) in [
+            ("spinning", id_receiver.recv().unwrap()),
+            ("waiting", id_receiver_2.recv().unwrap()),
+        ] {
             let handle = open_for_samples(id);
             assert_ne!(handle, 0, "the {name} thread opens");
             let mut worst = Duration::ZERO;
@@ -810,7 +900,10 @@ pub(crate) mod tests {
         let output = std::fs::read_to_string(&log).unwrap_or_default();
         std::fs::remove_file(&log).ok();
         assert!(status.success(), "{test} failed in its child process:\n{output}");
-        assert!(output.contains("test result: ok. 1 passed"), "{test} did not run in its child process:\n{output}");
+        assert!(
+            output.contains("test result: ok. 1 passed"),
+            "{test} did not run in its child process:\n{output}"
+        );
     }
 
     /// Runs the ignored test `name` of the test module `module` alone in a child process, for a
@@ -913,7 +1006,14 @@ pub(crate) mod tests {
 
     #[test]
     fn the_filter_announces_the_code_of_the_exception() {
-        let record = ExceptionRecord { code: 0xC000_0005, flags: 0, record: core::ptr::null_mut(), address: core::ptr::null_mut(), parameters: 0, information: [0; 15] };
+        let record = ExceptionRecord {
+            code: 0xC000_0005,
+            flags: 0,
+            record: core::ptr::null_mut(),
+            address: core::ptr::null_mut(),
+            parameters: 0,
+            information: [0; 15],
+        };
         // SAFETY: the record lives for the calls; null is allowed.
         unsafe {
             assert_eq!(exit_of_exception(&record), Some(0xC000_0005));
@@ -961,7 +1061,8 @@ pub(crate) mod tests {
     }
 
     type DllNotify = unsafe extern "system" fn(reason: u32, data: *const DllNotification, context: *mut c_void);
-    type Register = unsafe extern "system" fn(flags: u32, notify: DllNotify, context: *mut c_void, cookie: *mut *mut c_void) -> i32;
+    type Register =
+        unsafe extern "system" fn(flags: u32, notify: DllNotify, context: *mut c_void, cookie: *mut *mut c_void) -> i32;
     type Unregister = unsafe extern "system" fn(cookie: *mut c_void) -> i32;
 
     #[link(name = "kernel32")]
@@ -993,11 +1094,17 @@ pub(crate) mod tests {
         count: usize,
     }
 
-    static LOADS: std::sync::Mutex<Loads> = std::sync::Mutex::new(Loads { names: [[0; MOST_NAME]; MOST_LOADS], count: 0 });
+    static LOADS: std::sync::Mutex<Loads> = std::sync::Mutex::new(Loads {
+        names: [[0; MOST_NAME]; MOST_LOADS],
+        count: 0,
+    });
     static WATCHED_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
     unsafe extern "system" fn record_load(reason: u32, data: *const DllNotification, _context: *mut c_void) {
-        if reason != DLL_LOADED || data.is_null() || GetCurrentThreadId() != WATCHED_THREAD.load(std::sync::atomic::Ordering::SeqCst) {
+        if reason != DLL_LOADED
+            || data.is_null()
+            || GetCurrentThreadId() != WATCHED_THREAD.load(std::sync::atomic::Ordering::SeqCst)
+        {
             return;
         }
         let name = &*(*data).base_name;
@@ -1047,7 +1154,10 @@ pub(crate) mod tests {
             .iter()
             .map(|name| String::from_utf16_lossy(&name[..name.iter().position(|&c| c == 0).unwrap_or(MOST_NAME)]))
             .collect();
-        assert!(names.is_empty(), "the dump writer loaded DLLs that hold_dump_libraries lacks: {names:?}");
+        assert!(
+            names.is_empty(),
+            "the dump writer loaded DLLs that hold_dump_libraries lacks: {names:?}"
+        );
         std::fs::remove_dir_all(&folder).unwrap();
     }
 }

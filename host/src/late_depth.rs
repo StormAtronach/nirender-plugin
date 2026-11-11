@@ -41,17 +41,36 @@ impl LateDepth {
         let texture = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("late depth"), entries: &[texture(0), texture(1)] });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("late depth"), source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{FRAGMENT}").into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("late depth"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("late depth"),
+            entries: &[texture(0), texture(1)],
+        });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("late depth"),
+            source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{FRAGMENT}").into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("late depth"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let _long = crate::LongStep::begin();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("late depth"),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             primitive: Default::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_format,
@@ -62,7 +81,12 @@ impl LateDepth {
                 bias: Default::default(),
             }),
             multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[] }),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
             multiview_mask: None,
             cache: None,
         });
@@ -71,20 +95,45 @@ impl LateDepth {
 
     /// Writes into `target` (copy 1) the depth of `after` where it differs from `before`, if
     /// it is nearer.
-    pub(crate) fn merge(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, before: &wgpu::TextureView, after: &wgpu::TextureView, target: &wgpu::TextureView) {
-        let group = gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-            label: Some("late depth"),
-            layout: &self.layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(before) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(after) }],
-        });
+    pub(crate) fn merge(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        before: &wgpu::TextureView,
+        after: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+    ) {
+        let group = gpu::frame_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("late depth"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(before),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(after),
+                    },
+                ],
+            },
+        );
         crate::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("late depth"),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: target,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
             }),
             timestamp_writes: None,
             occlusion_query_set: None,

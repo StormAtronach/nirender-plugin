@@ -33,7 +33,10 @@ pub(crate) struct StageGroups<G> {
 
 impl<G> Default for StageGroups<G> {
     fn default() -> Self {
-        StageGroups { groups: FxHashMap::default(), sets_of: FxHashMap::default() }
+        StageGroups {
+            groups: FxHashMap::default(),
+            sets_of: FxHashMap::default(),
+        }
     }
 }
 
@@ -84,7 +87,11 @@ mod tests {
     use super::*;
 
     fn key(textures: [u32; STAGES]) -> StageKey {
-        StageKey { textures, samplers: [[0; 5]; STAGES], hide: 0 }
+        StageKey {
+            textures,
+            samplers: [[0; 5]; STAGES],
+            hide: 0,
+        }
     }
 
     #[test]

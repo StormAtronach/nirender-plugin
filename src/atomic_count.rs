@@ -48,45 +48,240 @@ struct Site {
 }
 
 const SITES: [Site; 39] = [
-    Site { at: 0x6FE39F, len: 5, function: "NiPropertyState::reset", slot: "default alpha" },
-    Site { at: 0x6FE3BF, len: 5, function: "NiPropertyState::reset", slot: "default fog" },
-    Site { at: 0x6FE3DF, len: 5, function: "NiPropertyState::reset", slot: "default material" },
-    Site { at: 0x6FE3FF, len: 5, function: "NiPropertyState::reset", slot: "default stencil" },
-    Site { at: 0x6FE41F, len: 5, function: "NiPropertyState::reset", slot: "default texturing" },
-    Site { at: 0x6FE43F, len: 5, function: "NiPropertyState::reset", slot: "default vertex colour" },
-    Site { at: 0x6FE45F, len: 5, function: "NiPropertyState::reset", slot: "default wireframe" },
-    Site { at: 0x6FE475, len: 7, function: "NiPropertyState::reset", slot: "the old zbuffer (release)" },
-    Site { at: 0x6FE489, len: 5, function: "NiPropertyState::reset", slot: "default zbuffer" },
-    Site { at: 0x6FE49F, len: 7, function: "NiPropertyState::reset", slot: "the old renderer specific (release)" },
-    Site { at: 0x6FE4B3, len: 5, function: "NiPropertyState::reset", slot: "default renderer specific" },
-    Site { at: 0x6FE2E6, len: 7, function: "NiPropertyState::ctor_copy", slot: "the old property (release)" },
-    Site { at: 0x6FE2FC, len: 5, function: "NiPropertyState::ctor_copy", slot: "each property of the copied state" },
-    Site { at: 0x471B25, len: 5, function: "NiPointer::set", slot: "the new object" },
-    Site { at: 0x471B12, len: 5, function: "NiPointer::set", slot: "the old object (release)" },
-    Site { at: 0x40A886, len: 5, function: "NiPointer::dtor", slot: "the object (release)" },
-    Site { at: 0x404630, len: 5, function: "NiObject::release", slot: "the object (release)" },
-    Site { at: 0x6EB230, len: 5, function: "NiAVObject::PushLocalProperties", slot: "the parent state" },
-    Site { at: 0x6EB30D, len: 15, function: "NiAVObject::PushLocalProperties", slot: "the parent state (release)" },
-    Site { at: 0x6EB333, len: 5, function: "NiAVObject::PushLocalProperties", slot: "the new state" },
-    Site { at: 0x6EB349, len: 7, function: "NiAVObject::PushLocalProperties", slot: "the new state (release)" },
-    Site { at: 0x6C8D82, len: 5, function: "NiNode::UpdateProperties", slot: "the state" },
-    Site { at: 0x6C8D94, len: 15, function: "NiNode::UpdateProperties", slot: "the local state (release)" },
-    Site { at: 0x6C8E05, len: 7, function: "NiNode::UpdateProperties", slot: "the state (release)" },
-    Site { at: 0x6F41F6, len: 7, function: "NiGeometry::UpdatePropertiesDownward", slot: "the geometry's old state (release)" },
-    Site { at: 0x6F420F, len: 5, function: "NiGeometry::UpdatePropertiesDownward", slot: "the geometry's state" },
-    Site { at: 0x6F4224, len: 15, function: "NiGeometry::UpdatePropertiesDownward", slot: "the state argument (release)" },
-    Site { at: 0x6EB125, len: 5, function: "NiAVObject::UpdateProperties", slot: "the state" },
-    Site { at: 0x6EB137, len: 13, function: "NiAVObject::UpdateProperties", slot: "the local state (release)" },
-    Site { at: 0x6EB19A, len: 7, function: "NiAVObject::UpdateProperties", slot: "the state (release)" },
-    Site { at: 0x6F3F5E, len: 7, function: "NiGeometry::pushStateToRenderer", slot: "the old current property state (release)" },
-    Site { at: 0x6F3F6D, len: 10, function: "NiGeometry::pushStateToRenderer", slot: "the shape's property state" },
-    Site { at: 0x6F3F88, len: 7, function: "NiGeometry::pushStateToRenderer", slot: "the old current effect state (release)" },
-    Site { at: 0x6F3F97, len: 10, function: "NiGeometry::pushStateToRenderer", slot: "the shape's effect state" },
-    Site { at: 0x6F5393, len: 7, function: "NiRenderer::BeginBatch", slot: "the old current property state (release)" },
-    Site { at: 0x6F53A2, len: 10, function: "NiRenderer::BeginBatch", slot: "the batch's property state" },
-    Site { at: 0x6F53BB, len: 7, function: "NiRenderer::BeginBatch", slot: "the old current effect state (release)" },
-    Site { at: 0x6F53CA, len: 10, function: "NiRenderer::BeginBatch", slot: "the batch's effect state" },
-    Site { at: 0x6A9EEB, len: 7, function: "NiDX8Renderer::dtor", slot: "the current property state (release)" },
+    Site {
+        at: 0x6FE39F,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default alpha",
+    },
+    Site {
+        at: 0x6FE3BF,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default fog",
+    },
+    Site {
+        at: 0x6FE3DF,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default material",
+    },
+    Site {
+        at: 0x6FE3FF,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default stencil",
+    },
+    Site {
+        at: 0x6FE41F,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default texturing",
+    },
+    Site {
+        at: 0x6FE43F,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default vertex colour",
+    },
+    Site {
+        at: 0x6FE45F,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default wireframe",
+    },
+    Site {
+        at: 0x6FE475,
+        len: 7,
+        function: "NiPropertyState::reset",
+        slot: "the old zbuffer (release)",
+    },
+    Site {
+        at: 0x6FE489,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default zbuffer",
+    },
+    Site {
+        at: 0x6FE49F,
+        len: 7,
+        function: "NiPropertyState::reset",
+        slot: "the old renderer specific (release)",
+    },
+    Site {
+        at: 0x6FE4B3,
+        len: 5,
+        function: "NiPropertyState::reset",
+        slot: "default renderer specific",
+    },
+    Site {
+        at: 0x6FE2E6,
+        len: 7,
+        function: "NiPropertyState::ctor_copy",
+        slot: "the old property (release)",
+    },
+    Site {
+        at: 0x6FE2FC,
+        len: 5,
+        function: "NiPropertyState::ctor_copy",
+        slot: "each property of the copied state",
+    },
+    Site {
+        at: 0x471B25,
+        len: 5,
+        function: "NiPointer::set",
+        slot: "the new object",
+    },
+    Site {
+        at: 0x471B12,
+        len: 5,
+        function: "NiPointer::set",
+        slot: "the old object (release)",
+    },
+    Site {
+        at: 0x40A886,
+        len: 5,
+        function: "NiPointer::dtor",
+        slot: "the object (release)",
+    },
+    Site {
+        at: 0x404630,
+        len: 5,
+        function: "NiObject::release",
+        slot: "the object (release)",
+    },
+    Site {
+        at: 0x6EB230,
+        len: 5,
+        function: "NiAVObject::PushLocalProperties",
+        slot: "the parent state",
+    },
+    Site {
+        at: 0x6EB30D,
+        len: 15,
+        function: "NiAVObject::PushLocalProperties",
+        slot: "the parent state (release)",
+    },
+    Site {
+        at: 0x6EB333,
+        len: 5,
+        function: "NiAVObject::PushLocalProperties",
+        slot: "the new state",
+    },
+    Site {
+        at: 0x6EB349,
+        len: 7,
+        function: "NiAVObject::PushLocalProperties",
+        slot: "the new state (release)",
+    },
+    Site {
+        at: 0x6C8D82,
+        len: 5,
+        function: "NiNode::UpdateProperties",
+        slot: "the state",
+    },
+    Site {
+        at: 0x6C8D94,
+        len: 15,
+        function: "NiNode::UpdateProperties",
+        slot: "the local state (release)",
+    },
+    Site {
+        at: 0x6C8E05,
+        len: 7,
+        function: "NiNode::UpdateProperties",
+        slot: "the state (release)",
+    },
+    Site {
+        at: 0x6F41F6,
+        len: 7,
+        function: "NiGeometry::UpdatePropertiesDownward",
+        slot: "the geometry's old state (release)",
+    },
+    Site {
+        at: 0x6F420F,
+        len: 5,
+        function: "NiGeometry::UpdatePropertiesDownward",
+        slot: "the geometry's state",
+    },
+    Site {
+        at: 0x6F4224,
+        len: 15,
+        function: "NiGeometry::UpdatePropertiesDownward",
+        slot: "the state argument (release)",
+    },
+    Site {
+        at: 0x6EB125,
+        len: 5,
+        function: "NiAVObject::UpdateProperties",
+        slot: "the state",
+    },
+    Site {
+        at: 0x6EB137,
+        len: 13,
+        function: "NiAVObject::UpdateProperties",
+        slot: "the local state (release)",
+    },
+    Site {
+        at: 0x6EB19A,
+        len: 7,
+        function: "NiAVObject::UpdateProperties",
+        slot: "the state (release)",
+    },
+    Site {
+        at: 0x6F3F5E,
+        len: 7,
+        function: "NiGeometry::pushStateToRenderer",
+        slot: "the old current property state (release)",
+    },
+    Site {
+        at: 0x6F3F6D,
+        len: 10,
+        function: "NiGeometry::pushStateToRenderer",
+        slot: "the shape's property state",
+    },
+    Site {
+        at: 0x6F3F88,
+        len: 7,
+        function: "NiGeometry::pushStateToRenderer",
+        slot: "the old current effect state (release)",
+    },
+    Site {
+        at: 0x6F3F97,
+        len: 10,
+        function: "NiGeometry::pushStateToRenderer",
+        slot: "the shape's effect state",
+    },
+    Site {
+        at: 0x6F5393,
+        len: 7,
+        function: "NiRenderer::BeginBatch",
+        slot: "the old current property state (release)",
+    },
+    Site {
+        at: 0x6F53A2,
+        len: 10,
+        function: "NiRenderer::BeginBatch",
+        slot: "the batch's property state",
+    },
+    Site {
+        at: 0x6F53BB,
+        len: 7,
+        function: "NiRenderer::BeginBatch",
+        slot: "the old current effect state (release)",
+    },
+    Site {
+        at: 0x6F53CA,
+        len: 10,
+        function: "NiRenderer::BeginBatch",
+        slot: "the batch's effect state",
+    },
+    Site {
+        at: 0x6A9EEB,
+        len: 7,
+        function: "NiDX8Renderer::dtor",
+        slot: "the current property state (release)",
+    },
 ];
 
 /// The most bytes of a site, and one more for the `jnz` after an inline release.
@@ -317,7 +512,11 @@ enum Covering {
 /// The rule of [`covers`], with the stubs of the sites (0 for a site not written) and the read of
 /// a byte given.
 fn covering_site(stubs: &[usize; SITES.len()], ea: usize, len: usize, read: impl Fn(usize) -> u8) -> Covering {
-    let inside = SITES.iter().zip(stubs).enumerate().find(|(_, (site, &stub))| stub != 0 && ea >= site.at && ea + len <= site.at + site.len);
+    let inside = SITES
+        .iter()
+        .zip(stubs)
+        .enumerate()
+        .find(|(_, (site, &stub))| stub != 0 && ea >= site.at && ea + len <= site.at + site.len);
     let Some((index, (site, &stub))) = inside else {
         return Covering::Outside;
     };
@@ -377,7 +576,10 @@ mod tests {
         let site = [0x8B, 0x45, 0x04, 0x48, 0x89, 0x45, 0x04, 0x75, 0x09];
         let (len, code) = stub_code(0x6EB349, &read(&site), 0x4000).unwrap();
         assert_eq!(len, 7);
-        assert_eq!(&code[..11], &[0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0x0F, 0xC1, 0x45, 0x04, 0x48]);
+        assert_eq!(
+            &code[..11],
+            &[0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0x0F, 0xC1, 0x45, 0x04, 0x48]
+        );
         assert_eq!(code[11], 0xE9);
         assert_eq!(code.len(), 16);
         assert_eq!(target(&code, 0x4000, 16), 0x6EB350);
@@ -386,7 +588,9 @@ mod tests {
     #[test]
     fn the_stub_of_an_interleaved_release_keeps_its_registers_and_its_test() {
         // 0x6F4224, NiGeometry::UpdatePropertiesDownward, the count in esi
-        let site = [0x8B, 0x70, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4E, 0x8B, 0xD6, 0x85, 0xD2, 0x89, 0x30, 0x75];
+        let site = [
+            0x8B, 0x70, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4E, 0x8B, 0xD6, 0x85, 0xD2, 0x89, 0x30, 0x75,
+        ];
         let (len, code) = stub_code(0x6F4224, &read(&site), 0x5000).unwrap();
         assert_eq!(len, 15);
         let order = [
@@ -407,7 +611,9 @@ mod tests {
     #[test]
     fn the_interleaved_release_with_the_count_in_edx_has_no_move_to_edx() {
         // 0x6EB137, NiAVObject::UpdateProperties
-        let site = [0x8B, 0x50, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4A, 0x85, 0xD2, 0x89, 0x10, 0x75];
+        let site = [
+            0x8B, 0x50, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4A, 0x85, 0xD2, 0x89, 0x10, 0x75,
+        ];
         let (len, code) = stub_code(0x6EB137, &read(&site), 0x6000).unwrap();
         assert_eq!(len, 13);
         let order = [
@@ -426,10 +632,15 @@ mod tests {
     #[test]
     fn the_interleaved_release_with_the_count_in_edi() {
         // 0x6C8D94, NiNode::UpdateProperties
-        let site = [0x8B, 0x78, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4F, 0x8B, 0xD7, 0x85, 0xD2, 0x89, 0x38, 0x75];
+        let site = [
+            0x8B, 0x78, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4F, 0x8B, 0xD7, 0x85, 0xD2, 0x89, 0x38, 0x75,
+        ];
         let (len, code) = stub_code(0x6C8D94, &read(&site), 0x7000).unwrap();
         assert_eq!(len, 15);
-        assert_eq!(&code[2..13], &[0xBF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0x0F, 0xC1, 0x78, 0x04, 0x4F]);
+        assert_eq!(
+            &code[2..13],
+            &[0xBF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0x0F, 0xC1, 0x78, 0x04, 0x4F]
+        );
         assert_eq!(&code[16..18], &[0x8B, 0xD7]);
     }
 
@@ -439,7 +650,10 @@ mod tests {
         let site = [0x85, 0xF6, 0x89, 0x73, 0x0C, 0x74, 0x03, 0xFF, 0x46, 0x04];
         let (len, code) = stub_code(0x6F3F6D, &read(&site), 0x8000).unwrap();
         assert_eq!(len, 10);
-        assert_eq!(&code[..11], &[0x85, 0xF6, 0x89, 0x73, 0x0C, 0x74, 0x04, 0xF0, 0xFF, 0x46, 0x04]);
+        assert_eq!(
+            &code[..11],
+            &[0x85, 0xF6, 0x89, 0x73, 0x0C, 0x74, 0x04, 0xF0, 0xFF, 0x46, 0x04]
+        );
         assert_eq!(code[11], 0xE9);
         assert_eq!(target(&code, 0x8000, 16), 0x6F3F77);
     }
@@ -467,7 +681,10 @@ mod tests {
         let code = site_code(0x6F4224, 15, 0x5000);
         assert_eq!(code.len(), 15);
         assert_eq!(code[0], 0xE9);
-        assert_eq!((0x6F4224usize + 5).wrapping_add(u32::from_le_bytes(code[1..5].try_into().unwrap()) as usize), 0x5000);
+        assert_eq!(
+            (0x6F4224usize + 5).wrapping_add(u32::from_le_bytes(code[1..5].try_into().unwrap()) as usize),
+            0x5000
+        );
         assert!(code[5..].iter().all(|&b| b == 0x90));
     }
 
@@ -480,13 +697,17 @@ mod tests {
         assert!(stub_code(0, &read(&[0x8B, 0x41, 0x04, 0x48, 0x89, 0x41, 0x04, 0x74]), 0).is_none());
         assert!(stub_code(0, &read(&[0x8B, 0x40, 0x04, 0x48, 0x89, 0x40, 0x04, 0x75]), 0).is_none());
         // An interleaved release that stores another register.
-        let site = [0x8B, 0x70, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4E, 0x8B, 0xD6, 0x85, 0xD2, 0x89, 0x38, 0x75];
+        let site = [
+            0x8B, 0x70, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4E, 0x8B, 0xD6, 0x85, 0xD2, 0x89, 0x38, 0x75,
+        ];
         assert!(stub_code(0, &read(&site), 0).is_none());
     }
 
     #[test]
     fn the_stubs_fit_their_room() {
-        let site = [0x8B, 0x70, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4E, 0x8B, 0xD6, 0x85, 0xD2, 0x89, 0x30, 0x75];
+        let site = [
+            0x8B, 0x70, 0x04, 0x8B, 0xC8, 0x83, 0xC0, 0x04, 0x4E, 0x8B, 0xD6, 0x85, 0xD2, 0x89, 0x30, 0x75,
+        ];
         assert!(stub_code(0, &read(&site), 0).unwrap().1.len() <= STUB_LEN);
         assert!(SITES.iter().all(|s| s.len >= 5 && s.len < READ_LEN));
     }
@@ -514,13 +735,28 @@ mod tests {
         }
         let mut memory = site_code(site.at, site.len, stub);
 
-        assert_eq!(covering_site(&stubs, site.at, site.len, reader(&memory, site.at)), Covering::Own);
+        assert_eq!(
+            covering_site(&stubs, site.at, site.len, reader(&memory, site.at)),
+            Covering::Own
+        );
         assert_eq!(covering_site(&stubs, site.at + 5, 2, reader(&memory, site.at)), Covering::Own);
-        assert_eq!(covering_site(&stubs, site.at + 5, 3, reader(&memory, site.at)), Covering::Outside);
-        assert_eq!(covering_site(&[0; SITES.len()], site.at, site.len, reader(&memory, site.at)), Covering::Outside);
+        assert_eq!(
+            covering_site(&stubs, site.at + 5, 3, reader(&memory, site.at)),
+            Covering::Outside
+        );
+        assert_eq!(
+            covering_site(&[0; SITES.len()], site.at, site.len, reader(&memory, site.at)),
+            Covering::Outside
+        );
 
         memory[6] = 0x42;
-        assert_eq!(covering_site(&stubs, site.at + 6, 1, reader(&memory, site.at)), Covering::Foreign(index));
-        assert_eq!(covering_site(&stubs, site.at, 1, reader(&memory, site.at)), Covering::Foreign(index));
+        assert_eq!(
+            covering_site(&stubs, site.at + 6, 1, reader(&memory, site.at)),
+            Covering::Foreign(index)
+        );
+        assert_eq!(
+            covering_site(&stubs, site.at, 1, reader(&memory, site.at)),
+            Covering::Foreign(index)
+        );
     }
 }

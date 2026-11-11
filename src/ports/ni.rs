@@ -11,7 +11,6 @@
 //! [`crate::atomic_count`] make the game's own: the main thread and the cell loader thread
 //! change the counts of shared objects (risk 56).
 
-
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT};

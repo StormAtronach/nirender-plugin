@@ -84,7 +84,12 @@ impl Camera {
     /// The camera of a view matrix of Direct3D, whose columns hold the camera's axes
     /// (`NiDX8Renderer::SetCameraData` 0x6AC620), at its exact place.
     pub fn of_view(view: &[f32; 16], location: [f64; 3]) -> Camera {
-        Camera { right: [view[0], view[4], view[8]], up: [view[1], view[5], view[9]], direction: [view[2], view[6], view[10]], location }
+        Camera {
+            right: [view[0], view[4], view[8]],
+            up: [view[1], view[5], view[9]],
+            direction: [view[2], view[6], view[10]],
+            location,
+        }
     }
 }
 
@@ -97,7 +102,11 @@ pub struct Transform {
 
 impl Transform {
     fn of_words(words: &[u32]) -> Transform {
-        Transform { rotation: core::array::from_fn(|i| f32::from_bits(words[i])), translation: core::array::from_fn(|i| f32::from_bits(words[9 + i])), scale: f32::from_bits(words[12]) }
+        Transform {
+            rotation: core::array::from_fn(|i| f32::from_bits(words[i])),
+            translation: core::array::from_fn(|i| f32::from_bits(words[9 + i])),
+            scale: f32::from_bits(words[12]),
+        }
     }
 }
 
@@ -136,12 +145,23 @@ impl Chain {
             return None;
         }
         let exact = &words[3 + TRANSFORM_WORDS..HEAD_WORDS];
-        let links = words[HEAD_WORDS..].as_chunks::<LINK_WORDS>().0.iter().take(count).map(|link| Link { kind: link[0], local: Transform::of_words(&link[1..]) }).collect();
+        let links = words[HEAD_WORDS..]
+            .as_chunks::<LINK_WORDS>()
+            .0
+            .iter()
+            .take(count)
+            .map(|link| Link {
+                kind: link[0],
+                local: Transform::of_words(&link[1..]),
+            })
+            .collect();
         let model = &words[HEAD_WORDS + count * LINK_WORDS..];
         let chain = Chain {
             coordinates: words[1],
             root: Transform::of_words(&words[3..]),
-            root_exact: core::array::from_fn(|i| f64::from_bits(u64::from(exact[i * 2]) | u64::from(exact[i * 2 + 1]) << 32)),
+            root_exact: core::array::from_fn(|i| {
+                f64::from_bits(u64::from(exact[i * 2]) | u64::from(exact[i * 2 + 1]) << 32)
+            }),
             links,
             model_matrix: core::array::from_fn(|i| f32::from_bits(model[i])),
             model_translation: core::array::from_fn(|i| f32::from_bits(model[9 + i])),
@@ -155,7 +175,11 @@ impl Chain {
             Places::Stored => self.root.translation.map(f64::from),
             Places::Exact => self.root_exact,
         };
-        let mut world = World { rotation: self.root.rotation, place, scale: self.root.scale };
+        let mut world = World {
+            rotation: self.root.rotation,
+            place,
+            scale: self.root.scale,
+        };
         for link in &self.links {
             world = child_world(&world, &link.local, places);
             if turned && link.kind != NO_TURN {
@@ -166,7 +190,14 @@ impl Chain {
     }
 
     fn projection(&self, camera: &Camera, places: Places, origin: &[f64; 3], turned: bool) -> Projection {
-        projection(self.coordinates, &self.model_matrix, &self.model_translation, &self.effect_world(camera, places, turned), origin, places)
+        projection(
+            self.coordinates,
+            &self.model_matrix,
+            &self.model_translation,
+            &self.effect_world(camera, places, turned),
+            origin,
+            places,
+        )
     }
 
     /// The projection as the engine has it, from the stored places and a camera at its stored place.
@@ -199,12 +230,18 @@ impl Chain {
     }
 
     fn camera_stage_in(&self, camera: &Camera, places: Places) -> [f32; 16] {
-        let origin = if takes_position(self.coordinates) { camera.location } else { [0.0; 3] };
+        let origin = if takes_position(self.coordinates) {
+            camera.location
+        } else {
+            [0.0; 3]
+        };
         let (matrix, translation) = self.projection(camera, places, &origin, true);
         let mut out = [0.0f32; 16];
         for (axis, along) in [camera.right, camera.up, camera.direction].iter().enumerate() {
             for row in 0..3 {
-                out[axis * 4 + row] = (0..3).map(|k| f64::from(matrix[row * 3 + k]) * f64::from(along[k])).sum::<f64>() as f32;
+                out[axis * 4 + row] = (0..3)
+                    .map(|k| f64::from(matrix[row * 3 + k]) * f64::from(along[k]))
+                    .sum::<f64>() as f32;
             }
         }
         out[12..15].copy_from_slice(&translation);
@@ -213,7 +250,12 @@ impl Chain {
 
     /// The mode of the last billboard that turns: the pair of the check's report.
     pub fn last_turn(&self) -> u32 {
-        self.links.iter().rev().map(|link| link.kind).find(|&kind| kind != NO_TURN).unwrap_or(NO_TURN)
+        self.links
+            .iter()
+            .rev()
+            .map(|link| link.kind)
+            .find(|&kind| kind != NO_TURN)
+            .unwrap_or(NO_TURN)
     }
 
     pub fn turning_billboards(&self) -> usize {
@@ -225,7 +267,9 @@ impl Chain {
 fn multiply(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
     core::array::from_fn(|i| {
         let (row, column) = (i / 3, i % 3);
-        (0..3).map(|k| f64::from(a[row * 3 + k]) * f64::from(b[k * 3 + column])).sum::<f64>() as f32
+        (0..3)
+            .map(|k| f64::from(a[row * 3 + k]) * f64::from(b[k * 3 + column]))
+            .sum::<f64>() as f32
     })
 }
 
@@ -311,17 +355,47 @@ fn turn_to_axes(world: &World, camera: &Camera) -> [f32; 9] {
     let direction = apply_transposed(&world.rotation, &camera.direction);
     let up = apply_transposed(&world.rotation, &camera.up);
     let right = apply_transposed(&world.rotation, &camera.right);
-    [right[0], up[0], direction[0], right[1], up[1], direction[1], right[2], up[2], direction[2]]
+    [
+        right[0],
+        up[0],
+        direction[0],
+        right[1],
+        up[1],
+        direction[1],
+        right[2],
+        up[2],
+        direction[2],
+    ]
 }
 
 /// `NiTextureEffect::UpdateProjection` 0x6E37C0: a sphere map from the world rotation alone, each
 /// other mode from the model projection, its translation for a position relative to `origin`.
-fn projection(coordinates: u32, model_matrix: &[f32; 9], model_translation: &[f32; 3], world: &World, origin: &[f64; 3], places: Places) -> Projection {
+fn projection(
+    coordinates: u32,
+    model_matrix: &[f32; 9],
+    model_translation: &[f32; 3],
+    world: &World,
+    origin: &[f64; 3],
+    places: Places,
+) -> Projection {
     if coordinates == COORDINATES_SPHERE {
         let r = &world.rotation;
         let half = |v: f32| (f64::from(v) * 0.5) as f32;
         let minus_half = |v: f32| (f64::from(v) * -0.5) as f32;
-        return ([half(r[2]), half(r[5]), half(r[8]), minus_half(r[1]), minus_half(r[4]), minus_half(r[7]), 0.0, 0.0, 0.0], [0.5, 0.5, 0.0]);
+        return (
+            [
+                half(r[2]),
+                half(r[5]),
+                half(r[8]),
+                minus_half(r[1]),
+                minus_half(r[4]),
+                minus_half(r[7]),
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [0.5, 0.5, 0.0],
+        );
     }
     let inverse = (1.0 / f64::from(world.scale)) as f32;
     let r = &world.rotation;
@@ -329,7 +403,10 @@ fn projection(coordinates: u32, model_matrix: &[f32; 9], model_translation: &[f3
     let matrix = multiply(model_matrix, &transposed).map(|v| (f64::from(v) * f64::from(inverse)) as f32);
     let relative: [f64; 3] = core::array::from_fn(|i| world.place[i] - origin[i]);
     let at = apply(&matrix, &relative, places);
-    (matrix, core::array::from_fn(|i| places.keep(f64::from(model_translation[i]) - at[i]) as f32))
+    (
+        matrix,
+        core::array::from_fn(|i| places.keep(f64::from(model_translation[i]) - at[i]) as f32),
+    )
 }
 
 /// The table's stage of an effect whose projection does not move in the play: its words of the
@@ -442,7 +519,10 @@ impl TurnChecks {
         self.previous = self.camera;
         self.camera = Some(*camera);
         self.previous_stored = self.stored;
-        self.stored = Some(Camera { location: stored_location.map(f64::from), ..*camera });
+        self.stored = Some(Camera {
+            location: stored_location.map(f64::from),
+            ..*camera
+        });
         self.origin = *origin;
         self.frames += 1;
         self.moved_frames += u64::from(self.previous.is_some_and(|previous| previous != *camera));
@@ -452,21 +532,28 @@ impl TurnChecks {
     /// The projection of `chain` against the engine's words of this frame. `before` is its chain
     /// before the last record.
     pub fn compare(&mut self, chain: &Chain, before: &Chain, words: &EngineWords) {
-        let (Some(camera), Some(stored_camera)) = (self.camera, self.stored) else { return };
+        let (Some(camera), Some(stored_camera)) = (self.camera, self.stored) else {
+            return;
+        };
         let engine = &words.projection;
         let (matrix, translation) = difference(&chain.stored_projection(&stored_camera), engine);
         let (exact_matrix, exact_translation) = difference(&chain.exact_projection(&camera), engine);
-        let old_camera = self.previous_stored.map_or(0.0, |previous| difference(&chain.stored_projection(&previous), engine).0);
+        let old_camera = self
+            .previous_stored
+            .map_or(0.0, |previous| difference(&chain.stored_projection(&previous), engine).0);
         let no_turn = difference(&chain.unturned_projection(&stored_camera), engine).0;
         let old_chain = difference(&before.stored_projection(&stored_camera), engine).0;
         let (relative_error, world_error) = self.coordinate_errors(chain, &camera, engine);
-        let (stage_matrix, stage_translation) = stage_difference(&chain.camera_stage_in(&stored_camera, Places::Stored), &words.stage);
+        let (stage_matrix, stage_translation) =
+            stage_difference(&chain.camera_stage_in(&stored_camera, Places::Stored), &words.stage);
         let (exact_stage_matrix, exact_stage_translation) = stage_difference(&chain.camera_stage(&camera), &words.stage);
         let pair = if chain.turning_billboards() > 1 {
             &mut self.nested
         } else {
             let (mode, coordinates) = (chain.last_turn() as usize, chain.coordinates as usize);
-            let Some(pair) = self.pairs.get_mut(mode).and_then(|modes| modes.get_mut(coordinates)) else { return };
+            let Some(pair) = self.pairs.get_mut(mode).and_then(|modes| modes.get_mut(coordinates)) else {
+                return;
+            };
             pair
         };
         pair.compared += 1;
@@ -495,7 +582,9 @@ impl TurnChecks {
         let world = chain.effect_world(camera, Places::Exact, true);
         let relative: [f64; 3] = core::array::from_fn(|i| world.place[i] - self.origin[i]);
         let (matrix, translation) = chain.stage_projection(camera, &self.origin);
-        let truth: [f64; 3] = core::array::from_fn(|row| (0..3).map(|k| f64::from(matrix[row * 3 + k]) * relative[k]).sum::<f64>() + f64::from(translation[row]));
+        let truth: [f64; 3] = core::array::from_fn(|row| {
+            (0..3).map(|k| f64::from(matrix[row * 3 + k]) * relative[k]).sum::<f64>() + f64::from(translation[row])
+        });
         let place = relative.map(|v| v as f32);
         let new_form = coordinate_at(&matrix, &translation, &place);
         let added: [f32; 3] = core::array::from_fn(|i| place[i] + self.origin[i] as f32);
@@ -512,7 +601,11 @@ impl TurnChecks {
         }
         lines.push(format!("effect turn check: {} frames, {} with another camera than the frame before; the camera at most {:.0} units from the origin of the world", self.frames, self.moved_frames, self.farthest));
         for (mode, modes) in self.pairs.iter().enumerate() {
-            let billboard = if mode as u32 == NO_TURN { "no billboard".to_string() } else { format!("billboard mode {mode}") };
+            let billboard = if mode as u32 == NO_TURN {
+                "no billboard".to_string()
+            } else {
+                format!("billboard mode {mode}")
+            };
             for (coordinates, pair) in modes.iter().enumerate() {
                 lines.push(pair.line(&format!("effect turn check: {billboard}, coordinate mode {coordinates}")));
             }
@@ -530,11 +623,17 @@ mod tests {
     const VECTORS: &str = include_str!("effect_turn_vectors.txt");
 
     fn floats(text: &str) -> Vec<f32> {
-        text.split_whitespace().map(|word| f32::from_bits(u32::from_str_radix(word, 16).unwrap())).collect()
+        text.split_whitespace()
+            .map(|word| f32::from_bits(u32::from_str_radix(word, 16).unwrap()))
+            .collect()
     }
 
     fn transform(v: &[f32]) -> Transform {
-        Transform { rotation: v[..9].try_into().unwrap(), translation: v[9..12].try_into().unwrap(), scale: v[12] }
+        Transform {
+            rotation: v[..9].try_into().unwrap(),
+            translation: v[9..12].try_into().unwrap(),
+            scale: v[12],
+        }
     }
 
     /// A case of the file: its name, the chain, the camera, the engine's world of the effect and
@@ -568,11 +667,23 @@ mod tests {
                         coordinates: parts[1].parse().unwrap(),
                         root,
                         root_exact: root.translation.map(f64::from),
-                        links: kinds.iter().enumerate().map(|(i, &kind)| Link { kind, local: transform(&locals[i * TRANSFORM_WORDS..]) }).collect(),
+                        links: kinds
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &kind)| Link {
+                                kind,
+                                local: transform(&locals[i * TRANSFORM_WORDS..]),
+                            })
+                            .collect(),
                         model_matrix: model[..9].try_into().unwrap(),
                         model_translation: model[9..12].try_into().unwrap(),
                     },
-                    camera: Camera { direction: camera[..3].try_into().unwrap(), up: camera[3..6].try_into().unwrap(), right: camera[6..9].try_into().unwrap(), location: [camera[9], camera[10], camera[11]].map(f64::from) },
+                    camera: Camera {
+                        direction: camera[..3].try_into().unwrap(),
+                        up: camera[3..6].try_into().unwrap(),
+                        right: camera[6..9].try_into().unwrap(),
+                        location: [camera[9], camera[10], camera[11]].map(f64::from),
+                    },
                     world: transform(&floats(parts[7])),
                     matrix: projection[..9].try_into().unwrap(),
                     translation: projection[9..12].try_into().unwrap(),
@@ -608,7 +719,12 @@ mod tests {
         let cases = cases();
         for mode in 0..3 {
             for coordinates in 0..5 {
-                assert!(cases.iter().any(|c| c.chain.coordinates == coordinates && c.chain.last_turn() == mode), "no case of billboard mode {mode} and coordinate mode {coordinates}");
+                assert!(
+                    cases
+                        .iter()
+                        .any(|c| c.chain.coordinates == coordinates && c.chain.last_turn() == mode),
+                    "no case of billboard mode {mode} and coordinate mode {coordinates}"
+                );
             }
         }
         for name in ["identity facing", "identity about y", "nested"] {
@@ -633,16 +749,23 @@ mod tests {
     #[test]
     fn without_the_turn_the_values_differ() {
         let cases = cases();
-        let turning: Vec<&Case> = cases.iter().filter(|c| !c.name.starts_with("identity") && c.chain.last_turn() != NO_TURN).collect();
+        let turning: Vec<&Case> = cases
+            .iter()
+            .filter(|c| !c.name.starts_with("identity") && c.chain.last_turn() != NO_TURN)
+            .collect();
         assert!(!turning.is_empty());
-        let same = turning.iter().filter(|c| difference(&c.chain.unturned_projection(&c.camera), &(c.matrix, c.translation)).0 <= 1.0e-6);
+        let same = turning
+            .iter()
+            .filter(|c| difference(&c.chain.unturned_projection(&c.camera), &(c.matrix, c.translation)).0 <= 1.0e-6);
         // A case with the camera along the node's own axes can turn by nothing.
         assert!(same.count() * 10 < turning.len());
     }
 
     /// The value in doubles of a stage at a place of the world.
     fn stage_value(matrix: &[f32; 9], translation: &[f32; 3], place: &[f64; 3]) -> [f64; 3] {
-        core::array::from_fn(|row| (0..3).map(|k| f64::from(matrix[row * 3 + k]) * place[k]).sum::<f64>() + f64::from(translation[row]))
+        core::array::from_fn(|row| {
+            (0..3).map(|k| f64::from(matrix[row * 3 + k]) * place[k]).sum::<f64>() + f64::from(translation[row])
+        })
     }
 
     /// Moving the origin moves the stage's translation and leaves the coordinate of a place of
@@ -671,7 +794,12 @@ mod tests {
     #[test]
     fn a_map_without_the_position_stays_as_it_is() {
         for case in cases().iter().filter(|c| !takes_position(c.chain.coordinates)) {
-            assert_eq!(case.chain.stage_projection(&case.camera, &[0.0; 3]), case.chain.stage_projection(&case.camera, &[100000.0, 2000.0, 3.0]), "{}", case.name);
+            assert_eq!(
+                case.chain.stage_projection(&case.camera, &[0.0; 3]),
+                case.chain.stage_projection(&case.camera, &[100000.0, 2000.0, 3.0]),
+                "{}",
+                case.name
+            );
         }
     }
 
@@ -697,14 +825,22 @@ mod tests {
             let stage = case.chain.camera_stage_in(&case.camera, Places::Stored);
             let v = [12.5f64, -7.25, 180.0];
             let axes = [case.camera.right, case.camera.up, case.camera.direction];
-            let place: [f64; 3] = core::array::from_fn(|k| (0..3).map(|a| f64::from(axes[a][k]) * v[a]).sum::<f64>() + case.camera.location[k]);
+            let place: [f64; 3] = core::array::from_fn(|k| {
+                (0..3).map(|a| f64::from(axes[a][k]) * v[a]).sum::<f64>() + case.camera.location[k]
+            });
             let want = stage_value(&case.matrix, &case.translation, &place);
             for row in 0..3 {
-                let got: f64 = (0..3).map(|a| v[a] * f64::from(stage[a * 4 + row])).sum::<f64>() + f64::from(stage[12 + row]);
+                let got: f64 =
+                    (0..3).map(|a| v[a] * f64::from(stage[a * 4 + row])).sum::<f64>() + f64::from(stage[12 + row]);
                 // Each side has a translation rounded to its float step.
                 let size = case.translation[row].abs().max(stage[12 + row].abs()).max(1.0);
                 let step = f64::from(f32::from_bits(size.to_bits() + 1) - size);
-                assert!((got - want[row]).abs() <= step * 3.0 + 1.0e-3, "{}: {got} against {}", case.name, want[row]);
+                assert!(
+                    (got - want[row]).abs() <= step * 3.0 + 1.0e-3,
+                    "{}: {got} against {}",
+                    case.name,
+                    want[row]
+                );
             }
         }
     }
@@ -723,7 +859,11 @@ mod tests {
             for row in 0..3 {
                 let from_stage: f64 = (0..3).map(|a| v[a] * f64::from(stage[a * 4 + row])).sum();
                 let from_world: f64 = (0..3).map(|k| f64::from(matrix[row * 3 + k]) * world[k]).sum();
-                assert!((from_stage - from_world).abs() < 1.0e-5, "{}: {from_stage} against {from_world}", case.name);
+                assert!(
+                    (from_stage - from_world).abs() < 1.0e-5,
+                    "{}: {from_stage} against {from_world}",
+                    case.name
+                );
             }
         }
     }
@@ -732,17 +872,29 @@ mod tests {
     /// the origin added back in floats is off, and the relative stage is not.
     #[test]
     fn far_from_the_origin_the_form_before_is_off() {
-        let case = cases().into_iter().find(|c| c.chain.coordinates == 0 && c.chain.last_turn() == 0).unwrap();
+        let case = cases()
+            .into_iter()
+            .find(|c| c.chain.coordinates == 0 && c.chain.last_turn() == 0)
+            .unwrap();
         let mut chain = case.chain;
         chain.root_exact = [250000.5, -310000.25, 1200.125];
         chain.root.translation = chain.root_exact.map(|v| v as f32);
-        let camera = Camera { location: [250100.0, -310100.0, 1300.0], ..case.camera };
+        let camera = Camera {
+            location: [250100.0, -310100.0, 1300.0],
+            ..case.camera
+        };
         let mut checks = TurnChecks::default();
         checks.next_frame(&camera, camera.location.map(|v| v as f32), &camera.location);
-        let engine = chain.stored_projection(&Camera { location: camera.location.map(|v| f64::from(v as f32)), ..camera });
+        let engine = chain.stored_projection(&Camera {
+            location: camera.location.map(|v| f64::from(v as f32)),
+            ..camera
+        });
         let (relative, world) = checks.coordinate_errors(&chain, &camera, &engine);
         assert!(relative < 1.0e-4, "the relative stage is off by {relative}");
-        assert!(world > relative * 2.0, "the form before is off by {world}, the relative stage by {relative}");
+        assert!(
+            world > relative * 2.0,
+            "the form before is off by {world}, the relative stage by {relative}"
+        );
     }
 
     #[test]
@@ -781,6 +933,9 @@ mod tests {
     #[test]
     fn the_texture_matrix_has_the_columns_in_rows() {
         let m = texture_matrix(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], &[10.0, 11.0, 12.0]);
-        assert_eq!(m, [1.0, 4.0, 7.0, 0.0, 2.0, 5.0, 8.0, 0.0, 3.0, 6.0, 9.0, 0.0, 10.0, 11.0, 12.0, 0.0]);
+        assert_eq!(
+            m,
+            [1.0, 4.0, 7.0, 0.0, 2.0, 5.0, 8.0, 0.0, 3.0, 6.0, 9.0, 0.0, 10.0, 11.0, 12.0, 0.0]
+        );
     }
 }

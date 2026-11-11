@@ -49,7 +49,10 @@ pub fn required_features_of(tier: TextureTier) -> wgpu::Features {
 /// without a GPU compares. The request takes the sizes (the largest texture, the buffers,
 /// the room of the arrays) from the adapter.
 pub fn fixed_limits() -> wgpu::Limits {
-    wgpu::Limits { max_sampled_textures_per_shader_stage: SAMPLED_TEXTURES, ..wgpu::Limits::default() }
+    wgpu::Limits {
+        max_sampled_textures_per_shader_stage: SAMPLED_TEXTURES,
+        ..wgpu::Limits::default()
+    }
 }
 
 /// `MGE_XE_OLD_GPU=least|downlevel`: the adapter taken as an old graphics card, for a test of
@@ -81,7 +84,10 @@ impl OldGpu {
     /// The limits of the profile, at most the adapter's.
     fn limits(self, adapter: &wgpu::Limits) -> wgpu::Limits {
         let profile = match self {
-            OldGpu::Least => wgpu::Limits { max_texture_dimension_2d: 16384, ..fixed_limits() },
+            OldGpu::Least => wgpu::Limits {
+                max_texture_dimension_2d: 16384,
+                ..fixed_limits()
+            },
             OldGpu::Downlevel => wgpu::Limits::downlevel_defaults(),
         };
         profile.or_worse_values_from(adapter)
@@ -126,7 +132,10 @@ impl TextureTier {
 pub fn tier_c_shader_source(source: &str) -> String {
     let mut out = source.replacen("enable wgpu_binding_array;\n", "", 1);
     let arrays = "@group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;\n@group(1) @binding(1) var samplers: binding_array<sampler>;\n";
-    assert!(out.contains(arrays), "the binding arrays of group 1 are not in the world shader");
+    assert!(
+        out.contains(arrays),
+        "the binding arrays of group 1 are not in the world shader"
+    );
     let mut fixed = String::new();
     for stage in 0..STAGES {
         fixed += &format!("@group(1) @binding({stage}) var t{stage}: texture_2d<f32>;\n");
@@ -136,11 +145,19 @@ pub fn tier_c_shader_source(source: &str) -> String {
     }
     out = out.replacen(arrays, &fixed, 1);
     for stage in 0..STAGES {
-        let indexed = format!("textures[draws[record].stages[{stage}].slots.x], samplers[draws[record].stages[{stage}].slots.y]");
-        assert_eq!(out.matches(&indexed).count(), 1, "stage {stage} does not sample the arrays once");
+        let indexed =
+            format!("textures[draws[record].stages[{stage}].slots.x], samplers[draws[record].stages[{stage}].slots.y]");
+        assert_eq!(
+            out.matches(&indexed).count(),
+            1,
+            "stage {stage} does not sample the arrays once"
+        );
         out = out.replacen(&indexed, &format!("t{stage}, s{stage}"), 1);
     }
-    assert!(!out.contains("textures[") && !out.contains("samplers["), "the world shader reads the arrays in another place");
+    assert!(
+        !out.contains("textures[") && !out.contains("samplers["),
+        "the world shader reads the arrays in another place"
+    );
     out
 }
 
@@ -150,11 +167,18 @@ pub fn tier_c_shader_source(source: &str) -> String {
 /// the record of the draw read as `draws[record]` and sent through the functions of the shader.
 pub fn world_shader_source(extension_text: &str) -> String {
     let extension = retained::rewrite_extension_text(&extension_text.replace("draw.", "draws[record]."));
-    format!("{}\n{}\n{}\n{extension}", include_str!("shader.wgsl"), depth::wgsl(), crate::spot::WGSL)
+    format!(
+        "{}\n{}\n{}\n{extension}",
+        include_str!("shader.wgsl"),
+        depth::wgsl(),
+        crate::spot::WGSL
+    )
 }
 
 fn array_features() -> wgpu::Features {
-    wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY
+    wgpu::Features::TEXTURE_BINDING_ARRAY
+        | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+        | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY
 }
 
 /// A backend, an adapter and a device that have what the renderer needs, with the choices
@@ -194,7 +218,11 @@ impl Request {
             "depth: {:?}, {} (the adapter {} Depth32FloatStencil8{})",
             self.depth_format,
             if depth::reversed() { "reversed" } else { "plain" },
-            if self.features.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) { "has" } else { "lacks" },
+            if self.features.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) {
+                "has"
+            } else {
+                "lacks"
+            },
             if switches().depth24 { "; MGE_XE_DEPTH_FORMAT=24" } else { "" }
         );
         println!("multisampling: {} samples for each pixel of the frame", self.samples);
@@ -209,8 +237,13 @@ impl Request {
             );
         }
         match self.tier {
-            TextureTier::A => println!("texture tier: a (binding arrays: room for {} textures and {} samplers)", self.array_cap, self.sampler_cap),
-            TextureTier::C => println!("texture tier: c (a group of {STAGES} textures and {STAGES} samplers for each set; no binding arrays)"),
+            TextureTier::A => println!(
+                "texture tier: a (binding arrays: room for {} textures and {} samplers)",
+                self.array_cap, self.sampler_cap
+            ),
+            TextureTier::C => println!(
+                "texture tier: c (a group of {STAGES} textures and {STAGES} samplers for each set; no binding arrays)"
+            ),
         }
     }
 }
@@ -225,7 +258,13 @@ pub struct Refusal {
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}: {}: {}", backend_name(self.backend), self.adapter.as_deref().unwrap_or("no adapter"), self.reason)
+        write!(
+            f,
+            "{}: {}: {}",
+            backend_name(self.backend),
+            self.adapter.as_deref().unwrap_or("no adapter"),
+            self.reason
+        )
     }
 }
 
@@ -250,14 +289,23 @@ fn backend_name(backend: wgpu::Backends) -> &'static str {
 }
 
 fn adapter_line(info: &wgpu::AdapterInfo) -> String {
-    format!("{} ({:?}, driver {} {})", info.name, info.backend, info.driver, info.driver_info)
+    format!(
+        "{} ({:?}, driver {} {})",
+        info.name, info.backend, info.driver, info.driver_info
+    )
 }
 
 /// Asks the backends in their order for an adapter and a device with what the renderer
 /// needs; the first that serves is the answer. With a window, the surface is made on it in
 /// the same try, since a surface belongs to the instance of its backend. When no backend
 /// serves, every refusal comes back in the order of the tries.
-pub(crate) fn request(backends: wgpu::Backends, window: Option<WindowTarget>, wanted_format: wgpu::TextureFormat, texture_slots: u32, samples: u32) -> Result<Request, Vec<Refusal>> {
+pub(crate) fn request(
+    backends: wgpu::Backends,
+    window: Option<WindowTarget>,
+    wanted_format: wgpu::TextureFormat,
+    texture_slots: u32,
+    samples: u32,
+) -> Result<Request, Vec<Refusal>> {
     let mut refusals = Vec::new();
     for backend in order(backends) {
         match try_backend(backend, window.as_ref(), wanted_format, texture_slots, samples) {
@@ -274,8 +322,18 @@ pub(crate) fn request(backends: wgpu::Backends, window: Option<WindowTarget>, wa
 }
 
 /// One backend: the instance, the surface of the window, the adapter, the needs, the device.
-fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_format: wgpu::TextureFormat, texture_slots: u32, samples: u32) -> Result<Request, Refusal> {
-    let refuse = |adapter: Option<String>, reason: String| Refusal { backend, adapter, reason };
+fn try_backend(
+    backend: wgpu::Backends,
+    window: Option<&WindowTarget>,
+    wanted_format: wgpu::TextureFormat,
+    texture_slots: u32,
+    samples: u32,
+) -> Result<Request, Refusal> {
+    let refuse = |adapter: Option<String>, reason: String| Refusal {
+        backend,
+        adapter,
+        reason,
+    };
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = backend;
     // The WGPU_* variables of the environment can change the flags, for a test (for
@@ -290,7 +348,11 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
 
     let surface = match window {
         None => None,
-        Some(WindowTarget::Own(window)) => Some(instance.create_surface(window.clone()).map_err(|error| refuse(None, format!("no surface on the window: {error}")))?),
+        Some(WindowTarget::Own(window)) => Some(
+            instance
+                .create_surface(window.clone())
+                .map_err(|error| refuse(None, format!("no surface on the window: {error}")))?,
+        ),
         // The game's window lives until the game ends, and this program ends with it.
         Some(WindowTarget::Game(handle)) => {
             use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
@@ -333,7 +395,10 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     if !features.contains(array_features()) {
         let missing: Vec<&str> = [
             (wgpu::Features::TEXTURE_BINDING_ARRAY, "TEXTURE_BINDING_ARRAY"),
-            (wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING, "SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING"),
+            (
+                wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+                "SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING",
+            ),
             (wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY, "PARTIALLY_BOUND_BINDING_ARRAY"),
         ]
         .iter()
@@ -345,8 +410,15 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     // The room of the texture arrays: the setting of the extension (0 automatic), the test
     // switch MGE_XE_ARRAY_CAP over it, at most the adapter's room. The samplers of the
     // array count in the elements of the arrays too.
-    let wanted = switches().array_cap.unwrap_or(if texture_slots == 0 { AUTO_TEXTURE_SLOTS } else { texture_slots.max(MIN_TEXTURE_SLOTS) });
-    let array_cap = limits.max_binding_array_elements_per_shader_stage.saturating_sub(SAMPLER_CAP).min(wanted);
+    let wanted = switches().array_cap.unwrap_or(if texture_slots == 0 {
+        AUTO_TEXTURE_SLOTS
+    } else {
+        texture_slots.max(MIN_TEXTURE_SLOTS)
+    });
+    let array_cap = limits
+        .max_binding_array_elements_per_shader_stage
+        .saturating_sub(SAMPLER_CAP)
+        .min(wanted);
     let sampler_cap = limits.max_binding_array_sampler_elements_per_shader_stage.min(SAMPLER_CAP);
     if array_cap < ARRAY_TEXTURES || sampler_cap < ARRAY_SAMPLERS {
         array_lacks.push(format!("room in the binding arrays: has {array_cap} textures and {sampler_cap} samplers, needs {ARRAY_TEXTURES} and {ARRAY_SAMPLERS}"));
@@ -361,12 +433,19 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
         None if array_lacks.is_empty() => TextureTier::A,
         None => TextureTier::C,
     };
-    let (array_cap, sampler_cap) = if tier == TextureTier::A { (array_cap, sampler_cap) } else { (0, 0) };
+    let (array_cap, sampler_cap) = if tier == TextureTier::A {
+        (array_cap, sampler_cap)
+    } else {
+        (0, 0)
+    };
     if !features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
         lacks.push("the BC texture compression (TEXTURE_COMPRESSION_BC)".to_string());
     }
     if limits.max_sampled_textures_per_shader_stage < SAMPLED_TEXTURES {
-        lacks.push(format!("sampled textures in one stage: has {}, needs {SAMPLED_TEXTURES}", limits.max_sampled_textures_per_shader_stage));
+        lacks.push(format!(
+            "sampled textures in one stage: has {}, needs {SAMPLED_TEXTURES}",
+            limits.max_sampled_textures_per_shader_stage
+        ));
     }
     // The other limits that the request asks for whatever the adapter (a device without them
     // is refused at its request).
@@ -387,7 +466,12 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
         // The game gives colours that are ready for the screen: no sRGB format.
         let capabilities = surface.get_capabilities(&adapter);
         if !capabilities.formats.contains(&target_format) {
-            target_format = capabilities.formats.iter().copied().find(|format| !format.is_srgb()).unwrap_or(capabilities.formats[0]);
+            target_format = capabilities
+                .formats
+                .iter()
+                .copied()
+                .find(|format| !format.is_srgb())
+                .unwrap_or(capabilities.formats[0]);
         }
         surface_usages = capabilities.usages;
         present_modes = capabilities.present_modes;
@@ -396,7 +480,11 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     // float depth is reversed: near 1, far 0 (`depth`). A fixed-point depth gains nothing
     // from it.
     let float_depth = features.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) && !switches().depth24;
-    let depth_format = if float_depth { wgpu::TextureFormat::Depth32FloatStencil8 } else { DEPTH_FORMAT };
+    let depth_format = if float_depth {
+        wgpu::TextureFormat::Depth32FloatStencil8
+    } else {
+        DEPTH_FORMAT
+    };
     depth::set_reversed(float_depth);
     depth::set_one_buffer(switches().one_depth);
     if switches().one_depth && !depth::one_buffer() {
@@ -413,9 +501,14 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
         }
         let color = adapter.get_texture_format_features(target_format).flags;
         let depth = adapter.get_texture_format_features(depth_format).flags;
-        color.sample_count_supported(count) && color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE) && depth.sample_count_supported(count)
+        color.sample_count_supported(count)
+            && color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE)
+            && depth.sample_count_supported(count)
     });
-    println!("samples: asked {asked}, using {samples}{}", samples_reason(asked, samples, adapter_formats));
+    println!(
+        "samples: asked {asked}, using {samples}{}",
+        samples_reason(asked, samples, adapter_formats)
+    );
 
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("nirender"),
@@ -430,7 +523,11 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
                     | wgpu::Features::INDIRECT_FIRST_INSTANCE
                     | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
                     | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES))
-            | if float_depth { wgpu::Features::DEPTH32FLOAT_STENCIL8 } else { wgpu::Features::empty() },
+            | if float_depth {
+                wgpu::Features::DEPTH32FLOAT_STENCIL8
+            } else {
+                wgpu::Features::empty()
+            },
         // The largest texture that the adapter takes, up to 16384: an atlas of the distant
         // land of MGE XE has that size. One buffer for the geometry of many meshes of an
         // extension (the pool of the distant statics of MGE XE). The records of the draws
@@ -450,7 +547,22 @@ fn try_backend(backend: wgpu::Backends, window: Option<&WindowTarget>, wanted_fo
     }))
     .map_err(|error| refuse(name.clone(), format!("no device: {error}")))?;
 
-    Ok(Request { info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, tier, features, limits })
+    Ok(Request {
+        info,
+        surface,
+        device,
+        queue,
+        target_format,
+        surface_usages,
+        present_modes,
+        depth_format,
+        samples,
+        array_cap,
+        sampler_cap,
+        tier,
+        features,
+        limits,
+    })
 }
 
 /// The counts of samples that the WebGPU spec guarantees for the formats of the frame. A
@@ -493,7 +605,11 @@ fn lacks_text(backend: wgpu::Backends, lacks: &[String]) -> String {
         return format!("lacks {}", lacks.join("; "));
     }
     println!("{}: all the lacks: {}", backend_name(backend), lacks.join("; "));
-    format!("lacks {}; and {} more", lacks[..LACKS_NAMED].join("; "), lacks.len() - LACKS_NAMED)
+    format!(
+        "lacks {}; and {} more",
+        lacks[..LACKS_NAMED].join("; "),
+        lacks.len() - LACKS_NAMED
+    )
 }
 
 /// The lacks that a refusal names before their count ([`lacks_text`]).
@@ -539,7 +655,10 @@ pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
             0
         }
         None => {
-            println!("probe: none: {}", refusals.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "));
+            println!(
+                "probe: none: {}",
+                refusals.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
+            );
             EXIT_GPU as i32
         }
     };
@@ -552,7 +671,17 @@ pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
 /// code 20), and the log lines of the refusals; then the program ends with the code.
 pub(crate) fn refuse_live(refusals: &[Refusal]) -> ! {
     let reasons: Vec<String> = refusals.iter().map(|refusal| format!("gpu: {refusal}")).collect();
-    let why: Vec<String> = refusals.iter().map(|refusal| format!("{} ({}) {}.", refusal.adapter.as_deref().unwrap_or("No adapter"), backend_name(refusal.backend), refusal.reason)).collect();
+    let why: Vec<String> = refusals
+        .iter()
+        .map(|refusal| {
+            format!(
+                "{} ({}) {}.",
+                refusal.adapter.as_deref().unwrap_or("No adapter"),
+                backend_name(refusal.backend),
+                refusal.reason
+            )
+        })
+        .collect();
     let text = format!(
         "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\nClose this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.",
         why.join("\n")
@@ -569,9 +698,15 @@ mod tests {
         let all = |_: u32| true;
         let guaranteed = |count: u32| GUARANTEED_SAMPLES.contains(&count);
         // An adapter that has every count: the asked count, cut to a power of two from 1 to 8.
-        assert_eq!([0, 1, 2, 3, 4, 8, 16].map(|asked| choose_samples(asked, all)), [1, 1, 2, 4, 4, 8, 8]);
+        assert_eq!(
+            [0, 1, 2, 3, 4, 8, 16].map(|asked| choose_samples(asked, all)),
+            [1, 1, 2, 4, 4, 8, 8]
+        );
         // A device held to the guaranteed counts (no adapter-specific format features): 8 and 2 step down.
-        assert_eq!([1, 2, 4, 8, 16].map(|asked| choose_samples(asked, guaranteed)), [1, 1, 4, 4, 4]);
+        assert_eq!(
+            [1, 2, 4, 8, 16].map(|asked| choose_samples(asked, guaranteed)),
+            [1, 1, 4, 4, 4]
+        );
         // No count above 1 stands: 1 stands whatever is asked.
         assert_eq!(choose_samples(8, |_| false), 1);
     }
@@ -595,9 +730,20 @@ mod tests {
 
     #[test]
     fn a_refusal_names_the_backend_the_adapter_and_the_lack() {
-        let refusal = Refusal { backend: wgpu::Backends::DX12, adapter: Some("A card (Dx12, driver x 1.0)".to_string()), reason: "lacks sampled textures in one stage: has 16, needs 32".to_string() };
-        assert_eq!(refusal.to_string(), "dx12: A card (Dx12, driver x 1.0): lacks sampled textures in one stage: has 16, needs 32");
-        let none = Refusal { backend: wgpu::Backends::VULKAN, adapter: None, reason: "no graphics adapter: x".to_string() };
+        let refusal = Refusal {
+            backend: wgpu::Backends::DX12,
+            adapter: Some("A card (Dx12, driver x 1.0)".to_string()),
+            reason: "lacks sampled textures in one stage: has 16, needs 32".to_string(),
+        };
+        assert_eq!(
+            refusal.to_string(),
+            "dx12: A card (Dx12, driver x 1.0): lacks sampled textures in one stage: has 16, needs 32"
+        );
+        let none = Refusal {
+            backend: wgpu::Backends::VULKAN,
+            adapter: None,
+            reason: "no graphics adapter: x".to_string(),
+        };
         assert_eq!(none.to_string(), "vulkan: no adapter: no graphics adapter: x");
     }
 
@@ -605,7 +751,8 @@ mod tests {
     fn the_fixed_limits_carry_the_sampled_textures_and_the_features_the_arrays() {
         assert_eq!(fixed_limits().max_sampled_textures_per_shader_stage, SAMPLED_TEXTURES);
         assert_eq!(fixed_limits().max_bind_groups, wgpu::Limits::default().max_bind_groups);
-        assert!(required_features_of(TextureTier::A).contains(wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::TEXTURE_COMPRESSION_BC));
+        assert!(required_features_of(TextureTier::A)
+            .contains(wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::TEXTURE_COMPRESSION_BC));
         // Every adapter: tier C, without the arrays.
         assert_eq!(required_features(), wgpu::Features::TEXTURE_COMPRESSION_BC);
         assert!(!required_features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8));
@@ -614,26 +761,49 @@ mod tests {
     #[test]
     fn a_refusal_names_three_lacks_and_counts_the_rest() {
         let lacks: Vec<String> = (1..=5).map(|n| format!("lack {n}")).collect();
-        assert_eq!(lacks_text(wgpu::Backends::VULKAN, &lacks), "lacks lack 1; lack 2; lack 3; and 2 more");
-        assert_eq!(lacks_text(wgpu::Backends::VULKAN, &lacks[..3]), "lacks lack 1; lack 2; lack 3");
+        assert_eq!(
+            lacks_text(wgpu::Backends::VULKAN, &lacks),
+            "lacks lack 1; lack 2; lack 3; and 2 more"
+        );
+        assert_eq!(
+            lacks_text(wgpu::Backends::VULKAN, &lacks[..3]),
+            "lacks lack 1; lack 2; lack 3"
+        );
     }
 
     #[test]
     fn the_old_gpu_profiles_cut_the_adapter_and_the_least_one_passes() {
-        let large = wgpu::Limits { max_texture_dimension_2d: 32768, max_storage_buffer_binding_size: 1 << 32, max_sampled_textures_per_shader_stage: 1 << 20, ..wgpu::Limits::default() };
+        let large = wgpu::Limits {
+            max_texture_dimension_2d: 32768,
+            max_storage_buffer_binding_size: 1 << 32,
+            max_sampled_textures_per_shader_stage: 1 << 20,
+            ..wgpu::Limits::default()
+        };
         let least = OldGpu::Least.limits(&large);
         assert_eq!(least.max_texture_dimension_2d, 16384);
         assert_eq!(least.max_storage_buffer_binding_size, 128 << 20);
         assert_eq!(least.max_sampled_textures_per_shader_stage, SAMPLED_TEXTURES);
-        assert!(fixed_limits().check_limits(&least), "the request does not take its least adapter");
+        assert!(
+            fixed_limits().check_limits(&least),
+            "the request does not take its least adapter"
+        );
         // A profile is never above the adapter.
-        let small = wgpu::Limits { max_texture_dimension_2d: 4096, ..fixed_limits() };
+        let small = wgpu::Limits {
+            max_texture_dimension_2d: 4096,
+            ..fixed_limits()
+        };
         assert_eq!(OldGpu::Least.limits(&small).max_texture_dimension_2d, 4096);
         // The downlevel profile lacks some of what the request asks for, by name.
         let mut lacks = Vec::new();
         fixed_limits().check_limits_with_fail_fn(&OldGpu::Downlevel.limits(&large), false, |name, _, _| lacks.push(name));
-        assert!(lacks.contains(&"max_storage_buffers_per_shader_stage") && lacks.contains(&"max_texture_dimension_2d"), "{lacks:?}");
-        assert_eq!(OldGpu::Least.features(), wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::POLYGON_MODE_LINE);
+        assert!(
+            lacks.contains(&"max_storage_buffers_per_shader_stage") && lacks.contains(&"max_texture_dimension_2d"),
+            "{lacks:?}"
+        );
+        assert_eq!(
+            OldGpu::Least.features(),
+            wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::POLYGON_MODE_LINE
+        );
     }
 
     #[test]
@@ -648,12 +818,17 @@ mod tests {
 
     #[test]
     fn tier_c_samples_six_fixed_pairs_and_no_array() {
-        let source = tier_c_shader_source(&world_shader_source("fn extension_shade(in: VertexOut) -> vec4f { return draw.fog_color; }\n"));
+        let source = tier_c_shader_source(&world_shader_source(
+            "fn extension_shade(in: VertexOut) -> vec4f { return draw.fog_color; }\n",
+        ));
         assert!(!source.contains("binding_array") && !source.contains("textures[") && !source.contains("samplers["));
         for stage in 0..STAGES {
             assert!(source.contains(&format!("@group(1) @binding({stage}) var t{stage}: texture_2d<f32>;")));
             assert!(source.contains(&format!("@group(1) @binding({}) var s{stage}: sampler;", STAGES + stage)));
-            assert!(source.contains(&format!("textureSample(t{stage}, s{stage}, ")), "stage {stage}");
+            assert!(
+                source.contains(&format!("textureSample(t{stage}, s{stage}, ")),
+                "stage {stage}"
+            );
         }
     }
 
@@ -664,12 +839,20 @@ mod tests {
     #[ignore = "needs a GPU"]
     fn tier_c_shader_validates_on_a_device_without_the_arrays() {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
-        let descriptor = wgpu::DeviceDescriptor { required_features: required_features_of(TextureTier::C), required_limits: fixed_limits(), ..Default::default() };
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let descriptor = wgpu::DeviceDescriptor {
+            required_features: required_features_of(TextureTier::C),
+            required_limits: fixed_limits(),
+            ..Default::default()
+        };
         let (device, _queue) = pollster::block_on(adapter.request_device(&descriptor)).expect("a device");
         let source = tier_c_shader_source(&world_shader_source(&crate::extension::extension_shaders(None)));
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let _module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tier c"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let _module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("tier c"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
     }
@@ -678,13 +861,19 @@ mod tests {
     fn the_world_shader_source_joins_the_extension_after_the_depth_functions() {
         let source = world_shader_source("fn extension_shade(in: VertexOut) -> vec4f { return draw.fog_color; }\n");
         assert!(source.starts_with("// The binding arrays"), "{}", &source[..40]);
-        assert!(source.contains("return draw_fog_color();"), "the record read is not sent through the shader's function");
+        assert!(
+            source.contains("return draw_fog_color();"),
+            "the record read is not sent through the shader's function"
+        );
         assert!(source.find("fn extension_shade").unwrap() > source.find("fn view_distance").unwrap_or(0));
     }
 
     #[test]
     fn the_world_shader_is_valid_wgsl() {
-        crate::assert_wgsl("shader.wgsl", &world_shader_source(&crate::extension::extension_shaders(None)));
+        crate::assert_wgsl(
+            "shader.wgsl",
+            &world_shader_source(&crate::extension::extension_shaders(None)),
+        );
     }
 
     /// The cone of a spot light has one home: the world shader has the text of spot.rs once,
@@ -696,6 +885,8 @@ mod tests {
         assert_eq!(source.matches("fn spot_cone").count(), 1);
         assert!(source.find(crate::spot::WGSL).unwrap() < source.find("fn extension_shade").unwrap());
         let own = include_str!("shader.wgsl");
-        assert!(own.contains("spot_cone(light, direction)") && !own.contains("fn spot_cone") && !own.contains("light.cone.x"));
+        assert!(
+            own.contains("spot_cone(light, direction)") && !own.contains("fn spot_cone") && !own.contains("light.cone.x")
+        );
     }
 }

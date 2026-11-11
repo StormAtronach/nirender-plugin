@@ -343,7 +343,10 @@ impl RenderTexture {
     /// The size of a pixel of the game's size in pixels of the texture: 1 on each side when
     /// the texture has the size that the game asked for.
     pub(crate) fn scale(&self) -> (f32, f32) {
-        (self.size.0 as f32 / self.asked.0 as f32, self.size.1 as f32 / self.asked.1 as f32)
+        (
+            self.size.0 as f32 / self.asked.0 as f32,
+            self.size.1 as f32 / self.asked.1 as f32,
+        )
     }
 }
 
@@ -752,7 +755,10 @@ mod tests {
     }
 
     fn instance(record: u32) -> Instance {
-        Instance { world: [0.0; 16], record: [record, 7, 0, 0] }
+        Instance {
+            world: [0.0; 16],
+            record: [record, 7, 0, 0],
+        }
     }
 
     /// The numbers of run 20261102-135610-hob-race-2: records 2048 and 2049 at the growth to 4096.

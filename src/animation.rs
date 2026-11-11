@@ -65,7 +65,11 @@ struct Camera {
     position: [f32; 3],
     lod_adjust: f32,
 }
-static CAMERA: MainCell<Camera> = MainCell::new(Camera { planes: Vec::new(), position: [0.0; 3], lod_adjust: 1.0 });
+static CAMERA: MainCell<Camera> = MainCell::new(Camera {
+    planes: Vec::new(),
+    position: [0.0; 3],
+    lod_adjust: 1.0,
+});
 
 fn policy_of(name: &str) -> Option<Policy> {
     match name {
@@ -85,7 +89,8 @@ pub fn policy() -> Policy {
             _ => Policy::ViewShadows,
         };
     }
-    let from_env = crate::switches::parsed("NIRENDER_ANIMATION", "the name of a policy", policy_of).unwrap_or(Policy::ViewShadows);
+    let from_env =
+        crate::switches::parsed("NIRENDER_ANIMATION", "the name of a policy", policy_of).unwrap_or(Policy::ViewShadows);
     POLICY.store(from_env as u8, Ordering::Relaxed);
     from_env
 }
@@ -225,11 +230,16 @@ unsafe fn withheld(camera: &Camera, node: usize) -> Option<Withheld> {
         return Some(Withheld::Itself);
     }
     let mut child = node;
-    let found = crate::parent_chain::first_answer(rd(node, AV::parentNode), crate::parent_chain::GUARD, |n| rd(n, AV::parentNode), |parent| {
-        let reason = barred_by(camera, parent, child);
-        child = parent;
-        reason
-    });
+    let found = crate::parent_chain::first_answer(
+        rd(node, AV::parentNode),
+        crate::parent_chain::GUARD,
+        |n| rd(n, AV::parentNode),
+        |parent| {
+            let reason = barred_by(camera, parent, child);
+            child = parent;
+            reason
+        },
+    );
     match found {
         Ok(reason) => reason,
         Err(crate::parent_chain::ChainTooLong) => {

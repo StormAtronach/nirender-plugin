@@ -13,7 +13,10 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::engine::WORLD_CONTROLLER;
-use crate::gen::layouts::{NiAVObject, NiBoneData, NiDX8Renderer as R, NiSkinData, NiSkinInstance, NiSkinPartition_Partition, NiTransform, PlayerAnimController, WorldController};
+use crate::gen::layouts::{
+    NiAVObject, NiBoneData, NiDX8Renderer as R, NiSkinData, NiSkinInstance, NiSkinPartition_Partition, NiTransform,
+    PlayerAnimController, WorldController,
+};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::ports::renderer_frame;
@@ -37,9 +40,16 @@ const PARTITION_BONES: usize = NiSkinPartition_Partition::bones;
 const PARTITION_BONE_COUNT: usize = NiSkinPartition_Partition::numBones;
 /// `WorldController`: the roots that the game copies the eye of the first person into (world,
 /// arm and shadow camera).
-const WC_CAMERA_ROOTS: [usize; 3] = [WorldController::worldCamera_sgCameraRoot, WorldController::armCamera_sgCameraRoot, WorldController::shadowCamera_sgCameraRoot];
+const WC_CAMERA_ROOTS: [usize; 3] = [
+    WorldController::worldCamera_sgCameraRoot,
+    WorldController::armCamera_sgCameraRoot,
+    WorldController::shadowCamera_sgCameraRoot,
+];
 /// `WorldController`: the world camera and the arm camera. Their scenes are relative.
-const WC_OWNED_CAMERAS: [usize; 2] = [WorldController::worldCamera_cameraData_camera, WorldController::armCamera_cameraData_camera];
+const WC_OWNED_CAMERAS: [usize; 2] = [
+    WorldController::worldCamera_cameraData_camera,
+    WorldController::armCamera_cameraData_camera,
+];
 /// `PlayerAnimController`: the "Camera" node of the first-person model.
 const CONTROLLER_HEAD_CAMERA: usize = PlayerAnimController::firstPersonHeadCamera;
 
@@ -61,12 +71,20 @@ struct DTransform {
 unsafe fn from_ni(transform: usize) -> DTransform {
     let r: [[f32; 3]; 3] = rd(transform, 0);
     let t: [f32; 3] = rd(transform, T_TRANSLATION);
-    DTransform { r: r.map(|row| row.map(f64::from)), t: t.map(f64::from), s: rd::<f32>(transform, T_SCALE) as f64 }
+    DTransform {
+        r: r.map(|row| row.map(f64::from)),
+        t: t.map(f64::from),
+        s: rd::<f32>(transform, T_SCALE) as f64,
+    }
 }
 
 /// `NiTransform::operator*`: `(a * b)(p) = a(b(p))`.
 fn combine(a: &DTransform, b: &DTransform) -> DTransform {
-    let mut out = DTransform { r: [[0.0; 3]; 3], t: [0.0; 3], s: a.s * b.s };
+    let mut out = DTransform {
+        r: [[0.0; 3]; 3],
+        t: [0.0; 3],
+        s: a.s * b.s,
+    };
     for i in 0..3 {
         for j in 0..3 {
             out.r[i][j] = a.r[i][0] * b.r[0][j] + a.r[i][1] * b.r[1][j] + a.r[i][2] * b.r[2][j];
@@ -81,7 +99,11 @@ fn invert(a: &DTransform) -> Option<DTransform> {
     if a.s == 0.0 {
         return None;
     }
-    let mut out = DTransform { r: [[0.0; 3]; 3], t: [0.0; 3], s: 1.0 / a.s };
+    let mut out = DTransform {
+        r: [[0.0; 3]; 3],
+        t: [0.0; 3],
+        s: 1.0 / a.s,
+    };
     for i in 0..3 {
         for j in 0..3 {
             out.r[i][j] = a.r[j][i];
@@ -138,7 +160,11 @@ fn float_step_by_loop(magnitude: f32) -> f32 {
 
 fn within_guard(computed: f32, stored: f32) -> bool {
     let delta = (computed - stored).abs();
-    let magnitude = if stored.abs() > computed.abs() { stored.abs() } else { computed.abs() };
+    let magnitude = if stored.abs() > computed.abs() {
+        stored.abs()
+    } else {
+        computed.abs()
+    };
     delta <= GUARD_STEPS * float_step(magnitude)
 }
 
@@ -182,7 +208,16 @@ unsafe fn retire_cache(t: &MainThread) {
 /// The entry of the node, or a free one. Null when the probes found none.
 unsafe fn cache_slot(t: &MainThread, node: usize) -> *mut CacheEntry {
     if (*CACHE.get(t)).is_null() {
-        let table = vec![CacheEntry { node: 0, generation: 0, stored: [0.0; 3], exact: [0.0; 3] }; CACHE_SLOTS].into_boxed_slice();
+        let table = vec![
+            CacheEntry {
+                node: 0,
+                generation: 0,
+                stored: [0.0; 3],
+                exact: [0.0; 3]
+            };
+            CACHE_SLOTS
+        ]
+        .into_boxed_slice();
         *CACHE.get(t) = Box::leak(table).as_mut_ptr();
     }
     let mut index = (((node >> 4) as u32).wrapping_mul(2654435761) as usize) & (CACHE_SLOTS - 1);
@@ -202,7 +237,8 @@ pub(crate) unsafe fn exact_translation(t: &MainThread, node: usize, depth: u32) 
     }
     let stored: [f32; 3] = rd(node, AV_WORLD + T_TRANSLATION);
     let slot = cache_slot(t, node);
-    if !slot.is_null() && (*slot).generation == *CACHE_GENERATION.get(t) && (*slot).node == node && (*slot).stored == stored {
+    if !slot.is_null() && (*slot).generation == *CACHE_GENERATION.get(t) && (*slot).node == node && (*slot).stored == stored
+    {
         return Some((*slot).exact);
     }
 
@@ -226,7 +262,12 @@ pub(crate) unsafe fn exact_translation(t: &MainThread, node: usize, depth: u32) 
     // The walk of the parent can have used this slot. Find it again.
     let slot = cache_slot(t, node);
     if !slot.is_null() {
-        *slot = CacheEntry { node, generation: *CACHE_GENERATION.get(t), stored, exact };
+        *slot = CacheEntry {
+            node,
+            generation: *CACHE_GENERATION.get(t),
+            stored,
+            exact,
+        };
     }
     Some(exact)
 }
@@ -253,7 +294,13 @@ struct EyePair {
     exact: [f64; 3],
 }
 
-static EYE: MainCell<EyePair> = MainCell::new(EyePair { valid: false, frame: 0, roots: [0; 3], stored: [0.0; 3], exact: [0.0; 3] });
+static EYE: MainCell<EyePair> = MainCell::new(EyePair {
+    valid: false,
+    frame: 0,
+    roots: [0; 3],
+    stored: [0.0; 3],
+    exact: [0.0; 3],
+});
 /// The number of the frame in progress. It goes up at the end of each frame.
 static FRAME: MainCell<u32> = MainCell::new(1);
 
@@ -352,7 +399,10 @@ pub unsafe fn install() -> Result<(), String> {
     if !INSTALLED.begin() {
         return Ok(());
     }
-    let result = crate::mwse_native::subscribe(crate::mwse_native::NATIVE_EVENT_CAMERA_TRANSFORMS_UPDATED, camera_transforms_updated);
+    let result = crate::mwse_native::subscribe(
+        crate::mwse_native::NATIVE_EVENT_CAMERA_TRANSFORMS_UPDATED,
+        camera_transforms_updated,
+    );
     INSTALLED.finish(result.is_ok());
     result.map(|_| ())
 }
@@ -362,7 +412,9 @@ pub(crate) fn own() -> bool {
 }
 
 fn compare() -> bool {
-    COMPARE.load(Ordering::Relaxed) && !crate::link_client::client_camera_space() && crate::shadow::leg() != crate::shadow::Leg::Rust
+    COMPARE.load(Ordering::Relaxed)
+        && !crate::link_client::client_camera_space()
+        && crate::shadow::leg() != crate::shadow::Leg::Rust
 }
 
 /// True when the world matrix that goes to the device now is relative to the camera.
@@ -389,7 +441,11 @@ pub unsafe fn scene_begin(t: &MainThread, world_location: usize) -> Option<[f64;
     // `NiCamera::Click` gives the address of the world translation of the camera.
     let camera = world_location - AV_WORLD - T_TRANSLATION;
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
-    if world_controller == 0 || !WC_OWNED_CAMERAS.iter().any(|&offset| rd::<usize>(world_controller, offset) == camera) {
+    if world_controller == 0
+        || !WC_OWNED_CAMERAS
+            .iter()
+            .any(|&offset| rd::<usize>(world_controller, offset) == camera)
+    {
         return None;
     }
     let location: [f32; 3] = rd(world_location, 0);
@@ -444,7 +500,14 @@ unsafe fn active_origin(t: &MainThread) -> Option<[f64; 3]> {
     }
     if !*ORIGIN_CHECKED.get(t) {
         *ORIGIN_CHECKED.get(t) = true;
-        count(t, if host_origin.map(f64::to_bits) == origin.map(f64::to_bits) { 0 } else { 1 });
+        count(
+            t,
+            if host_origin.map(f64::to_bits) == origin.map(f64::to_bits) {
+                0
+            } else {
+                1
+            },
+        );
     }
     Some(origin)
 }
@@ -474,7 +537,9 @@ pub unsafe fn take_model_transform(t: &MainThread, this: usize, transform: usize
         return false;
     }
     let Some(origin) = active_origin(t) else { return false };
-    let Some(relative) = rigid_relative(t, transform, &origin) else { return false };
+    let Some(relative) = rigid_relative(t, transform, &origin) else {
+        return false;
+    };
     *PENDING.get(t) = true;
     renderer_frame::set_model_transform(this, relative.as_ptr() as usize);
     *PENDING.get(t) = false;
@@ -518,7 +583,8 @@ pub unsafe fn check_model_transform(t: &MainThread, this: usize, transform: usiz
 /// `each`, when the data of the skin is not complete.
 ///
 /// transform(i) = shape * rootParentToSkin * inverse(rootParent) * bone * boneOffset
-unsafe fn skinned_relative(t: &MainThread, 
+unsafe fn skinned_relative(
+    t: &MainThread,
     skin: usize,
     partition: usize,
     transform: usize,
@@ -540,8 +606,14 @@ unsafe fn skinned_relative(t: &MainThread,
     if bone_records == 0 {
         return false;
     }
-    let shape = if geometry_site && transform == *GEOMETRY_TRANSFORM.get(t) { exact_transform(t, transform - AV_WORLD) } else { from_ni(transform) };
-    let Some(inverse_root_parent) = invert(&exact_transform(t, root_parent)) else { return false };
+    let shape = if geometry_site && transform == *GEOMETRY_TRANSFORM.get(t) {
+        exact_transform(t, transform - AV_WORLD)
+    } else {
+        from_ni(transform)
+    };
+    let Some(inverse_root_parent) = invert(&exact_transform(t, root_parent)) else {
+        return false;
+    };
     let count: u16 = rd(partition, PARTITION_BONE_COUNT);
     let bone_count: u32 = rd(data, DATA_BONE_COUNT);
     for i in 0..count as usize {
@@ -555,7 +627,10 @@ unsafe fn skinned_relative(t: &MainThread,
     for i in 0..count as usize {
         let index = rd::<u16>(partition_bones, i * 2) as usize;
         let bone = exact_transform(t, rd(bones, index * 4));
-        let palette = combine(&combine(&skin_to_root, &bone), &from_ni(bone_records + index * BONE_RECORD_SIZE));
+        let palette = combine(
+            &combine(&skin_to_root, &bone),
+            &from_ni(bone_records + index * BONE_RECORD_SIZE),
+        );
         let mut relative = [0u32; T_WORDS];
         for r in 0..3 {
             for c in 0..3 {
@@ -579,7 +654,14 @@ unsafe fn skinned_relative(t: &MainThread,
 ///
 /// `skin` is 0 or a live `NiSkinInstance` with its skin data and its bones, and `transform` is 0 or
 /// the world transform of a live `NiAVObject` whose parent chain is live.
-pub unsafe fn skin_palette(t: &MainThread, skin: usize, transform: usize, geometry_site: bool, software: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
+pub unsafe fn skin_palette(
+    t: &MainThread,
+    skin: usize,
+    transform: usize,
+    geometry_site: bool,
+    software: bool,
+    out: &mut Vec<[f32; 16]>,
+) -> Result<bool, &'static str> {
     let start = crate::capture::ticks();
     let result = build_skin_palette(t, skin, transform, geometry_site, software, out);
     if result.is_ok() {
@@ -604,7 +686,15 @@ struct SkinMeasure {
     seen_frame: u32,
 }
 
-static SKIN_MEASURE: MainCell<SkinMeasure> = MainCell::new(SkinMeasure { parts: 0, matrices: 0, bones: 0, skeletons: 0, ticks: 0, seen: None, seen_frame: 0 });
+static SKIN_MEASURE: MainCell<SkinMeasure> = MainCell::new(SkinMeasure {
+    parts: 0,
+    matrices: 0,
+    bones: 0,
+    skeletons: 0,
+    ticks: 0,
+    seen: None,
+    seen_frame: 0,
+});
 
 unsafe fn note_skin(t: &MainThread, skin: usize, matrices: usize, ticks: i64) {
     let measure = &mut *SKIN_MEASURE.get(t);
@@ -654,7 +744,14 @@ pub(crate) fn place_only(place: [f32; 3]) -> [f32; 16] {
     matrix
 }
 
-unsafe fn build_skin_palette(t: &MainThread, skin: usize, transform: usize, geometry_site: bool, software: bool, out: &mut Vec<[f32; 16]>) -> Result<bool, &'static str> {
+unsafe fn build_skin_palette(
+    t: &MainThread,
+    skin: usize,
+    transform: usize,
+    geometry_site: bool,
+    software: bool,
+    out: &mut Vec<[f32; 16]>,
+) -> Result<bool, &'static str> {
     out.clear();
     if transform == 0 {
         return Err("no skin instance or no transform");
@@ -662,7 +759,11 @@ unsafe fn build_skin_palette(t: &MainThread, skin: usize, transform: usize, geom
     let origin = if own() { active_origin(t) } else { None };
     let relative = origin.is_some();
     let origin = origin.unwrap_or([0.0; 3]);
-    let shape = if geometry_site && transform == *GEOMETRY_TRANSFORM.get(t) { exact_transform(t, transform - AV_WORLD) } else { from_ni(transform) };
+    let shape = if geometry_site && transform == *GEOMETRY_TRANSFORM.get(t) {
+        exact_transform(t, transform - AV_WORLD)
+    } else {
+        from_ni(transform)
+    };
     skin_transforms(t, skin, &shape, |palette| {
         let scale = palette.s as f32;
         let mut matrix = [0f32; 16];
@@ -695,7 +796,13 @@ pub const BONE_BYTES: usize = 9 * 4 + 3 * 8;
 ///
 /// `shape` is 0 or points at a live `NiAVObject` whose parent chain is live. `skin` is 0 or a
 /// live `NiSkinInstance` with its skin data and its bones.
-pub unsafe fn skin_bones(t: &MainThread, shape: usize, skin: usize, software: bool, out: &mut Vec<u8>) -> Result<u32, &'static str> {
+pub unsafe fn skin_bones(
+    t: &MainThread,
+    shape: usize,
+    skin: usize,
+    software: bool,
+    out: &mut Vec<u8>,
+) -> Result<u32, &'static str> {
     let start = crate::capture::ticks();
     out.clear();
     if shape == 0 {
@@ -729,7 +836,12 @@ pub unsafe fn skin_bones(t: &MainThread, shape: usize, skin: usize, software: bo
 /// The world transform of each bone of a skin for a draw of its shape, whose world transform
 /// is `shape`: the skin's transform to its root parent, the bone, the bone's transform from
 /// the skin. Or what is missing when the data of the skin is not complete.
-unsafe fn skin_transforms(t: &MainThread, skin: usize, shape: &DTransform, mut each: impl FnMut(&DTransform)) -> Result<(), &'static str> {
+unsafe fn skin_transforms(
+    t: &MainThread,
+    skin: usize,
+    shape: &DTransform,
+    mut each: impl FnMut(&DTransform),
+) -> Result<(), &'static str> {
     if skin == 0 {
         return Err("no skin instance or no transform");
     }
@@ -755,11 +867,15 @@ unsafe fn skin_transforms(t: &MainThread, skin: usize, shape: &DTransform, mut e
             return Err("a bone of the skin instance is null");
         }
     }
-    let inverse_root_parent = invert(&exact_transform(t, root_parent)).ok_or("the transform of the root parent has no inverse")?;
+    let inverse_root_parent =
+        invert(&exact_transform(t, root_parent)).ok_or("the transform of the root parent has no inverse")?;
     let skin_to_root = combine(&combine(shape, &from_ni(data + DATA_TRANSFORM)), &inverse_root_parent);
     for i in 0..bone_count as usize {
         let bone = exact_transform(t, rd(bones, i * 4));
-        each(&combine(&combine(&skin_to_root, &bone), &from_ni(bone_records + i * BONE_RECORD_SIZE)));
+        each(&combine(
+            &combine(&skin_to_root, &bone),
+            &from_ni(bone_records + i * BONE_RECORD_SIZE),
+        ));
     }
     Ok(())
 }
@@ -772,7 +888,14 @@ unsafe fn skin_transforms(t: &MainThread, skin: usize, shape: &DTransform, mut e
 /// `this` points at the live `NiDX8Renderer` with its device; `skin` and `partition` are each 0 or
 /// a live `NiSkinInstance` with its data and bones and a live skin partition of it; `transform` is
 /// 0 or the world transform of a live `NiAVObject` whose parent chain is live.
-pub unsafe fn take_skinned_transforms(t: &MainThread, this: usize, skin: usize, partition: usize, transform: usize, geometry_site: bool) -> bool {
+pub unsafe fn take_skinned_transforms(
+    t: &MainThread,
+    this: usize,
+    skin: usize,
+    partition: usize,
+    transform: usize,
+    geometry_site: bool,
+) -> bool {
     if !own() {
         return false;
     }
@@ -795,7 +918,13 @@ pub unsafe fn take_skinned_transforms(t: &MainThread, this: usize, skin: usize, 
 /// # Safety
 ///
 /// As for [`take_skinned_transforms`], without the renderer.
-pub unsafe fn check_skinned_transforms(t: &MainThread, skin: usize, partition: usize, transform: usize, geometry_site: bool) {
+pub unsafe fn check_skinned_transforms(
+    t: &MainThread,
+    skin: usize,
+    partition: usize,
+    transform: usize,
+    geometry_site: bool,
+) {
     if !compare() {
         return;
     }
@@ -805,8 +934,13 @@ pub unsafe fn check_skinned_transforms(t: &MainThread, skin: usize, partition: u
         if index < 4 {
             // `write_world_matrix` writes only the world matrix of a renderer.
             let mut matrix = [0u32; 16];
-            renderer_frame::write_world_matrix((matrix.as_mut_ptr() as usize).wrapping_sub(R::currentWorldMatrix), relative.as_ptr() as usize);
-            equal = equal && crate::link_client::world_relative(t, index) && crate::link_client::world_matrix(t, index) == matrix;
+            renderer_frame::write_world_matrix(
+                (matrix.as_mut_ptr() as usize).wrapping_sub(R::currentWorldMatrix),
+                relative.as_ptr() as usize,
+            );
+            equal = equal
+                && crate::link_client::world_relative(t, index)
+                && crate::link_client::world_matrix(t, index) == matrix;
         }
     });
     if !made {
@@ -875,7 +1009,11 @@ mod tests {
 
     #[test]
     fn combine_and_invert_agree() {
-        let a = DTransform { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [10.0, 20.0, 30.0], s: 2.0 };
+        let a = DTransform {
+            r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            t: [10.0, 20.0, 30.0],
+            s: 2.0,
+        };
         let identity = combine(&a, &invert(&a).unwrap());
         for i in 0..3 {
             assert!(identity.t[i].abs() < 1e-12);

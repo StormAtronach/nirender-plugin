@@ -113,20 +113,27 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         at += 8 + length;
     }
     if at < file.len() && at + 8 > file.len() {
-        println!("capture: {} bytes after the last record are no whole record head: left out", file.len() - at);
+        println!(
+            "capture: {} bytes after the last record are no whole record head: left out",
+            file.len() - at
+        );
     }
     let frames = records.iter().filter(|(tag, _)| *tag == tag::FRAME_END).count();
     // `--frames-at`: several frames of one replay, each into `<picture>-<frame as 5 digits>.png`
     // (the frames count from 0, as `--frame`). One start of the helper for a capture of many
     // stops, in place of one for each.
-    let frames_at: Vec<usize> = option(&args, "--frames-at").map(|text| text.split(',').filter_map(|n| n.trim().parse().ok()).collect()).unwrap_or_default();
+    let frames_at: Vec<usize> = option(&args, "--frames-at")
+        .map(|text| text.split(',').filter_map(|n| n.trim().parse().ok()).collect())
+        .unwrap_or_default();
     // `--marks-every N`: a mark after every N frames (the helper's time for each frame by
     // part), and a wait for the GPU after each frame, for the bench of a long capture
     // (`scripts/wgpu-bench/bench_replay.py` of the docs).
     let marks_every: usize = option(&args, "--marks-every").and_then(|text| text.parse().ok()).unwrap_or(0);
     let wanted = match frames_at.iter().max() {
         Some(&last) => last,
-        None => option(&args, "--frame").and_then(|text| text.parse().ok()).unwrap_or(frames.saturating_sub(1)),
+        None => option(&args, "--frame")
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(frames.saturating_sub(1)),
     };
     let reader = format!("{} ({})", live::program_name(), live::reader_build(extension.as_deref()));
     let header = match capture_header(&records, &reader) {
@@ -146,11 +153,24 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
     if width == 0 || height == 0 {
         (width, height) = (1280, 720);
     }
-    println!("{} records, {frames} frames, frame {wanted} into {width} x {height}", records.len());
+    println!(
+        "{} records, {frames} frames, frame {wanted} into {width} x {height}",
+        records.len()
+    );
 
     // The samples of the extension's settings, as in the live mode; `MGE_XE_SAMPLES` is for a test.
-    let samples = switches().samples.or(extension.as_ref().map(|extension| extension.samples())).unwrap_or(1);
-    let renderer = match Renderer::new(backends, None, wgpu::TextureFormat::Rgba8Unorm, extension_shaders(extension.as_deref()), extension.as_ref().map_or(0, |extension| extension.texture_slots()), samples) {
+    let samples = switches()
+        .samples
+        .or(extension.as_ref().map(|extension| extension.samples()))
+        .unwrap_or(1);
+    let renderer = match Renderer::new(
+        backends,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        extension_shaders(extension.as_deref()),
+        extension.as_ref().map_or(0, |extension| extension.texture_slots()),
+        samples,
+    ) {
         Ok((renderer, _)) => renderer,
         Err(refusals) => {
             for refusal in &refusals {
@@ -161,15 +181,29 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
     };
     let mut player = Player::new(renderer);
     // The filter of the extension's settings, as in the live mode; the argument is for a test.
-    player.renderer.anisotropy =
-        option(&args, "--anisotropy").and_then(|text| text.parse().ok()).or(extension.as_ref().map(|extension| extension.anisotropy())).unwrap_or(1);
+    player.renderer.anisotropy = option(&args, "--anisotropy")
+        .and_then(|text| text.parse().ok())
+        .or(extension.as_ref().map(|extension| extension.anisotropy()))
+        .unwrap_or(1);
     if let Some(mut extension) = extension {
         extension.offline();
         player.extension = Some(extension);
     }
     let device = player.renderer.device.clone();
-    let target = target_texture(&device, width, height, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING);
-    let depth = target_texture(&device, width, height, player.renderer.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
+    let target = target_texture(
+        &device,
+        width,
+        height,
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+    );
+    let depth = target_texture(
+        &device,
+        width,
+        height,
+        player.renderer.depth_format,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+    );
     let mut frame = 0;
     for (tag, data) in &records {
         // Each frame up to the wanted one is drawn: the game can draw into a rendered texture
@@ -180,14 +214,22 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         if player.feed(*tag, data) {
             if player.drawing() {
                 let mut read = None;
-                let this_one = if frames_at.is_empty() { frame == wanted } else { frames_at.contains(&frame) };
+                let this_one = if frames_at.is_empty() {
+                    frame == wanted
+                } else {
+                    frames_at.contains(&frame)
+                };
                 player.end_frame(|encoder| {
                     if this_one {
                         read = Some(copy_picture(&device, encoder, &target, width, height));
                     }
                 });
                 if let Some((buffer, row)) = read {
-                    let path = if frames_at.is_empty() { args[2].clone() } else { format!("{}-{:05}.png", args[2], frame) };
+                    let path = if frames_at.is_empty() {
+                        args[2].clone()
+                    } else {
+                        format!("{}-{:05}.png", args[2], frame)
+                    };
                     save_picture(&device, &buffer, row, width, height, false, &path);
                     buffer.unmap();
                 }
@@ -214,7 +256,9 @@ fn capture_header<'a>(records: &[(u32, &'a [u8])], reader: &str) -> Result<&'a [
         Some(&(tag::HEADER, header)) => stream_format::accept_header(header, reader).map(|_| header),
         Some(&(other, _)) => {
             let name = tag::name(other);
-            Err(format!("The first record of the capture has the tag {other} ({name}), not HEADER."))
+            Err(format!(
+                "The first record of the capture has the tag {other} ({name}), not HEADER."
+            ))
         }
         None => Err("The capture has no record.".to_string()),
     }

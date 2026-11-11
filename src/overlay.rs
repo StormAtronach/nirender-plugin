@@ -68,7 +68,10 @@ extern "system" {
 /// The largest free block of the address space of the process now, for a log line (risk 41).
 /// A walk of the address space: for a mark, not for each frame.
 pub fn largest_free_now() -> u64 {
-    let mut status = MemoryStatus { length: core::mem::size_of::<MemoryStatus>() as u32, ..Default::default() };
+    let mut status = MemoryStatus {
+        length: core::mem::size_of::<MemoryStatus>() as u32,
+        ..Default::default()
+    };
     // SAFETY: the calls write into the own structures; the walk reads no memory of the process.
     unsafe {
         GlobalMemoryStatusEx(&mut status);
@@ -81,7 +84,9 @@ unsafe fn largest_free(total: u64) -> u64 {
     let mut largest = 0usize;
     let mut address = 0x1_0000usize;
     let mut region: Region = core::mem::zeroed();
-    while (address as u64) < total && VirtualQuery(address as *const c_void, &mut region, core::mem::size_of::<Region>()) != 0 {
+    while (address as u64) < total
+        && VirtualQuery(address as *const c_void, &mut region, core::mem::size_of::<Region>()) != 0
+    {
         if region.state == MEM_FREE {
             largest = largest.max(region.size);
         }
@@ -102,9 +107,15 @@ unsafe fn largest_free(total: u64) -> u64 {
 /// No condition: the function reads no engine memory. It is `unsafe` because of the calls of the
 /// Windows functions.
 pub unsafe fn body(stream_ms: f32, ports_ms: f32, wait_ms: f32) -> [u8; 64] {
-    let mut memory = ProcessMemory { size: core::mem::size_of::<ProcessMemory>() as u32, ..Default::default() };
+    let mut memory = ProcessMemory {
+        size: core::mem::size_of::<ProcessMemory>() as u32,
+        ..Default::default()
+    };
     K32GetProcessMemoryInfo(crate::win::GetCurrentProcess(), &mut memory, memory.size);
-    let mut status = MemoryStatus { length: core::mem::size_of::<MemoryStatus>() as u32, ..Default::default() };
+    let mut status = MemoryStatus {
+        length: core::mem::size_of::<MemoryStatus>() as u32,
+        ..Default::default()
+    };
     GlobalMemoryStatusEx(&mut status);
     let mut out = [0u8; 64];
     out[0..4].copy_from_slice(&(on() as u32).to_le_bytes());

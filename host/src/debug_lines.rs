@@ -87,7 +87,10 @@ impl LineSources {
 
     /// The names of the named sources in this set, in the order of their bits.
     pub fn names(self) -> impl Iterator<Item = &'static str> {
-        Self::NAMED.into_iter().filter(move |(source, _)| self.contains(*source)).map(|(_, name)| name)
+        Self::NAMED
+            .into_iter()
+            .filter(move |(source, _)| self.contains(*source))
+            .map(|(_, name)| name)
     }
 
     /// The set of a list of names separated by commas (the replay argument). An empty list
@@ -146,7 +149,10 @@ mod tests {
         assert_eq!(LineSources::parse_list(""), Ok(LineSources::NONE));
         assert_eq!(LineSources::parse_list("lights, lua").map(LineSources::bits), Ok(1 | 8));
         assert_eq!(LineSources::parse_list("lights,lights").map(LineSources::bits), Ok(1));
-        assert_eq!(LineSources::parse_list("lights,wires"), Err(UnknownSource("wires".to_owned())));
+        assert_eq!(
+            LineSources::parse_list("lights,wires"),
+            Err(UnknownSource("wires".to_owned()))
+        );
     }
 
     #[test]

@@ -1,11 +1,10 @@
 //! The records of the stream into the player: `feed` and what it calls for a draw of
 //! the game (the shape, the instance and the held-shape records, the screen draws).
 
-use crate::*;
 use crate::stream_format::{
-    HEADER_ABILITIES_AT, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH,
-    HEADER_WIDTH_AT, HEADER_WORLD_WALK,
+    HEADER_ABILITIES_AT, HEADER_ENVMAP_LIT, HEADER_HEIGHT_AT, HEADER_QUEUE_FLUSH, HEADER_WIDTH_AT, HEADER_WORLD_WALK,
 };
+use crate::*;
 
 /// The draws of the calls' target go somewhere: the target is a texture that this program made
 /// (`known_texture`), or the last `EVENT_SET_TARGET` asked for no texture (the back buffer). A
@@ -50,7 +49,12 @@ fn scene_record(data: &[u8]) -> SceneRecord {
         8
     };
     let sun = (flags & 64 != 0 && data.len() >= at + 104).then(|| data[at..at + 104].try_into().unwrap());
-    SceneRecord { ambient: word(data, 0), fog, fog_off_color, sun }
+    SceneRecord {
+        ambient: word(data, 0),
+        fog,
+        fog_off_color,
+        sun,
+    }
 }
 
 /// Reads an `INSTANCE_LIGHTS` record: the instance, the keys of its lights, and the ambient light
@@ -114,7 +118,10 @@ impl Player {
                 self.gamma_ramp = gamma::read_ramp(data).filter(|ramp| !gamma::is_identity(ramp));
                 self.gamma_new = true;
                 match self.gamma_ramp.as_ref() {
-                    Some(ramp) => println!("gamma ramp: a look-up table for the window; red 64 -> {}, 128 -> {}, 192 -> {} (of 65535)", ramp[64], ramp[128], ramp[192]),
+                    Some(ramp) => println!(
+                        "gamma ramp: a look-up table for the window; red 64 -> {}, 128 -> {}, 192 -> {} (of 65535)",
+                        ramp[64], ramp[128], ramp[192]
+                    ),
                     None => println!("gamma ramp: the identity; the window takes the plain copy"),
                 }
             }
@@ -200,15 +207,25 @@ impl Player {
                 self.view_scene_draws = [0; 2];
                 self.view_early_draws = 0;
                 let in_back_buffer = plan::Plan::scene_in_back_buffer(in_target, self.stream.back_buffer);
-                for step in self.plan_now().scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world), in_back_buffer) {
+                for step in
+                    self.plan_now()
+                        .scene_begin_view(kind, ViewKind::classify(in_target, camera_is_world), in_back_buffer)
+                {
                     self.plan_step(step);
                 }
             }
             tag::SCENE_END => {
                 // Flag 1: the engine's sorted queue stays open after the scene.
                 let queue_open = word(data, 0) & 1 != 0;
-                let (extension, in_back_buffer, drawing, queue_flush) = (self.extension.is_some(), self.target.is_none(), self.drawing(), self.stream.queue_flush);
-                let steps = self.plan_now().scene_end(extension, in_back_buffer, drawing, queue_open, queue_flush);
+                let (extension, in_back_buffer, drawing, queue_flush) = (
+                    self.extension.is_some(),
+                    self.target.is_none(),
+                    self.drawing(),
+                    self.stream.queue_flush,
+                );
+                let steps = self
+                    .plan_now()
+                    .scene_end(extension, in_back_buffer, drawing, queue_open, queue_flush);
                 for step in steps {
                     self.plan_step(step);
                 }
@@ -262,11 +279,14 @@ impl Player {
             tag::INSTANCE_MOVE => self.instance_move(data),
             tag::INSTANCE_LIGHTS => {
                 if let Some((id, keys, ambient)) = instance_lights(data) {
-                    self.retained.set_lights(id, &keys, Some(ambient), &self.renderer.lights_known);
+                    self.retained
+                        .set_lights(id, &keys, Some(ambient), &self.renderer.lights_known);
                 }
             }
             // `tag::needed` checked that the record holds its count's ids.
-            tag::INSTANCE_SHOWN => self.retained.set_shown((0..word(data, 0) as usize).map(|i| word(data, 4 + i * 4))),
+            tag::INSTANCE_SHOWN => self
+                .retained
+                .set_shown((0..word(data, 0) as usize).map(|i| word(data, 4 + i * 4))),
             tag::INSTANCE_BONES if data.len() >= 24 => {
                 let bound = core::array::from_fn(|i| float(data, 8 + i * 4));
                 self.retained.set_bones(word(data, 0), word(data, 4), bound, &data[24..]);
@@ -282,7 +302,13 @@ impl Player {
                 let count = word(data, 4) as usize;
                 let particles = &data[36..(36 + count * 20).min(data.len())];
                 let floats3 = |at: usize| -> [f32; 3] { core::array::from_fn(|i| f32::from_bits(word(data, at + i * 4))) };
-                self.renderer.particles(word(data, 0), f32::from_bits(word(data, 8)), floats3(12), floats3(24), particles);
+                self.renderer.particles(
+                    word(data, 0),
+                    f32::from_bits(word(data, 8)),
+                    floats3(12),
+                    floats3(24),
+                    particles,
+                );
                 self.renderer.counts.instance_particles += 1;
             }
             tag::INSTANCE_QUEUED if data.len() >= 4 => self.instance_queued(word(data, 0)),
@@ -333,7 +359,12 @@ impl Player {
                     CALL_VIEWPORT => {
                         let viewport = &arguments[word(data, 12) as usize * 4..];
                         if viewport.len() >= 24 {
-                            let rectangle = [word(viewport, 0) as f32, word(viewport, 4) as f32, word(viewport, 8) as f32, word(viewport, 12) as f32];
+                            let rectangle = [
+                                word(viewport, 0) as f32,
+                                word(viewport, 4) as f32,
+                                word(viewport, 8) as f32,
+                                word(viewport, 12) as f32,
+                            ];
                             let viewport = (rectangle, [float(viewport, 16), float(viewport, 20)]);
                             self.stream.viewport = Some(viewport);
                             if self.stream.back_buffer {
@@ -347,7 +378,13 @@ impl Player {
                         if handle != 0 && word(arguments, 12) & 1 != 0 {
                             self.renderer.render_texture(handle, word(arguments, 0), word(arguments, 4));
                         } else if handle != 0 {
-                            self.renderer.empty_texture(handle, word(arguments, 0), word(arguments, 4), word(arguments, 8), word(arguments, 16));
+                            self.renderer.empty_texture(
+                                handle,
+                                word(arguments, 0),
+                                word(arguments, 4),
+                                word(arguments, 8),
+                                word(arguments, 16),
+                            );
                         }
                     }
                     CALL_TEXTURE_LEVEL => {
@@ -360,7 +397,12 @@ impl Player {
                         // The colour surface and the depth surface. A surface of a texture
                         // that this program made is that texture; each other one is the
                         // back buffer.
-                        let texture = self.renderer.surfaces.get(&word(arguments, 0)).copied().filter(|handle| self.renderer.targets.contains_key(handle));
+                        let texture = self
+                            .renderer
+                            .surfaces
+                            .get(&word(arguments, 0))
+                            .copied()
+                            .filter(|handle| self.renderer.targets.contains_key(handle));
                         self.stream.back_buffer = calls_target_draws(texture.is_some(), self.wants_texture);
                         if texture != self.target {
                             self.target = texture;
@@ -386,8 +428,15 @@ impl Player {
                         if let (Some(texture), true) = (texture, pixels.len() >= 20) {
                             // The draws into the texture come first: a write of a texture is
                             // done before the commands that are not sent yet.
-                            let touch = super::split::Touch { reads: Vec::new(), writes: vec![texture] };
-                            self.flush_split(Some(touch), |player| player.renderer.target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[20..]));
+                            let touch = super::split::Touch {
+                                reads: Vec::new(),
+                                writes: vec![texture],
+                            };
+                            self.flush_split(Some(touch), |player| {
+                                player
+                                    .renderer
+                                    .target_pixels(texture, word(pixels, 0), word(pixels, 4), &pixels[20..])
+                            });
                         }
                     }
                     CALL_CLEAR if self.drawing() && self.stream.back_buffer => {
@@ -396,7 +445,12 @@ impl Player {
                         let clear_color = (flags & 1 != 0).then(|| {
                             // The alpha of the back buffer is 1: see the colour write of a draw.
                             let c = color(word(arguments, 12));
-                            wgpu::Color { r: c[0] as f64, g: c[1] as f64, b: c[2] as f64, a: 1.0 }
+                            wgpu::Color {
+                                r: c[0] as f64,
+                                g: c[1] as f64,
+                                b: c[2] as f64,
+                                a: 1.0,
+                            }
                         });
                         // The game's value, in the convention of the depth (`depth::clear`).
                         let clear_depth = (flags & 2 != 0).then(|| depth::clear(float(arguments, 16)));
@@ -437,7 +491,9 @@ impl Player {
                 let counts = &mut self.renderer.counts;
                 if counts.unknown_records == 0 {
                     counts.unknown_tag = tag;
-                    println!("record of the tag {tag}, which this build does not know: skipped (the plugin is another build)");
+                    println!(
+                        "record of the tag {tag}, which this build does not know: skipped (the plugin is another build)"
+                    );
                 }
                 counts.unknown_records += 1;
             }
@@ -462,7 +518,13 @@ impl Player {
     /// films of the game: a position on the screen, a colour and one texture coordinate
     /// (D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1, 28 bytes).
     pub(crate) fn draw_up(&mut self, data: &[u8]) {
-        let (texture, vertex_format, stride, kind, primitives) = (word(data, 0), word(data, 4), word(data, 8) as usize, word(data, 12), word(data, 16) as usize);
+        let (texture, vertex_format, stride, kind, primitives) = (
+            word(data, 0),
+            word(data, 4),
+            word(data, 8) as usize,
+            word(data, 12),
+            word(data, 16) as usize,
+        );
         let vertices = &data[20..];
         if vertex_format != 0x144 || stride != 28 || !self.stream.back_buffer || !(4..=6).contains(&kind) {
             self.renderer.counts.screen_draws_lost += 1;
@@ -481,7 +543,18 @@ impl Player {
         let vertex = |i: usize| -> [f32; 10] {
             let v = &vertices[i * stride..];
             let c = color(word(v, 16));
-            [(float(v, 0) + 0.5) / width * 2.0 - 1.0, 1.0 - (float(v, 4) + 0.5) / height * 2.0, float(v, 8).clamp(0.0, 1.0), 1.0, c[0], c[1], c[2], c[3], float(v, 20), float(v, 24)]
+            [
+                (float(v, 0) + 0.5) / width * 2.0 - 1.0,
+                1.0 - (float(v, 4) + 0.5) / height * 2.0,
+                float(v, 8).clamp(0.0, 1.0),
+                1.0,
+                c[0],
+                c[1],
+                c[2],
+                c[3],
+                float(v, 20),
+                float(v, 24),
+            ]
         };
         // A triangle list from a list, a strip or a fan.
         let mut list: Vec<f32> = Vec::new();
@@ -506,37 +579,66 @@ impl Player {
         let samples = if self.target.is_none() { renderer.samples } else { 1 };
         let pipeline = renderer.screen_pipeline(samples);
         let clock = ticks::Clock::now();
-        let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("screen draw"), contents: bytemuck::cast_slice(&list), usage: wgpu::BufferUsages::VERTEX });
-        let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
-        let group = crate::gpu::frame_group(&renderer.device, &wgpu::BindGroupDescriptor {
+        let buffer = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("screen draw"),
-            layout: renderer.screen_layout.as_ref().unwrap(),
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(renderer.screen_sampler.as_ref().unwrap()) },
-            ],
+            contents: bytemuck::cast_slice(&list),
+            usage: wgpu::BufferUsages::VERTEX,
         });
+        let view = renderer.textures.get(&texture).unwrap_or(&renderer.white).clone();
+        let group = crate::gpu::frame_group(
+            &renderer.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("screen draw"),
+                layout: renderer.screen_layout.as_ref().unwrap(),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(renderer.screen_sampler.as_ref().unwrap()),
+                    },
+                ],
+            },
+        );
         renderer.counts.times[TIME_BUFFERS] += clock.elapsed();
         self.view_world_items();
-        self.items.push(Item::Screen(ScreenDraw { texture, pipeline, group, buffer, vertices: (list.len() / 10) as u32 }));
+        self.items.push(Item::Screen(ScreenDraw {
+            texture,
+            pipeline,
+            group,
+            buffer,
+            vertices: (list.len() / 10) as u32,
+        }));
     }
 
     /// The size of the target that the game draws into.
     pub(crate) fn size_of_target(&self) -> (u32, u32) {
-        self.target.and_then(|handle| self.renderer.targets.get(&handle)).map_or(self.frame_size, |texture| texture.size)
+        self.target
+            .and_then(|handle| self.renderer.targets.get(&handle))
+            .map_or(self.frame_size, |texture| texture.size)
     }
 
     /// The size that the game asked for of the target that it draws into: the size of its
     /// screen coordinates. It differs from [`Player::size_of_target`] for a texture made smaller
     /// ([`target_size`]).
     pub(crate) fn asked_size_of_target(&self) -> (u32, u32) {
-        self.target.and_then(|handle| self.renderer.targets.get(&handle)).map_or(self.frame_size, |texture| texture.asked)
+        self.target
+            .and_then(|handle| self.renderer.targets.get(&handle))
+            .map_or(self.frame_size, |texture| texture.asked)
     }
 
     /// A shape record: the draws of the object from its geometry and material records, one
     /// for each pass of the state derived from its material.
     pub(crate) fn shape(&mut self, data: &[u8]) {
-        let (geometry, material, flags, light_count, ambient) = (word(data, 0), word(data, 4), word(data, 8), word(data, 12) as usize, word(data, 16));
+        let (geometry, material, flags, light_count, ambient) = (
+            word(data, 0),
+            word(data, 4),
+            word(data, 8),
+            word(data, 12) as usize,
+            word(data, 16),
+        );
         self.renderer.counts.shape_records += 1;
         let colours: [f32; 14] = core::array::from_fn(|i| float(data, 84 + i * 4));
         let bone_count = word(data, 140) as usize;
@@ -552,7 +654,9 @@ impl Player {
             self.renderer.counts.shape_missing += 1;
             return;
         }
-        let effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, effects_at + (e * EFFECT_STAGE_WORDS + i) * 4))));
+        let effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| {
+            core::array::from_fn(|e| core::array::from_fn(|i| word(data, effects_at + (e * EFFECT_STAGE_WORDS + i) * 4)))
+        });
         self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
         if let Some(fog) = self.stream.shape_fog {
             self.stream.fog = fog;
@@ -583,17 +687,34 @@ impl Player {
         // A particle system: its geometry for the frame comes from the record itself.
         if flags & 8 != 0 {
             let tail = bones_at + bone_count * 64;
-            let count = if data.len() >= tail + 32 { word(data, tail) as usize } else { 0 };
+            let count = if data.len() >= tail + 32 {
+                word(data, tail) as usize
+            } else {
+                0
+            };
             let at = tail + 32;
             if count == 0 || data.len() < at + count * 20 {
                 self.renderer.counts.shape_missing += 1;
                 return;
             }
             let axes: [f32; 6] = core::array::from_fn(|i| float(data, tail + 8 + i * 4));
-            self.renderer.particles(geometry, float(data, tail + 4), [axes[0], axes[1], axes[2]], [axes[3], axes[4], axes[5]], &data[at..at + count * 20]);
+            self.renderer.particles(
+                geometry,
+                float(data, tail + 4),
+                [axes[0], axes[1], axes[2]],
+                [axes[3], axes[4], axes[5]],
+                &data[at..at + count * 20],
+            );
         }
         self.stream.shape_queued = flags & 0x800 != 0;
-        self.draw_shape(geometry, material, flags, core::array::from_fn(|i| float(data, 20 + i * 4)), &colours, effects.as_ref());
+        self.draw_shape(
+            geometry,
+            material,
+            flags,
+            core::array::from_fn(|i| float(data, 20 + i * 4)),
+            &colours,
+            effects.as_ref(),
+        );
     }
 
     /// A geometry sent again under its handle (a morpher or a UV controller changed its
@@ -623,7 +744,10 @@ impl Player {
             return;
         }
         let gone = std::mem::take(&mut self.gone_geometries);
-        let orphans: Vec<u32> = gone.iter().flat_map(|&handle| self.instances_of(handle).into_iter().map(|(id, _)| id)).collect();
+        let orphans: Vec<u32> = gone
+            .iter()
+            .flat_map(|&handle| self.instances_of(handle).into_iter().map(|(id, _)| id))
+            .collect();
         for id in orphans {
             self.retained_remove(id);
             self.renderer.counts.geometry_orphans += 1;
@@ -635,11 +759,15 @@ impl Player {
     /// scan of the instances in a frame after a new record, and in every 64th frame while some
     /// wait (an instance gets its handles noted again within 64 frames).
     pub(crate) fn drop_gone_materials(&mut self) {
-        if self.gone_materials.is_empty() || !(std::mem::take(&mut self.gone_materials_new) || self.renderer.counts.frames % 64 == 0) {
+        if self.gone_materials.is_empty()
+            || !(std::mem::take(&mut self.gone_materials_new) || self.renderer.counts.frames % 64 == 0)
+        {
             return;
         }
         let named: FxHashSet<u32> = self.instances.values().map(|r| r.material).collect();
-        let (waiting, going): (Vec<u32>, Vec<u32>) = std::mem::take(&mut self.gone_materials).into_iter().partition(|handle| named.contains(handle));
+        let (waiting, going): (Vec<u32>, Vec<u32>) = std::mem::take(&mut self.gone_materials)
+            .into_iter()
+            .partition(|handle| named.contains(handle));
         self.gone_materials = waiting;
         if going.is_empty() {
             return;
@@ -693,7 +821,10 @@ impl Player {
 
     fn log_orphan(&self, id: u32) {
         let now = self.renderer.counts.frames;
-        let (first, last, name) = self.instance_made.get(&id).map_or((now, now, ""), |made| (made.first_frame, made.last_frame, &made.name[..]));
+        let (first, last, name) = self
+            .instance_made
+            .get(&id)
+            .map_or((now, now, ""), |made| (made.first_frame, made.last_frame, &made.name[..]));
         let bound = self.retained.first_slot_bound(id).unwrap_or([0.0; 4]);
         // In the main view's last list.
         let visible = self.retained.listed(id);
@@ -719,8 +850,13 @@ impl Player {
 
     /// The instances of the table whose geometry is `handle`.
     fn instances_of(&self, handle: u32) -> Vec<(u32, Retained)> {
-        let Some(ids) = self.by_geometry.get(&handle) else { return Vec::new() };
-        ids.iter().filter_map(|id| self.instances.get(id).map(|r| (*id, *r))).filter(|(_, r)| r.flags & INSTANCE_BLOCK != 0).collect()
+        let Some(ids) = self.by_geometry.get(&handle) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .filter_map(|id| self.instances.get(id).map(|r| (*id, *r)))
+            .filter(|(_, r)| r.flags & INSTANCE_BLOCK != 0)
+            .collect()
     }
 
     /// An instance record: into the table, by its id.
@@ -739,7 +875,14 @@ impl Player {
         };
         let id = word(data, 0);
         let frame = self.renderer.counts.frames;
-        self.instance_made.entry(id).or_insert_with(|| InstanceMade { first_frame: frame, last_frame: frame, name: String::from_utf8_lossy(data.get(176..).unwrap_or_default()).into() }).last_frame = frame;
+        self.instance_made
+            .entry(id)
+            .or_insert_with(|| InstanceMade {
+                first_frame: frame,
+                last_frame: frame,
+                name: String::from_utf8_lossy(data.get(176..).unwrap_or_default()).into(),
+            })
+            .last_frame = frame;
         if let Some((_, moved)) = move_check.filter(|(moved_id, _)| *moved_id == id) {
             self.renderer.counts.moves_checked += 1;
             if moved != retained {
@@ -791,7 +934,11 @@ impl Player {
         let set = set_flags & 0xFFFF;
         let uv = if set_flags >> 16 & 1 != 0 {
             self.renderer.counts.uv_bases += 1;
-            crate::uv_animation::UvAnimation { set, base: state, now: state }
+            crate::uv_animation::UvAnimation {
+                set,
+                base: state,
+                now: state,
+            }
         } else if let Some(uv) = geometry.uv.filter(|uv| uv.set == set) {
             self.renderer.counts.uv_steps += 1;
             crate::uv_animation::UvAnimation { now: state, ..uv }
@@ -853,7 +1000,10 @@ impl Player {
     /// start of the world.
     /// Engine-rules R2, R3, R22 (the skill wgpu-renderer-dev).
     pub(crate) fn walk_place(&mut self, id: u32) {
-        let world_view = self.plan.world_begun && scene::world_camera(self.plan.scene_kind) && self.stream.back_buffer && self.target.is_none();
+        let world_view = self.plan.world_begun
+            && scene::world_camera(self.plan.scene_kind)
+            && self.stream.back_buffer
+            && self.target.is_none();
         if !world_view {
             self.renderer.counts.walk_outside += 1;
             return;
@@ -873,15 +1023,29 @@ impl Player {
     /// ([`engine::views::Views::camera_set`]): the scene's origin and target come with its
     /// record, and its view and projection after it.
     fn note_view_facts(&mut self) {
-        let (view, projection, origin, target_size, values) = (self.stream.view, self.stream.projection, self.stream.origin, self.size_of_target(), self.retained_values);
-        self.views.note_facts(|| engine::views::ViewFacts { view, projection, origin, target_size, values });
+        let (view, projection, origin, target_size, values) = (
+            self.stream.view,
+            self.stream.projection,
+            self.stream.origin,
+            self.size_of_target(),
+            self.retained_values,
+        );
+        self.views.note_facts(|| engine::views::ViewFacts {
+            view,
+            projection,
+            origin,
+            target_size,
+            values,
+        });
     }
 
     /// A draw comes in the open scene of a view of its own: the items of its world's start go
     /// before it, once for the scene. Only after the world of the scene began
     /// ([`Player::view_world_begun`]): the sky of a view of the world camera draws first.
     pub(crate) fn view_world_items(&mut self) {
-        let Some(group) = self.views.open().filter(|_| self.view_world_begun && self.drawing()) else { return };
+        let Some(group) = self.views.open().filter(|_| self.view_world_begun && self.drawing()) else {
+            return;
+        };
         self.view_tier_item(group);
     }
 
@@ -926,7 +1090,10 @@ impl Player {
             open.tier_ended |= due.grass;
             open.tier_posted |= due.post;
         }
-        for (wanted, item) in [(due.grass, Item::TierEnd as fn(Box<WorldFacts>, Additions) -> Item), (due.post, Item::TierPost)] {
+        for (wanted, item) in [
+            (due.grass, Item::TierEnd as fn(Box<WorldFacts>, Additions) -> Item),
+            (due.post, Item::TierPost),
+        ] {
             if !wanted {
                 continue;
             }
@@ -974,7 +1141,8 @@ impl Player {
             engine::views::Place::New(group, run) => {
                 // A main view with a root of its own (the world camera on a mod's subject)
                 // starts the world of the frame at its first place.
-                let (extension, in_back_buffer) = (self.extension.is_some(), self.stream.back_buffer && self.target.is_none());
+                let (extension, in_back_buffer) =
+                    (self.extension.is_some(), self.stream.back_buffer && self.target.is_none());
                 for step in self.plan_now().view_first_place(extension, in_back_buffer, walk_marked) {
                     self.plan_step(step);
                 }
@@ -1015,10 +1183,12 @@ impl Player {
         self.stream.object_class = retained.class;
         // A draw of the flush of the engine's sorted queue (0x800), as the shape record has it.
         self.stream.shape_queued = flags & 0x800 != 0;
-        let mut effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects.then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
+        let mut effects: Option<[[u32; EFFECT_STAGE_WORDS]; 2]> = has_effects
+            .then(|| core::array::from_fn(|e| core::array::from_fn(|i| word(data, 12 + (e * EFFECT_STAGE_WORDS + i) * 4))));
         // An effect that moves in the play takes its chain's value, as in the table.
         if let (Some(stages), Some(material)) = (effects.as_mut(), self.renderer.materials.get(&retained.material)) {
-            self.retained.chain_stages(material, &self.stream.view, self.stream.position, stages);
+            self.retained
+                .chain_stages(material, &self.stream.view, self.stream.position, stages);
         }
         self.stream.shape_fog = has_fog.then(|| core::array::from_fn(|i| word(data, fog_at + i * 4)));
         if let Some(fog) = self.stream.shape_fog {
@@ -1043,7 +1213,11 @@ impl Player {
         let skinned = flags & 4 != 0;
         if skinned {
             let bones_at = lights_at + light_count * 4;
-            let bone_count = if data.len() >= bones_at + 4 { word(data, bones_at) as usize } else { 0 };
+            let bone_count = if data.len() >= bones_at + 4 {
+                word(data, bones_at) as usize
+            } else {
+                0
+            };
             if bone_count == 0 || data.len() < bones_at + 4 + bone_count * 64 {
                 self.renderer.counts.shape_missing += 1;
                 return;
@@ -1071,15 +1245,35 @@ impl Player {
             }
             world[15] = 1.0;
         }
-        self.draw_shape(retained.geometry, retained.material, retained.flags | (flags & 32), world, &retained.colours, effects.as_ref());
+        self.draw_shape(
+            retained.geometry,
+            retained.material,
+            retained.flags | (flags & 32),
+            world,
+            &retained.colours,
+            effects.as_ref(),
+        );
         self.stream.shape_bones = None;
     }
 
     /// The draws of a shape from its geometry and material records: one for each pass of
     /// the state derived from its material. `world` is the world matrix of the draw, with
     /// the flag 1 when it is relative to the origin of the scene.
-    pub(crate) fn draw_shape(&mut self, geometry: u32, material: u32, flags: u32, world: [f32; 16], colours: &[f32; 14], effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>) {
-        let Some((fvf, stride, entries, strips)) = self.renderer.geometries.get(&geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone())) else {
+    pub(crate) fn draw_shape(
+        &mut self,
+        geometry: u32,
+        material: u32,
+        flags: u32,
+        world: [f32; 16],
+        colours: &[f32; 14],
+        effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>,
+    ) {
+        let Some((fvf, stride, entries, strips)) = self
+            .renderer
+            .geometries
+            .get(&geometry)
+            .map(|g| (g.fvf, g.stride, g.entries, g.strips.clone()))
+        else {
             self.renderer.counts.shape_missing += 1;
             return;
         };
@@ -1117,7 +1311,11 @@ impl Player {
             // The flag 128: the draw goes into the picture of the character with the Code
             // Patch, which draws a pass that blends in a way of its own. The alpha of the
             // material is the last of its colours.
-            let (state, second) = if flags & 128 != 0 { state.code_patch_picture(colours[13]) } else { (state, None) };
+            let (state, second) = if flags & 128 != 0 {
+                state.code_patch_picture(colours[13])
+            } else {
+                (state, None)
+            };
             // The primitive type of Direct3D, the first index and the number of indexes.
             // The flag 64: lines, as a line list of the index entries of the geometry.
             if flags & 64 != 0 {
@@ -1146,7 +1344,15 @@ impl Player {
 
     /// Gives the shape in progress to the extension when it takes it: see [`Extension::hold`].
     /// True when the extension took it; then none of its passes is drawn.
-    pub(crate) fn hold_shape(&mut self, m: &material::Material, derived: &material::Derived, flags: u32, effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>, entries: u32, strips: &[u16]) -> bool {
+    pub(crate) fn hold_shape(
+        &mut self,
+        m: &material::Material,
+        derived: &material::Derived,
+        flags: u32,
+        effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>,
+        entries: u32,
+        strips: &[u16],
+    ) -> bool {
         let class = self.stream.object_class;
         // Flag 8 is a particle system, 64 lines, 128 a draw into the picture of the
         // character. Classes 1 to 8 are the sky and the glare of the sun, 10 the water plane.
@@ -1167,14 +1373,24 @@ impl Player {
         if self.parameters.is_none() && self.plan.scene_kind == scene::SCENE_WORLD {
             self.ask_frame();
         }
-        let Some((true, fog_range)) = self.parameters.as_ref().map(|p| (p.hold, p.fog_range)) else { return false };
+        let Some((true, fog_range)) = self.parameters.as_ref().map(|p| (p.hold, p.fog_range)) else {
+            return false;
+        };
         let shape = &self.stream.shape;
-        let Some(layout) = VertexLayout::of(shape.fvf, shape.stride) else { return false };
+        let Some(layout) = VertexLayout::of(shape.fvf, shape.stride) else {
+            return false;
+        };
         let frame = self.renderer.geometry_frame;
-        let Some((vertices, indexes, base_vertex, geometry_first)) = self.renderer.geometries.get_mut(&shape.geometry).filter(|g| entries <= g.entries).map(|g| {
-            g.drawn_in = frame;
-            (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)
-        }) else {
+        let Some((vertices, indexes, base_vertex, geometry_first)) = self
+            .renderer
+            .geometries
+            .get_mut(&shape.geometry)
+            .filter(|g| entries <= g.entries)
+            .map(|g| {
+                g.drawn_in = frame;
+                (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)
+            })
+        else {
             return false;
         };
         let pass = Pass::new(derived, 0, m, &self.renderer.textures, effects);
@@ -1225,11 +1441,18 @@ impl Player {
             origin,
             lights,
             maps,
-            depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
+            depth: [
+                (derived.depth[0] != 0) as u32,
+                (derived.depth[1] != 0) as u32,
+                derived.depth[2],
+            ],
             cull: derived.cull,
             stencil: derived.stencil,
         };
-        let in_place = self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&held));
+        let in_place = self
+            .extension
+            .as_ref()
+            .is_some_and(|extension| extension.held_in_place(&held));
         // The draws of the flush of the engine's queue wait for the sorted blends (`draw`). A held
         // shape of the flush waits with them, or it goes before them: before the mask whose
         // stencil it tests, when a sort adjust node in MWSE's ordered mode draws both.
@@ -1242,7 +1465,8 @@ impl Player {
             let facts = self.world_facts(false);
             self.items.push(Item::HeldHere(Box::new(held), Box::new(facts)));
         } else {
-            self.renderer.counts.held_sorted_fallback += crate::engine::alpha::sorted_by_engine(held.facts.class, &derived.blends, derived.no_sorter) as u64;
+            self.renderer.counts.held_sorted_fallback +=
+                crate::engine::alpha::sorted_by_engine(held.facts.class, &derived.blends, derived.no_sorter) as u64;
             self.taken.push(held);
         }
         self.renderer.counts.held += 1;

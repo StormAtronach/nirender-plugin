@@ -46,7 +46,11 @@ impl Part {
     }
 
     fn line(&self, name: &str) -> String {
-        let note = if self.note.is_empty() { String::new() } else { format!(", {}", self.note) };
+        let note = if self.note.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", self.note)
+        };
         format!("{name}: {} items, hash {:016x}{note}\n", self.count, self.hash)
     }
 }
@@ -84,7 +88,12 @@ pub unsafe fn run_pending() {
         return;
     }
     ASKED.store(false, Ordering::Release);
-    let ((source_textures, rendered_textures), buffers) = crate::capture::with_worker_stalled(|| (crate::ports::textures::state_part(), crate::ports::geometry::state_part(crate::engine::renderer())));
+    let ((source_textures, rendered_textures), buffers) = crate::capture::with_worker_stalled(|| {
+        (
+            crate::ports::textures::state_part(),
+            crate::ports::geometry::state_part(crate::engine::renderer()),
+        )
+    });
     let (instances, mode, generation) = crate::instance_stream::state_part(&t);
     let (mut geometry, geometry_records) = crate::geometry_stream::state_part(&t);
     geometry.note = MOVES.to_string();

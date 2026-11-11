@@ -51,24 +51,44 @@ impl DepthMerge {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("first-person depth merge"), source: wgpu::ShaderSource::Wgsl(format!("{}{}", depth::wgsl(), SHADER).into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("first-person depth merge"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("first-person depth merge"),
+            source: wgpu::ShaderSource::Wgsl(format!("{}{}", depth::wgsl(), SHADER).into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("first-person depth merge"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let _long = crate::LongStep::begin();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("first-person depth merge"),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             primitive: Default::default(),
             // The nearer of the two: the depth test keeps the world where it is nearer.
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -79,7 +99,12 @@ impl DepthMerge {
                 bias: Default::default(),
             }),
             multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[] }),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
             multiview_mask: None,
             cache: None,
         });
@@ -88,27 +113,57 @@ impl DepthMerge {
 
     /// Writes the depth of `arms` (the depth aspect of a copy with one sample) into `world`
     /// where it is nearer. The projections have the layout of Direct3D.
-    pub(crate) fn merge(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, arms: &wgpu::TextureView, world: &wgpu::TextureView, arms_projection: &[f32; 16], world_projection: &[f32; 16]) {
+    pub(crate) fn merge(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        arms: &wgpu::TextureView,
+        world: &wgpu::TextureView,
+        arms_projection: &[f32; 16],
+        world_projection: &[f32; 16],
+    ) {
         let perspective = arms_projection[11] == 1.0 && world_projection[11] == 1.0 && arms_projection[14] != 0.0;
         let ([arms_a, arms_b], [world_a, world_b]) = (depth::terms(arms_projection), depth::terms(world_projection));
         let values: [f32; 8] = [arms_a, arms_b, world_a, world_b, perspective as u32 as f32, 0.0, 0.0, 0.0];
-        let buffer = wgpu::util::DeviceExt::create_buffer_init(device, &wgpu::util::BufferInitDescriptor { label: Some("first-person depth merge"), contents: bytemuck::cast_slice(&values), usage: wgpu::BufferUsages::UNIFORM });
-        let group = gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-            label: Some("first-person depth merge"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(arms) },
-            ],
-        });
+        let buffer = wgpu::util::DeviceExt::create_buffer_init(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("first-person depth merge"),
+                contents: bytemuck::cast_slice(&values),
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        );
+        let group = gpu::frame_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("first-person depth merge"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(arms),
+                    },
+                ],
+            },
+        );
         crate::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("first-person depth merge"),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: world,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
             }),
             timestamp_writes: None,
             occlusion_query_set: None,

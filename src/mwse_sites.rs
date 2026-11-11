@@ -73,7 +73,9 @@ impl Form {
     }
 
     pub fn parse(text: &str) -> Option<Form> {
-        [Form::Push, Form::MovReg, Form::MovMem, Form::Data, Form::Unreached].into_iter().find(|form| form.name() == text)
+        [Form::Push, Form::MovReg, Form::MovMem, Form::Data, Form::Unreached]
+            .into_iter()
+            .find(|form| form.name() == text)
     }
 
     /// The form of a decoded instruction whose immediate is 32 bits.
@@ -119,12 +121,24 @@ impl<'a> Pe<'a> {
         let mut sections = Vec::new();
         for index in 0..count {
             let entry = table + 40 * index;
-            let name = String::from_utf8_lossy(pe.get(entry..entry + 8)?).trim_end_matches('\0').to_string();
+            let name = String::from_utf8_lossy(pe.get(entry..entry + 8)?)
+                .trim_end_matches('\0')
+                .to_string();
             let rva = dword(entry + 12)?;
             let (size, raw) = (dword(entry + 16)? as usize, dword(entry + 20)? as usize);
-            sections.push(Section { name, rva, bytes: &pe[raw.min(pe.len())..(raw + size).min(pe.len())] });
+            sections.push(Section {
+                name,
+                rva,
+                bytes: &pe[raw.min(pe.len())..(raw + size).min(pe.len())],
+            });
         }
-        let mut image = Pe { image_base: 0, entry: 0, sections, exports: Vec::new(), relocs: Vec::new() };
+        let mut image = Pe {
+            image_base: 0,
+            entry: 0,
+            sections,
+            exports: Vec::new(),
+            relocs: Vec::new(),
+        };
         // A PE32 optional header (magic 0x10B) with its data directories.
         if optional_size >= 96 && word(optional)? == 0x10B {
             image.entry = dword(optional + 16)?;
@@ -132,7 +146,10 @@ impl<'a> Pe<'a> {
             let directories = dword(optional + 92)? as usize;
             let directory = |index: usize| {
                 let at = optional + 96 + 8 * index;
-                (index < directories && at + 8 <= table).then(|| Some((dword(at)?, dword(at + 4)?))).flatten().filter(|&(rva, _)| rva != 0)
+                (index < directories && at + 8 <= table)
+                    .then(|| Some((dword(at)?, dword(at + 4)?)))
+                    .flatten()
+                    .filter(|&(rva, _)| rva != 0)
             };
             if let Some((rva, size)) = directory(0) {
                 image.exports = image.export_rvas(rva, size);
@@ -160,7 +177,10 @@ impl<'a> Pe<'a> {
         let (Some(count), Some(functions)) = (self.dword_at(rva + 20), self.dword_at(rva + 28)) else {
             return Vec::new();
         };
-        (0..count).filter_map(|index| self.dword_at(functions + 4 * index)).filter(|&function| function != 0 && !(rva..rva + size).contains(&function)).collect()
+        (0..count)
+            .filter_map(|index| self.dword_at(functions + 4 * index))
+            .filter(|&function| function != 0 && !(rva..rva + size).contains(&function))
+            .collect()
     }
 
     /// The HIGHLOW entries of the base relocation table.
@@ -282,11 +302,22 @@ fn near_target(instruction: &Instruction) -> Option<u64> {
 /// each byte of a relocated dword, 1 + the offset of the dword. A block in which a relocated
 /// dword lies in an instruction and is none of its constants is data: it has no edges.
 fn decode_block(text: &[u8], va: u32, start: u32, starts: &HashSet<u32>, reloc: &[u32]) -> Block {
-    let offset_of = |address: u64| address.checked_sub(u64::from(va)).filter(|&offset| offset < text.len() as u64).map(|offset| offset as u32);
+    let offset_of = |address: u64| {
+        address
+            .checked_sub(u64::from(va))
+            .filter(|&offset| offset < text.len() as u64)
+            .map(|offset| offset as u32)
+    };
     let mut decoder = Decoder::with_ip(32, text, u64::from(va), DecoderOptions::NONE);
     decoder.set_position(start as usize).expect("a block start is in the code");
     decoder.set_ip(u64::from(va) + u64::from(start));
-    let mut block = Block { start, insns: Vec::new(), edges: Vec::new(), data: false, leaves: false };
+    let mut block = Block {
+        start,
+        insns: Vec::new(),
+        edges: Vec::new(),
+        data: false,
+        leaves: false,
+    };
     let mut instruction = Instruction::default();
     while decoder.can_decode() {
         let at = decoder.position() as u32;
@@ -321,7 +352,12 @@ fn decode_block(text: &[u8], va: u32, start: u32, starts: &HashSet<u32>, reloc: 
             }
         }
         let form = Form::of(instruction.code()).filter(|_| constants[0] != 0);
-        block.insns.push(Insn { start: at, len: len as u8, constants, form });
+        block.insns.push(Insn {
+            start: at,
+            len: len as u8,
+            constants,
+            form,
+        });
         let target = near_target(&instruction).and_then(offset_of);
         match instruction.flow_control() {
             FlowControl::Next | FlowControl::XbeginXabortXend => {}
@@ -333,7 +369,10 @@ fn decode_block(text: &[u8], va: u32, start: u32, starts: &HashSet<u32>, reloc: 
             FlowControl::Call | FlowControl::IndirectCall => {
                 block.edges.extend(target.map(Edge::Address));
                 if ((at + len) as usize) < text.len() {
-                    block.edges.push(Edge::After { start: at + len, callee: target });
+                    block.edges.push(Edge::After {
+                        start: at + len,
+                        callee: target,
+                    });
                 }
                 break;
             }
@@ -374,7 +413,11 @@ impl Decode {
 
     /// The bytes of `.text` that only a kept instruction of a weak block holds.
     pub fn weak(&self) -> usize {
-        self.owner.iter().zip(&self.strong).filter(|&(&owner, &strong)| owner != 0 && !strong).count()
+        self.owner
+            .iter()
+            .zip(&self.strong)
+            .filter(|&(&owner, &strong)| owner != 0 && !strong)
+            .count()
     }
 }
 
@@ -418,7 +461,9 @@ impl Graph {
             let mut callers = waiting.remove(&self.blocks[index].start).unwrap_or_default();
             for &(caller, callee) in &before[index] {
                 match callee {
-                    Some(callee) if !self.index.get(&callee).is_some_and(|&called| back[called]) => waiting.entry(callee).or_default().push(caller),
+                    Some(callee) if !self.index.get(&callee).is_some_and(|&called| back[called]) => {
+                        waiting.entry(callee).or_default().push(caller)
+                    }
                     _ => callers.push(caller),
                 }
             }
@@ -451,9 +496,14 @@ impl Graph {
                 for edge in &self.blocks[index].edges {
                     let (target, strong) = match *edge {
                         Edge::Flow(target) | Edge::Address(target) => (target, true),
-                        Edge::After { start, callee } => (start, callee.is_none_or(|callee| live_at(callee).is_some_and(|called| back[called]))),
+                        Edge::After { start, callee } => (
+                            start,
+                            callee.is_none_or(|callee| live_at(callee).is_some_and(|called| back[called])),
+                        ),
                     };
-                    if let Some(next) = live_at(target).filter(|&next| strength[next].is_none() && (strong || pass == Strength::Weak)) {
+                    if let Some(next) =
+                        live_at(target).filter(|&next| strength[next].is_none() && (strong || pass == Strength::Weak))
+                    {
                         strength[next] = Some(pass);
                         work.push(next);
                     }
@@ -482,7 +532,9 @@ impl Graph {
             for &index in &order {
                 let insns = &blocks[index].insns;
                 let clash = insns.iter().find_map(|insn| {
-                    (insn.start..insn.start + u32::from(insn.len)).find(|&byte| owner[byte as usize] != 0 && owner[byte as usize] != insn.start + 1).map(|byte| (owner_block[byte as usize] as usize, byte))
+                    (insn.start..insn.start + u32::from(insn.len))
+                        .find(|&byte| owner[byte as usize] != 0 && owner[byte as usize] != insn.start + 1)
+                        .map(|byte| (owner_block[byte as usize] as usize, byte))
                 });
                 if let Some((other, byte)) = clash {
                     clashes.push((other, index, byte));
@@ -512,7 +564,10 @@ impl Graph {
         };
         let mut constant = vec![false; length];
         let mut immediate = vec![None; length];
-        for insn in (0..blocks.len()).filter(|&index| strength[index].is_some()).flat_map(|index| &blocks[index].insns) {
+        for insn in (0..blocks.len())
+            .filter(|&index| strength[index].is_some())
+            .flat_map(|index| &blocks[index].insns)
+        {
             for offset in insn.constants.into_iter().filter(|&offset| offset != 0) {
                 constant[(insn.start + u32::from(offset)) as usize] = true;
             }
@@ -522,7 +577,15 @@ impl Graph {
         }
         overlaps.sort_unstable();
         overlaps.dedup();
-        Decode { owner, strong, constant, immediate, blocks: blocks.len(), dropped: blocks.iter().filter(|block| block.data).count(), overlaps }
+        Decode {
+            owner,
+            strong,
+            constant,
+            immediate,
+            blocks: blocks.len(),
+            dropped: blocks.iter().filter(|block| block.data).count(),
+            overlaps,
+        }
     }
 }
 
@@ -544,7 +607,11 @@ pub fn reached(pe: &Pe) -> Option<Decode> {
             reloc[byte as usize] = offset + 1;
         }
     }
-    let mut graph = Graph { blocks: Vec::new(), index: HashMap::new(), roots: HashSet::new() };
+    let mut graph = Graph {
+        blocks: Vec::new(),
+        index: HashMap::new(),
+        roots: HashSet::new(),
+    };
     let mut starts = HashSet::new();
     let mut work = Vec::new();
     let add_root = |graph: &mut Graph, starts: &mut HashSet<u32>, work: &mut Vec<u32>, offset: u32| {
@@ -577,8 +644,12 @@ pub fn reached(pe: &Pe) -> Option<Decode> {
         }
         let decode = graph.resolve(bytes.len());
         let roots = graph.roots.len();
-        for offset in (0..bytes.len() as u32).filter(|&offset| reloc[offset as usize] == offset + 1 && !decode.constant[offset as usize]) {
-            let value = bytes.get(offset as usize..offset as usize + 4).map(|word| u32::from_le_bytes(word.try_into().unwrap()));
+        for offset in (0..bytes.len() as u32)
+            .filter(|&offset| reloc[offset as usize] == offset + 1 && !decode.constant[offset as usize])
+        {
+            let value = bytes
+                .get(offset as usize..offset as usize + 4)
+                .map(|word| u32::from_le_bytes(word.try_into().unwrap()));
             if let Some(target) = value.and_then(code_offset) {
                 add_root(&mut graph, &mut starts, &mut work, target);
             }
@@ -631,7 +702,11 @@ pub fn operands(pe: &[u8], inside: impl Fn(u32) -> bool) -> (BTreeMap<(u32, Form
         reach.weak = decode.weak();
         reach.blocks = decode.blocks;
         reach.dropped = decode.dropped;
-        let va = image.sections.iter().find(|section| section.name == ".text").map_or(0, |text| image.image_base.wrapping_add(text.rva));
+        let va = image
+            .sections
+            .iter()
+            .find(|section| section.name == ".text")
+            .map_or(0, |text| image.image_base.wrapping_add(text.rva));
         reach.overlaps = decode.overlaps.iter().map(|&offset| va.wrapping_add(offset)).collect();
     }
     (found, reach)
@@ -657,7 +732,11 @@ pub struct Reach {
 
 impl Reach {
     pub fn line(&self) -> String {
-        let share = if self.text == 0 { 0.0 } else { 100.0 * self.reached as f64 / self.text as f64 };
+        let share = if self.text == 0 {
+            0.0
+        } else {
+            100.0 * self.reached as f64 / self.text as f64
+        };
         let overlaps: Vec<String> = self.overlaps.iter().take(8).map(|address| format!("{address:#x}")).collect();
         format!(
             "reach: {} of {} bytes of .text ({share:.1} %, {} of them weak), {} blocks, {} dropped as data, {} overlaps{}{}, {} values inside other instructions removed",
@@ -782,16 +861,32 @@ pub fn check(pe: &[u8], baseline: &[Reviewed], followed: impl Fn(u32) -> bool) -
     for (&(value, form), &count) in &found {
         let func = function_of(value).expect("operands keeps values in the table");
         let (place, port) = place(func, value);
-        let reviewed = baseline.iter().any(|line| line.value == value && line.form == form && count <= line.count);
-        let site = format!("{value:#x}, {}+{:#x}, {} x{count}", func.name, value as usize - func.ea, form.name());
+        let reviewed = baseline
+            .iter()
+            .any(|line| line.value == value && line.form == form && count <= line.count);
+        let site = format!(
+            "{value:#x}, {}+{:#x}, {} x{count}",
+            func.name,
+            value as usize - func.ea,
+            form.name()
+        );
         let failure = match place {
             Place::CensusOnly => None,
             Place::Entry if reviewed => None,
-            Place::Entry => Some(format!("the entry of {}: a call, an entry jump or a vtable slot; not in the baseline", port.unwrap_or("?"))),
+            Place::Entry => Some(format!(
+                "the entry of {}: a call, an entry jump or a vtable slot; not in the baseline",
+                port.unwrap_or("?")
+            )),
             Place::Head if head_target(func, value) && followed(value) => None,
-            Place::Head => Some(format!("in the stolen bytes of {}: the detour will refuse the renderer", port.unwrap_or("?"))),
+            Place::Head => Some(format!(
+                "in the stolen bytes of {}: the detour will refuse the renderer",
+                port.unwrap_or("?")
+            )),
             Place::Body if followed(value) || ports::wraps_engine(func.ea) || reviewed => None,
-            Place::Body => Some(format!("in the body of {}: no port follows a patch there, and the baseline does not have it", port.unwrap_or("?"))),
+            Place::Body => Some(format!(
+                "in the body of {}: no port follows a patch there, and the baseline does not have it",
+                port.unwrap_or("?")
+            )),
         };
         match failure {
             Some(why) => {
@@ -804,7 +899,12 @@ pub fn check(pe: &[u8], baseline: &[Reviewed], followed: impl Fn(u32) -> bool) -
     }
     for line in baseline {
         if !found.contains_key(&(line.value, line.form)) {
-            report.stale.push(format!("stale: the baseline has {:#x} {} x{}, and the DLL does not", line.value, line.form.name(), line.count));
+            report.stale.push(format!(
+                "stale: the baseline has {:#x} {} x{}, and the DLL does not",
+                line.value,
+                line.form.name(),
+                line.count
+            ));
         }
     }
     report
@@ -858,7 +958,14 @@ mod tests {
         put(optional + 96 + 40, &reloc_rva.to_le_bytes());
         put(optional + 96 + 44, &(reloc_table.len() as u32).to_le_bytes());
         let mut at = raw;
-        for (index, (name, rva, bytes)) in [(&b".text\0\0\0"[..], TEXT_RVA, text), (b".rdata\0\0", rdata_rva, rdata), (b".reloc\0\0", reloc_rva, &reloc_table[..])].into_iter().enumerate() {
+        for (index, (name, rva, bytes)) in [
+            (&b".text\0\0\0"[..], TEXT_RVA, text),
+            (b".rdata\0\0", rdata_rva, rdata),
+            (b".reloc\0\0", reloc_rva, &reloc_table[..]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let entry = table + 40 * index;
             put(entry, name);
             put(entry + 8, &(bytes.len() as u32).to_le_bytes());
@@ -888,10 +995,14 @@ mod tests {
     #[test]
     fn the_three_forms_are_counted_and_a_displacement_is_not() {
         let text = code(&[
-            &[0x68], &le(DTOR_SITE),                   // push imm32
-            &[0xB9], &le(DTOR_SITE),                   // mov ecx, imm32
-            &[0xC7, 0x44, 0x24, 0x08], &le(DTOR_SITE), // mov dword [esp+8], imm32
-            &[0xA1], &le(DTOR_SITE),                   // mov eax, [DTOR_SITE]: a displacement
+            &[0x68],
+            &le(DTOR_SITE), // push imm32
+            &[0xB9],
+            &le(DTOR_SITE), // mov ecx, imm32
+            &[0xC7, 0x44, 0x24, 0x08],
+            &le(DTOR_SITE), // mov dword [esp+8], imm32
+            &[0xA1],
+            &le(DTOR_SITE), // mov eax, [DTOR_SITE]: a displacement
             &[0xC3],
         ]);
         let (found, reach) = operands(&made_up_pe(&text, &[], &[]), only(DTOR_SITE));
@@ -972,7 +1083,15 @@ mod tests {
         // jmp [eax*4 + table]; the table of two cases; case 1: ret; case 2: push site, ret.
         let table = 7;
         let (case1, case2) = (15, 16);
-        let text = code(&[&[0xFF, 0x24, 0x85], &le(va(table)), &le(va(case1)), &le(va(case2)), &[0xC3, 0x68], &le(DTOR_SITE), &[0xC3]]);
+        let text = code(&[
+            &[0xFF, 0x24, 0x85],
+            &le(va(table)),
+            &le(va(case1)),
+            &le(va(case2)),
+            &[0xC3, 0x68],
+            &le(DTOR_SITE),
+            &[0xC3],
+        ]);
         let (found, reach) = operands(&made_up_pe(&text, &[], &[3, table, table + 4]), only(DTOR_SITE));
         assert_eq!(found.get(&(DTOR_SITE, Form::Push)), Some(&1), "{reach:?}");
     }
@@ -983,10 +1102,21 @@ mod tests {
         // relocated entries; a function that only the table reaches, with push site.
         let function = 13;
         let never = 19;
-        let text = code(&[&[0xE8], &le(never - 5), &le(va(function)), &le(va(function)), &[0x68], &le(DTOR_SITE), &[0xC3, 0xCC]]);
+        let text = code(&[
+            &[0xE8],
+            &le(never - 5),
+            &le(va(function)),
+            &le(va(function)),
+            &[0x68],
+            &le(DTOR_SITE),
+            &[0xC3, 0xCC],
+        ]);
         let (found, reach) = operands(&made_up_pe(&text, &[], &[5, 9]), only(DTOR_SITE));
         assert_eq!(found.get(&(DTOR_SITE, Form::Push)), Some(&1), "{reach:?}");
-        assert!(reach.dropped >= 1, "the fall-through into the table was not dropped: {reach:?}");
+        assert!(
+            reach.dropped >= 1,
+            "the fall-through into the table was not dropped: {reach:?}"
+        );
     }
 
     #[test]
@@ -994,7 +1124,16 @@ mod tests {
         // push offset table; ret; the table; the function of its entries, with push site.
         let table = 6;
         let function = 14;
-        let text = code(&[&[0x68], &le(va(table)), &[0xC3], &le(va(function)), &le(va(function)), &[0x68], &le(DTOR_SITE), &[0xC3]]);
+        let text = code(&[
+            &[0x68],
+            &le(va(table)),
+            &[0xC3],
+            &le(va(function)),
+            &le(va(function)),
+            &[0x68],
+            &le(DTOR_SITE),
+            &[0xC3],
+        ]);
         let (found, reach) = operands(&made_up_pe(&text, &[], &[1, table, table + 4]), only(DTOR_SITE));
         assert_eq!(found.get(&(DTOR_SITE, Form::Push)), Some(&1), "{reach:?}");
         assert!(reach.dropped >= 1, "{reach:?}");
@@ -1006,7 +1145,15 @@ mod tests {
         // after it, bytes with no relocation that decode as jmp to 10; from 10 the bytes decode
         // as mov eax, imm32 over the push of the real function at 11 that nothing reaches. The
         // site lies inside that mov: it must count, never be removed.
-        let text = code(&[&[0xE8], &le(12), &[0xE9], &le(0), &[0xB8, 0x68], &le(DTOR_SITE), &[0xC3, 0xCC]]);
+        let text = code(&[
+            &[0xE8],
+            &le(12),
+            &[0xE9],
+            &le(0),
+            &[0xB8, 0x68],
+            &le(DTOR_SITE),
+            &[0xC3, 0xCC],
+        ]);
         let (found, reach) = operands(&made_up_pe(&text, &[], &[]), only(DTOR_SITE));
         assert_eq!(found.get(&(DTOR_SITE, Form::Unreached)), Some(&1), "{reach:?}");
         assert_eq!(reach.removed, 0, "{reach:?}");
@@ -1018,10 +1165,21 @@ mod tests {
         // call 7, where the bytes from 7 are int3: the call never returns, so the mov from 5 is
         // weak; the strong block at 7 takes its bytes, and the mov's block is out. Its jmp to
         // 15 was the only way to the push there: that block is out too, and the site is unreached.
-        let text = code(&[&[0xE8], &le(2), &[0xB8, 0x90, 0xCC, 0x90, 0x90, 0xE9], &le(0), &[0x68], &le(DTOR_SITE), &[0xC3]]);
+        let text = code(&[
+            &[0xE8],
+            &le(2),
+            &[0xB8, 0x90, 0xCC, 0x90, 0x90, 0xE9],
+            &le(0),
+            &[0x68],
+            &le(DTOR_SITE),
+            &[0xC3],
+        ]);
         let (found, reach) = operands(&made_up_pe(&text, &[], &[]), only(DTOR_SITE));
         assert_eq!(found.get(&(DTOR_SITE, Form::Unreached)), Some(&1), "{reach:?}");
-        assert!(reach.overlaps.is_empty(), "a strong and a weak block are no overlap: {reach:?}");
+        assert!(
+            reach.overlaps.is_empty(),
+            "a strong and a weak block are no overlap: {reach:?}"
+        );
     }
 
     #[test]
@@ -1080,8 +1238,16 @@ mod tests {
         assert!(report.failures.is_empty(), "{:?}", report.failures);
         let report = check(&pe, &[], |value| value != DTOR_SITE && followed(value));
         assert_eq!(report.failures.len(), 1);
-        assert!(report.failures[0].contains("0x6a9d83, NiDX8Renderer::deleting_dtor+0x3"), "{}", report.failures[0]);
-        assert!(report.failures[0].contains("in the stolen bytes of NiDX8Renderer::deleting_dtor"), "{}", report.failures[0]);
+        assert!(
+            report.failures[0].contains("0x6a9d83, NiDX8Renderer::deleting_dtor+0x3"),
+            "{}",
+            report.failures[0]
+        );
+        assert!(
+            report.failures[0].contains("in the stolen bytes of NiDX8Renderer::deleting_dtor"),
+            "{}",
+            report.failures[0]
+        );
     }
 
     #[test]
@@ -1090,10 +1256,17 @@ mod tests {
         let push: &[u8] = &code(&[&[0x68], &le(0x6A9E10)]);
         let pe = made_up_pe(&code(&[push, &[0xC3]]), &[], &[]);
         assert_eq!(check(&pe, &[], followed).failures.len(), 1);
-        let reviewed = Reviewed { value: 0x6A9E10, form: Form::Push, count: 1 };
+        let reviewed = Reviewed {
+            value: 0x6A9E10,
+            form: Form::Push,
+            count: 1,
+        };
         assert!(check(&pe, &[reviewed.clone()], followed).failures.is_empty());
         // The same value in another form, or one more time, is a new occurrence.
-        let mov = Reviewed { form: Form::MovReg, ..reviewed.clone() };
+        let mov = Reviewed {
+            form: Form::MovReg,
+            ..reviewed.clone()
+        };
         assert_eq!(check(&pe, &[mov], followed).failures.len(), 1);
         let twice = made_up_pe(&code(&[push, push, &[0xC3]]), &[], &[]);
         assert_eq!(check(&twice, &[reviewed], followed).failures.len(), 1);
@@ -1103,8 +1276,18 @@ mod tests {
     fn a_baseline_line_needs_a_reason_and_a_missing_value_is_stale() {
         assert!(parse_baseline("0x6a9e10 push 2").is_err());
         let lines = parse_baseline("# a comment\n0x6a9e10 push 2 the expected callee of the call at 0x6A9D83\n").unwrap();
-        assert_eq!(lines, vec![Reviewed { value: 0x6A9E10, form: Form::Push, count: 2 }]);
-        assert_eq!(parse_baseline("0x6a9e10 unreached 1 a table").unwrap()[0].form, Form::Unreached);
+        assert_eq!(
+            lines,
+            vec![Reviewed {
+                value: 0x6A9E10,
+                form: Form::Push,
+                count: 2
+            }]
+        );
+        assert_eq!(
+            parse_baseline("0x6a9e10 unreached 1 a table").unwrap()[0].form,
+            Form::Unreached
+        );
         let report = check(&made_up_pe(&[0x90, 0x90, 0xC3], &[], &[]), &lines, followed);
         assert_eq!(report.stale.len(), 1);
         assert!(report.failures.is_empty());
@@ -1112,7 +1295,8 @@ mod tests {
 
     /// The baseline of the repository.
     fn baseline() -> Vec<Reviewed> {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/mwse_sites.baseline")).expect("tools/mwse_sites.baseline");
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/mwse_sites.baseline"))
+            .expect("tools/mwse_sites.baseline");
         parse_baseline(&text).unwrap_or_else(|error| panic!("tools/mwse_sites.baseline: {error}"))
     }
 
@@ -1136,8 +1320,19 @@ mod tests {
             println!("{line}");
         }
         println!("{}", report.reach.line());
-        println!("{path}: {} places in ported or census functions, {} failed, {} stale baseline lines; {:.1} s", report.lines.len(), report.failures.len(), report.stale.len(), started.elapsed().as_secs_f64());
-        assert!(report.failures.is_empty(), "{} places of MWSE.dll are not followed:\n{}", report.failures.len(), report.failures.join("\n"));
+        println!(
+            "{path}: {} places in ported or census functions, {} failed, {} stale baseline lines; {:.1} s",
+            report.lines.len(),
+            report.failures.len(),
+            report.stale.len(),
+            started.elapsed().as_secs_f64()
+        );
+        assert!(
+            report.failures.is_empty(),
+            "{} places of MWSE.dll are not followed:\n{}",
+            report.failures.len(),
+            report.failures.join("\n")
+        );
     }
 
     /// The null test of the decode on a real DLL (`NIRENDER_MWSE_DLL`, the DLL of 2026-11-09,
@@ -1156,8 +1351,20 @@ mod tests {
             eprintln!("skipped: {path} names no 0x6a9d83");
             return;
         }
-        assert!(found.keys().all(|&(_, form)| matches!(form, Form::Push | Form::MovReg | Form::MovMem)), "{found:?}");
+        assert!(
+            found
+                .keys()
+                .all(|&(_, form)| matches!(form, Form::Push | Form::MovReg | Form::MovMem)),
+            "{found:?}"
+        );
         let report = check(&pe, &baseline(), |value| value != DTOR_SITE && followed(value));
-        assert!(report.failures.iter().any(|line| line.contains("0x6a9d83, NiDX8Renderer::deleting_dtor+0x3")), "{:?}", report.failures);
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|line| line.contains("0x6a9d83, NiDX8Renderer::deleting_dtor+0x3")),
+            "{:?}",
+            report.failures
+        );
     }
 }

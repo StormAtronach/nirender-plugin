@@ -8,14 +8,14 @@ use core::mem::transmute;
 use crate::d3d::{
     device_add_ref, device_release, device_set_texture, device_set_transform, D3DRS_TEXTUREFACTOR, D3DRS_WRAP0, D3DRS_WRAP1,
     D3DTSS_ADDRESSU, D3DTSS_ADDRESSV, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2, D3DTSS_ALPHAOP, D3DTSS_BUMPENVLOFFSET,
-    D3DTSS_BUMPENVLSCALE, D3DTSS_BUMPENVMAT00, D3DTSS_BUMPENVMAT01, D3DTSS_BUMPENVMAT10, D3DTSS_BUMPENVMAT11, D3DTSS_COLORARG1,
-    D3DTSS_COLORARG2, D3DTSS_COLOROP, D3DTSS_MAGFILTER, D3DTSS_MINFILTER, D3DTSS_MIPFILTER, D3DTSS_TEXCOORDINDEX,
-    D3DTSS_TEXTURETRANSFORMFLAGS, D3DTS_TEXTURE0,
+    D3DTSS_BUMPENVLSCALE, D3DTSS_BUMPENVMAT00, D3DTSS_BUMPENVMAT01, D3DTSS_BUMPENVMAT10, D3DTSS_BUMPENVMAT11,
+    D3DTSS_COLORARG1, D3DTSS_COLORARG2, D3DTSS_COLOROP, D3DTSS_MAGFILTER, D3DTSS_MINFILTER, D3DTSS_MIPFILTER,
+    D3DTSS_TEXCOORDINDEX, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTS_TEXTURE0,
 };
 use crate::engine::{
-    self, eh_vector_constructor_iterator, eh_vector_destructor_iterator, ni_object_net_ctor, ni_pointer_assign, ni_pointer_set,
-    virtual_at, NI_POINTER_CTOR, NI_POINTER_DTOR, NI_REF_OBJECT_COUNT, VTBL_NI_ALPHA_PROPERTY, VTBL_NI_DX8_TEXTURE_PASS,
-    VTBL_NI_REF_OBJECT,
+    self, eh_vector_constructor_iterator, eh_vector_destructor_iterator, ni_object_net_ctor, ni_pointer_assign,
+    ni_pointer_set, virtual_at, NI_POINTER_CTOR, NI_POINTER_DTOR, NI_REF_OBJECT_COUNT, VTBL_NI_ALPHA_PROPERTY,
+    VTBL_NI_DX8_TEXTURE_PASS, VTBL_NI_REF_OBJECT,
 };
 use crate::gen::layouts::{
     NiAlphaProperty as AP, NiDX8ConfigurableTexturePipeline as CTP, NiDX8RenderState as RS, NiDX8Renderer as R,
@@ -153,7 +153,9 @@ unsafe fn stage_group_set_stage_at_index(group: usize, index: u32, stage: usize)
 
 /// 0x6C1FA0 `NiDX8TexturePass::setTextureFiltering`. `this` is a texture stage.
 unsafe fn stage_set_texture_filtering(stage: usize, renderer: usize, mipmapped: u32, flag_b: u32) {
-    transmute::<usize, unsafe extern "thiscall" fn(usize, usize, u32, u32) -> u32>(0x6C1FA0)(stage, renderer, mipmapped, flag_b);
+    transmute::<usize, unsafe extern "thiscall" fn(usize, usize, u32, u32) -> u32>(0x6C1FA0)(
+        stage, renderer, mipmapped, flag_b,
+    );
 }
 
 /// 0x6C1EE0 `NiDX8TexturePass::setTextureWrapping`. `this` is a texture stage.
@@ -242,7 +244,15 @@ pub unsafe fn envmap_lit() -> bool {
 /// Makes the call at 0x6C1BA4 with the registers that the game code has there. ECX and EBP
 /// are the render state of the renderer. EDI is the render state that the function read at
 /// entry. ESI is the stage. EBX is the renderer. EDX is the value. EAX is the stage number.
-unsafe fn texcoord_index_call(target: usize, rs: usize, rs_at_entry: usize, this: usize, renderer: usize, stage: u32, value: u32) {
+unsafe fn texcoord_index_call(
+    target: usize,
+    rs: usize,
+    rs_at_entry: usize,
+    this: usize,
+    renderer: usize,
+    stage: u32,
+    value: u32,
+) {
     if target == 0x65EDE0 {
         render_state::set_texture_stage_state_with_save(rs, stage, D3DTSS_TEXCOORDINDEX, value, 0);
         return;
@@ -373,7 +383,8 @@ pub unsafe fn texture_stage_update_renderer(this: usize, renderer: usize) -> u8 
         // gives the stack slot of its `renderer` argument.
         let mut created: u32 = 0;
         let mut mipmapped: u32 = 0;
-        let prepare: unsafe extern "thiscall" fn(usize, usize, *mut u32, *mut u32) -> usize = transmute(virtual_at(manager, 8));
+        let prepare: unsafe extern "thiscall" fn(usize, usize, *mut u32, *mut u32) -> usize =
+            transmute(virtual_at(manager, 8));
         let d3d_texture = prepare(manager, texture, &mut created, &mut mipmapped);
         let stage: u32 = rd(this, TS::stage);
         let slot = texture_slot(rs, stage);
@@ -386,7 +397,11 @@ pub unsafe fn texture_stage_update_renderer(this: usize, renderer: usize) -> u8 
             let device: usize = rd(renderer, R::d3dDevice);
             let rs_now: usize = rd(renderer, R::renderState);
             if transform_flags != 0 {
-                device_set_transform(device, rd::<u32>(this, TS::stage).wrapping_add(D3DTS_TEXTURE0), this + TS::textureMatrix);
+                device_set_transform(
+                    device,
+                    rd::<u32>(this, TS::stage).wrapping_add(D3DTS_TEXTURE0),
+                    this + TS::textureMatrix,
+                );
             }
             render_state::set_texture_stage_state_with_save(
                 rs_now,
@@ -544,7 +559,11 @@ pub unsafe fn ctor(this: usize, renderer: usize, caps: usize, rs: usize, texture
     wr::<u32>(this, CTP::field_B04, 0);
     init_alpha_state_templates(this);
     let memory = engine::operator_new(TP::SIZE);
-    let pass = if memory != 0 { texture_pass_ctor(memory, rd(this, CTP::renderer)) } else { 0 };
+    let pass = if memory != 0 {
+        texture_pass_ctor(memory, rd(this, CTP::renderer))
+    } else {
+        0
+    };
     pointer_assign(this + CTP::combiners, pass);
     this
 }
@@ -736,7 +755,16 @@ pub unsafe fn init_alpha_state_templates(this: usize) {
         wr::<u32>(g(FILTER_MAGNIFY), entry * 12, 1);
         wr::<u32>(g(FILTER_MIP), entry * 12, 0);
     }
-    for (offset, value) in [(0x18, 1u32), (0x1C, 1), (0x10, 1), (0x14, 3), (0x08, 3), (0x0C, 1), (0x00, 3), (0x04, 3)] {
+    for (offset, value) in [
+        (0x18, 1u32),
+        (0x1C, 1),
+        (0x10, 1),
+        (0x14, 3),
+        (0x08, 3),
+        (0x0C, 1),
+        (0x00, 3),
+        (0x04, 3),
+    ] {
         wr::<u32>(g(ADDRESS_REMAP_U), offset, value);
     }
 
@@ -782,8 +810,19 @@ pub unsafe fn build_pass(
 ) -> u32 {
     crate::shadow::touch(&build_pass_port::STATE);
     let pass: usize = rd(this, CTP_CURRENT_PASS);
-    let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32, usize, usize, usize, usize) -> u32 = transmute(virtual_at(pass, 8));
-    f(pass, property_state, effect_state, has_normals as u32, texture_sets, geometry_data, skin_instance, world_transform, world_bound)
+    let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32, usize, usize, usize, usize) -> u32 =
+        transmute(virtual_at(pass, 8));
+    f(
+        pass,
+        property_state,
+        effect_state,
+        has_normals as u32,
+        texture_sets,
+        geometry_data,
+        skin_instance,
+        world_transform,
+        world_bound,
+    )
 }
 
 /// 0x6B9C30 `NiDX8ConfigurableTexturePipeline::loadBinary`: a jump to slot 0xC of the pass.
@@ -866,8 +905,19 @@ pub unsafe fn select_and_link_pass(
         wr::<u32>(this, CTP::field_B04, 0);
     }
     let pass: usize = rd(this, CTP_CURRENT_PASS);
-    let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32, usize, usize, usize, usize) -> u32 = transmute(virtual_at(pass, 0x10));
-    f(pass, property_state, effect_state, has_normals as u32, texture_sets, geometry_data, skin_instance, transform, world_bound)
+    let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32, usize, usize, usize, usize) -> u32 =
+        transmute(virtual_at(pass, 0x10));
+    f(
+        pass,
+        property_state,
+        effect_state,
+        has_normals as u32,
+        texture_sets,
+        geometry_data,
+        skin_instance,
+        transform,
+        world_bound,
+    )
 }
 
 /// 0x6B9D30 `NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables`. Takes the
@@ -898,8 +948,19 @@ pub unsafe fn ensure_and_register_streamables(
         }
     }
     let pass: usize = rd(this, CTP_CURRENT_PASS);
-    let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32, usize, usize, usize, usize) -> u32 = transmute(virtual_at(pass, 0x14));
-    f(pass, property_state, effect_state, has_normals as u32, texture_sets, geometry_data, skin_instance, transform, world_bound)
+    let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32, usize, usize, usize, usize) -> u32 =
+        transmute(virtual_at(pass, 0x14));
+    f(
+        pass,
+        property_state,
+        effect_state,
+        has_normals as u32,
+        texture_sets,
+        geometry_data,
+        skin_instance,
+        transform,
+        world_bound,
+    )
 }
 
 /// 0x6B9D80 `NiDX8ConfigurableTexturePipeline::setCameraData`. The location is a `vec3` by
@@ -911,7 +972,11 @@ pub unsafe fn ensure_and_register_streamables(
 /// each at three floats.
 pub unsafe fn set_camera_data(this: usize, direction: usize, up: usize, right: usize, x: u32, y: u32, z: u32) {
     crate::shadow::touch(&set_camera_data_port::STATE);
-    for (column, axis) in [(CTP::worldRightX, right), (CTP::worldUpX, up), (CTP::worldDirectionX, direction)] {
+    for (column, axis) in [
+        (CTP::worldRightX, right),
+        (CTP::worldUpX, up),
+        (CTP::worldDirectionX, direction),
+    ] {
         for row in 0..3 {
             wr::<u32>(this, column + row * 12, x87_pass(rd(axis, row * 4)));
         }
@@ -982,8 +1047,20 @@ pub unsafe fn build_skin_partition_pass(
 ) -> u32 {
     crate::shadow::touch(&build_skin_partition_pass_port::STATE);
     let pass: usize = rd(this, CTP_CURRENT_PASS);
-    let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32, usize, usize, usize, usize, usize) -> u32 = transmute(virtual_at(pass, 4));
-    f(pass, property_state, effect_state, has_normals as u32, texture_sets, geometry_data, skin_instance, partition, transform, world_bound)
+    let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32, usize, usize, usize, usize, usize) -> u32 =
+        transmute(virtual_at(pass, 4));
+    f(
+        pass,
+        property_state,
+        effect_state,
+        has_normals as u32,
+        texture_sets,
+        geometry_data,
+        skin_instance,
+        partition,
+        transform,
+        world_bound,
+    )
 }
 
 /// The colour operation, the alpha operation and their arguments, for the three stages of the
@@ -1045,7 +1122,11 @@ pub unsafe fn init_pipeline_state(this: usize) {
     let groups: usize = rd(rd::<usize>(this, CTP::combiners), TP::TArray_18_storage);
     if rd::<usize>(groups, 0) == 0 {
         let memory = engine::operator_new(STAGE_GROUP_SIZE);
-        let group = if memory != 0 { engine::texture_pass_stage_group_ctor(memory) } else { 0 };
+        let group = if memory != 0 {
+            engine::texture_pass_stage_group_ctor(memory)
+        } else {
+            0
+        };
         for (index, values) in DEFAULT_STAGES.into_iter().enumerate() {
             let member = CTP_STAGES[index];
             let stage = || rd::<usize>(this, member);
@@ -1082,7 +1163,11 @@ pub unsafe fn init_pipeline_state(this: usize) {
 
     wr::<u32>(g(G_MAX_VERTEX_SHADER_CONST), 0, rd(this, CTP::d3dCaps_MaxVertexShaderConst));
     wr::<u32>(g(G_VERTEX_SHADER_VERSION), 0, rd(this, CTP::d3dCaps_VertexShaderVersion));
-    wr::<u32>(g(G_MAX_SIMULTANEOUS_TEXTURES), 0, rd(this, CTP::d3dCaps_MaxSimultaneousTextures));
+    wr::<u32>(
+        g(G_MAX_SIMULTANEOUS_TEXTURES),
+        0,
+        rd(this, CTP::d3dCaps_MaxSimultaneousTextures),
+    );
     let blend_stages: u32 = rd(this, CTP::d3dCaps_MaxTextureBlendStages);
     wr(g(G_MAX_TEXTURE_BLEND_STAGES), 0, blend_stages);
     if blend_stages > 8 {
@@ -1107,11 +1192,21 @@ pub unsafe fn init_filtering_and_address_caps(this: usize) {
     wr::<u32>(g(FILTER_MIP), 0, 0);
     // Entries 1 to 5 of the remapper, in the order of the game code.
     for (offset, value) in [
-        (0x10, 2u32), (0x0C, 2), (0x14, 0),
-        (0x1C, 2), (0x18, 2), (0x20, 2),
-        (0x28, 1), (0x24, 1), (0x2C, 1),
-        (0x34, 1), (0x30, 1), (0x38, 2),
-        (0x40, 2), (0x3C, 2), (0x44, 1),
+        (0x10, 2u32),
+        (0x0C, 2),
+        (0x14, 0),
+        (0x1C, 2),
+        (0x18, 2),
+        (0x20, 2),
+        (0x28, 1),
+        (0x24, 1),
+        (0x2C, 1),
+        (0x34, 1),
+        (0x30, 1),
+        (0x38, 2),
+        (0x40, 2),
+        (0x3C, 2),
+        (0x44, 1),
     ] {
         wr::<u32>(g(FILTER_REMAP), offset, value);
     }
@@ -1120,7 +1215,11 @@ pub unsafe fn init_filtering_and_address_caps(this: usize) {
     let flags: u32 = rd(this, CTP_FLAGS);
     wr(this, CTP_FLAGS, if address_caps & 0x10 != 0 { flags | 1 } else { flags & !1 });
     let flags: u32 = rd(this, CTP_FLAGS);
-    wr(this, CTP_FLAGS, if address_caps & 4 != 0 { flags | 0x80 } else { flags & !0x80 });
+    wr(
+        this,
+        CTP_FLAGS,
+        if address_caps & 4 != 0 { flags | 0x80 } else { flags & !0x80 },
+    );
     let texture_caps: u32 = rd(this, CTP::d3dCaps_TextureCaps);
     let flags: u32 = rd(this, CTP_FLAGS);
     if texture_caps & 0x400 != 0 {
@@ -1233,117 +1332,226 @@ unsafe fn init_filtering_and_address_caps_regions(set: &mut Regions, this: usize
 // Ports
 // ---------------------------------------------------------------------------------------------
 
-port_thiscall!(texture_stage_ctor_port, 0x6C1930, "NiDX8TextureStage::ctor",
+port_thiscall!(
+    texture_stage_ctor_port,
+    0x6C1930,
+    "NiDX8TextureStage::ctor",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| texture_stage_ctor_regions(set, this),
-    rust = texture_stage_ctor);
+    rust = texture_stage_ctor
+);
 
-port_thiscall!(texture_stage_dtor_port, 0x6C1A70, "NiDX8TextureStage::dtor",
+port_thiscall!(
+    texture_stage_dtor_port,
+    0x6C1A70,
+    "NiDX8TextureStage::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| texture_stage_dtor_regions(set, this),
-    rust = texture_stage_dtor);
+    rust = texture_stage_dtor
+);
 
-port_thiscall!(texture_stage_update_renderer_port, 0x6C1B00, "NiDX8TextureStage::updateRenderer",
+port_thiscall!(
+    texture_stage_update_renderer_port,
+    0x6C1B00,
+    "NiDX8TextureStage::updateRenderer",
     fn(this, renderer: usize) -> u8,
     compare_eax = true,
     regions = |set| texture_stage_update_renderer_regions(set, this, renderer),
-    rust = texture_stage_update_renderer);
+    rust = texture_stage_update_renderer
+);
 
-port_thiscall!(ctor_port, 0x6B8DA0, "NiDX8ConfigurableTexturePipeline::ctor",
+port_thiscall!(
+    ctor_port,
+    0x6B8DA0,
+    "NiDX8ConfigurableTexturePipeline::ctor",
     fn(this, renderer: usize, caps: usize, rs: usize, texture_manager: usize, unused: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = ctor);
+    rust = ctor
+);
 
-port_thiscall!(dtor_port, 0x6B8EE0, "NiDX8ConfigurableTexturePipeline::dtor",
+port_thiscall!(
+    dtor_port,
+    0x6B8EE0,
+    "NiDX8ConfigurableTexturePipeline::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = dtor);
+    rust = dtor
+);
 
-port_cdecl!(create_port, 0x6B8FF0, "NiDX8ConfigurableTexturePipeline::create",
+port_cdecl!(
+    create_port,
+    0x6B8FF0,
+    "NiDX8ConfigurableTexturePipeline::create",
     fn(renderer: usize, caps: usize, rs: usize, texture_manager: usize, flag: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = create);
+    rust = create
+);
 
-port_thiscall!(init_alpha_state_templates_port, 0x6B90E0, "NiDX8ConfigurableTexturePipeline::initAlphaStateTemplates",
+port_thiscall!(
+    init_alpha_state_templates_port,
+    0x6B90E0,
+    "NiDX8ConfigurableTexturePipeline::initAlphaStateTemplates",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = init_alpha_state_templates);
+    rust = init_alpha_state_templates
+);
 
-port_thiscall!(build_pass_port, 0x6B9C20, "NiDX8ConfigurableTexturePipeline::buildPass",
-    fn(this, property_state: usize, effect_state: usize, has_normals: u8, texture_sets: u32, geometry_data: usize,
-       skin_instance: usize, world_transform: usize, world_bound: usize) -> u32,
+port_thiscall!(
+    build_pass_port,
+    0x6B9C20,
+    "NiDX8ConfigurableTexturePipeline::buildPass",
+    fn(
+        this,
+        property_state: usize,
+        effect_state: usize,
+        has_normals: u8,
+        texture_sets: u32,
+        geometry_data: usize,
+        skin_instance: usize,
+        world_transform: usize,
+        world_bound: usize,
+    ) -> u32,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = build_pass);
+    rust = build_pass
+);
 
-port_thiscall!(load_binary_port, 0x6B9C30, "NiDX8ConfigurableTexturePipeline::loadBinary",
+port_thiscall!(
+    load_binary_port,
+    0x6B9C30,
+    "NiDX8ConfigurableTexturePipeline::loadBinary",
     fn(this, a: u32, b: u32, c: u32, d: u32) -> u32,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = load_binary);
+    rust = load_binary
+);
 
-port_thiscall!(select_and_link_pass_port, 0x6B9C40, "NiDX8ConfigurableTexturePipeline::selectAndLinkPass",
-    fn(this, property_state: usize, effect_state: usize, has_normals: u8, texture_sets: u32, geometry_data: usize,
-       skin_instance: usize, transform: usize, world_bound: usize) -> u32,
+port_thiscall!(
+    select_and_link_pass_port,
+    0x6B9C40,
+    "NiDX8ConfigurableTexturePipeline::selectAndLinkPass",
+    fn(
+        this,
+        property_state: usize,
+        effect_state: usize,
+        has_normals: u8,
+        texture_sets: u32,
+        geometry_data: usize,
+        skin_instance: usize,
+        transform: usize,
+        world_bound: usize,
+    ) -> u32,
     compare_eax = true,
     regions = |set| select_and_link_pass_regions(set, this, property_state),
-    rust = select_and_link_pass);
+    rust = select_and_link_pass
+);
 
-port_thiscall!(ensure_and_register_streamables_port, 0x6B9D30, "NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables",
-    fn(this, property_state: usize, effect_state: usize, has_normals: u8, texture_sets: u32, geometry_data: usize,
-       skin_instance: usize, transform: usize, world_bound: usize) -> u32,
+port_thiscall!(
+    ensure_and_register_streamables_port,
+    0x6B9D30,
+    "NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables",
+    fn(
+        this,
+        property_state: usize,
+        effect_state: usize,
+        has_normals: u8,
+        texture_sets: u32,
+        geometry_data: usize,
+        skin_instance: usize,
+        transform: usize,
+        world_bound: usize,
+    ) -> u32,
     compare_eax = true,
     regions = |set| ensure_and_register_streamables_regions(set, this),
-    rust = ensure_and_register_streamables);
+    rust = ensure_and_register_streamables
+);
 
-port_thiscall!(set_camera_data_port, 0x6B9D80, "NiDX8ConfigurableTexturePipeline::setCameraData",
+port_thiscall!(
+    set_camera_data_port,
+    0x6B9D80,
+    "NiDX8ConfigurableTexturePipeline::setCameraData",
     fn(this, direction: usize, up: usize, right: usize, x: u32, y: u32, z: u32) -> (),
     compare_eax = false,
     regions = |set| set.add(this, CTP::SIZE),
-    rust = set_camera_data);
+    rust = set_camera_data
+);
 
-port_thiscall!(next_frame_port, 0x6B9E00, "NiDX8ConfigurableTexturePipeline::nextFrame",
+port_thiscall!(
+    next_frame_port,
+    0x6B9E00,
+    "NiDX8ConfigurableTexturePipeline::nextFrame",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| pass_call_regions(set, this),
-    rust = next_frame);
+    rust = next_frame
+);
 
-port_thiscall!(set_stage_addressing_mode_port, 0x6B9E20, "NiDX8ConfigurableTexturePipeline::setStageAddressingMode",
+port_thiscall!(
+    set_stage_addressing_mode_port,
+    0x6B9E20,
+    "NiDX8ConfigurableTexturePipeline::setStageAddressingMode",
     fn(this, clamp_mode: u32, stage: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(stage, TS::SIZE),
-    rust = set_stage_addressing_mode);
+    rust = set_stage_addressing_mode
+);
 
-port_thiscall!(set_stage_filter_mode_port, 0x6B9E40, "NiDX8ConfigurableTexturePipeline::setStageFilterMode",
+port_thiscall!(
+    set_stage_filter_mode_port,
+    0x6B9E40,
+    "NiDX8ConfigurableTexturePipeline::setStageFilterMode",
     fn(this, filter_mode: u32, stage: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(stage, TS::SIZE),
-    rust = set_stage_filter_mode);
+    rust = set_stage_filter_mode
+);
 
-port_thiscall!(build_skin_partition_pass_port, 0x6B9E90, "NiDX8ConfigurableTexturePipeline::buildSkinPartitionPass",
-    fn(this, property_state: usize, effect_state: usize, has_normals: u8, texture_sets: u32, geometry_data: usize,
-       skin_instance: usize, partition: usize, transform: usize, world_bound: usize) -> u32,
+port_thiscall!(
+    build_skin_partition_pass_port,
+    0x6B9E90,
+    "NiDX8ConfigurableTexturePipeline::buildSkinPartitionPass",
+    fn(
+        this,
+        property_state: usize,
+        effect_state: usize,
+        has_normals: u8,
+        texture_sets: u32,
+        geometry_data: usize,
+        skin_instance: usize,
+        partition: usize,
+        transform: usize,
+        world_bound: usize,
+    ) -> u32,
     compare_eax = true,
     regions = |set| pass_call_regions(set, this),
-    rust = build_skin_partition_pass);
+    rust = build_skin_partition_pass
+);
 
-port_thiscall!(init_pipeline_state_port, 0x6B9EA0, "NiDX8ConfigurableTexturePipeline::initPipelineState",
+port_thiscall!(
+    init_pipeline_state_port,
+    0x6B9EA0,
+    "NiDX8ConfigurableTexturePipeline::initPipelineState",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| init_pipeline_state_regions(set, this),
-    rust = init_pipeline_state);
+    rust = init_pipeline_state
+);
 
-port_thiscall!(init_filtering_and_address_caps_port, 0x6BA840, "NiDX8ConfigurableTexturePipeline::initFilteringAndAddressCaps",
+port_thiscall!(
+    init_filtering_and_address_caps_port,
+    0x6BA840,
+    "NiDX8ConfigurableTexturePipeline::initFilteringAndAddressCaps",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| init_filtering_and_address_caps_regions(set, this),
-    rust = init_filtering_and_address_caps);
+    rust = init_filtering_and_address_caps
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &texture_stage_ctor_port::STATE,
@@ -1427,21 +1635,62 @@ mod tests {
         PASS_LOG.with(|log| log.borrow_mut().push((pass, 0x18)));
         0
     }
-    unsafe extern "thiscall" fn pass_link(pass: usize, _ps: usize, _es: usize, normals: u32, sets: u32, _g: usize, _s: usize, _t: usize, _b: usize) -> u32 {
+    unsafe extern "thiscall" fn pass_link(
+        pass: usize,
+        _ps: usize,
+        _es: usize,
+        normals: u32,
+        sets: u32,
+        _g: usize,
+        _s: usize,
+        _t: usize,
+        _b: usize,
+    ) -> u32 {
         PASS_LOG.with(|log| log.borrow_mut().push((pass, 0x10)));
         normals * 100 + sets
     }
-    unsafe extern "thiscall" fn pass_register(pass: usize, _ps: usize, _es: usize, _n: u32, _sets: u32, _g: usize, _s: usize, _t: usize, _b: usize) -> u32 {
+    unsafe extern "thiscall" fn pass_register(
+        pass: usize,
+        _ps: usize,
+        _es: usize,
+        _n: u32,
+        _sets: u32,
+        _g: usize,
+        _s: usize,
+        _t: usize,
+        _b: usize,
+    ) -> u32 {
         PASS_LOG.with(|log| log.borrow_mut().push((pass, 0x14)));
         77
     }
-    unsafe extern "thiscall" fn pass_build(_pass: usize, _ps: usize, _es: usize, _n: u32, sets: u32, _g: usize, _s: usize, _t: usize, bound: usize) -> u32 {
+    unsafe extern "thiscall" fn pass_build(
+        _pass: usize,
+        _ps: usize,
+        _es: usize,
+        _n: u32,
+        sets: u32,
+        _g: usize,
+        _s: usize,
+        _t: usize,
+        bound: usize,
+    ) -> u32 {
         sets + bound as u32
     }
     unsafe extern "thiscall" fn pass_blend(_pass: usize, a: u32, b: u32, c: u32, d: u32) -> u32 {
         a + b * 10 + c * 100 + d * 1000
     }
-    unsafe extern "thiscall" fn pass_skin(_pass: usize, _ps: usize, _es: usize, _n: u32, _sets: u32, _g: usize, _s: usize, partition: usize, _t: usize, bound: usize) -> u32 {
+    unsafe extern "thiscall" fn pass_skin(
+        _pass: usize,
+        _ps: usize,
+        _es: usize,
+        _n: u32,
+        _sets: u32,
+        _g: usize,
+        _s: usize,
+        partition: usize,
+        _t: usize,
+        bound: usize,
+    ) -> u32 {
         (partition + bound) as u32
     }
     unsafe extern "thiscall" fn type_id_7(_data: usize) -> u32 {
@@ -1449,7 +1698,16 @@ mod tests {
     }
 
     fn pass_vtable() -> Box<[usize; 8]> {
-        Box::new([0, pass_skin as *const () as usize, pass_build as *const () as usize, pass_blend as *const () as usize, pass_link as *const () as usize, pass_register as *const () as usize, pass_reset as *const () as usize, 0])
+        Box::new([
+            0,
+            pass_skin as *const () as usize,
+            pass_build as *const () as usize,
+            pass_blend as *const () as usize,
+            pass_link as *const () as usize,
+            pass_register as *const () as usize,
+            pass_reset as *const () as usize,
+            0,
+        ])
     }
 
     // A replacement for the hook of the Code Patch. It stores the registers and the stack
@@ -1485,7 +1743,15 @@ mod tests {
     #[test]
     fn the_hooked_call_gets_the_registers_of_the_game_code() {
         unsafe {
-            texcoord_index_call(nirender_tp_probe as *const () as usize, 0x1111, 0x2222, 0x3333, 0x4444, 5, 0x30000);
+            texcoord_index_call(
+                nirender_tp_probe as *const () as usize,
+                0x1111,
+                0x2222,
+                0x3333,
+                0x4444,
+                5,
+                0x30000,
+            );
             let probe = core::ptr::addr_of!(NIRENDER_TP_PROBE).read();
             // The registers: EAX stage, ECX and EBP render state, EDX value, EBX renderer, ESI
             // stage object, EDI render state at entry. Then the stack arguments: stage,
@@ -1534,7 +1800,11 @@ mod tests {
         let mut rs = vec![0u8; RS::SIZE];
         let mut renderer = vec![0u8; R::SIZE];
         let mut stage = [0u8; TS::SIZE];
-        let (rs, r, s) = (rs.as_mut_ptr() as usize, renderer.as_mut_ptr() as usize, stage.as_mut_ptr() as usize);
+        let (rs, r, s) = (
+            rs.as_mut_ptr() as usize,
+            renderer.as_mut_ptr() as usize,
+            stage.as_mut_ptr() as usize,
+        );
         unsafe {
             wr(rs, RS::device, &*device.object as *const usize as usize);
             wr(r, R::renderState, rs);
@@ -1549,7 +1819,13 @@ mod tests {
             assert_eq!(texture_stage_update_renderer(s, r), 1);
             assert_eq!(
                 device_log(),
-                [[3, 2, 0, 0], [4, 2, 1, 4], [4, 2, 4, 2], [4, 2, 5, 2], [3, D3DRS_TEXTUREFACTOR, 0x1234, 0]]
+                [
+                    [3, 2, 0, 0],
+                    [4, 2, 1, 4],
+                    [4, 2, 4, 2],
+                    [4, 2, 5, 2],
+                    [3, D3DRS_TEXTUREFACTOR, 0x1234, 0]
+                ]
             );
             assert_eq!(rd::<usize>(rs, RS::texturePerStage + 8), 0);
             assert_eq!(rd::<u32>(rs, RS::maybe_textureStageStateSettings + (2 * 32 + 1) * 8), 4);
@@ -1612,8 +1888,19 @@ mod tests {
         let p = pipeline.as_mut_ptr() as usize;
         let (direction, up, right) = ([1.0f32, 2.0, 3.0], [4.0f32, 5.0, 6.0], [7.0f32, 8.0, 9.0]);
         unsafe {
-            set_camera_data(p, direction.as_ptr() as usize, up.as_ptr() as usize, right.as_ptr() as usize, 10, 11, 12);
-            assert_eq!(rd::<[f32; 9]>(p, CTP::worldRightX), [7.0, 4.0, 1.0, 8.0, 5.0, 2.0, 9.0, 6.0, 3.0]);
+            set_camera_data(
+                p,
+                direction.as_ptr() as usize,
+                up.as_ptr() as usize,
+                right.as_ptr() as usize,
+                10,
+                11,
+                12,
+            );
+            assert_eq!(
+                rd::<[f32; 9]>(p, CTP::worldRightX),
+                [7.0, 4.0, 1.0, 8.0, 5.0, 2.0, 9.0, 6.0, 3.0]
+            );
             assert_eq!(rd::<f32>(p, CTP::worldRightY), 8.0);
             assert_eq!(rd::<f32>(p, CTP::worldRightZ), 9.0);
             assert_eq!(rd::<[u32; 3]>(p, CTP::worldLocation), [10, 11, 12]);
@@ -1624,7 +1911,9 @@ mod tests {
     fn alpha_templates_get_their_flags() {
         // 0x00EC is the value that the inline constructor leaves: source alpha, inverse source
         // alpha.
-        let expected = [0x0001u16, 0x00ED, 0x0043, 0x00EC, 0x1243, 0x00EC, 0x00ED, 0x00EC, 0x0001, 0x00EC];
+        let expected = [
+            0x0001u16, 0x00ED, 0x0043, 0x00EC, 0x1243, 0x00EC, 0x00ED, 0x00EC, 0x0001, 0x00EC,
+        ];
         for (index, flags) in expected.into_iter().enumerate() {
             let mut property = [0u8; AP::SIZE];
             let p = property.as_mut_ptr() as usize;
@@ -1705,8 +1994,16 @@ mod tests {
         let p = pipeline.as_mut_ptr() as usize;
         unsafe {
             PASS_LOG.with(|log| log.borrow_mut().clear());
-            wr(specific.as_mut_ptr() as usize, NiRendererSpecificProperty::renderData, data.as_ptr() as usize);
-            wr(property_state.as_mut_ptr() as usize, NiPropertyState::propRendererSpecific, specific.as_ptr() as usize);
+            wr(
+                specific.as_mut_ptr() as usize,
+                NiRendererSpecificProperty::renderData,
+                data.as_ptr() as usize,
+            );
+            wr(
+                property_state.as_mut_ptr() as usize,
+                NiPropertyState::propRendererSpecific,
+                specific.as_ptr() as usize,
+            );
             wr(p, CTP::combiners, c);
             wr(p, CTP_CURRENT_PASS, c);
             combiners[1] = 2;

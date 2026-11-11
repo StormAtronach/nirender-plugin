@@ -47,26 +47,103 @@ pub const ARGS: [u8; SLOTS] = [
 ];
 
 pub const NAMES: [&str; SLOTS] = [
-    "QueryInterface", "AddRef", "Release", "TestCooperativeLevel", "GetAvailableTextureMem",
-    "ResourceManagerDiscardBytes", "GetDirect3D", "GetDeviceCaps", "GetDisplayMode", "GetCreationParameters",
-    "SetCursorProperties", "SetCursorPosition", "ShowCursor", "CreateAdditionalSwapChain", "Reset",
-    "Present", "GetBackBuffer", "GetRasterStatus", "SetGammaRamp", "GetGammaRamp",
-    "CreateTexture", "CreateVolumeTexture", "CreateCubeTexture", "CreateVertexBuffer", "CreateIndexBuffer",
-    "CreateRenderTarget", "CreateDepthStencilSurface", "CreateImageSurface", "CopyRects", "UpdateTexture",
-    "GetFrontBuffer", "SetRenderTarget", "GetRenderTarget", "GetDepthStencilSurface", "BeginScene",
-    "EndScene", "Clear", "SetTransform", "GetTransform", "MultiplyTransform",
-    "SetViewport", "GetViewport", "SetMaterial", "GetMaterial", "SetLight",
-    "GetLight", "LightEnable", "GetLightEnable", "SetClipPlane", "GetClipPlane",
-    "SetRenderState", "GetRenderState", "BeginStateBlock", "EndStateBlock", "ApplyStateBlock",
-    "CaptureStateBlock", "DeleteStateBlock", "CreateStateBlock", "SetClipStatus", "GetClipStatus",
-    "GetTexture", "SetTexture", "GetTextureStageState", "SetTextureStageState", "ValidateDevice",
-    "GetInfo", "SetPaletteEntries", "GetPaletteEntries", "SetCurrentTexturePalette", "GetCurrentTexturePalette",
-    "DrawPrimitive", "DrawIndexedPrimitive", "DrawPrimitiveUP", "DrawIndexedPrimitiveUP", "ProcessVertices",
-    "CreateVertexShader", "SetVertexShader", "GetVertexShader", "DeleteVertexShader", "SetVertexShaderConstant",
-    "GetVertexShaderConstant", "GetVertexShaderDeclaration", "GetVertexShaderFunction", "SetStreamSource", "GetStreamSource",
-    "SetIndices", "GetIndices", "CreatePixelShader", "SetPixelShader", "GetPixelShader",
-    "DeletePixelShader", "SetPixelShaderConstant", "GetPixelShaderConstant", "GetPixelShaderFunction", "DrawRectPatch",
-    "DrawTriPatch", "DeletePatch",
+    "QueryInterface",
+    "AddRef",
+    "Release",
+    "TestCooperativeLevel",
+    "GetAvailableTextureMem",
+    "ResourceManagerDiscardBytes",
+    "GetDirect3D",
+    "GetDeviceCaps",
+    "GetDisplayMode",
+    "GetCreationParameters",
+    "SetCursorProperties",
+    "SetCursorPosition",
+    "ShowCursor",
+    "CreateAdditionalSwapChain",
+    "Reset",
+    "Present",
+    "GetBackBuffer",
+    "GetRasterStatus",
+    "SetGammaRamp",
+    "GetGammaRamp",
+    "CreateTexture",
+    "CreateVolumeTexture",
+    "CreateCubeTexture",
+    "CreateVertexBuffer",
+    "CreateIndexBuffer",
+    "CreateRenderTarget",
+    "CreateDepthStencilSurface",
+    "CreateImageSurface",
+    "CopyRects",
+    "UpdateTexture",
+    "GetFrontBuffer",
+    "SetRenderTarget",
+    "GetRenderTarget",
+    "GetDepthStencilSurface",
+    "BeginScene",
+    "EndScene",
+    "Clear",
+    "SetTransform",
+    "GetTransform",
+    "MultiplyTransform",
+    "SetViewport",
+    "GetViewport",
+    "SetMaterial",
+    "GetMaterial",
+    "SetLight",
+    "GetLight",
+    "LightEnable",
+    "GetLightEnable",
+    "SetClipPlane",
+    "GetClipPlane",
+    "SetRenderState",
+    "GetRenderState",
+    "BeginStateBlock",
+    "EndStateBlock",
+    "ApplyStateBlock",
+    "CaptureStateBlock",
+    "DeleteStateBlock",
+    "CreateStateBlock",
+    "SetClipStatus",
+    "GetClipStatus",
+    "GetTexture",
+    "SetTexture",
+    "GetTextureStageState",
+    "SetTextureStageState",
+    "ValidateDevice",
+    "GetInfo",
+    "SetPaletteEntries",
+    "GetPaletteEntries",
+    "SetCurrentTexturePalette",
+    "GetCurrentTexturePalette",
+    "DrawPrimitive",
+    "DrawIndexedPrimitive",
+    "DrawPrimitiveUP",
+    "DrawIndexedPrimitiveUP",
+    "ProcessVertices",
+    "CreateVertexShader",
+    "SetVertexShader",
+    "GetVertexShader",
+    "DeleteVertexShader",
+    "SetVertexShaderConstant",
+    "GetVertexShaderConstant",
+    "GetVertexShaderDeclaration",
+    "GetVertexShaderFunction",
+    "SetStreamSource",
+    "GetStreamSource",
+    "SetIndices",
+    "GetIndices",
+    "CreatePixelShader",
+    "SetPixelShader",
+    "GetPixelShader",
+    "DeletePixelShader",
+    "SetPixelShaderConstant",
+    "GetPixelShaderConstant",
+    "GetPixelShaderFunction",
+    "DrawRectPatch",
+    "DrawTriPatch",
+    "DeletePatch",
 ];
 
 /// A dry run does not pass these calls on. They change device state or draw, and they return
@@ -75,8 +152,37 @@ pub const NAMES: [&str; SLOTS] = [
 pub fn dry_skips(slot: usize) -> bool {
     matches!(
         slot,
-        15 | 18 | 31 | 34 | 35 | 36 | 37 | 39 | 40 | 42 | 44 | 46 | 48 | 50 | 54 | 58 | 61 | 63 | 66 | 68 | 70 | 71 | 72 | 73 | 76
-            | 79 | 83 | 85 | 88 | 91 | 94 | 95
+        15 | 18
+            | 31
+            | 34
+            | 35
+            | 36
+            | 37
+            | 39
+            | 40
+            | 42
+            | 44
+            | 46
+            | 48
+            | 50
+            | 54
+            | 58
+            | 61
+            | 63
+            | 66
+            | 68
+            | 70
+            | 71
+            | 72
+            | 73
+            | 76
+            | 79
+            | 83
+            | 85
+            | 88
+            | 91
+            | 94
+            | 95
     )
 }
 
@@ -97,15 +203,15 @@ pub fn vertex_count(primitive_type: u32, primitives: u32) -> u32 {
 #[cfg(feature = "rig")]
 pub fn payload(slot: usize, a: &[u32]) -> (usize, usize) {
     let (ptr, len) = match slot {
-        18 => (a[1], 0x600),                                // SetGammaRamp: D3DGAMMARAMP
-        36 => (a[1], a[0] * 16),                            // Clear: D3DRECT[count]
-        37 | 39 => (a[1], 64),                              // SetTransform, MultiplyTransform: D3DMATRIX
-        40 => (a[0], 24),                                   // SetViewport: D3DVIEWPORT8
-        42 => (a[0], 68),                                   // SetMaterial: D3DMATERIAL8
-        44 => (a[1], 104),                                  // SetLight: D3DLIGHT8
-        48 => (a[1], 16),                                   // SetClipPlane: float[4]
-        72 => (a[2], vertex_count(a[0], a[1]) * a[3]),      // DrawPrimitiveUP: vertices
-        79 | 91 => (a[1], a[2] * 16),                       // Set*ShaderConstant: float[4][count]
+        18 => (a[1], 0x600),                           // SetGammaRamp: D3DGAMMARAMP
+        36 => (a[1], a[0] * 16),                       // Clear: D3DRECT[count]
+        37 | 39 => (a[1], 64),                         // SetTransform, MultiplyTransform: D3DMATRIX
+        40 => (a[0], 24),                              // SetViewport: D3DVIEWPORT8
+        42 => (a[0], 68),                              // SetMaterial: D3DMATERIAL8
+        44 => (a[1], 104),                             // SetLight: D3DLIGHT8
+        48 => (a[1], 16),                              // SetClipPlane: float[4]
+        72 => (a[2], vertex_count(a[0], a[1]) * a[3]), // DrawPrimitiveUP: vertices
+        79 | 91 => (a[1], a[2] * 16),                  // Set*ShaderConstant: float[4][count]
         _ => (0, 0),
     };
     if ptr == 0 || len == 0 {
@@ -167,7 +273,12 @@ struct Replay {
 }
 
 #[cfg(feature = "rig")]
-static mut REPLAY: Replay = Replay { on: false, created: Vec::new(), taken: 0, mismatch: false };
+static mut REPLAY: Replay = Replay {
+    on: false,
+    created: Vec::new(),
+    taken: 0,
+    mismatch: false,
+};
 
 /// Starts the engine run of a comparison. The run is recorded and real. It gets the
 /// resources that the Rust run made, in the same order.
@@ -193,7 +304,11 @@ pub unsafe fn end_engine_run() -> String {
         text.push_str(" the engine made a resource the rust run did not;");
     }
     if replay.taken < replay.created.len() {
-        text.push_str(&format!(" rust made {} resources, the engine {};", replay.created.len(), replay.taken));
+        text.push_str(&format!(
+            " rust made {} resources, the engine {};",
+            replay.created.len(),
+            replay.taken
+        ));
         for created in &replay.created[replay.taken..] {
             if created.object != 0 {
                 // No object holds the resource. This releases the reference that the creation gave.
@@ -211,8 +326,10 @@ pub unsafe fn end_engine_run() -> String {
 /// The vtable of the device and the table of the wrappers, with the word before each table
 /// (the type information pointer). Written once by `attach`, read by every wrapper on any
 /// thread: atomics, so that the reads and the one write are ordered.
-static ORIG: [core::sync::atomic::AtomicUsize; TABLE_LEN + 1] = [const { core::sync::atomic::AtomicUsize::new(0) }; TABLE_LEN + 1];
-static OURS: [core::sync::atomic::AtomicUsize; TABLE_LEN + 1] = [const { core::sync::atomic::AtomicUsize::new(0) }; TABLE_LEN + 1];
+static ORIG: [core::sync::atomic::AtomicUsize; TABLE_LEN + 1] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; TABLE_LEN + 1];
+static OURS: [core::sync::atomic::AtomicUsize; TABLE_LEN + 1] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; TABLE_LEN + 1];
 
 #[cfg(feature = "rig")]
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -310,7 +427,11 @@ pub fn append_record(log: &mut Vec<u32>, slot: usize, args: &[u32], payload_byte
     log.resize(start + words, 0);
     // This is safe. `words` u32 values cover the bytes, and the tail of the last word stays zero.
     unsafe {
-        core::ptr::copy_nonoverlapping(payload_bytes.as_ptr(), log.as_mut_ptr().add(start) as *mut u8, payload_bytes.len());
+        core::ptr::copy_nonoverlapping(
+            payload_bytes.as_ptr(),
+            log.as_mut_ptr().add(start) as *mut u8,
+            payload_bytes.len(),
+        );
     }
 }
 
@@ -380,8 +501,12 @@ pub fn first_difference(a: &[u32], b: &[u32]) -> Option<String> {
                 at_b = next_b;
                 index += 1;
             }
-            (Some((ra, _)), None) => return Some(format!("call {index}: rust {} | engine has no more calls", describe(&ra))),
-            (None, Some((rb, _))) => return Some(format!("call {index}: rust has no more calls | engine {}", describe(&rb))),
+            (Some((ra, _)), None) => {
+                return Some(format!("call {index}: rust {} | engine has no more calls", describe(&ra)))
+            }
+            (None, Some((rb, _))) => {
+                return Some(format!("call {index}: rust has no more calls | engine {}", describe(&rb)))
+            }
             (None, None) => return Some("logs differ outside any record".into()),
         }
     }
@@ -396,8 +521,12 @@ unsafe fn call_original(slot: usize, this: usize, a: &[u32]) -> u32 {
         2 => t::<usize, unsafe extern "system" fn(usize, u32, u32) -> u32>(f)(this, a[0], a[1]),
         3 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32) -> u32>(f)(this, a[0], a[1], a[2]),
         4 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32) -> u32>(f)(this, a[0], a[1], a[2], a[3]),
-        5 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32>(f)(this, a[0], a[1], a[2], a[3], a[4]),
-        6 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32>(f)(this, a[0], a[1], a[2], a[3], a[4], a[5]),
+        5 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32>(f)(
+            this, a[0], a[1], a[2], a[3], a[4],
+        ),
+        6 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32>(f)(
+            this, a[0], a[1], a[2], a[3], a[4], a[5],
+        ),
         7 => t::<usize, unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32, u32) -> u32>(f)(
             this, a[0], a[1], a[2], a[3], a[4], a[5], a[6],
         ),
@@ -421,7 +550,11 @@ unsafe fn forward(slot: usize, this: usize, args: &[u32]) -> u32 {
 #[cfg(feature = "rig")]
 unsafe fn record(slot: usize, this: usize, args: &[u32]) -> Option<u32> {
     let (ptr, len) = payload(slot, args);
-    let bytes: &[u8] = if len == 0 { &[] } else { core::slice::from_raw_parts(ptr as *const u8, len) };
+    let bytes: &[u8] = if len == 0 {
+        &[]
+    } else {
+        core::slice::from_raw_parts(ptr as *const u8, len)
+    };
     let mut logged = [0u32; 8];
     let mask = address_args(slot);
     for (i, arg) in args.iter().enumerate() {
@@ -456,7 +589,12 @@ unsafe fn record(slot: usize, this: usize, args: &[u32]) -> Option<u32> {
         if makes_buffer(slot) {
             crate::resource::wrap(object);
         }
-        replay.created.push(Created { slot, args: logged, result, object });
+        replay.created.push(Created {
+            slot,
+            args: logged,
+            result,
+            object,
+        });
         Some(result)
     } else {
         None
@@ -775,7 +913,9 @@ mod tests {
         // slots are the ones of the Direct3D 8 interfaces IDirect3D8 and IDirect3DDevice8.
         unsafe {
             // The test binary is not a d3d8.dll.
-            assert!(!is_windows_direct3d8(a_real_device_of_windows_has_unlocked_references as *const () as usize));
+            assert!(!is_windows_direct3d8(
+                a_real_device_of_windows_has_unlocked_references as *const () as usize
+            ));
             assert!(!is_windows_direct3d8(0));
             // The d3d8.dll of Windows is one. It is loaded by its full path: a bare name looks in
             // the folder of the binary first.
@@ -808,7 +948,8 @@ mod tests {
             }
             let slot = |object: usize, index: usize| *(*(object as *const *const usize)).add(index);
             let mut mode = [0u32; 4];
-            let get_display_mode: unsafe extern "system" fn(usize, u32, *mut [u32; 4]) -> i32 = core::mem::transmute(slot(direct3d, 8));
+            let get_display_mode: unsafe extern "system" fn(usize, u32, *mut [u32; 4]) -> i32 =
+                core::mem::transmute(slot(direct3d, 8));
             let create_device: unsafe extern "system" fn(usize, u32, u32, usize, u32, *const [u32; 13], *mut usize) -> i32 =
                 core::mem::transmute(slot(direct3d, 15));
             let release_direct3d: unsafe extern "system" fn(usize) -> u32 = core::mem::transmute(slot(direct3d, 2));
@@ -822,7 +963,11 @@ mod tests {
             let shown = get_display_mode(direct3d, 0, &mut mode);
             // Windowed, on the desktop window; D3DDEVTYPE_HAL, D3DCREATE_SOFTWARE_VERTEXPROCESSING.
             let parameters = [0, 0, mode[3], 1, 0, 1, GetDesktopWindow() as u32, 1, 0, 0, 0, 0, 0];
-            let made = if shown >= 0 { create_device(direct3d, 0, 1, GetDesktopWindow(), 0x20, &parameters, &mut device) } else { shown };
+            let made = if shown >= 0 {
+                create_device(direct3d, 0, 1, GetDesktopWindow(), 0x20, &parameters, &mut device)
+            } else {
+                shown
+            };
             if made < 0 || device == 0 {
                 println!("skipped, NOT SHOWN: no device, display mode {shown:#x}, CreateDevice {made:#x}");
                 release_direct3d(direct3d);
@@ -832,11 +977,18 @@ mod tests {
             let module = crate::census::module_base_of(release);
             let host = crate::link_client::host_module();
             let name = crate::census::module_of(release);
-            println!("IDirect3DDevice8::Release at {release:#x} in {name}, base {module:#x}: is_windows_direct3d8 {}", is_windows_direct3d8(release));
+            println!(
+                "IDirect3DDevice8::Release at {release:#x} in {name}, base {module:#x}: is_windows_direct3d8 {}",
+                is_windows_direct3d8(release)
+            );
             let release_device: unsafe extern "system" fn(usize) -> u32 = core::mem::transmute(release);
             release_device(device);
             release_direct3d(direct3d);
-            assert!(is_windows_direct3d8(release), "Release at {release:#x}, module {module:#x} {name}, host {host:#x}, error {}", GetLastError());
+            assert!(
+                is_windows_direct3d8(release),
+                "Release at {release:#x}, module {module:#x} {name}, host {host:#x}, error {}",
+                GetLastError()
+            );
         }
     }
 
@@ -878,9 +1030,18 @@ mod tests {
     fn address_arguments_are_real_arguments() {
         for slot in 0..SLOTS {
             let mask = address_args(slot);
-            assert!(mask >> ARGS[slot] == 0, "slot {slot} {} masks an argument it does not have", NAMES[slot]);
+            assert!(
+                mask >> ARGS[slot] == 0,
+                "slot {slot} {} masks an argument it does not have",
+                NAMES[slot]
+            );
             if creates(slot) {
-                assert_eq!(mask, 1 << (ARGS[slot] - 1), "slot {slot} {}: the result is the last argument", NAMES[slot]);
+                assert_eq!(
+                    mask,
+                    1 << (ARGS[slot] - 1),
+                    "slot {slot} {}: the result is the last argument",
+                    NAMES[slot]
+                );
             }
             // Every argument with a payload is an address of the caller's storage.
             let mut args = [0x1000u32; 8];

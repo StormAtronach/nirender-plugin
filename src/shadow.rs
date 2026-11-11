@@ -47,7 +47,10 @@ pub struct Counter {
 
 impl Counter {
     pub const fn new() -> Counter {
-        Counter { low: AtomicU32::new(0), high: AtomicU32::new(0) }
+        Counter {
+            low: AtomicU32::new(0),
+            high: AtomicU32::new(0),
+        }
     }
 
     #[inline(always)]
@@ -72,7 +75,10 @@ pub struct Stamps {
 
 impl Stamps {
     pub const fn new() -> Stamps {
-        Stamps { low: AtomicU32::new(0), high: AtomicU32::new(0) }
+        Stamps {
+            low: AtomicU32::new(0),
+            high: AtomicU32::new(0),
+        }
     }
 
     #[inline(always)]
@@ -115,7 +121,8 @@ pub fn calibrate_stamps() {
 /// Milliseconds for a number of time stamps. The rate of the stamps is that over the time
 /// since `calibrate_stamps`.
 pub fn stamps_to_ms(stamps: u64) -> f64 {
-    let seconds = (crate::capture::ticks() - STAMP_START_TICKS.load(Ordering::Relaxed)) as f64 / crate::capture::ticks_per_second() as f64;
+    let seconds = (crate::capture::ticks() - STAMP_START_TICKS.load(Ordering::Relaxed)) as f64
+        / crate::capture::ticks_per_second() as f64;
     let rate = stamp().wrapping_sub(STAMP_START.load(Ordering::Relaxed)) as f64 / seconds.max(1e-6);
     stamps as f64 * 1000.0 / rate.max(1.0)
 }
@@ -161,7 +168,13 @@ pub struct PortState {
 }
 
 impl PortState {
-    pub const fn new(name: &'static str, addr: usize, stack_args: usize, cleanup: Cleanup, detour: fn() -> usize) -> PortState {
+    pub const fn new(
+        name: &'static str,
+        addr: usize,
+        stack_args: usize,
+        cleanup: Cleanup,
+        detour: fn() -> usize,
+    ) -> PortState {
         PortState {
             name,
             addr,
@@ -194,7 +207,11 @@ impl PortState {
     }
 
     pub fn set_mode(&self, mode: Mode) {
-        let mode = if self.locked.load(Ordering::Relaxed) { Mode::Off } else { mode };
+        let mode = if self.locked.load(Ordering::Relaxed) {
+            Mode::Off
+        } else {
+            mode
+        };
         self.mode.store(mode as u8, Ordering::Relaxed);
     }
 
@@ -346,7 +363,10 @@ pub struct Regions {
 
 impl Regions {
     pub const fn new() -> Regions {
-        Regions { list: Vec::new(), skip: false }
+        Regions {
+            list: Vec::new(),
+            skip: false,
+        }
     }
     /// Adds a block of memory. The list has no limit. A null address or a size of 0 adds
     /// nothing.
@@ -555,7 +575,11 @@ pub unsafe fn dispatch<R: Eax>(
 ) -> u32 {
     let eax = dispatch_inner(state, compare_eax, regions, rust, engine);
     // The thread of the call picks the hook: the main thread's hook may claim the main thread.
-    let hook = if on_main_thread() { &state.after } else { &state.after_off_thread };
+    let hook = if on_main_thread() {
+        &state.after
+    } else {
+        &state.after_off_thread
+    };
     let after = hook.load(Ordering::Relaxed);
     if after != 0 {
         core::mem::transmute::<usize, unsafe fn()>(after)();
@@ -628,7 +652,10 @@ unsafe fn compare<R: Eax>(
     }
     crate::install::attach_device_early();
     let scratch = &mut *core::ptr::addr_of_mut!(SCRATCH);
-    let mut set = Regions { list: core::mem::take(&mut scratch.regions), skip: false };
+    let mut set = Regions {
+        list: core::mem::take(&mut scratch.regions),
+        skip: false,
+    };
     set.list.clear();
     regions(&mut set);
     if set.skip {
@@ -659,7 +686,11 @@ unsafe fn compare<R: Eax>(
     device::end(&mut scratch.log_engine);
     let resources = device::end_engine_run();
     set_leg(Leg::None);
-    let heap = if track { crate::alloc::end(&scratch.blocks_rust) } else { String::new() };
+    let heap = if track {
+        crate::alloc::end(&scratch.blocks_rust)
+    } else {
+        String::new()
+    };
 
     state.shadow_calls.add();
     let eax_differs = compare_eax && (eax_rust ^ eax_engine) & R::MASK != 0;
@@ -676,10 +707,26 @@ unsafe fn compare<R: Eax>(
                 state.name,
                 state.shadow_calls.get(),
                 calls.map(|c| format!("device {c};")).unwrap_or_default(),
-                if memory.is_empty() { String::new() } else { format!(" memory{memory}") },
-                if heap.is_empty() { String::new() } else { format!(" heap{heap}") },
-                if resources.is_empty() { String::new() } else { format!(" resources{resources}") },
-                if eax_differs { format!(" eax rust {eax_rust:#x} engine {eax_engine:#x}") } else { String::new() },
+                if memory.is_empty() {
+                    String::new()
+                } else {
+                    format!(" memory{memory}")
+                },
+                if heap.is_empty() {
+                    String::new()
+                } else {
+                    format!(" heap{heap}")
+                },
+                if resources.is_empty() {
+                    String::new()
+                } else {
+                    format!(" resources{resources}")
+                },
+                if eax_differs {
+                    format!(" eax rust {eax_rust:#x} engine {eax_engine:#x}")
+                } else {
+                    String::new()
+                },
             );
         }
     }
@@ -714,20 +761,35 @@ mod tests {
     fn each_after_hook_runs_on_its_own_thread() {
         static PORT: PortState = PortState::new("a test port", 0, 0, crate::hook::Cleanup::Callee, no_detour);
         PORT.after.store(count_main_hook as *const () as usize, Ordering::Relaxed);
-        PORT.after_off_thread.store(count_off_thread_hook as *const () as usize, Ordering::Relaxed);
+        PORT.after_off_thread
+            .store(count_off_thread_hook as *const () as usize, Ordering::Relaxed);
         // SAFETY: the port is in mode off: each call runs the engine closure, which does nothing.
         let call = || unsafe { dispatch(&PORT, false, |_| {}, |_| 0u32, || 0) };
 
         let _turn = crate::main_thread::TestTurn::take();
         let before = main_thread_for_test();
         call();
-        let after_main = (MAIN_HOOK_CALLS.load(Ordering::SeqCst), OFF_THREAD_HOOK_CALLS.load(Ordering::SeqCst));
+        let after_main = (
+            MAIN_HOOK_CALLS.load(Ordering::SeqCst),
+            OFF_THREAD_HOOK_CALLS.load(Ordering::SeqCst),
+        );
         std::thread::spawn(call).join().unwrap();
-        let after_other = (MAIN_HOOK_CALLS.load(Ordering::SeqCst), OFF_THREAD_HOOK_CALLS.load(Ordering::SeqCst));
+        let after_other = (
+            MAIN_HOOK_CALLS.load(Ordering::SeqCst),
+            OFF_THREAD_HOOK_CALLS.load(Ordering::SeqCst),
+        );
         restore_main_thread(before);
 
-        assert_eq!(after_main, (1, 0), "a call on the main thread runs the main thread's hook only");
-        assert_eq!(after_other, (1, 1), "a call on another thread runs the other thread's hook only");
+        assert_eq!(
+            after_main,
+            (1, 0),
+            "a call on the main thread runs the main thread's hook only"
+        );
+        assert_eq!(
+            after_other,
+            (1, 1),
+            "a call on another thread runs the other thread's hook only"
+        );
     }
 
     #[test]

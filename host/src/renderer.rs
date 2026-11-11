@@ -6,39 +6,117 @@ use super::*;
 
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
 /// the lights and the bones of the frame, and the buffers of the retained instances.
-pub(crate) fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, sampler: &wgpu::Sampler, texture: &wgpu::TextureView, clusters: &Clusters, lights: &wgpu::Buffer, bones: &wgpu::Buffer, records: &wgpu::Buffer, light_indexes: &wgpu::Buffer, scenes: &wgpu::Buffer, retained_lights: &wgpu::Buffer, retained_bones: &wgpu::Buffer, influences: &wgpu::Buffer, effect_entries: &wgpu::Buffer) -> wgpu::BindGroup {
-    crate::gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-        label: Some("extension frame"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(texture) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
-            wgpu::BindGroupEntry { binding: 3, resource: clusters.uniform.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 4, resource: clusters.table.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 5, resource: clusters.indexes.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 6, resource: lights.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 7, resource: bones.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 8, resource: records.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 9, resource: light_indexes.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: scenes, offset: 0, size: core::num::NonZeroU64::new(SCENE_SIZE as u64) }) },
-            wgpu::BindGroupEntry { binding: 11, resource: retained_lights.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 12, resource: retained_bones.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 13, resource: influences.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 14, resource: effect_entries.as_entire_binding() },
-        ],
-    })
+pub(crate) fn frame_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    sampler: &wgpu::Sampler,
+    texture: &wgpu::TextureView,
+    clusters: &Clusters,
+    lights: &wgpu::Buffer,
+    bones: &wgpu::Buffer,
+    records: &wgpu::Buffer,
+    light_indexes: &wgpu::Buffer,
+    scenes: &wgpu::Buffer,
+    retained_lights: &wgpu::Buffer,
+    retained_bones: &wgpu::Buffer,
+    influences: &wgpu::Buffer,
+    effect_entries: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    crate::gpu::frame_group(
+        device,
+        &wgpu::BindGroupDescriptor {
+            label: Some("extension frame"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(texture),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: clusters.uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: clusters.table.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: clusters.indexes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: lights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: bones.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: records.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: light_indexes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: scenes,
+                        offset: 0,
+                        size: core::num::NonZeroU64::new(SCENE_SIZE as u64),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: retained_lights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: retained_bones.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: influences.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: effect_entries.as_entire_binding(),
+                },
+            ],
+        },
+    )
 }
 
 /// The buffer of the arguments of the indirect draws of a frame.
 pub(crate) fn indirect_buffer(device: &wgpu::Device, draws: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor { label: Some("indirect draws"), size: (draws * ARGS_SIZE) as u64, usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("indirect draws"),
+        size: (draws * ARGS_SIZE) as u64,
+        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 /// Ends a run of draws: the arguments of the run go after those of the frame, and the pass
 /// gets one indirect call for them. The arguments reach the GPU before the submit
 /// (`upload_indirect`).
-pub(crate) fn flush_run(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, run_args: &mut Vec<IndirectArgs>, frame_args: &mut Vec<IndirectArgs>) {
+pub(crate) fn flush_run(
+    pass: &mut wgpu::RenderPass<'static>,
+    renderer: &mut Renderer,
+    run_args: &mut Vec<IndirectArgs>,
+    frame_args: &mut Vec<IndirectArgs>,
+) {
     if run_args.is_empty() {
         return;
     }
@@ -60,7 +138,16 @@ pub(crate) fn dump_wanted() -> u32 {
 /// the attenuation and the range.
 pub(crate) fn light_dump(path: &str, lights: &[LightData]) {
     for (i, l) in lights.iter().enumerate() {
-        println!("light dump {path} {i}: type {} position {:?} diffuse {:?} ambient {:?} attenuation {:?} range {} radius {}", l.position[3], &l.position[..3], &l.diffuse[..3], &l.ambient[..3], &l.attenuation[..3], l.direction[3], l.cone[2]);
+        println!(
+            "light dump {path} {i}: type {} position {:?} diffuse {:?} ambient {:?} attenuation {:?} range {} radius {}",
+            l.position[3],
+            &l.position[..3],
+            &l.diffuse[..3],
+            &l.ambient[..3],
+            &l.attenuation[..3],
+            l.direction[3],
+            l.cone[2]
+        );
     }
 }
 
@@ -87,7 +174,12 @@ pub(crate) fn record_buffer(device: &wgpu::Device, records: usize) -> wgpu::Buff
 /// The inputs a vertex does not have, zeros, one entry for each instance the instance buffer
 /// can hold: a draw's instances index both buffers, so this one must be as long.
 pub(crate) fn defaults_buffer(device: &wgpu::Device, instances: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor { label: Some("vertex defaults"), size: (instances * 64) as u64, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: false })
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("vertex defaults"),
+        size: (instances * 64) as u64,
+        usage: wgpu::BufferUsages::VERTEX,
+        mapped_at_creation: false,
+    })
 }
 
 /// The instances of a frame.
@@ -144,16 +236,35 @@ pub(crate) fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<
         return None;
     }
     let size = TIMING_QUERIES as u64 * 8;
-    let buffer = |usage| device.create_buffer(&wgpu::BufferDescriptor { label: Some("timing"), size, usage, mapped_at_creation: false });
+    let buffer = |usage| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("timing"),
+            size,
+            usage,
+            mapped_at_creation: false,
+        })
+    };
     let (sender, ready) = std::sync::mpsc::channel();
-    let set = device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("timing"), ty: wgpu::QueryType::Timestamp, count: TIMING_QUERIES });
+    let set = device.create_query_set(&wgpu::QuerySetDescriptor {
+        label: Some("timing"),
+        ty: wgpu::QueryType::Timestamp,
+        count: TIMING_QUERIES,
+    });
     let in_encoders = device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
     let in_passes = device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
-    let stamps = Rc::new(crate::stamps::Stamps::new(set.clone(), NAMED_FIRST, TIMING_NAMED, in_encoders, in_passes));
+    let stamps = Rc::new(crate::stamps::Stamps::new(
+        set.clone(),
+        NAMED_FIRST,
+        TIMING_NAMED,
+        in_encoders,
+        in_passes,
+    ));
     Some(Timing {
         set,
         resolve: buffer(wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST),
-        staging: (0..3).map(|_| buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST)).collect(),
+        staging: (0..3)
+            .map(|_| buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST))
+            .collect(),
         busy: vec![false; 3],
         slot_passes: vec![0; 3],
         ready,
@@ -190,7 +301,12 @@ impl Timing {
     /// The end of a frame, before the submit: reads the staging buffers that are mapped,
     /// then resolves the stamps of this frame into a free one. Returns the buffer to map
     /// after the submit.
-    pub(crate) fn end(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, counts: &mut Counts) -> Option<usize> {
+    pub(crate) fn end(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        counts: &mut Counts,
+    ) -> Option<usize> {
         let _ = device.poll(wgpu::PollType::Poll);
         while let Ok(slot) = self.ready.try_recv() {
             {
@@ -198,7 +314,11 @@ impl Timing {
                 let stamp = |i: u32| u64::from_le_bytes(mapped[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
                 let span = |i: u32| -> f64 {
                     let (begin, end) = (stamp(2 * i), stamp(2 * i + 1));
-                    if begin != 0 && end > begin { (end - begin) as f64 * self.period as f64 } else { 0.0 }
+                    if begin != 0 && end > begin {
+                        (end - begin) as f64 * self.period as f64
+                    } else {
+                        0.0
+                    }
                 };
                 counts.gpu_passes += (0..self.slot_passes[slot]).map(span).sum::<f64>();
                 counts.gpu_frame += span(TIMING_PASSES);
@@ -275,7 +395,12 @@ impl Renderer {
                 if texture.texture().mip_level_count() <= 1 {
                     sampler[4] = 0;
                 }
-                Some(HeldMap { map: index, texture, set: map.set.min(sets.saturating_sub(1)), sampler })
+                Some(HeldMap {
+                    map: index,
+                    texture,
+                    set: map.set.min(sets.saturating_sub(1)),
+                    sampler,
+                })
             })
             .collect()
     }
@@ -294,28 +419,69 @@ impl Renderer {
     ) -> Result<(Renderer, Option<wgpu::Surface<'static>>), Vec<request::Refusal>> {
         let request = request::request(backends, window, target_format, texture_slots, samples)?;
         request.report();
-        let request::Request { info, surface, device, queue, target_format, surface_usages, present_modes, depth_format, samples, array_cap, sampler_cap, tier, .. } = request;
+        let request::Request {
+            info,
+            surface,
+            device,
+            queue,
+            target_format,
+            surface_usages,
+            present_modes,
+            depth_format,
+            samples,
+            array_cap,
+            sampler_cap,
+            tier,
+            ..
+        } = request;
         gpu::watch(&device, &info);
 
-        let multisample = (samples > 1).then(|| multisample::Multisample::new(&device, target_format, depth_format, samples));
+        let multisample =
+            (samples > 1).then(|| multisample::Multisample::new(&device, target_format, depth_format, samples));
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
         let source = request::world_shader_source(&extension_shader);
-        let source = if tier == request::TextureTier::C { request::tier_c_shader_source(&source) } else { source };
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shader.wgsl"), source: wgpu::ShaderSource::Wgsl(source.clone().into()) });
+        let source = if tier == request::TextureTier::C {
+            request::tier_c_shader_source(&source)
+        } else {
+            source
+        };
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shader.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(source.clone().into()),
+        });
         let texture_entry = |binding: u32, count| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count,
         };
-        let sampler_entry = |binding: u32, count| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count };
+        let sampler_entry = |binding: u32, count| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count,
+        };
         // Group 1: the binding arrays of tier A, or the 6 textures and 6 samplers of tier C.
         let array_entries: Vec<wgpu::BindGroupLayoutEntry> = match tier {
-            request::TextureTier::A => vec![texture_entry(0, std::num::NonZeroU32::new(array_cap)), sampler_entry(1, std::num::NonZeroU32::new(sampler_cap))],
-            request::TextureTier::C => (0..STAGES as u32).map(|stage| texture_entry(stage, None)).chain((0..STAGES as u32).map(|stage| sampler_entry(STAGES as u32 + stage, None))).collect(),
+            request::TextureTier::A => vec![
+                texture_entry(0, std::num::NonZeroU32::new(array_cap)),
+                sampler_entry(1, std::num::NonZeroU32::new(sampler_cap)),
+            ],
+            request::TextureTier::C => (0..STAGES as u32)
+                .map(|stage| texture_entry(stage, None))
+                .chain((0..STAGES as u32).map(|stage| sampler_entry(STAGES as u32 + stage, None)))
+                .collect(),
         };
         let array_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some(if tier == request::TextureTier::A { "draw texture arrays" } else { "draw textures of the stages" }),
+            label: Some(if tier == request::TextureTier::A {
+                "draw texture arrays"
+            } else {
+                "draw textures of the stages"
+            }),
             entries: &array_entries,
         });
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -324,20 +490,37 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 // The clusters: only a pixel reads them. The vertex stage has room for 8
@@ -345,33 +528,53 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 // The lights and the bones of the frame.
                 wgpu::BindGroupLayoutEntry {
                     binding: 6,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 7,
                     visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 // The records of the draws of the frame.
                 wgpu::BindGroupLayoutEntry {
                     binding: 8,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 // The retained instances: the light indexes, the scene of the view (a
@@ -379,26 +582,42 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 9,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 10,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: core::num::NonZeroU64::new(SCENE_SIZE as u64) },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: core::num::NonZeroU64::new(SCENE_SIZE as u64),
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 11,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 // The bones of the skinned retained instances.
                 wgpu::BindGroupLayoutEntry {
                     binding: 12,
                     visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 // The bone influences of the shapes that the game skins in software. The vertex
@@ -406,7 +625,11 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 13,
                     visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 // The texture matrices of the table's texture effects. The vertex stage reads 8
@@ -414,7 +637,11 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 14,
                     visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
@@ -427,25 +654,36 @@ impl Renderer {
             bind_group_layouts: &[Some(&frame_layout), Some(&array_layout)],
             immediate_size: 0,
         });
-        let white = Rc::new(device
-            .create_texture_with_data(
-                &queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("white"),
-                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                },
-                wgpu::util::TextureDataOrder::MipMajor,
-                &[255, 255, 255, 255],
-            )
-            .create_view(&Default::default()));
+        let white = Rc::new(
+            device
+                .create_texture_with_data(
+                    &queue,
+                    &wgpu::TextureDescriptor {
+                        label: Some("white"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    },
+                    wgpu::util::TextureDataOrder::MipMajor,
+                    &[255, 255, 255, 255],
+                )
+                .create_view(&Default::default()),
+        );
         let defaults = defaults_buffer(&device, RETAINED_AT_FIRST + INSTANCES_AT_FIRST);
-        let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("extension frame"), size: 512, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("extension frame"),
+            size: 512,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let frame_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("extension frame"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -458,8 +696,14 @@ impl Renderer {
         let extension_lights = ExtensionLights::new(&device);
         let (first_lights, first_bones) = (light_buffer(&device, LIGHTS_AT_FIRST), bone_buffer(&device, BONES_AT_FIRST));
         let first_records = record_buffer(&device, RETAINED_AT_FIRST + RECORDS_AT_FIRST);
-        let record_limit = ((device.limits().max_storage_buffer_binding_size as u64).min(device.limits().max_buffer_size) as usize / RECORD_SIZE).min(switches::switches().record_limit.unwrap_or(usize::MAX));
-        println!("draw records: room for {record_limit} in one binding ({} MB)", record_limit * RECORD_SIZE / (1 << 20));
+        let record_limit = ((device.limits().max_storage_buffer_binding_size as u64).min(device.limits().max_buffer_size)
+            as usize
+            / RECORD_SIZE)
+            .min(switches::switches().record_limit.unwrap_or(usize::MAX));
+        println!(
+            "draw records: room for {record_limit} in one binding ({} MB)",
+            record_limit * RECORD_SIZE / (1 << 20)
+        );
         let first_light_indexes = light_index_buffer(&device, LIGHT_INDEXES_AT_FIRST);
         let first_scenes = scene_buffer(&device);
         let first_retained_lights = retained_light_buffer(&device, RETAINED_LIGHTS_AT_FIRST);
@@ -467,10 +711,35 @@ impl Renderer {
         let first_retained_bones = bone_buffer(&device, RETAINED_BONES_AT_FIRST);
         let first_effect_entries = effect_entry_buffer(&device, EFFECT_ENTRIES_AT_FIRST);
         let influences = crate::influences::Influences::new(&device);
-        let frame_group = Rc::new(frame_group(&device, &frame_layout, &frame_uniform, &frame_sampler, &white, &clusters, &first_lights, &first_bones, &first_records, &first_light_indexes, &first_scenes, &first_retained_lights, &first_retained_bones, &influences.buffer, &first_effect_entries));
+        let frame_group = Rc::new(frame_group(
+            &device,
+            &frame_layout,
+            &frame_uniform,
+            &frame_sampler,
+            &white,
+            &clusters,
+            &first_lights,
+            &first_bones,
+            &first_records,
+            &first_light_indexes,
+            &first_scenes,
+            &first_retained_lights,
+            &first_retained_bones,
+            &influences.buffer,
+            &first_effect_entries,
+        ));
         let timing = make_timing(&device, &queue);
-        let stamps = timing.as_ref().map_or_else(|| Rc::new(crate::stamps::Stamps::off()), |timing| timing.stamps.clone());
-        let maker = PipelineMaker { device: device.clone(), layout: pipeline_layout.clone(), vertex: shader.clone(), target_format, depth_format, wireframe };
+        let stamps = timing
+            .as_ref()
+            .map_or_else(|| Rc::new(crate::stamps::Stamps::off()), |timing| timing.stamps.clone());
+        let maker = PipelineMaker {
+            device: device.clone(),
+            layout: pipeline_layout.clone(),
+            vertex: shader.clone(),
+            target_format,
+            depth_format,
+            wireframe,
+        };
         let stage_shaders = crate::stage_shaders::StageShaders::new(switches().stage_shaders, &source);
         let renderer = Renderer {
             maker,
@@ -561,7 +830,11 @@ impl Renderer {
             geometries: FxHashMap::default(),
             gone_textures: Vec::new(),
             // Storage too: the morph pass writes the positions of a morphed geometry in place.
-            vertex_pool: pool::Pool::new("game vertices", wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE, VERTEX_CHUNK),
+            vertex_pool: pool::Pool::new(
+                "game vertices",
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+                VERTEX_CHUNK,
+            ),
             index_pool: pool::Pool::new("game indexes", wgpu::BufferUsages::INDEX, INDEX_CHUNK),
             influences,
             retired: Vec::new(),
@@ -595,9 +868,11 @@ impl Renderer {
             return false;
         }
         let laid_out = !self.frame_texture_views.is_empty();
-        let pinned_grew = self.pinned_textures.len() > self.pinned_in_frame || self.pinned_samplers.len() > self.pinned_samplers_in_frame;
+        let pinned_grew =
+            self.pinned_textures.len() > self.pinned_in_frame || self.pinned_samplers.len() > self.pinned_samplers_in_frame;
         let own = self.frame_texture_views.len().saturating_sub(self.pinned_in_frame + 1);
-        let room_short = self.frame_texture_views.len() + FRAME_RESERVE > self.array_cap || self.frame_samplers.len() + 8 > self.sampler_cap;
+        let room_short = self.frame_texture_views.len() + FRAME_RESERVE > self.array_cap
+            || self.frame_samplers.len() + 8 > self.sampler_cap;
         if laid_out && !pinned_grew && own <= 2 * FRAME_RESERVE && !room_short {
             self.counts.arrays_kept += 1;
             return false;
@@ -744,8 +1019,14 @@ impl Renderer {
                 label: Some("draw texture arrays"),
                 layout: &self.array_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&views) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&samplers) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureViewArray(&views),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::SamplerArray(&samplers),
+                    },
                 ],
             },
         ));
@@ -762,22 +1043,59 @@ impl Renderer {
     /// and kept until one of its textures takes another view or goes ([`StageGroups::forget`]).
     /// A handle without a texture, and the target of the pass (`hide`), show white; a stage
     /// without a texture has the handle 0 and the sampler state 0, as in tier A.
-    pub(crate) fn stage_group(&mut self, textures: [u32; STAGES], samplers: [[u32; 5]; STAGES], hide: Option<u32>) -> Rc<wgpu::BindGroup> {
+    pub(crate) fn stage_group(
+        &mut self,
+        textures: [u32; STAGES],
+        samplers: [[u32; 5]; STAGES],
+        hide: Option<u32>,
+    ) -> Rc<wgpu::BindGroup> {
         // A target that is not one of the set's textures changes nothing: one group for both.
         let hide = hide.filter(|handle| textures.contains(handle)).unwrap_or(0);
-        let key = StageKey { textures, samplers, hide };
+        let key = StageKey {
+            textures,
+            samplers,
+            hide,
+        };
         if let Some(group) = self.stage_groups.get(&key) {
             return group;
         }
         let views: Vec<Rc<wgpu::TextureView>> = textures
             .iter()
-            .map(|&handle| if handle == 0 || handle == hide { self.white.clone() } else { self.textures.get(&handle).cloned().unwrap_or_else(|| self.white.clone()) })
+            .map(|&handle| {
+                if handle == 0 || handle == hide {
+                    self.white.clone()
+                } else {
+                    self.textures.get(&handle).cloned().unwrap_or_else(|| self.white.clone())
+                }
+            })
             .collect();
         let sampler_objects: Vec<Rc<wgpu::Sampler>> = samplers.iter().map(|&values| self.sampler(values)).collect();
-        let mut entries: Vec<wgpu::BindGroupEntry> = views.iter().enumerate().map(|(stage, view)| wgpu::BindGroupEntry { binding: stage as u32, resource: wgpu::BindingResource::TextureView(view) }).collect();
-        entries.extend(sampler_objects.iter().enumerate().map(|(stage, sampler)| wgpu::BindGroupEntry { binding: (STAGES + stage) as u32, resource: wgpu::BindingResource::Sampler(sampler) }));
+        let mut entries: Vec<wgpu::BindGroupEntry> = views
+            .iter()
+            .enumerate()
+            .map(|(stage, view)| wgpu::BindGroupEntry {
+                binding: stage as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            })
+            .collect();
+        entries.extend(
+            sampler_objects
+                .iter()
+                .enumerate()
+                .map(|(stage, sampler)| wgpu::BindGroupEntry {
+                    binding: (STAGES + stage) as u32,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                }),
+        );
         self.counts.array_groups_made += 1;
-        let group = Rc::new(crate::gpu::frame_group(&self.device, &wgpu::BindGroupDescriptor { label: Some("draw textures of the stages"), layout: &self.array_layout, entries: &entries }));
+        let group = Rc::new(crate::gpu::frame_group(
+            &self.device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("draw textures of the stages"),
+                layout: &self.array_layout,
+                entries: &entries,
+            },
+        ));
         self.stage_groups.insert(key, group.clone());
         group
     }
@@ -792,7 +1110,11 @@ impl Renderer {
         slots.dedup();
         let mut remap = FxHashMap::default();
         remap.insert(0, 0);
-        let view = |slot: u32| self.frame_texture_views.get(slot as usize).map_or(&*self.white, |view| &**view);
+        let view = |slot: u32| {
+            self.frame_texture_views
+                .get(slot as usize)
+                .map_or(&*self.white, |view| &**view)
+        };
         let mut views: Vec<&wgpu::TextureView> = vec![view(0)];
         for slot in slots {
             remap.insert(slot, views.len() as u32);
@@ -806,8 +1128,14 @@ impl Renderer {
                 label: Some("draw texture arrays, small"),
                 layout: &self.array_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&views) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&samplers) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureViewArray(&views),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::SamplerArray(&samplers),
+                    },
                 ],
             },
         ));
@@ -829,7 +1157,11 @@ impl Renderer {
     /// Before a submit.
     pub(crate) fn upload_indirect(&mut self, args: &[IndirectArgs]) {
         if args.len() > self.indirect_written {
-            self.queue.write_buffer(&self.indirect_buffer, (self.indirect_written * ARGS_SIZE) as u64, bytemuck::cast_slice(&args[self.indirect_written..]));
+            self.queue.write_buffer(
+                &self.indirect_buffer,
+                (self.indirect_written * ARGS_SIZE) as u64,
+                bytemuck::cast_slice(&args[self.indirect_written..]),
+            );
             self.indirect_written = args.len();
         }
     }
@@ -847,7 +1179,11 @@ impl Renderer {
         }
         self.instance_len = instances.len();
         if !instances.is_empty() {
-            self.queue.write_buffer(&self.instance_buffer, (self.retained_instances * INSTANCE_SIZE) as u64, bytemuck::cast_slice(instances));
+            self.queue.write_buffer(
+                &self.instance_buffer,
+                (self.retained_instances * INSTANCE_SIZE) as u64,
+                bytemuck::cast_slice(instances),
+            );
         }
     }
 
@@ -859,7 +1195,11 @@ impl Renderer {
         }
         self.instance_extras += instances.len();
         let first = self.instance_capacity - self.instance_extras;
-        self.queue.write_buffer(&self.instance_buffer, (first * INSTANCE_SIZE) as u64, bytemuck::cast_slice(instances));
+        self.queue.write_buffer(
+            &self.instance_buffer,
+            (first * INSTANCE_SIZE) as u64,
+            bytemuck::cast_slice(instances),
+        );
         Some(first as u32)
     }
 
@@ -870,7 +1210,10 @@ impl Renderer {
     pub(crate) fn record(&mut self, data: &DrawData) -> Option<u32> {
         if self.retained_records + self.record_count >= self.record_limit {
             if self.counts.records_over_limit == 0 {
-                println!("draw records: the frame reached the limit of {} records; draws past it are not drawn", self.record_limit);
+                println!(
+                    "draw records: the frame reached the limit of {} records; draws past it are not drawn",
+                    self.record_limit
+                );
             }
             self.counts.records_over_limit += 1;
             return None;
@@ -893,7 +1236,11 @@ impl Renderer {
             self.record_generation = self.record_generation.wrapping_add(1);
         }
         if self.record_count > self.record_written {
-            self.queue.write_buffer(&self.record_buffer, ((self.retained_records + self.record_written) * RECORD_SIZE) as u64, &self.record_staging[self.record_written * RECORD_SIZE..]);
+            self.queue.write_buffer(
+                &self.record_buffer,
+                ((self.retained_records + self.record_written) * RECORD_SIZE) as u64,
+                &self.record_staging[self.record_written * RECORD_SIZE..],
+            );
             self.record_written = self.record_count;
         }
     }
@@ -906,7 +1253,8 @@ impl Renderer {
         }
         self.record_extras += 1;
         let index = self.record_capacity - self.record_extras;
-        self.queue.write_buffer(&self.record_buffer, (index * RECORD_SIZE) as u64, bytemuck::bytes_of(data));
+        self.queue
+            .write_buffer(&self.record_buffer, (index * RECORD_SIZE) as u64, bytemuck::bytes_of(data));
         Some(index as u32)
     }
 
@@ -915,7 +1263,13 @@ impl Renderer {
     /// room of the records or of the instances is full.
     pub(crate) fn copy_of_draw(&mut self, data: &DrawData, instances: &[Instance]) -> Option<u32> {
         let record = self.record_now(data)?;
-        let copies: Vec<Instance> = instances.iter().map(|instance| Instance { world: instance.world, record: [record, 0, 0, 0] }).collect();
+        let copies: Vec<Instance> = instances
+            .iter()
+            .map(|instance| Instance {
+                world: instance.world,
+                record: [record, 0, 0, 0],
+            })
+            .collect();
         self.append_instances(&copies)
     }
 
@@ -967,8 +1321,15 @@ impl Renderer {
         let format = if decode { wgpu::TextureFormat::Bgra8Unorm } else { format };
         let mut bytes = Vec::new();
         for level in 0..levels {
-            let (w, h) = (word(data, widths + level * 4) as usize, word(data, heights + level * 4) as usize);
-            let size = if block != 0 { w.div_ceil(4).max(1) * h.div_ceil(4).max(1) * block } else { w * h * source_bytes };
+            let (w, h) = (
+                word(data, widths + level * 4) as usize,
+                word(data, heights + level * 4) as usize,
+            );
+            let size = if block != 0 {
+                w.div_ceil(4).max(1) * h.div_ceil(4).max(1) * block
+            } else {
+                w * h * source_bytes
+            };
             let from = word(data, offsets + level * 4) as usize;
             let to = (word(data, offsets + (level + 1) * 4) as usize).min(pixels.len());
             let start = bytes.len();
@@ -996,7 +1357,11 @@ impl Renderer {
             &self.queue,
             &wgpu::TextureDescriptor {
                 label: Some("game texture"),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: levels as u32,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -1049,7 +1414,10 @@ impl Renderer {
         if let Some(pipeline) = self.screen_pipelines.get(&samples) {
             return pipeline.clone();
         }
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("screen draw"), source: wgpu::ShaderSource::Wgsl(SCREEN_SHADER.into()) });
+        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("screen draw"),
+            source: wgpu::ShaderSource::Wgsl(SCREEN_SHADER.into()),
+        });
         let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("screen draw"),
             bind_group_layouts: &[self.screen_layout.as_ref()],
@@ -1064,7 +1432,11 @@ impl Renderer {
                 module: &module,
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 40, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attributes })],
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 40,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &attributes,
+                })],
             },
             primitive: Default::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -1074,7 +1446,10 @@ impl Renderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fs"),
@@ -1118,7 +1493,11 @@ impl Renderer {
         let levels = if levels == 0 { all } else { levels.min(all) };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("game render target"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1144,12 +1523,37 @@ impl Renderer {
                 println!("rendered texture: the game asked for {} x {}, and the device's largest side is {largest}: made {width} x {height}", asked.0, asked.1);
             }
         }
-        let texture = target_texture(&self.device, width, height, self.target_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC);
-        let depth = target_texture(&self.device, width, height, self.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+        let texture = target_texture(
+            &self.device,
+            width,
+            height,
+            self.target_format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+        );
+        let depth = target_texture(
+            &self.device,
+            width,
+            height,
+            self.depth_format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
         let view = Rc::new(texture.create_view(&Default::default()));
         self.set_texture(handle, view.clone());
         self.texture_objects.remove(&handle);
-        self.targets.insert(handle, RenderTexture { texture, view, depth: Rc::new(depth.create_view(&Default::default())), depth_texture: depth, size: (width, height), asked });
+        self.targets.insert(
+            handle,
+            RenderTexture {
+                texture,
+                view,
+                depth: Rc::new(depth.create_view(&Default::default())),
+                depth_texture: depth,
+                size: (width, height),
+                asked,
+            },
+        );
         self.counts.render_textures += 1;
     }
 
@@ -1163,35 +1567,79 @@ impl Renderer {
         }
         let game_pixels = &pixels[..(width * height * 4) as usize];
         let (width, height) = target.size;
-        let mut bytes = if target.size == target.asked { game_pixels.to_vec() } else { resample_nearest(game_pixels, target.asked, target.size) };
-        if !matches!(self.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+        let mut bytes = if target.size == target.asked {
+            game_pixels.to_vec()
+        } else {
+            resample_nearest(game_pixels, target.asked, target.size)
+        };
+        if !matches!(
+            self.target_format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        ) {
             for pixel in bytes.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
         }
         self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &target.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             &bytes,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         self.counts.target_copies += 1;
     }
 
     /// The game wrote a level of a texture again.
     pub(crate) fn texture_update(&mut self, data: &[u8]) {
-        let (handle, level, width, height, size) = (word(data, 0), word(data, 4), word(data, 8), word(data, 12), word(data, 20) as usize);
+        let (handle, level, width, height, size) = (
+            word(data, 0),
+            word(data, 4),
+            word(data, 8),
+            word(data, 12),
+            word(data, 20) as usize,
+        );
         let Some((texture, d3d_format)) = self.texture_objects.get(&handle) else {
             self.counts.texture_updates_lost += 1;
-            *self.counts.lost_reasons.entry(format!("the texture is not one that this program made, format {:#x}", word(data, 16))).or_default() += 1;
+            *self
+                .counts
+                .lost_reasons
+                .entry(format!(
+                    "the texture is not one that this program made, format {:#x}",
+                    word(data, 16)
+                ))
+                .or_default() += 1;
             return;
         };
         let decode = self.decoded.contains(&handle);
         let (block, row, rows, expected) = crate::d3d::level_layout(*d3d_format, width, height);
         if level >= texture.mip_level_count() || size < expected || data.len() < 24 + expected {
             self.counts.texture_updates_lost += 1;
-            let reason = if level >= texture.mip_level_count() { "the texture has no such level" } else { "the record has too few bytes" };
-            *self.counts.lost_reasons.entry(format!("{reason}, format {d3d_format:#x}, level {level} of {}, {width} x {height}", texture.mip_level_count())).or_default() += 1;
+            let reason = if level >= texture.mip_level_count() {
+                "the texture has no such level"
+            } else {
+                "the record has too few bytes"
+            };
+            *self
+                .counts
+                .lost_reasons
+                .entry(format!(
+                    "{reason}, format {d3d_format:#x}, level {level} of {}, {width} x {height}",
+                    texture.mip_level_count()
+                ))
+                .or_default() += 1;
             return;
         }
         let mut pixels = std::borrow::Cow::Borrowed(&data[24..24 + expected]);
@@ -1210,10 +1658,23 @@ impl Renderer {
             }
         }
         self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             &pixels,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(rows) },
-            wgpu::Extent3d { width: if block != 0 { width.next_multiple_of(4) } else { width }, height: if block != 0 { height.next_multiple_of(4) } else { height }, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d {
+                width: if block != 0 { width.next_multiple_of(4) } else { width },
+                height: if block != 0 { height.next_multiple_of(4) } else { height },
+                depth_or_array_layers: 1,
+            },
         );
         self.counts.texture_updates += 1;
     }
@@ -1223,7 +1684,14 @@ impl Renderer {
     /// slots that name them stay: true then.
     pub(crate) fn geometry(&mut self, data: &[u8]) -> bool {
         let clock = ticks::Clock::now();
-        let (handle, fvf, stride, vertices, entries, strips) = (word(data, 0), word(data, 12), word(data, 16), word(data, 20), word(data, 24), word(data, 28));
+        let (handle, fvf, stride, vertices, entries, strips) = (
+            word(data, 0),
+            word(data, 12),
+            word(data, 16),
+            word(data, 20),
+            word(data, 24),
+            word(data, 28),
+        );
         let lengths = ((strips as usize * 2) + 3) & !3;
         let (vertex_at, index_at) = (32 + lengths, 32 + lengths + vertices as usize * stride as usize);
         let index_end = index_at + entries as usize * 2;
@@ -1231,17 +1699,23 @@ impl Renderer {
             self.counts.geometry_bad += 1;
             return false;
         }
-        let strip_lengths: Vec<u16> = (0..strips as usize).map(|i| u16::from_le_bytes([data[32 + i * 2], data[33 + i * 2]])).collect();
+        let strip_lengths: Vec<u16> = (0..strips as usize)
+            .map(|i| u16::from_le_bytes([data[32 + i * 2], data[33 + i * 2]]))
+            .collect();
         self.counts.geometry_records += 1;
         self.counts.geometry_bytes += data.len() as u64;
         let (vertex_bytes, index_bytes) = (&data[vertex_at..index_at], &data[index_at..index_end]);
         // A shape that the game skins in software: its bone influences after the indexes. Its
         // vertices name them, so its record takes new ranges (`influences.rs`).
         let list = if fvf & FVF_INFLUENCES != 0 {
-            let list = data.len().checked_sub(index_end + 4).filter(|_| stride >= 28).and_then(|left| {
-                let bytes = word(data, index_end) as usize * crate::influences::ENTRY_BYTES as usize;
-                (bytes <= left).then(|| &data[index_end + 4..index_end + 4 + bytes])
-            });
+            let list = data
+                .len()
+                .checked_sub(index_end + 4)
+                .filter(|_| stride >= 28)
+                .and_then(|left| {
+                    let bytes = word(data, index_end) as usize * crate::influences::ENTRY_BYTES as usize;
+                    (bytes <= left).then(|| &data[index_end + 4..index_end + 4 + bytes])
+                });
             let Some(list) = list else {
                 self.counts.geometry_bad += 1;
                 return false;
@@ -1250,14 +1724,24 @@ impl Renderer {
         } else {
             None
         };
-        let same_layout = self.geometries.get(&handle).filter(|old| list.is_none() && old.unique == Some(word(data, 4)) && old.fvf == fvf && old.stride == stride && old.entries == entries && old.strips == strip_lengths);
+        let same_layout = self.geometries.get(&handle).filter(|old| {
+            list.is_none()
+                && old.unique == Some(word(data, 4))
+                && old.fvf == fvf
+                && old.stride == stride
+                && old.entries == entries
+                && old.strips == strip_lengths
+        });
         // A draw of this frame named the ranges already (the screen polygon of each blob of the
         // fog of war): the write would land before that draw too.
         let drawn_in_frame = same_layout.is_some_and(|old| old.drawn_in == self.geometry_frame);
         if drawn_in_frame {
             self.counts.geometry_drawn_in_frame += 1;
         }
-        if let Some((Some(vertex_range), Some(index_range))) = same_layout.filter(|_| !drawn_in_frame).map(|old| (old.vertex_range.as_ref(), old.index_range.as_ref())) {
+        if let Some((Some(vertex_range), Some(index_range))) = same_layout
+            .filter(|_| !drawn_in_frame)
+            .map(|old| (old.vertex_range.as_ref(), old.index_range.as_ref()))
+        {
             let fits = |range: &pool::Range, bytes: &[u8]| (bytes.len() as u64).next_multiple_of(4).max(4) == range.size;
             if fits(vertex_range, vertex_bytes) && fits(index_range, index_bytes) {
                 pool::Pool::rewrite(&self.queue, vertex_range, vertex_bytes);
@@ -1270,7 +1754,10 @@ impl Renderer {
         let (moved, influence_range) = match list {
             Some(list) => {
                 let (range, first) = self.influences.put(&self.device, &self.queue, list);
-                (Some(crate::influences::moved_vertices(vertex_bytes, stride as usize, first)), Some(range))
+                (
+                    Some(crate::influences::moved_vertices(vertex_bytes, stride as usize, first)),
+                    Some(range),
+                )
             }
             None => (None, None),
         };
@@ -1313,7 +1800,11 @@ impl Renderer {
     /// ranges go back to the pools after the frame. Only a geometry of the same unique id goes
     /// (the quads of particles have none: they go too). True when a geometry went.
     pub(crate) fn geometry_gone(&mut self, handle: u32, unique: u32) -> bool {
-        if !self.geometries.get(&handle).is_some_and(|g| g.unique.is_none_or(|id| id == unique)) {
+        if !self
+            .geometries
+            .get(&handle)
+            .is_some_and(|g| g.unique.is_none_or(|id| id == unique))
+        {
             self.counts.geometries_gone_not_held += 1;
             return false;
         }
@@ -1338,7 +1829,10 @@ impl Renderer {
             self.counts.short_records += 1;
             return;
         }
-        let values: Vec<f32> = data[16..16 + floats * 4].chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let values: Vec<f32> = data[16..16 + floats * 4]
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
         let device = self.device.clone();
         let morphs = self.morphs.get_or_insert_with(|| morph::Morphs::new(&device));
         morphs.put_targets(&self.device, &self.queue, handle, unique, count, vertices, &values);
@@ -1354,7 +1848,10 @@ impl Renderer {
             return;
         }
         let weights: Vec<f32> = (0..count).map(|i| float(data, 12 + i * 4)).collect();
-        let (Some(morphs), Some(geometry)) = (self.morphs.as_mut(), self.geometries.get(&handle).filter(|g| g.unique == Some(unique))) else {
+        let (Some(morphs), Some(geometry)) = (
+            self.morphs.as_mut(),
+            self.geometries.get(&handle).filter(|g| g.unique == Some(unique)),
+        ) else {
             self.counts.morph_missing += 1;
             return;
         };
@@ -1463,11 +1960,29 @@ impl Renderer {
         let difference: [f32; 3] = core::array::from_fn(|i| (up[i] - right[i]) * radius);
         let index = self.quad_index_buffer(count as u32);
         let device = self.device.clone();
-        let quads = self.particle_quads.get_or_insert_with(|| particle_quads::ParticleQuads::new(&device));
+        let quads = self
+            .particle_quads
+            .get_or_insert_with(|| particle_quads::ParticleQuads::new(&device));
         let (vertex, place) = quads.add(&device, particles, sum, difference);
         self.counts.shape_particles += 1;
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1.
-        let geometry = Geometry { fvf: 0x152, stride: STRIDE as u32, entries: place.indices, strips: Vec::new(), vertex, index, vertex_range: None, index_range: None, base_vertex: place.first_vertex as i32, first_index: 0, unique: None, influence_range: None, bones_needed: 0, uv: None, drawn_in: 0 };
+        let geometry = Geometry {
+            fvf: 0x152,
+            stride: STRIDE as u32,
+            entries: place.indices,
+            strips: Vec::new(),
+            vertex,
+            index,
+            vertex_range: None,
+            index_range: None,
+            base_vertex: place.first_vertex as i32,
+            first_index: 0,
+            unique: None,
+            influence_range: None,
+            bones_needed: 0,
+            uv: None,
+            drawn_in: 0,
+        };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
     }
@@ -1476,11 +1991,21 @@ impl Renderer {
     /// `quads` quads: the game keeps one and it grows to the largest system seen.
     fn quad_index_buffer(&mut self, quads: u32) -> Rc<wgpu::Buffer> {
         if self.quad_indexes.as_ref().is_none_or(|(have, _)| *have < quads) {
-            let indexes: Vec<u8> = (0..quads).flat_map(|q| [0u16, 1, 2, 0, 2, 3].map(|i| (q * 4) as u16 + i)).flat_map(|i| i.to_le_bytes()).collect();
-            let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("quads"), contents: &indexes, usage: wgpu::BufferUsages::INDEX });
+            let indexes: Vec<u8> = (0..quads)
+                .flat_map(|q| [0u16, 1, 2, 0, 2, 3].map(|i| (q * 4) as u16 + i))
+                .flat_map(|i| i.to_le_bytes())
+                .collect();
+            let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("quads"),
+                contents: &indexes,
+                usage: wgpu::BufferUsages::INDEX,
+            });
             self.quad_indexes = Some((quads, Rc::new(buffer)));
         }
-        self.quad_indexes.as_ref().map(|(_, buffer)| buffer.clone()).expect("the quad index buffer was just made")
+        self.quad_indexes
+            .as_ref()
+            .map(|(_, buffer)| buffer.clone())
+            .expect("the quad index buffer was just made")
     }
 
     /// The systems and the particles whose quads the GPU made, when it made any.
@@ -1580,7 +2105,10 @@ impl PipelineMaker {
     /// A fragment module of a stage key, or None when the device refuses it.
     pub(crate) fn module(&self, source: &str) -> Option<wgpu::ShaderModule> {
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("stage shader"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("stage shader"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
         match pollster::block_on(scope.pop()) {
             None => Some(module),
             Some(error) => {
@@ -1614,22 +2142,53 @@ impl PipelineMaker {
             5 => wgpu::PrimitiveTopology::TriangleStrip,
             _ => return None,
         };
-        let from_vertex: Vec<wgpu::VertexAttribute> =
-            present.iter().map(|a| wgpu::VertexAttribute { format: a.format, offset: a.offset, shader_location: a.location }).collect();
+        let from_vertex: Vec<wgpu::VertexAttribute> = present
+            .iter()
+            .map(|a| wgpu::VertexAttribute {
+                format: a.format,
+                offset: a.offset,
+                shader_location: a.location,
+            })
+            .collect();
         // An input that the vertex does not have comes from a buffer of zeros.
         let from_defaults: Vec<wgpu::VertexAttribute> = (0..INPUT_FORMATS.len() as u32)
             .filter(|location| !present.iter().any(|a| a.location == *location))
-            .map(|location| wgpu::VertexAttribute { format: INPUT_FORMATS[location as usize], offset: 0, shader_location: location })
+            .map(|location| wgpu::VertexAttribute {
+                format: INPUT_FORMATS[location as usize],
+                offset: 0,
+                shader_location: location,
+            })
             .collect();
         // The world matrix of an instance: four columns at the locations 9 to 12; the
         // record of the draw at 13.
-        let mut from_instances: Vec<wgpu::VertexAttribute> =
-            (0..4).map(|column| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: column as u64 * 16, shader_location: 9 + column }).collect();
-        from_instances.push(wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32x2, offset: 64, shader_location: 13 });
+        let mut from_instances: Vec<wgpu::VertexAttribute> = (0..4)
+            .map(|column| wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: column as u64 * 16,
+                shader_location: 9 + column,
+            })
+            .collect();
+        from_instances.push(wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Uint32x2,
+            offset: 64,
+            shader_location: 13,
+        });
         let buffers = [
-            Some(wgpu::VertexBufferLayout { array_stride: key.stride as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &from_vertex }),
-            Some(wgpu::VertexBufferLayout { array_stride: 64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_defaults }),
-            Some(wgpu::VertexBufferLayout { array_stride: INSTANCE_SIZE as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &from_instances }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: key.stride as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &from_vertex,
+            }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: 64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &from_defaults,
+            }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: INSTANCE_SIZE as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &from_instances,
+            }),
         ];
         let blend = (key.blend[0] != 0).then(|| {
             let component = wgpu::BlendComponent {
@@ -1637,7 +2196,10 @@ impl PipelineMaker {
                 dst_factor: blend_factor(key.blend[2]),
                 operation: wgpu::BlendOperation::Add,
             };
-            wgpu::BlendState { color: component, alpha: component }
+            wgpu::BlendState {
+                color: component,
+                alpha: component,
+            }
         });
         // Direct3D culls the faces with this winding. A front face of the game is clockwise
         // [I: the cull values come from the cull table of the render state, ctor 0x6B7D70,
@@ -1651,18 +2213,31 @@ impl PipelineMaker {
         let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("game draw"),
             layout: Some(&self.layout),
-            vertex: wgpu::VertexState { module: &self.vertex, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &buffers },
+            vertex: wgpu::VertexState {
+                module: &self.vertex,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &buffers,
+            },
             primitive: wgpu::PrimitiveState {
                 topology,
                 front_face: wgpu::FrontFace::Cw,
                 cull_mode,
-                polygon_mode: if key.fill == 2 && self.wireframe { wgpu::PolygonMode::Line } else { wgpu::PolygonMode::Fill },
+                polygon_mode: if key.fill == 2 && self.wireframe {
+                    wgpu::PolygonMode::Line
+                } else {
+                    wgpu::PolygonMode::Fill
+                },
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: self.depth_format,
                 depth_write_enabled: Some(depth_on && key.depth[1] != 0),
-                depth_compare: Some(if depth_on { depth::compare(compare(key.depth[2])) } else { wgpu::CompareFunction::Always }),
+                depth_compare: Some(if depth_on {
+                    depth::compare(compare(key.depth[2]))
+                } else {
+                    wgpu::CompareFunction::Always
+                }),
                 stencil: if key.stencil[0] == 0 {
                     Default::default()
                 } else {
@@ -1673,11 +2248,19 @@ impl PipelineMaker {
                         depth_fail_op: stencil_operation(key.stencil[2]),
                         pass_op: stencil_operation(key.stencil[3]),
                     };
-                    wgpu::StencilState { front: face, back: face, read_mask: key.stencil[5] & 0xFF, write_mask: key.stencil[6] & 0xFF }
+                    wgpu::StencilState {
+                        front: face,
+                        back: face,
+                        read_mask: key.stencil[5] & 0xFF,
+                        write_mask: key.stencil[6] & 0xFF,
+                    }
                 },
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: key.samples, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: key.samples,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: fragment,
                 entry_point: Some("fs"),
@@ -1698,8 +2281,17 @@ impl PipelineMaker {
 /// The bytes of a 2D texture or texture array as its format packs them: each level of each
 /// layer in whole blocks, for each sample. 0 for a format with no one block size (a depth with
 /// a stencil).
-pub(crate) fn texture_bytes(width: u32, height: u32, layers: u32, levels: u32, samples: u32, format: wgpu::TextureFormat) -> u64 {
-    let Some(block_bytes) = format.block_copy_size(None) else { return 0 };
+pub(crate) fn texture_bytes(
+    width: u32,
+    height: u32,
+    layers: u32,
+    levels: u32,
+    samples: u32,
+    format: wgpu::TextureFormat,
+) -> u64 {
+    let Some(block_bytes) = format.block_copy_size(None) else {
+        return 0;
+    };
     let (block_width, block_height) = format.block_dimensions();
     let level_bytes = |level: u32| {
         let blocks_across = (width >> level).max(1).div_ceil(block_width) as u64;
@@ -1712,7 +2304,14 @@ pub(crate) fn texture_bytes(width: u32, height: u32, layers: u32, levels: u32, s
 /// The bytes of a texture of the helper ([`texture_bytes`]).
 fn bytes_of(texture: &wgpu::Texture) -> u64 {
     let size = texture.size();
-    texture_bytes(size.width, size.height, size.depth_or_array_layers, texture.mip_level_count(), texture.sample_count(), texture.format())
+    texture_bytes(
+        size.width,
+        size.height,
+        size.depth_or_array_layers,
+        texture.mip_level_count(),
+        texture.sample_count(),
+        texture.format(),
+    )
 }
 
 #[cfg(test)]

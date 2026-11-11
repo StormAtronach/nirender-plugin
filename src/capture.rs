@@ -36,21 +36,24 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use crate::link::{
-    DrawV1, SceneV2, TextureV1, CALL_COPY_PIXELS, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE, CALL_CREATE_INDEX_BUFFER,
-    CALL_CREATE_TEXTURE, CALL_CREATE_VERTEX_BUFFER, CALL_CUBE_FACE, CALL_GET_DEPTH_BUFFER, CALL_GET_RENDER_TARGET, CALL_PRESENT,
-    CALL_RENDER_TARGET, CALL_SURFACE_DESCRIPTION, CALL_SURFACE_LOCK, CALL_SURFACE_UNLOCK, CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM,
-};
 use crate::checked::Open;
+use crate::link::{
+    DrawV1, SceneV2, TextureV1, CALL_COPY_PIXELS, CALL_CREATE_DEPTH_BUFFER, CALL_CREATE_IMAGE_SURFACE,
+    CALL_CREATE_INDEX_BUFFER, CALL_CREATE_TEXTURE, CALL_CREATE_VERTEX_BUFFER, CALL_CUBE_FACE, CALL_GET_DEPTH_BUFFER,
+    CALL_GET_RENDER_TARGET, CALL_PRESENT, CALL_RENDER_TARGET, CALL_SURFACE_DESCRIPTION, CALL_SURFACE_LOCK,
+    CALL_SURFACE_UNLOCK, CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM,
+};
 use crate::main_thread::MainThread;
-use crate::sync::{DeviceLock, LockCell};
 use crate::mem::rd;
+use crate::sync::{DeviceLock, LockCell};
 // The layout of the HEADER record and of the shared memories: their one home.
 use crate::stream_format::{
-    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET, HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME,
-    HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WORLD_WALK, MESSAGES_CAPACITY, MESSAGES_MEMORY, READ_EVENT, RECORDS_EVENT, TILES_MEMORY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_READ, MESSAGES_WRITTEN, REPLY_CAPACITY,
-    REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_CAPACITY, RING_CLOSED, RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_READ,
-    RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES, TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
+    HEADER_ENVMAP_KNOWN, HEADER_ENVMAP_LIT, HEADER_QUEUE_FLUSH, HEADER_QUEUE_MARKED, HEADER_SCENE_TARGET,
+    HEADER_SCENE_VIEWS, HEADER_SCENE_WIREFRAME, HEADER_VIEW_PLACES, HEADER_WALK_PLACES, HEADER_WORLD_WALK,
+    MESSAGES_CAPACITY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_MEMORY, MESSAGES_READ, MESSAGES_WRITTEN, READ_EVENT,
+    RECORDS_EVENT, REPLY_CAPACITY, REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_CAPACITY, RING_CLOSED,
+    RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_READ, RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN,
+    TILES_MEMORY, TILE_BYTES, TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
 };
 
 pub const MAGIC: &[u8; 8] = b"NIRCAP01";
@@ -73,9 +76,21 @@ fn header_abilities() -> u32 {
         | HEADER_SCENE_VIEWS
         | HEADER_SCENE_WIREFRAME
         | HEADER_ENVMAP_KNOWN
-        | if crate::world_walk::installed() { HEADER_WORLD_WALK } else { 0 }
-        | if crate::queue_flush::installed() { HEADER_QUEUE_FLUSH } else { 0 }
-        | if unsafe { crate::ports::texture_pipeline::envmap_lit() } { HEADER_ENVMAP_LIT } else { 0 }
+        | if crate::world_walk::installed() {
+            HEADER_WORLD_WALK
+        } else {
+            0
+        }
+        | if crate::queue_flush::installed() {
+            HEADER_QUEUE_FLUSH
+        } else {
+            0
+        }
+        | if unsafe { crate::ports::texture_pipeline::envmap_lit() } {
+            HEADER_ENVMAP_LIT
+        } else {
+            0
+        }
 }
 
 /// The tags of the records.
@@ -293,7 +308,14 @@ pub mod tag {
 // ---- the ring in shared memory
 
 extern "system" {
-    fn CreateFileMappingA(file: isize, security: *const u8, protect: u32, size_high: u32, size_low: u32, name: *const u8) -> isize;
+    fn CreateFileMappingA(
+        file: isize,
+        security: *const u8,
+        protect: u32,
+        size_high: u32,
+        size_low: u32,
+        name: *const u8,
+    ) -> isize;
     fn MapViewOfFile(mapping: isize, access: u32, offset_high: u32, offset_low: u32, bytes: usize) -> *mut u8;
     fn UnmapViewOfFile(address: *const u8) -> i32;
     fn CloseHandle(handle: isize) -> i32;
@@ -382,7 +404,9 @@ unsafe fn loading_tick() {
 pub fn loading_done() {
     if LOADING.swap(false, Ordering::Relaxed) {
         let longest = LOAD_LONGEST.load(Ordering::Relaxed) as f64 / ticks_per_second() as f64;
-        crate::log!("load: the longest time between two frames was {longest:.1} s (Windows shows \"Not Responding\" after 5 s)");
+        crate::log!(
+            "load: the longest time between two frames was {longest:.1} s (Windows shows \"Not Responding\" after 5 s)"
+        );
     }
 }
 
@@ -484,8 +508,14 @@ impl Silence {
         }
         match crate::stream_format::limit(ending, allowance) {
             crate::stream_format::Limit::None => Verdict::Wait,
-            crate::stream_format::Limit::Ending(seconds) if now - self.ending_since > seconds as i64 * second => Verdict::EndingLate(ending),
-            crate::stream_format::Limit::Silence(seconds) if self.still_since != 0 && now - self.still_since > seconds as i64 * second => Verdict::NotAnswering(seconds),
+            crate::stream_format::Limit::Ending(seconds) if now - self.ending_since > seconds as i64 * second => {
+                Verdict::EndingLate(ending)
+            }
+            crate::stream_format::Limit::Silence(seconds)
+                if self.still_since != 0 && now - self.still_since > seconds as i64 * second =>
+            {
+                Verdict::NotAnswering(seconds)
+            }
             _ => Verdict::Wait,
         }
     }
@@ -497,7 +527,14 @@ impl Ring {
         let mut text = name.as_bytes().to_vec();
         text.push(0);
         // INVALID_HANDLE_VALUE: memory of the page file. PAGE_READWRITE is 4.
-        let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, (capacity as usize + RING_HEAD) as u32, text.as_ptr());
+        let mapping = CreateFileMappingA(
+            -1,
+            core::ptr::null(),
+            4,
+            0,
+            (capacity as usize + RING_HEAD) as u32,
+            text.as_ptr(),
+        );
         if mapping == 0 {
             return Err(format!("no shared memory with the name {name}"));
         }
@@ -518,7 +555,26 @@ impl Ring {
         read_name.push(0);
         let read_event = CreateEventA(core::ptr::null(), 0, 0, read_name.as_ptr());
         crate::pacing::start(mapping, name);
-        Ok(Ring { mapping, base, capacity, event, wakes: 0, read_event, read_waits: 0, read_wakes: 0, waited: 0, frame_before: 0, read_before: 0, paced: 0, host_late: false, dropped: 0, largest_dropped: 0, split_textures: 0, silence: Silence::default(), ended: false })
+        Ok(Ring {
+            mapping,
+            base,
+            capacity,
+            event,
+            wakes: 0,
+            read_event,
+            read_waits: 0,
+            read_wakes: 0,
+            waited: 0,
+            frame_before: 0,
+            read_before: 0,
+            paced: 0,
+            host_late: false,
+            dropped: 0,
+            largest_dropped: 0,
+            split_textures: 0,
+            silence: Silence::default(),
+            ended: false,
+        })
     }
 
     unsafe fn counter(&self, offset: usize) -> &core::sync::atomic::AtomicU64 {
@@ -602,7 +658,9 @@ impl Ring {
         // The helper waits for a record: wake it. The store above and this load are
         // SeqCst, as the helper's store of the word and its load of the count are, so
         // that one of the two sides sees the other's store.
-        if self.event != 0 && (*(self.base.add(RING_WAITING) as *const core::sync::atomic::AtomicU32)).load(Ordering::SeqCst) != 0 {
+        if self.event != 0
+            && (*(self.base.add(RING_WAITING) as *const core::sync::atomic::AtomicU32)).load(Ordering::SeqCst) != 0
+        {
             SetEvent(self.event);
             self.wakes += 1;
         }
@@ -667,7 +725,9 @@ impl Ring {
         }
         // The word again: the one above is older than the read, and a current helper can have
         // written it, and read a whole frame, between the two loads.
-        if crate::stream_format::helper_too_old(ending, allowance, read, self.frame_before) && self.head_word(crate::stream_format::RING_ALLOWANCE) == 0 {
+        if crate::stream_format::helper_too_old(ending, allowance, read, self.frame_before)
+            && self.head_word(crate::stream_format::RING_ALLOWANCE) == 0
+        {
             crate::log!("stream: the host program read a whole frame and wrote no allowance word: it is older than this plugin, and files of different builds are mixed; it is ended");
             crate::own_device::end_host(crate::stream_format::EXIT_HELPER_TOO_OLD);
             self.ended = true;
@@ -742,7 +802,15 @@ impl Reply {
         }
         core::ptr::write_bytes(base, 0, REPLY_HEAD);
         (base.add(REPLY_CAPACITY) as *mut u32).write_volatile(capacity as u32);
-        Some(Reply { mapping, base, capacity, requests: 0, waited: 0, name: name.to_string(), generation })
+        Some(Reply {
+            mapping,
+            base,
+            capacity,
+            requests: 0,
+            waited: 0,
+            name: name.to_string(),
+            generation,
+        })
     }
 
     unsafe fn close(&mut self) {
@@ -753,12 +821,20 @@ impl Reply {
     /// Puts a memory of the next generation for `size` pixel bytes in place of this one. The
     /// counts stay. False when the new memory cannot be made: this one stays.
     unsafe fn grow(&mut self, size: usize) -> bool {
-        let Some(mut larger) = Reply::create_generation(&self.name, size, self.generation + 1) else { return false };
+        let Some(mut larger) = Reply::create_generation(&self.name, size, self.generation + 1) else {
+            return false;
+        };
         // The number of the last answer, so that a silent helper is found as before.
-        (larger.base.add(REPLY_REQUEST) as *mut u32).write_volatile((self.base.add(REPLY_REQUEST) as *const u32).read_volatile());
+        (larger.base.add(REPLY_REQUEST) as *mut u32)
+            .write_volatile((self.base.add(REPLY_REQUEST) as *const u32).read_volatile());
         (larger.requests, larger.waited) = (self.requests, self.waited);
         self.close();
-        crate::log!("stream: the reply memory grew from {} to {} pixel bytes (generation {})", self.capacity, size, larger.generation);
+        crate::log!(
+            "stream: the reply memory grew from {} to {} pixel bytes (generation {})",
+            self.capacity,
+            size,
+            larger.generation
+        );
         *self = larger;
         true
     }
@@ -806,7 +882,9 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
     };
     // The helper is silent when it did not answer the last read in time. It is back when that
     // read has its answer now.
-    if HELPER_SILENT.load(Ordering::Relaxed) && (state(lock)?.reply.as_ref()?.base as *const u32).read_volatile() == request - 1 {
+    if HELPER_SILENT.load(Ordering::Relaxed)
+        && (state(lock)?.reply.as_ref()?.base as *const u32).read_volatile() == request - 1
+    {
         HELPER_SILENT.store(false, Ordering::Relaxed);
         crate::log!("stream: the host program answers the pixel reads again");
     }
@@ -834,7 +912,10 @@ unsafe fn ask_pixels(lock: &DeviceLock, texture: u32) -> Option<(u32, u32)> {
         wait_a_moment();
     }
     reply.waited += ticks() - start;
-    Some(((reply.base.add(REPLY_WIDTH) as *const u32).read_volatile(), (reply.base.add(REPLY_HEIGHT) as *const u32).read_volatile()))
+    Some((
+        (reply.base.add(REPLY_WIDTH) as *const u32).read_volatile(),
+        (reply.base.add(REPLY_HEIGHT) as *const u32).read_volatile(),
+    ))
 }
 
 // The tile memory of a stream (its layout: `stream_format`, `TILE_*`): the host writes the
@@ -864,7 +945,11 @@ impl Tiles {
         for slot in 0..TILE_SLOTS {
             core::ptr::write_bytes(base.add(slot * (TILE_HEAD + TILE_BYTES)), 0, TILE_HEAD);
         }
-        Some(Tiles { mapping, base, tickets: 0 })
+        Some(Tiles {
+            mapping,
+            base,
+            tickets: 0,
+        })
     }
 
     unsafe fn slot(&self, ticket: u32) -> *mut u8 {
@@ -897,7 +982,10 @@ pub unsafe fn copy_tile(target: u32, texture: u32) -> Option<u32> {
     if let Some(t) = MainThread::here() {
         crate::instance_stream::view_flush(&t);
     }
-    write(tag::COPY_TILE, &[words(&[ticket, stream_handle(target), stream_handle(texture)])]);
+    write(
+        tag::COPY_TILE,
+        &[words(&[ticket, stream_handle(target), stream_handle(texture)])],
+    );
     // The slots that the flush freed retire after the copy's record.
     if let Some(t) = MainThread::here() {
         crate::instance_stream::write_flush_retirements(&t);
@@ -916,7 +1004,10 @@ pub unsafe fn tile_pixels(ticket: u32) -> Option<(u32, u32, &'static [u8])> {
     if (*(slot.add(TILE_TICKET) as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire) != ticket {
         return None;
     }
-    let (width, height) = ((slot.add(TILE_WIDTH) as *const u32).read_volatile(), (slot.add(TILE_HEIGHT) as *const u32).read_volatile());
+    let (width, height) = (
+        (slot.add(TILE_WIDTH) as *const u32).read_volatile(),
+        (slot.add(TILE_HEIGHT) as *const u32).read_volatile(),
+    );
     if HELPER_SILENT.swap(false, Ordering::Relaxed) {
         crate::log!("stream: the host program answers the tile reads again");
     }
@@ -967,7 +1058,14 @@ impl Messages {
     unsafe fn create(name: &str) -> Option<Messages> {
         let mut text = format!("{name}{MESSAGES_MEMORY}").into_bytes();
         text.push(0);
-        let mapping = CreateFileMappingA(-1, core::ptr::null(), 4, 0, (MESSAGES_BYTES + MESSAGES_HEAD) as u32, text.as_ptr());
+        let mapping = CreateFileMappingA(
+            -1,
+            core::ptr::null(),
+            4,
+            0,
+            (MESSAGES_BYTES + MESSAGES_HEAD) as u32,
+            text.as_ptr(),
+        );
         if mapping == 0 {
             return None;
         }
@@ -1066,7 +1164,12 @@ struct FileTextures {
 impl FileTextures {
     /// Keeps the set current with a record that goes into the file.
     fn note_record(&mut self, tag: u32, parts: &[&[u8]]) {
-        let word = |i: usize| parts.first().and_then(|p| p.get(i * 4..i * 4 + 4)).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let word = |i: usize| {
+            parts
+                .first()
+                .and_then(|p| p.get(i * 4..i * 4 + 4))
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
         match tag {
             tag::TEXTURE => {
                 if let Some(handle) = word(0) {
@@ -1082,7 +1185,18 @@ impl FileTextures {
                 }
             }
             tag::CALL => {
-                if matches!(word(0), Some(CALL_CREATE_TEXTURE | CALL_TEXTURE_LEVEL | CALL_CUBE_FACE | CALL_CREATE_IMAGE_SURFACE | CALL_CREATE_DEPTH_BUFFER | CALL_GET_RENDER_TARGET | CALL_GET_DEPTH_BUFFER)) {
+                if matches!(
+                    word(0),
+                    Some(
+                        CALL_CREATE_TEXTURE
+                            | CALL_TEXTURE_LEVEL
+                            | CALL_CUBE_FACE
+                            | CALL_CREATE_IMAGE_SURFACE
+                            | CALL_CREATE_DEPTH_BUFFER
+                            | CALL_GET_RENDER_TARGET
+                            | CALL_GET_DEPTH_BUFFER
+                    )
+                ) {
                     if let Some(handle) = word(2) {
                         self.have.insert(handle, REVISION_UNKNOWN);
                     }
@@ -1095,7 +1209,12 @@ impl FileTextures {
     /// The handles that a record names under the device lock (0 for none), and the record's
     /// name. A material goes through [`name_texture`]; these cannot read, so they count.
     fn named_by(tag: u32, parts: &[&[u8]]) -> ([u32; 2], &'static str) {
-        let word = |i: usize| parts.first().and_then(|p| p.get(i * 4..i * 4 + 4)).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let word = |i: usize| {
+            parts
+                .first()
+                .and_then(|p| p.get(i * 4..i * 4 + 4))
+                .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
         // A CALL: the index, the result, the handle, the count, the arguments.
         const CALL_ARGUMENTS: usize = 4;
         match tag {
@@ -1103,7 +1222,9 @@ impl FileTextures {
             tag::COPY_TILE => ([word(1), word(2)], "COPY_TILE"),
             tag::READ_PIXELS => ([word(1), 0], "READ_PIXELS"),
             tag::CALL if word(0) == CALL_COPY_PIXELS => ([word(CALL_ARGUMENTS), word(CALL_ARGUMENTS + 3)], "COPY_PIXELS"),
-            tag::CALL if word(0) == CALL_RENDER_TARGET => ([word(CALL_ARGUMENTS), word(CALL_ARGUMENTS + 1)], "RENDER_TARGET"),
+            tag::CALL if word(0) == CALL_RENDER_TARGET => {
+                ([word(CALL_ARGUMENTS), word(CALL_ARGUMENTS + 1)], "RENDER_TARGET")
+            }
             _ => ([0, 0], ""),
         }
     }
@@ -1228,14 +1349,19 @@ thread_local! {
 /// that (false). Gives the ids collected.
 #[cfg(test)]
 pub fn test_record_deletes(on: bool) -> Vec<u32> {
-    TEST_DELETES.with(|deletes| deletes.replace(on.then(Vec::new))).unwrap_or_default()
+    TEST_DELETES
+        .with(|deletes| deletes.replace(on.then(Vec::new)))
+        .unwrap_or_default()
 }
 
 /// Makes the capture file at `path`, and its folder first when the folder is missing (the
 /// captures of the key go into `nirender-captures\` of the game folder, which no install
 /// makes).
 fn create_capture_file(path: &str) -> Result<File, String> {
-    if let Some(folder) = std::path::Path::new(path).parent().filter(|folder| !folder.as_os_str().is_empty()) {
+    if let Some(folder) = std::path::Path::new(path)
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
     }
     File::create(path).map_err(|error| format!("{path}: {error}"))
@@ -1274,8 +1400,15 @@ unsafe fn tee(t: &MainThread, lock: &DeviceLock, path: &str, frames: u32) -> Res
     #[cfg(not(test))]
     let pictures = crate::own_host::rendered_pictures();
     let header = {
-        let Some(mut s) = state(&lock) else { return Err("no stream".into()) };
-        s.tee = Some(Tee { out, left: frames.max(1), worst_frame: 0, textures: FileTextures::default() });
+        let Some(mut s) = state(&lock) else {
+            return Err("no stream".into());
+        };
+        s.tee = Some(Tee {
+            out,
+            left: frames.max(1),
+            worst_frame: 0,
+            textures: FileTextures::default(),
+        });
         FILE_OPEN.store(true, Ordering::Relaxed);
         s.tee_hold = frames == 0;
         s.tee_only = true;
@@ -1339,9 +1472,13 @@ pub unsafe fn tee_frames(t: &MainThread, frames: u32) -> bool {
     drop(dirty);
     // The geometry and material records of the hold: forgotten, so that the next draw of
     // each sends it again, into the frames.
-    let geometry: Vec<u32> = state(&lock).map(|mut s| s.tee_dirty_geometry.drain().collect()).unwrap_or_default();
+    let geometry: Vec<u32> = state(&lock)
+        .map(|mut s| s.tee_dirty_geometry.drain().collect())
+        .unwrap_or_default();
     crate::geometry_stream::forget(t, &geometry);
-    let material: Vec<u32> = state(&lock).map(|mut s| s.tee_dirty_material.drain().collect()).unwrap_or_default();
+    let material: Vec<u32> = state(&lock)
+        .map(|mut s| s.tee_dirty_material.drain().collect())
+        .unwrap_or_default();
     crate::material_stream::forget(t, &material);
     // The chains of the texture effects do not go into the file during a hold: all of them again,
     // into the frames (the replay of run 20261102-062618-hob-turn-tour had none, and drew those
@@ -1372,7 +1509,16 @@ pub unsafe fn tee_end() {
 /// release sends again only the instances the engine displays.
 /// Engine-rules R14 (the skill wgpu-renderer-dev).
 fn resource_record(tag: u32) -> bool {
-    matches!(tag, tag::TEXTURE | tag::CALL | tag::INSTANCE_DELETE | tag::TEXTURE_GONE | tag::GEOMETRY_GONE | tag::MATERIAL_GONE | tag::EFFECT_CHAIN_GONE)
+    matches!(
+        tag,
+        tag::TEXTURE
+            | tag::CALL
+            | tag::INSTANCE_DELETE
+            | tag::TEXTURE_GONE
+            | tag::GEOMETRY_GONE
+            | tag::MATERIAL_GONE
+            | tag::EFFECT_CHAIN_GONE
+    )
 }
 
 /// Ends the capture file of a direct stream.
@@ -1401,11 +1547,17 @@ pub unsafe fn start_stream(name: &str, megabytes: u32, warmup: u32, own_host: bo
         s.own_host = own_host;
         // Room for the back buffer, and for a rendered texture of 1024 x 1024.
         let renderer = crate::engine::renderer();
-        let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
+        let size: [u32; 2] = if renderer != 0 {
+            rd(renderer, BACK_BUFFER_SIZE)
+        } else {
+            [0, 0]
+        };
         s.reply = Reply::create(name, (size[0] as usize * size[1] as usize * 4).max(1024 * 1024 * 4));
         s.tiles = Tiles::create(name);
     }
-    crate::log!("stream: start, {warmup} frames of warm-up, a ring of {megabytes} MB with the name {name}, own host {own_host}");
+    crate::log!(
+        "stream: start, {warmup} frames of warm-up, a ring of {megabytes} MB with the name {name}, own host {own_host}"
+    );
     Ok(())
 }
 
@@ -1451,9 +1603,12 @@ pub unsafe fn resize(width: u32, height: u32, window: u32) {
     }
     if let Some(mut s) = state(&lock) {
         if s.header.len() >= crate::stream_format::HEADER_WINDOW_AT + 4 {
-            s.header[crate::stream_format::HEADER_WIDTH_AT..crate::stream_format::HEADER_WIDTH_AT + 4].copy_from_slice(&width.to_le_bytes());
-            s.header[crate::stream_format::HEADER_HEIGHT_AT..crate::stream_format::HEADER_HEIGHT_AT + 4].copy_from_slice(&height.to_le_bytes());
-            s.header[crate::stream_format::HEADER_WINDOW_AT..crate::stream_format::HEADER_WINDOW_AT + 4].copy_from_slice(&window.to_le_bytes());
+            s.header[crate::stream_format::HEADER_WIDTH_AT..crate::stream_format::HEADER_WIDTH_AT + 4]
+                .copy_from_slice(&width.to_le_bytes());
+            s.header[crate::stream_format::HEADER_HEIGHT_AT..crate::stream_format::HEADER_HEIGHT_AT + 4]
+                .copy_from_slice(&height.to_le_bytes());
+            s.header[crate::stream_format::HEADER_WINDOW_AT..crate::stream_format::HEADER_WINDOW_AT + 4]
+                .copy_from_slice(&window.to_le_bytes());
         }
     }
     let mut size = [0u8; 12];
@@ -1539,14 +1694,21 @@ pub unsafe fn stop() {
             }
             ring.close();
             if let Some(mut reply) = s.reply.take() {
-                crate::log!("stream: {} pixel reads, the game waited {:.1} ms in all for them", reply.requests, reply.waited as f64 * 1000.0 / ticks_per_second() as f64);
+                crate::log!(
+                    "stream: {} pixel reads, the game waited {:.1} ms in all for them",
+                    reply.requests,
+                    reply.waited as f64 * 1000.0 / ticks_per_second() as f64
+                );
                 reply.close();
             }
             if let Some(mut tiles) = s.tiles.take() {
                 crate::log!("stream: {}", crate::map_tiles::report());
                 crate::log!("stream: {}", crate::map_fog::report());
                 crate::log!("stream: {}", crate::world_walk::report());
-                crate::log!("stream: render targets: {} calls of SetRenderTarget refused by the port, with no event", crate::link_client::target_refusals());
+                crate::log!(
+                    "stream: render targets: {} calls of SetRenderTarget refused by the port, with no event",
+                    crate::link_client::target_refusals()
+                );
                 crate::log!("stream: {}", crate::shape_stream::scene_fog_line());
                 crate::log!("stream: {}", crate::queue_flush::report());
                 tiles.close();
@@ -1588,7 +1750,13 @@ pub unsafe fn stop() {
 
 /// A draw with its vertices in the call.
 pub unsafe fn draw_up(texture: u32, vertex_format: u32, stride: u32, primitive_type: u32, primitives: u32, vertices: &[u8]) {
-    write(tag::DRAW_UP, &[words(&[stream_handle(texture), vertex_format, stride, primitive_type, primitives]), vertices]);
+    write(
+        tag::DRAW_UP,
+        &[
+            words(&[stream_handle(texture), vertex_format, stride, primitive_type, primitives]),
+            vertices,
+        ],
+    );
 }
 
 /// The bit of the number of an extension record that marks a state, not an event: the
@@ -1643,7 +1811,11 @@ pub unsafe fn gamma_ramp(ramp: &[u8]) {
 /// The gamma ramp of the device: the last one set, else the identity (`i * 257`).
 pub unsafe fn gamma_ramp_now() -> Vec<u8> {
     let lock = crate::sync::device_lock();
-    let ramp = (*GAMMA.get(&lock)).clone().unwrap_or_else(|| (0..GAMMA_RAMP_BYTES / 2).flat_map(|at| ((at % 256) as u16 * 257).to_le_bytes()).collect());
+    let ramp = (*GAMMA.get(&lock)).clone().unwrap_or_else(|| {
+        (0..GAMMA_RAMP_BYTES / 2)
+            .flat_map(|at| ((at % 256) as u16 * 257).to_le_bytes())
+            .collect()
+    });
     ramp
 }
 
@@ -1672,7 +1844,9 @@ pub unsafe fn helper_takes() -> u32 {
     let lock = crate::sync::device_lock();
     let Some(s) = state(&lock) else { return 0 };
     match s.out.as_ref() {
-        Some(Sink::Ring(ring)) => (*(ring.base.add(RING_TAKES) as *const core::sync::atomic::AtomicU32)).load(Ordering::Relaxed),
+        Some(Sink::Ring(ring)) => {
+            (*(ring.base.add(RING_TAKES) as *const core::sync::atomic::AtomicU32)).load(Ordering::Relaxed)
+        }
         _ => 0,
     }
 }
@@ -1683,7 +1857,9 @@ pub unsafe fn helper_shadow_reach() -> f32 {
     let lock = crate::sync::device_lock();
     let Some(s) = state(&lock) else { return 0.0 };
     match s.out.as_ref() {
-        Some(Sink::Ring(ring)) => f32::from_bits((*(ring.base.add(RING_SHADOW_REACH) as *const core::sync::atomic::AtomicU32)).load(Ordering::Relaxed)),
+        Some(Sink::Ring(ring)) => f32::from_bits(
+            (*(ring.base.add(RING_SHADOW_REACH) as *const core::sync::atomic::AtomicU32)).load(Ordering::Relaxed),
+        ),
         _ => 0.0,
     }
 }
@@ -1841,7 +2017,8 @@ unsafe fn write_record(tag: u32, parts: &[&[u8]], file_only: bool) {
         for (handle, name) in tee.textures.note_named(tag, parts, exempt_surfaces()) {
             crate::log!("capture: {name} names the handle {handle:#x}, which the file lacks");
         }
-        let mut ok = tee.out.write_all(&tag.to_le_bytes()).is_ok() && tee.out.write_all(&(length as u32).to_le_bytes()).is_ok();
+        let mut ok =
+            tee.out.write_all(&tag.to_le_bytes()).is_ok() && tee.out.write_all(&(length as u32).to_le_bytes()).is_ok();
         for part in parts {
             ok = ok && tee.out.write_all(part).is_ok();
         }
@@ -1864,7 +2041,9 @@ unsafe fn write_record(tag: u32, parts: &[&[u8]], file_only: bool) {
         }
         Some(Sink::Ring(ring)) => {
             if !ring.push(tag, parts) {
-                crate::log!("stream: the host program ended, or the plugin ended it, while the ring was full; the stream ends");
+                crate::log!(
+                    "stream: the host program ended, or the plugin ended it, while the ring was full; the stream ends"
+                );
                 s.failed = true;
                 // The main thread finds the exit code at its frame end and runs the failure
                 // path (`check_host`).
@@ -1885,7 +2064,10 @@ unsafe fn write_record(tag: u32, parts: &[&[u8]], file_only: bool) {
 
 // The stream is little endian, as the only target of the plugin (i686) is: the memory of a
 // value is its stream bytes.
-const _: () = assert!(cfg!(target_endian = "little"), "the stream writes the memory of its values as little-endian bytes");
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "the stream writes the memory of its values as little-endian bytes"
+);
 
 /// The bytes of `values` in the stream: the memory of the values, without a copy.
 fn words(values: &[u32]) -> &[u8] {
@@ -1940,10 +2122,31 @@ pub unsafe fn object(draw: &DrawV1, geometry_handle: u32, material_handle: u32) 
         }
     }
     if geometry_handle != 0 || material_handle != 0 {
-        let flags = draw.flags | if geometry_handle != 0 { OBJECT_HAS_GEOMETRY } else { 0 } | if material_handle != 0 { OBJECT_HAS_MATERIAL } else { 0 };
-        write(tag::OBJECT, &[words(&[draw.kind, draw.object_class, flags, draw.geometry, geometry_handle, material_handle]), &name[..name.len().min(96)]]);
+        let flags = draw.flags
+            | if geometry_handle != 0 { OBJECT_HAS_GEOMETRY } else { 0 }
+            | if material_handle != 0 { OBJECT_HAS_MATERIAL } else { 0 };
+        write(
+            tag::OBJECT,
+            &[
+                words(&[
+                    draw.kind,
+                    draw.object_class,
+                    flags,
+                    draw.geometry,
+                    geometry_handle,
+                    material_handle,
+                ]),
+                &name[..name.len().min(96)],
+            ],
+        );
     } else {
-        write(tag::OBJECT, &[words(&[draw.kind, draw.object_class, draw.flags, draw.geometry]), &name[..name.len().min(96)]]);
+        write(
+            tag::OBJECT,
+            &[
+                words(&[draw.kind, draw.object_class, draw.flags, draw.geometry]),
+                &name[..name.len().min(96)],
+            ],
+        );
     }
 }
 
@@ -2030,7 +2233,16 @@ pub unsafe fn instance_move(head: &[u32]) {
 }
 
 /// A draw of an instance. See [`tag::INSTANCE_DRAW`].
-pub unsafe fn instance_draw(id: u32, ambient: u32, effects: Option<&[u32]>, fog: Option<[u32; 4]>, lights: &[u32], bones: &[u8], bone_count: u32, queued: bool) {
+pub unsafe fn instance_draw(
+    id: u32,
+    ambient: u32,
+    effects: Option<&[u32]>,
+    fog: Option<[u32; 4]>,
+    lights: &[u32],
+    bones: &[u8],
+    bone_count: u32,
+    queued: bool,
+) {
     let _lock = crate::sync::device_lock();
     let skinned = bone_count != 0;
     let flags = if effects.is_some() { crate::shape_stream::EFFECTS } else { 0 }
@@ -2042,7 +2254,15 @@ pub unsafe fn instance_draw(id: u32, ambient: u32, effects: Option<&[u32]>, fog:
     let palette: &[u8] = if skinned { bones } else { &[] };
     write(
         tag::INSTANCE_DRAW,
-        &[words(&[id, ambient, flags]), words(effects.unwrap_or(&[])), words(fog.as_ref().map_or(&[], |f| &f[..])), words(&count), words(lights), words(if skinned { &bone_word } else { &[] }), palette],
+        &[
+            words(&[id, ambient, flags]),
+            words(effects.unwrap_or(&[])),
+            words(fog.as_ref().map_or(&[], |f| &f[..])),
+            words(&count),
+            words(lights),
+            words(if skinned { &bone_word } else { &[] }),
+            palette,
+        ],
     );
 }
 
@@ -2050,7 +2270,17 @@ pub unsafe fn instance_draw(id: u32, ambient: u32, effects: Option<&[u32]>, fog:
 pub unsafe fn instance_particles(key: u32, radius: f32, right: [f32; 3], up: [f32; 3], particles: &[u8]) {
     let _lock = crate::sync::device_lock();
     let count = (particles.len() / crate::shape_stream::PARTICLE_BYTES) as u32;
-    let head = [key, count, radius.to_bits(), right[0].to_bits(), right[1].to_bits(), right[2].to_bits(), up[0].to_bits(), up[1].to_bits(), up[2].to_bits()];
+    let head = [
+        key,
+        count,
+        radius.to_bits(),
+        right[0].to_bits(),
+        right[1].to_bits(),
+        right[2].to_bits(),
+        up[0].to_bits(),
+        up[1].to_bits(),
+        up[2].to_bits(),
+    ];
     write(tag::INSTANCE_PARTICLES, &[words(&head), particles]);
 }
 
@@ -2092,14 +2322,20 @@ pub unsafe fn instance_census(ids: &[u32]) {
 /// The lights of an instance. See [`tag::INSTANCE_LIGHTS`].
 pub unsafe fn instance_lights(id: u32, lights: &[u32], ambient: u32) {
     let _lock = crate::sync::device_lock();
-    write(tag::INSTANCE_LIGHTS, &[words(&[id, lights.len() as u32]), words(lights), words(&[ambient])]);
+    write(
+        tag::INSTANCE_LIGHTS,
+        &[words(&[id, lights.len() as u32]), words(lights), words(&[ambient])],
+    );
 }
 
 /// The bones of an instance: `bones` holds `count` bones of `camera_space::BONE_BYTES`. See
 /// [`tag::INSTANCE_BONES`].
 pub unsafe fn instance_bones(id: u32, count: u32, bound: &[f32; 4], bones: &[u8]) {
     let _lock = crate::sync::device_lock();
-    write(tag::INSTANCE_BONES, &[words(&[id, count]), words(&bound.map(f32::to_bits)), bones]);
+    write(
+        tag::INSTANCE_BONES,
+        &[words(&[id, count]), words(&bound.map(f32::to_bits)), bones],
+    );
 }
 
 /// The bytes of an `INSTANCE_SHOWN` record. See [`tag::INSTANCE_SHOWN`].
@@ -2131,7 +2367,9 @@ pub const SCENE_FOG_COLOR: u32 = 128;
 pub unsafe fn retained_scene(ambient: u32, fog: Option<[u32; 4]>, fog_color: Option<u32>, sun: Option<&[u32; 26]>) {
     let _lock = crate::sync::device_lock();
     let fog_color = if fog.is_none() { fog_color } else { None };
-    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 } | if fog_color.is_some() { SCENE_FOG_COLOR } else { 0 } | if sun.is_some() { SCENE_SUN } else { 0 };
+    let flags = if fog.is_some() { crate::shape_stream::FOG } else { 0 }
+        | if fog_color.is_some() { SCENE_FOG_COLOR } else { 0 }
+        | if sun.is_some() { SCENE_SUN } else { 0 };
     write(
         tag::RETAINED_SCENE,
         &[
@@ -2263,13 +2501,31 @@ pub unsafe fn call(index: u32, args: &[u32], result: u32) {
         // example the character image after the game changed its alpha. The record has
         // width, height, format, size, the texture of the destination when the own host
         // knows it (or 0), and the pixels.
-        let from_image = index == CALL_COPY_PIXELS && (result as i32) >= 0 && !named.is_empty() && state(&lock).is_some_and(|s| s.image_surfaces.contains(&named[0]));
-        let pixels = if from_image { crate::link_client::surface_pixels(args[0]) } else { None };
+        let from_image = index == CALL_COPY_PIXELS
+            && (result as i32) >= 0
+            && !named.is_empty()
+            && state(&lock).is_some_and(|s| s.image_surfaces.contains(&named[0]));
+        let pixels = if from_image {
+            crate::link_client::surface_pixels(args[0])
+        } else {
+            None
+        };
         if let Some((width, height, format, pixels)) = pixels {
             let texture = if args.len() > 3 { destination_texture(args[3]) } else { 0 };
-            write(tag::CALL, &[words(&head), words(&[width, height, format, pixels.len() as u32, texture]), &pixels]);
+            write(
+                tag::CALL,
+                &[
+                    words(&head),
+                    words(&[width, height, format, pixels.len() as u32, texture]),
+                    &pixels,
+                ],
+            );
         } else {
-            let data: &[u8] = if index == CALL_VIEWPORT && !args.is_empty() { bytes_at(args[0], 24) } else { &[] };
+            let data: &[u8] = if index == CALL_VIEWPORT && !args.is_empty() {
+                bytes_at(args[0], 24)
+            } else {
+                &[]
+            };
             write(tag::CALL, &[words(&head), data]);
         }
         // The slots that the flush freed retire after the copy's record.
@@ -2324,11 +2580,20 @@ pub unsafe fn texture(texture: &TextureV1, handle: usize) {
     if !recording() {
         return;
     }
-    let TextureParts { head, offsets, widths, heights, pixels } = texture_parts(texture, handle);
+    let TextureParts {
+        head,
+        offsets,
+        widths,
+        heights,
+        pixels,
+    } = texture_parts(texture, handle);
     let levels = texture.levels as usize;
     let tables = [words(&head), words(offsets), words(widths), words(heights)];
-    let sizes: Vec<usize> = (0..levels).map(|level| (offsets[level + 1] - offsets[level]) as usize).collect();
-    let Some(plan) = ring_capacity().and_then(|capacity| level_plan(capacity, tables.iter().map(|t| t.len()).sum(), &sizes)) else {
+    let sizes: Vec<usize> = (0..levels)
+        .map(|level| (offsets[level + 1] - offsets[level]) as usize)
+        .collect();
+    let Some(plan) = ring_capacity().and_then(|capacity| level_plan(capacity, tables.iter().map(|t| t.len()).sum(), &sizes))
+    else {
         write(tag::TEXTURE, &[tables[0], tables[1], tables[2], tables[3], pixels]);
         return;
     };
@@ -2413,7 +2678,9 @@ unsafe fn exempt_surfaces() -> [u32; 2] {
 /// its device texture.
 #[cfg(not(test))]
 pub unsafe fn name_texture(texture: usize, address: u32) {
-    let Some((data, revision)) = crate::ports::textures::source_data_of(texture) else { return };
+    let Some((data, revision)) = crate::ports::textures::source_data_of(texture) else {
+        return;
+    };
     let handle = stream_handle(address);
     let lock_held = crate::sync::device_lock_held_here();
     let again = {
@@ -2435,8 +2702,18 @@ pub unsafe fn name_texture(texture: usize, address: u32) {
         let lock = crate::sync::device_lock();
         let gone = state(&lock).is_none_or(|s| s.tee.as_ref().is_none_or(|tee| tee.textures.reading_gone));
         if !gone {
-            let TextureParts { head, offsets, widths, heights, pixels } = texture_parts(description, address as usize);
-            write_record(tag::TEXTURE, &[words(&head), words(offsets), words(widths), words(heights), pixels], true);
+            let TextureParts {
+                head,
+                offsets,
+                widths,
+                heights,
+                pixels,
+            } = texture_parts(description, address as usize);
+            write_record(
+                tag::TEXTURE,
+                &[words(&head), words(offsets), words(widths), words(heights), pixels],
+                true,
+            );
         }
     });
     let lock = crate::sync::device_lock();
@@ -2457,7 +2734,10 @@ pub unsafe fn name_texture(texture: usize, address: u32) {
         Err(lacks) => {
             files.lacking.insert(handle);
             files.lacks[lacks as usize] += 1;
-            crate::log!("capture: the file lacks the texture {handle:#x} {}: {lacks:?}", crate::ports::texture_link::file_name_of(texture));
+            crate::log!(
+                "capture: the file lacks the texture {handle:#x} {}: {lacks:?}",
+                crate::ports::texture_link::file_name_of(texture)
+            );
         }
     }
 }
@@ -2477,7 +2757,12 @@ fn level_plan(capacity: u64, table_bytes: usize, level_sizes: &[usize]) -> Optio
     if whole as u64 <= capacity {
         return None;
     }
-    Some(level_sizes.iter().map(|size| (RECORD_HEAD + UPDATE_HEAD + size) as u64 <= capacity).collect())
+    Some(
+        level_sizes
+            .iter()
+            .map(|size| (RECORD_HEAD + UPDATE_HEAD + size) as u64 <= capacity)
+            .collect(),
+    )
 }
 
 /// The capacity of the ring in bytes; [`None`] without a ring (a file capture: a record of
@@ -2514,7 +2799,13 @@ unsafe fn note_split(levels_dropped: u32, largest_level: usize) {
 
 /// The bytes that the game wrote into a level of a texture.
 pub unsafe fn texture_update(handle: usize, level: u32, width: u32, height: u32, format: u32, bytes: &[u8]) {
-    write(tag::TEXTURE_UPDATE, &[words(&[stream_handle(handle as u32), level, width, height, format, bytes.len() as u32]), bytes]);
+    write(
+        tag::TEXTURE_UPDATE,
+        &[
+            words(&[stream_handle(handle as u32), level, width, height, format, bytes.len() as u32]),
+            bytes,
+        ],
+    );
 }
 
 /// The head of a copy of pixels that names its texture (`call`, a copy from an image surface):
@@ -2641,7 +2932,10 @@ pub(crate) fn frame_end_records(start: i64, end: i64, shown: Option<&[u32]>, ret
     }
     records.push((tag::FRAME_END, [start.to_le_bytes(), end.to_le_bytes()].concat()));
     for &slot in retired {
-        records.push((tag::FRAME_EVENT, words(&[crate::link::EVENT_VIEW_RETIRE, slot as u32, 0]).to_vec()));
+        records.push((
+            tag::FRAME_EVENT,
+            words(&[crate::link::EVENT_VIEW_RETIRE, slot as u32, 0]).to_vec(),
+        ));
     }
     records
 }
@@ -2708,7 +3002,11 @@ unsafe fn frame_end(lock: &DeviceLock) {
                 }
                 RECORDING.store(true, Ordering::Relaxed);
                 let renderer = crate::engine::renderer();
-                let size: [u32; 2] = if renderer != 0 { rd(renderer, BACK_BUFFER_SIZE) } else { [0, 0] };
+                let size: [u32; 2] = if renderer != 0 {
+                    rd(renderer, BACK_BUFFER_SIZE)
+                } else {
+                    [0, 0]
+                };
                 let window: u32 = if renderer != 0 { rd(renderer, DEVICE_WINDOW) } else { 0 };
                 write(tag::HEADER, &[&header_record(size[0], size[1], window)]);
                 write_kept(&lock);
@@ -2854,7 +3152,10 @@ mod capture_file_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_end_records, picture_head, tag, FileTextures, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL};
+    use super::{
+        frame_end_records, picture_head, tag, FileTextures, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET,
+        CALL_TEXTURE_LEVEL,
+    };
 
     fn bytes(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
@@ -2868,7 +3169,10 @@ mod tests {
         use crate::link::EVENT_VIEW_RETIRE;
         let records = frame_end_records(5, 9, None, &[3, 7]);
         assert_eq!(records.len(), 3);
-        assert_eq!(records[0], (tag::FRAME_END, [5i64.to_le_bytes(), 9i64.to_le_bytes()].concat()));
+        assert_eq!(
+            records[0],
+            (tag::FRAME_END, [5i64.to_le_bytes(), 9i64.to_le_bytes()].concat())
+        );
         assert_eq!(records[1], (tag::FRAME_EVENT, bytes(&[EVENT_VIEW_RETIRE, 3, 0])));
         assert_eq!(records[2], (tag::FRAME_EVENT, bytes(&[EVENT_VIEW_RETIRE, 7, 0])));
         assert_eq!(frame_end_records(5, 9, None, &[]).len(), 1);
@@ -2881,7 +3185,10 @@ mod tests {
         let head = picture_head(9, 64, 32, 21, 8192);
         let count = head[3] as usize;
         let after_arguments = &head[4 + count..];
-        assert_eq!((head[0], after_arguments[0], after_arguments[1], after_arguments[4]), (CALL_COPY_PIXELS, 64, 32, 9));
+        assert_eq!(
+            (head[0], after_arguments[0], after_arguments[1], after_arguments[4]),
+            (CALL_COPY_PIXELS, 64, 32, 9)
+        );
         // It names no surface, so the file's count of lacking handles does not move.
         let mut files = FileTextures::default();
         assert!(files.note_named(tag::CALL, &[&bytes(&head)], [0, 0]).is_empty());
@@ -2921,7 +3228,10 @@ mod tests {
 
     #[test]
     fn a_handle_that_goes_during_its_read_is_noted() {
-        let mut files = FileTextures { reading: Some(5), ..Default::default() };
+        let mut files = FileTextures {
+            reading: Some(5),
+            ..Default::default()
+        };
         files.note_record(tag::TEXTURE_GONE, &[&bytes(&[6])]);
         assert!(!files.reading_gone);
         files.note_record(tag::TEXTURE_GONE, &[&bytes(&[5])]);
@@ -2948,7 +3258,12 @@ mod tests {
         ];
         let mut named = Vec::new();
         for (record, words) in &cases {
-            named.extend(files.note_named(*record, &[&bytes(words)], [99, 0]).into_iter().map(|(handle, _)| handle));
+            named.extend(
+                files
+                    .note_named(*record, &[&bytes(words)], [99, 0])
+                    .into_iter()
+                    .map(|(handle, _)| handle),
+            );
         }
         assert_eq!(named, vec![20, 21, 22, 23, 24]);
         assert_eq!(files.records_naming_lacking, 5);

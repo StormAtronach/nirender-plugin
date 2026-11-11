@@ -43,7 +43,10 @@ struct State {
     locked: Vec<Locked>,
 }
 
-static mut STATE: State = State { classes: Vec::new(), locked: Vec::new() };
+static mut STATE: State = State {
+    classes: Vec::new(),
+    locked: Vec::new(),
+};
 
 unsafe fn state() -> &'static mut State {
     &mut *core::ptr::addr_of_mut!(STATE)
@@ -97,14 +100,25 @@ unsafe fn buffer_size(object: usize) -> u32 {
 unsafe extern "system" fn lock_wrapper(this: usize, offset: u32, size: u32, data: *mut usize, flags: u32) -> u32 {
     let _lock = crate::sync::device_lock();
     crate::sync::off_thread("resource", "buffer Lock");
-    let lock: unsafe extern "system" fn(usize, u32, u32, *mut usize, u32) -> u32 = core::mem::transmute(original(this, LOCK));
+    let lock: unsafe extern "system" fn(usize, u32, u32, *mut usize, u32) -> u32 =
+        core::mem::transmute(original(this, LOCK));
     let result = lock(this, offset, size, data, flags);
     if (result as i32) >= 0 && (device::recording() || crate::capture::active()) {
         // Size 0 locks the whole buffer.
-        let size = if size == 0 { buffer_size(this).saturating_sub(offset) } else { size };
+        let size = if size == 0 {
+            buffer_size(this).saturating_sub(offset)
+        } else {
+            size
+        };
         let s = state();
         s.locked.retain(|l| l.object != this);
-        s.locked.push(Locked { object: this, data: *data, offset, size, flags });
+        s.locked.push(Locked {
+            object: this,
+            data: *data,
+            offset,
+            size,
+            flags,
+        });
     }
     result
 }

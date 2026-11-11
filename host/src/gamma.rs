@@ -11,13 +11,22 @@ pub(crate) const RAMP_VALUES: usize = 768;
 
 /// The ramp of a `GAMMA_RAMP` record (768 little-endian u16), or [`None`] for a short record.
 pub(crate) fn read_ramp(data: &[u8]) -> Option<Vec<u16>> {
-    (data.len() >= RAMP_VALUES * 2).then(|| data[..RAMP_VALUES * 2].chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect())
+    (data.len() >= RAMP_VALUES * 2).then(|| {
+        data[..RAMP_VALUES * 2]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect()
+    })
 }
 
 /// True when the ramp gives each 8-bit value back: the table changes no pixel of the window.
 /// The engine's ramp for gamma 1 truncates `i / 255 * 65535`, so a value can be `i * 257 - 1`.
 pub(crate) fn is_identity(ramp: &[u16]) -> bool {
-    ramp.len() == RAMP_VALUES && ramp.iter().enumerate().all(|(at, &value)| ((value as u32 * 255 + 32767) / 65535) as usize == at % 256)
+    ramp.len() == RAMP_VALUES
+        && ramp
+            .iter()
+            .enumerate()
+            .all(|(at, &value)| ((value as u32 * 255 + 32767) / 65535) as usize == at % 256)
 }
 
 /// The pass of the look-up table: the back buffer into the picture of the window.
@@ -56,24 +65,44 @@ impl Gamma {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gamma ramp"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("gamma ramp"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("gamma ramp"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gamma ramp"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let _long = crate::LongStep::begin();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("gamma ramp"),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
@@ -81,7 +110,11 @@ impl Gamma {
                 module: &module,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview_mask: None,
             cache: None,
@@ -103,13 +136,23 @@ impl Gamma {
     /// Writes the ramp into the table. The write lands before the command buffers of the next
     /// submit.
     pub(crate) fn set(&self, queue: &wgpu::Queue, ramp: &[u16]) {
-        let floats: Vec<u8> = ramp.iter().take(RAMP_VALUES).flat_map(|&value| (value as f32 / 65535.0).to_le_bytes()).collect();
+        let floats: Vec<u8> = ramp
+            .iter()
+            .take(RAMP_VALUES)
+            .flat_map(|&value| (value as f32 / 65535.0).to_le_bytes())
+            .collect();
         queue.write_buffer(&self.table, 0, &floats);
     }
 
     /// Draws `source` (the back buffer) through the table into `target` (the picture of the
     /// window): the part that the two have, as the plain copy; black outside it.
-    pub(crate) fn draw(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::Texture, target: &wgpu::Texture) {
+    pub(crate) fn draw(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::Texture,
+        target: &wgpu::Texture,
+    ) {
         let source_view = source.create_view(&Default::default());
         let target_view = target.create_view(&Default::default());
         let group = gpu::frame_group(
@@ -118,8 +161,14 @@ impl Gamma {
                 label: Some("gamma ramp"),
                 layout: &self.layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: self.table.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&source_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.table.as_entire_binding(),
+                    },
                 ],
             },
         );
@@ -130,7 +179,10 @@ impl Gamma {
                 view: &target_view,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -156,7 +208,9 @@ mod tests {
     /// The ramp of `NiDX8Application::SetGamma` for a gamma setting.
     fn engine_ramp(gamma: f32) -> Vec<u16> {
         let exponent = if gamma < 1.0 { gamma * 0.99 + 0.01 } else { gamma * 5.0 - 4.0 };
-        let one: Vec<u16> = (0..256).map(|i| ((i as f64 * 0.0039215689).powf(1.0 / exponent as f64) * 65535.0) as u16).collect();
+        let one: Vec<u16> = (0..256)
+            .map(|i| ((i as f64 * 0.0039215689).powf(1.0 / exponent as f64) * 65535.0) as u16)
+            .collect();
         one.iter().chain(&one).chain(&one).copied().collect()
     }
 

@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::platform::windows::WindowExtWindows;
-use winit::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::platform::windows::WindowExtWindows;
+use winit::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
 use winit::window::{Window, WindowId};
 
 use super::{copy_picture, option, save_picture, switches, target_texture, Player, Renderer, Status};
@@ -31,11 +31,11 @@ extern "system" {
 // The layout of the HEADER record and of the shared memories of a stream: their one home,
 // shared with the plugin.
 use super::stream_format::{
-    HEADER_HEIGHT_AT, HEADER_WIDTH_AT, HEADER_WINDOW_AT, MESSAGES_CAPACITY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_MEMORY, MESSAGES_READ, MESSAGES_WRITTEN,
-    READ_EVENT, RECORDS_EVENT, SHOWN_EVENT, TILES_MEMORY,
-    REPLY_CAPACITY, REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST, REPLY_WIDTH, RING_BUSY, RING_CAPACITY, RING_CLOSED, RING_DONE_AT, RING_DONE_TIME,
-    RING_GAME_WAITING, RING_HEAD, RING_MAGIC, RING_NEXT_START, RING_READ, RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, TILE_BYTES,
-    TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
+    HEADER_HEIGHT_AT, HEADER_WIDTH_AT, HEADER_WINDOW_AT, MESSAGES_CAPACITY, MESSAGES_HEAD, MESSAGES_MAGIC, MESSAGES_MEMORY,
+    MESSAGES_READ, MESSAGES_WRITTEN, READ_EVENT, RECORDS_EVENT, REPLY_CAPACITY, REPLY_HEAD, REPLY_HEIGHT, REPLY_REQUEST,
+    REPLY_WIDTH, RING_BUSY, RING_CAPACITY, RING_CLOSED, RING_DONE_AT, RING_DONE_TIME, RING_GAME_WAITING, RING_HEAD,
+    RING_MAGIC, RING_NEXT_START, RING_READ, RING_SHADOW_REACH, RING_TAKES, RING_WAITING, RING_WRITTEN, SHOWN_EVENT,
+    TILES_MEMORY, TILE_BYTES, TILE_HEAD, TILE_HEIGHT, TILE_SLOTS, TILE_TICKET, TILE_WIDTH,
 };
 
 /// The word [`RING_ENDING`](super::stream_format::RING_ENDING) of the ring head, or null
@@ -130,13 +130,25 @@ impl Ring {
                 // missing event gives 0, which the reader tests before each use.
                 let read_event = unsafe { OpenEventA(0x1F0003, 0, read_name.as_ptr()) };
                 // SAFETY: the offset of the word is inside the mapped head of the ring.
-                ENDING_WORD.store(unsafe { base.add(super::stream_format::RING_ENDING) }.cast(), Ordering::Release);
+                ENDING_WORD.store(
+                    unsafe { base.add(super::stream_format::RING_ENDING) }.cast(),
+                    Ordering::Release,
+                );
                 // SAFETY: as above; the offset 76 of the word is 4-aligned within the head, as
                 // an `AtomicU32` needs. The `Ring` has no `Drop`: the head stays mapped.
                 super::watchdog::set_allowance_word(unsafe { base.add(super::stream_format::RING_ALLOWANCE) }.cast());
-                return Ring { base, capacity, event, shown_event, read_event };
+                return Ring {
+                    base,
+                    capacity,
+                    event,
+                    shown_event,
+                    read_event,
+                };
             }
-            assert!(start.elapsed() < Duration::from_secs(60), "no shared memory with the name {name}");
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "no shared memory with the name {name}"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -146,7 +158,8 @@ impl Ring {
     fn set_takes(&self, classes: u32, shadow_reach: f32) {
         unsafe {
             (*(self.base.add(RING_TAKES) as *const std::sync::atomic::AtomicU32)).store(classes, Ordering::Release);
-            (*(self.base.add(RING_SHADOW_REACH) as *const std::sync::atomic::AtomicU32)).store(shadow_reach.to_bits(), Ordering::Release);
+            (*(self.base.add(RING_SHADOW_REACH) as *const std::sync::atomic::AtomicU32))
+                .store(shadow_reach.to_bits(), Ordering::Release);
         }
     }
 
@@ -173,7 +186,8 @@ impl Ring {
     /// it writes, the next record comes soon and this program waits awake, so that its core
     /// does not go to sleep between the records.
     fn game_phase(&self) -> GamePhase {
-        let start = unsafe { (*(self.base.add(RING_NEXT_START) as *const std::sync::atomic::AtomicI64)).load(Ordering::Acquire) };
+        let start =
+            unsafe { (*(self.base.add(RING_NEXT_START) as *const std::sync::atomic::AtomicI64)).load(Ordering::Acquire) };
         let rate = super::overlay::ticks_per_second();
         let now = super::overlay::ticks();
         match start {
@@ -260,7 +274,12 @@ struct Reply {
 impl Reply {
     fn open(name: &str) -> Option<Reply> {
         let (mapping, base) = Reply::map(name, 0)?;
-        Some(Reply { name: name.to_string(), mapping, base, generation: 0 })
+        Some(Reply {
+            name: name.to_string(),
+            mapping,
+            base,
+            generation: 0,
+        })
     }
 
     /// The memory of the generation `generation` (`stream_format::reply_memory_name`).
@@ -327,7 +346,11 @@ impl Tiles {
     }
 
     fn answer(&self, ticket: u32, width: u32, height: u32, pixels: &[u8]) {
-        let (width, height, pixels) = if pixels.len() > TILE_BYTES { (0, 0, &[][..]) } else { (width, height, pixels) };
+        let (width, height, pixels) = if pixels.len() > TILE_BYTES {
+            (0, 0, &[][..])
+        } else {
+            (width, height, pixels)
+        };
         unsafe {
             let slot = self.base.add((ticket as usize % TILE_SLOTS) * (TILE_HEAD + TILE_BYTES));
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), slot.add(TILE_HEAD), pixels.len());
@@ -360,7 +383,11 @@ impl Messages {
             return None;
         }
         let capacity = unsafe { (base.add(MESSAGES_CAPACITY) as *const u32).read_volatile() } as u64;
-        Some(Messages { base, capacity, full: false })
+        Some(Messages {
+            base,
+            capacity,
+            full: false,
+        })
     }
 
     fn counter(&self, offset: usize) -> &std::sync::atomic::AtomicU64 {
@@ -375,7 +402,10 @@ impl Messages {
         if total > self.capacity - (written - read) {
             if !self.full {
                 self.full = true;
-                println!("messages: no room for a message {id} of {} bytes: the game does not read; it is dropped", bytes.len());
+                println!(
+                    "messages: no room for a message {id} of {} bytes: the game does not read; it is dropped",
+                    bytes.len()
+                );
             }
             return;
         }
@@ -479,10 +509,17 @@ fn tag_line(counts: &[(u64, u64)]) -> String {
     let total: u64 = counts.iter().map(|count| count.1).sum();
     let mut tags: Vec<usize> = (0..counts.len()).filter(|&tag| counts[tag].0 > 0).collect();
     tags.sort_by_key(|&tag| std::cmp::Reverse(counts[tag].1));
-    let parts: Vec<String> = tags.iter().map(|&tag| {
-        let (records, bytes) = counts[tag];
-        format!("{tag} {records} ({:.1} MB, {:.1} %)", bytes as f64 / 1e6, bytes as f64 * 100.0 / total.max(1) as f64)
-    }).collect();
+    let parts: Vec<String> = tags
+        .iter()
+        .map(|&tag| {
+            let (records, bytes) = counts[tag];
+            format!(
+                "{tag} {records} ({:.1} MB, {:.1} %)",
+                bytes as f64 / 1e6,
+                bytes as f64 * 100.0 / total.max(1) as f64
+            )
+        })
+        .collect();
     parts.join("; ")
 }
 
@@ -514,7 +551,13 @@ fn chosen_present_mode(asked: wgpu::PresentMode, modes: &[wgpu::PresentMode]) ->
 /// Gets the picture of the window for a frame. A surface that is outdated or lost is
 /// configured again, one time for each frame. The log has each change of the status of a
 /// surface that gives no picture.
-fn acquire(surface: &wgpu::Surface, device: &wgpu::Device, configuration: Option<&wgpu::SurfaceConfiguration>, status: &mut &'static str, frame: u32) -> Option<wgpu::SurfaceTexture> {
+fn acquire(
+    surface: &wgpu::Surface,
+    device: &wgpu::Device,
+    configuration: Option<&wgpu::SurfaceConfiguration>,
+    status: &mut &'static str,
+    frame: u32,
+) -> Option<wgpu::SurfaceTexture> {
     // A lost device takes no picture: a picture of the window that is acquired and never
     // shown ends the program at its end (wgpu-hal: "Trying to destroy a
     // SwapchainAcquireSemaphore that is still in use", a test of 2026-10-21).
@@ -537,13 +580,24 @@ fn acquire(surface: &wgpu::Surface, device: &wgpu::Device, configuration: Option
             wgpu::CurrentSurfaceTexture::Occluded => ("hidden", false),
             wgpu::CurrentSurfaceTexture::Validation => ("not valid", false),
         };
-        if let (true, false, Some(configuration)) = (stale, configured_again, configuration.filter(|c| c.width != 0 && c.height != 0)) {
+        if let (true, false, Some(configuration)) = (
+            stale,
+            configured_again,
+            configuration.filter(|c| c.width != 0 && c.height != 0),
+        ) {
             surface.configure(device, configuration);
             configured_again = true;
             continue;
         }
         if *status != name {
-            println!("window: no picture at frame {frame}: the surface is {name}{}", if configured_again { ", also after it was configured again" } else { "" });
+            println!(
+                "window: no picture at frame {frame}: the surface is {name}{}",
+                if configured_again {
+                    ", also after it was configured again"
+                } else {
+                    ""
+                }
+            );
             *status = name;
         }
         return None;
@@ -555,14 +609,23 @@ fn acquire(surface: &wgpu::Surface, device: &wgpu::Device, configuration: Option
 fn take_gamma_ramp(gamma: &mut Option<super::gamma::Gamma>, player: &Player) {
     let Some(ramp) = player.gamma_ramp.as_ref() else { return };
     let renderer = &player.renderer;
-    gamma.get_or_insert_with(|| super::gamma::Gamma::new(&renderer.device, renderer.target_format)).set(&renderer.queue, ramp);
+    gamma
+        .get_or_insert_with(|| super::gamma::Gamma::new(&renderer.device, renderer.target_format))
+        .set(&renderer.queue, ramp);
 }
 
 impl App {
     /// Sets the size of the picture in the window, and makes the depth buffer for it.
     fn configure(&mut self, width: u32, height: u32) {
-        let (Some(surface), Some(configuration), Some(player)) = (self.surface.as_ref(), self.configuration.as_mut(), self.player.as_ref()) else { return };
-        if width == 0 || height == 0 || (configuration.width, configuration.height) == (width, height) && self.depth.is_some() {
+        let (Some(surface), Some(configuration), Some(player)) =
+            (self.surface.as_ref(), self.configuration.as_mut(), self.player.as_ref())
+        else {
+            return;
+        };
+        if width == 0
+            || height == 0
+            || (configuration.width, configuration.height) == (width, height) && self.depth.is_some()
+        {
             return;
         }
         configuration.width = width;
@@ -573,10 +636,23 @@ impl App {
         // With multisampling, the back buffer is the resolve target of the frame, and the
         // player reads it back into the multisampled colour target after a write outside
         // the pass (`Player::load_color`).
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
-        self.back_buffer = Some(target_texture(&player.renderer.device, width, height, player.renderer.target_format, usage));
+        let usage =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
+        self.back_buffer = Some(target_texture(
+            &player.renderer.device,
+            width,
+            height,
+            player.renderer.target_format,
+            usage,
+        ));
         // An extension can read the depth in a pass that does not have it as a target.
-        let depth = target_texture(&player.renderer.device, width, height, player.renderer.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
+        let depth = target_texture(
+            &player.renderer.device,
+            width,
+            height,
+            player.renderer.depth_format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        );
         self.depth = Some(Rc::new(depth.create_view(&Default::default())));
     }
 
@@ -590,14 +666,41 @@ impl App {
             player.gamma_new = false;
             take_gamma_ramp(&mut self.gamma, player);
         }
-        let (Some(surface), Some(player), Some(overlay)) = (self.surface.as_ref(), self.player.as_ref(), self.overlay.as_mut()) else { return };
+        let (Some(surface), Some(player), Some(overlay)) =
+            (self.surface.as_ref(), self.player.as_ref(), self.overlay.as_mut())
+        else {
+            return;
+        };
         let Some(back_buffer) = player.shown_picture() else { return };
-        let Some(frame) = acquire(surface, &player.renderer.device, self.configuration.as_ref(), &mut self.surface_status, self.frames) else { return };
+        let Some(frame) = acquire(
+            surface,
+            &player.renderer.device,
+            self.configuration.as_ref(),
+            &mut self.surface_status,
+            self.frames,
+        ) else {
+            return;
+        };
         let (device, queue) = (&player.renderer.device, &player.renderer.queue);
         let size = (frame.texture.width(), frame.texture.height());
         let mut encoder = device.create_command_encoder(&Default::default());
-        self.to_window.draw(device, &mut encoder, self.gamma.as_ref().filter(|_| player.gamma_ramp.is_some()), back_buffer, &frame.texture);
-        overlay.draw(device, queue, &mut encoder, &frame.texture.create_view(&Default::default()), size, Some(self.sign_step), &[], &Status::default());
+        self.to_window.draw(
+            device,
+            &mut encoder,
+            self.gamma.as_ref().filter(|_| player.gamma_ramp.is_some()),
+            back_buffer,
+            &frame.texture,
+        );
+        overlay.draw(
+            device,
+            queue,
+            &mut encoder,
+            &frame.texture.create_view(&Default::default()),
+            size,
+            Some(self.sign_step),
+            &[],
+            &Status::default(),
+        );
         crate::gpu::submit(queue, [encoder.finish()]);
         queue.present(frame);
     }
@@ -633,10 +736,18 @@ impl App {
         if let Some(player) = self.player.as_ref() {
             println!("time for each frame, in ms:");
             for (name, time) in super::TIME_NAMES.iter().zip(player.renderer.counts.times) {
-                println!("  {:6.3}  {name}", super::ticks::duration(time).as_secs_f64() * 1000.0 / self.frames.max(1) as f64);
+                println!(
+                    "  {:6.3}  {name}",
+                    super::ticks::duration(time).as_secs_f64() * 1000.0 / self.frames.max(1) as f64
+                );
             }
         }
-        println!("records {}, {:.1} MB, {:.2} MB for each frame", self.records, self.bytes as f64 / 1e6, self.bytes as f64 / 1e6 / self.frames.max(1) as f64);
+        println!(
+            "records {}, {:.1} MB, {:.2} MB for each frame",
+            self.records,
+            self.bytes as f64 / 1e6,
+            self.bytes as f64 / 1e6 / self.frames.max(1) as f64
+        );
         println!("records by tag, the most bytes first: {}", tag_line(&self.by_tag));
         if let Some(player) = self.player.as_ref() {
             player.print_counts();
@@ -658,7 +769,9 @@ impl App {
             wgpu::TextureFormat::Bgra8Unorm,
             crate::extension_shaders(self.extension.as_deref()),
             self.extension.as_ref().map_or(0, |extension| extension.texture_slots()),
-            switches().samples.unwrap_or_else(|| self.extension.as_ref().map_or(1, |extension| extension.samples())),
+            switches()
+                .samples
+                .unwrap_or_else(|| self.extension.as_ref().map_or(1, |extension| extension.samples())),
         );
         let (mut renderer, surface) = match made {
             Ok(made) => made,
@@ -671,7 +784,12 @@ impl App {
         let surface = surface.expect("a surface");
         let vsync = self.extension.as_ref().is_some_and(|extension| extension.vsync());
         let present_mode = switches().present.unwrap_or_else(|| present_mode_of(vsync));
-        let frame_latency = switches().frame_latency.unwrap_or_else(|| self.extension.as_ref().map_or(2, |extension| extension.frame_latency()).clamp(1, 3));
+        let frame_latency = switches().frame_latency.unwrap_or_else(|| {
+            self.extension
+                .as_ref()
+                .map_or(2, |extension| extension.frame_latency())
+                .clamp(1, 3)
+        });
         println!(
             "window: present mode {:?} ({present_mode:?} asked), {frame_latency} frames may wait for the GPU",
             chosen_present_mode(present_mode, &renderer.present_modes)
@@ -687,7 +805,10 @@ impl App {
             view_formats: vec![],
             color_space: Default::default(),
         });
-        assert!(renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST), "the window does not take a copy of a picture");
+        assert!(
+            renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST),
+            "the window does not take a copy of a picture"
+        );
         self.overlay = Some(super::overlay::Overlay::new(&renderer.device, renderer.target_format));
         let mut player = Player::new(renderer);
         // The abilities of the stream are in its head: the player reads them as a replay does.
@@ -696,8 +817,14 @@ impl App {
         player.renderer.anisotropy = player.extension.as_ref().map_or(1, |extension| extension.anisotropy());
         player.film_shot = self.shot_film.take();
         player.film_shot_at = self.shot_film_frame;
-        player.reply = self.reply.take().map(|mut reply| Box::new(move |request, generation, width, height, pixels: &[u8]| reply.answer(request, generation, width, height, pixels)) as _);
-        player.tile_out = self.tiles.take().map(|tiles| Box::new(move |ticket, width, height, pixels: &[u8]| tiles.answer(ticket, width, height, pixels)) as _);
+        player.reply = self.reply.take().map(|mut reply| {
+            Box::new(move |request, generation, width, height, pixels: &[u8]| {
+                reply.answer(request, generation, width, height, pixels)
+            }) as _
+        });
+        player.tile_out = self.tiles.take().map(|tiles| {
+            Box::new(move |ticket, width, height, pixels: &[u8]| tiles.answer(ticket, width, height, pixels)) as _
+        });
         self.player = Some(player);
         self.surface = Some(surface);
         self.window = own;
@@ -713,7 +840,9 @@ impl App {
     /// window sends no event of its size to a window of another process, so its size is read at
     /// each frame (one call). The surface follows through `Resized`.
     fn follow_parent(&self) {
-        let (Some(window), Some(parent)) = (self.window.as_ref(), self.parent) else { return };
+        let (Some(window), Some(parent)) = (self.window.as_ref(), self.parent) else {
+            return;
+        };
         let mut rect = [0i32; 4];
         unsafe { GetClientRect(parent, &mut rect) };
         let parent_size = ((rect[2] - rect[0]).max(0) as u32, (rect[3] - rect[1]).max(0) as u32);
@@ -727,12 +856,22 @@ impl App {
     /// buffer's: the back buffer and the depth are made again at it (`configure`); the window
     /// keeps its size, and the picture is scaled into it as before.
     fn take_new_size(&mut self) {
-        let Some(new) = self.player.as_ref().map(|player| player.size).filter(|&(width, height)| width != 0 && height != 0) else { return };
+        let Some(new) = self
+            .player
+            .as_ref()
+            .map(|player| player.size)
+            .filter(|&(width, height)| width != 0 && height != 0)
+        else {
+            return;
+        };
         let new = (new.0.max(64), new.1.max(64));
         if new == self.size {
             return;
         }
-        println!("picture {} x {} (the game made its renderer again; it was {} x {})", new.0, new.1, self.size.0, self.size.1);
+        println!(
+            "picture {} x {} (the game made its renderer again; it was {} x {})",
+            new.0, new.1, self.size.0, self.size.1
+        );
         self.size = new;
         self.depth = None;
         let (width, height) = self.window_size();
@@ -757,17 +896,25 @@ impl ApplicationHandler for App {
             return;
         }
         // The surface on the window of the game itself: no window of this program.
-        let game_window = self.parent.and_then(std::num::NonZeroIsize::new).filter(|_| switches().game_window);
+        let game_window = self
+            .parent
+            .and_then(std::num::NonZeroIsize::new)
+            .filter(|_| switches().game_window);
         if let Some(handle) = game_window {
             println!("window: the surface goes on the window of the game");
             return self.start(super::WindowTarget::Game(handle));
         }
-        let mut attributes =
-            Window::default_attributes().with_title("nirender host").with_inner_size(PhysicalSize::new(self.size.0, self.size.1)).with_resizable(false).with_active(false);
+        let mut attributes = Window::default_attributes()
+            .with_title("nirender host")
+            .with_inner_size(PhysicalSize::new(self.size.0, self.size.1))
+            .with_resizable(false)
+            .with_active(false);
         if let Some(parent) = self.parent.and_then(std::num::NonZeroIsize::new) {
             // A child window of the window of the game, over all of it.
             let handle = RawWindowHandle::Win32(Win32WindowHandle::new(parent));
-            attributes = unsafe { attributes.with_parent_window(Some(handle)) }.with_decorations(false).with_position(PhysicalPosition::new(0, 0));
+            attributes = unsafe { attributes.with_parent_window(Some(handle)) }
+                .with_decorations(false)
+                .with_position(PhysicalPosition::new(0, 0));
         }
         let window = Arc::new(event_loop.create_window(attributes).expect("a window"));
         if self.parent.is_some() {
@@ -850,7 +997,11 @@ impl ApplicationHandler for App {
                 self.take_new_size();
             }
             if !self.in_frame && self.depth.is_some() && size.0 != 0 {
-                self.player.as_mut().unwrap().begin_frame(self.back_buffer.as_ref().unwrap(), self.depth.clone().unwrap(), true);
+                self.player.as_mut().unwrap().begin_frame(
+                    self.back_buffer.as_ref().unwrap(),
+                    self.depth.clone().unwrap(),
+                    true,
+                );
                 self.in_frame = true;
             }
             let clock = super::ticks::Clock::now();
@@ -919,7 +1070,8 @@ impl ApplicationHandler for App {
             self.ring.set_takes(player.takes, player.shadow_reach);
             let inside_after = super::sum_except(&player.renderer.counts.times, super::TIME_RECORDS);
             // The time of a record without the parts that are measured on their own.
-            player.renderer.counts.times[super::TIME_RECORDS] += clock.elapsed().saturating_sub(inside_after - inside_before);
+            player.renderer.counts.times[super::TIME_RECORDS] +=
+                clock.elapsed().saturating_sub(inside_after - inside_before);
             if let (Some(overlay), Some(record)) = (self.overlay.as_mut(), player.overlay_record.take()) {
                 overlay.record(&record);
             }
@@ -928,7 +1080,12 @@ impl ApplicationHandler for App {
                 if let Some(line) = self.overlay.as_mut().and_then(|overlay| overlay.age_line()) {
                     println!("  {line}");
                 }
-                let since: Vec<(u64, u64)> = self.by_tag.iter().zip(&self.by_tag_at_mark).map(|(now, then)| (now.0 - then.0, now.1 - then.1)).collect();
+                let since: Vec<(u64, u64)> = self
+                    .by_tag
+                    .iter()
+                    .zip(&self.by_tag_at_mark)
+                    .map(|(now, then)| (now.0 - then.0, now.1 - then.1))
+                    .collect();
                 println!("  records by tag since the mark before: {}", tag_line(&since));
                 self.by_tag_at_mark = self.by_tag;
             }
@@ -940,11 +1097,20 @@ impl ApplicationHandler for App {
                 return;
             }
             let clock = super::ticks::Clock::now();
-            let frame = acquire(self.surface.as_ref().unwrap(), &player.renderer.device, self.configuration.as_ref(), &mut self.surface_status, self.frames);
+            let frame = acquire(
+                self.surface.as_ref().unwrap(),
+                &player.renderer.device,
+                self.configuration.as_ref(),
+                &mut self.surface_status,
+                self.frames,
+            );
             player.renderer.counts.times[super::TIME_ACQUIRE] += clock.elapsed();
             self.not_shown += frame.is_none() as u32;
             let in_window = frame.is_some();
-            let blue_first = matches!(player.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+            let blue_first = matches!(
+                player.renderer.target_format,
+                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+            );
             let take_shot = self.shot.is_some() && !self.shot_done && self.frames + 1 >= self.shot_frame;
             let back_buffer = self.back_buffer.as_ref().unwrap();
             let (width, height) = (back_buffer.width(), back_buffer.height());
@@ -970,7 +1136,11 @@ impl ApplicationHandler for App {
                     ),
                 );
             }
-            let status = player.extension.as_ref().map(|extension| extension.status()).unwrap_or_default();
+            let status = player
+                .extension
+                .as_ref()
+                .map(|extension| extension.status())
+                .unwrap_or_default();
             if player.gamma_new {
                 player.gamma_new = false;
                 take_gamma_ramp(&mut self.gamma, player);
@@ -987,7 +1157,16 @@ impl ApplicationHandler for App {
                     // The debug overlay goes on the picture of the window, not into the
                     // back buffer: a picture file and a pixel read do not have it.
                     if let Some(overlay) = overlay {
-                        overlay.draw(&device, &queue, encoder, &frame.texture.create_view(&Default::default()), (frame.texture.width(), frame.texture.height()), None, &lines, &status);
+                        overlay.draw(
+                            &device,
+                            &queue,
+                            encoder,
+                            &frame.texture.create_view(&Default::default()),
+                            (frame.texture.width(), frame.texture.height()),
+                            None,
+                            &lines,
+                            &status,
+                        );
                     }
                 }
                 if take_shot {
@@ -1009,7 +1188,10 @@ impl ApplicationHandler for App {
                 let mut encoder = device.create_command_encoder(&Default::default());
                 let (buffer, row) = copy_picture(&device, &mut encoder, back_buffer, width, height);
                 player.renderer.upload_indirect(&player.frame_args);
-                crate::gpu::submit(&player.renderer.queue, player.renderer.commands.take().into_iter().chain([encoder.finish()]));
+                crate::gpu::submit(
+                    &player.renderer.queue,
+                    player.renderer.commands.take().into_iter().chain([encoder.finish()]),
+                );
                 for path in &shots {
                     save_picture(&device, &buffer, row, width, height, blue_first, path);
                     buffer.unmap();
@@ -1019,17 +1201,32 @@ impl ApplicationHandler for App {
                 if let (true, Some(overlay)) = (self.window_shots, self.overlay.as_mut()) {
                     let copy = device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("window picture"),
-                        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                        size: wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
                         mip_level_count: 1,
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: back_buffer.format(),
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::COPY_SRC
+                            | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
                     });
                     let mut encoder = device.create_command_encoder(&Default::default());
                     super::window_pass::exact(&device, &mut encoder, gamma, back_buffer, &copy);
-                    overlay.draw(&device, &queue, &mut encoder, &copy.create_view(&Default::default()), (width, height), None, &lines, &status);
+                    overlay.draw(
+                        &device,
+                        &queue,
+                        &mut encoder,
+                        &copy.create_view(&Default::default()),
+                        (width, height),
+                        None,
+                        &lines,
+                        &status,
+                    );
                     let (buffer, row) = copy_picture(&device, &mut encoder, &copy, width, height);
                     crate::gpu::submit(&queue, [encoder.finish()]);
                     for path in &shots {
@@ -1071,13 +1268,22 @@ impl ApplicationHandler for App {
             let busy: u64 = player.renderer.counts.times.iter().sum();
             let frame_us = super::ticks::duration(busy - self.busy_before).as_secs_f64() * 1e6;
             self.busy_before = busy;
-            self.busy_mean_us = if self.busy_mean_us == 0.0 { frame_us } else { self.busy_mean_us + (frame_us - self.busy_mean_us) * 0.1 };
+            self.busy_mean_us = if self.busy_mean_us == 0.0 {
+                frame_us
+            } else {
+                self.busy_mean_us + (frame_us - self.busy_mean_us) * 0.1
+            };
             self.ring.shown(super::overlay::ticks(), self.busy_mean_us as u32);
             if let Some(overlay) = self.overlay.as_mut() {
                 if let (Some((start, end, read)), true) = (stamps, in_window) {
                     overlay.age(start, end, read, super::overlay::ticks());
                 }
-                overlay.frame(&device, self.idle, super::ticks::duration(player.renderer.counts.times[super::TIME_ACQUIRE]), player.renderer.counts.draws as u64);
+                overlay.frame(
+                    &device,
+                    self.idle,
+                    super::ticks::duration(player.renderer.counts.times[super::TIME_ACQUIRE]),
+                    player.renderer.counts.draws as u64,
+                );
             }
             self.frames += 1;
             self.first_frame.get_or_insert_with(Instant::now);
@@ -1131,7 +1337,10 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         if let Some(tag) = ring.pop(&mut data) {
             break tag;
         }
-        assert!(start.elapsed() < Duration::from_secs(60) && !ring.closed(), "no record in the ring");
+        assert!(
+            start.elapsed() < Duration::from_secs(60) && !ring.closed(),
+            "no record in the ring"
+        );
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
@@ -1149,9 +1358,17 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
             &format!("{message}\n\nClose this box: the game closes. nirender-host.log has the details."),
         ),
     }
-    let size = (super::word(&data, HEADER_WIDTH_AT).max(64), super::word(&data, HEADER_HEIGHT_AT).max(64));
+    let size = (
+        super::word(&data, HEADER_WIDTH_AT).max(64),
+        super::word(&data, HEADER_HEIGHT_AT).max(64),
+    );
     let embed = args.iter().any(|a| a == "--embed");
-    println!("picture {} x {}, window of the game {game_window:#x}{}", size.0, size.1, if embed { ", the host goes into it" } else { "" });
+    println!(
+        "picture {} x {}, window of the game {game_window:#x}{}",
+        size.0,
+        size.1,
+        if embed { ", the host goes into it" } else { "" }
+    );
     // This thread is the frame thread: the watchdog ends the program when a step of it stalls.
     if switches().watchdog {
         super::watchdog::start();
@@ -1172,11 +1389,15 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         parent: embed.then_some(game_window),
         shot: option(args, "--shot"),
         shot_frame: option(args, "--shot-frame").and_then(|text| text.parse().ok()).unwrap_or(60),
-        shots_at: option(args, "--shots-at").map(|text| text.split(',').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default(),
+        shots_at: option(args, "--shots-at")
+            .map(|text| text.split(',').filter_map(|n| n.parse().ok()).collect())
+            .unwrap_or_default(),
         shots_prefix: option(args, "--shots-prefix").unwrap_or_else(|| "frame".into()),
         window_shots: args.iter().any(|argument| argument == "--window-shots"),
         shot_film: option(args, "--shot-film"),
-        shot_film_frame: option(args, "--shot-film-frame").and_then(|text| text.parse().ok()).unwrap_or(120),
+        shot_film_frame: option(args, "--shot-film-frame")
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(120),
         window: None,
         surface: None,
         configuration: None,
@@ -1208,12 +1429,15 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         busy_mean_us: 0.0,
         blocks: [0; 5],
     };
-    EventLoop::new().expect("an event loop").run_app(&mut app).expect("the event loop");
+    EventLoop::new()
+        .expect("an event loop")
+        .run_app(&mut app)
+        .expect("the event loop");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LookAction, look_action};
+    use super::{look_action, LookAction};
 
     /// The actions of the looks 1, 2, ... until the first that is not a yield.
     fn looks_until_not_yield(yields: u32, game_writes: bool) -> (u32, LookAction) {
@@ -1230,9 +1454,17 @@ mod tests {
     #[test]
     fn n_wait_yields_are_n_yields_then_a_block_or_the_yields_again() {
         for yields in [1, 2, 32, 256] {
-            assert_eq!(looks_until_not_yield(yields, false), (yields, LookAction::Block), "yields {yields}");
+            assert_eq!(
+                looks_until_not_yield(yields, false),
+                (yields, LookAction::Block),
+                "yields {yields}"
+            );
             // While the game writes: the same yields again, never a look with no yield.
-            assert_eq!(looks_until_not_yield(yields, true), (yields, LookAction::Again), "yields {yields}");
+            assert_eq!(
+                looks_until_not_yield(yields, true),
+                (yields, LookAction::Again),
+                "yields {yields}"
+            );
         }
         // 0 blocks at once, also while the game writes, without a look at the phase.
         assert_eq!(look_action(1, 0, || panic!("the phase is not read")), LookAction::Block);
@@ -1246,7 +1478,10 @@ mod tests {
         let head: &'static mut [u32; 32] = Box::leak(Box::new([0u32; 32]));
         let base = head.as_mut_ptr().cast::<u8>();
         // SAFETY: the offset of the word is inside the 128 bytes of the head.
-        super::ENDING_WORD.store(unsafe { base.add(super::super::stream_format::RING_ENDING) }.cast(), std::sync::atomic::Ordering::Release);
+        super::ENDING_WORD.store(
+            unsafe { base.add(super::super::stream_format::RING_ENDING) }.cast(),
+            std::sync::atomic::Ordering::Release,
+        );
         super::announce_exit(super::super::stream_format::EXIT_PANIC);
         super::ENDING_WORD.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);
         assert_eq!(head[super::super::stream_format::RING_ENDING / 4], 0xC000_0409);
@@ -1260,8 +1495,17 @@ mod tests {
         assert_eq!(present_mode_of(true), wgpu::PresentMode::Fifo);
         assert_eq!(present_mode_of(false), wgpu::PresentMode::AutoNoVsync);
         // A surface without an immediate mode shows a frame at the next refresh in both.
-        assert_eq!(chosen_present_mode(present_mode_of(false), &[wgpu::PresentMode::Fifo]), wgpu::PresentMode::Fifo);
-        assert_eq!(chosen_present_mode(present_mode_of(false), &[wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate]), wgpu::PresentMode::Immediate);
+        assert_eq!(
+            chosen_present_mode(present_mode_of(false), &[wgpu::PresentMode::Fifo]),
+            wgpu::PresentMode::Fifo
+        );
+        assert_eq!(
+            chosen_present_mode(
+                present_mode_of(false),
+                &[wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate]
+            ),
+            wgpu::PresentMode::Immediate
+        );
     }
 
     /// A reply memory of 16 pixel bytes and 16 bytes after it that must stay 0xAA.
@@ -1277,7 +1521,12 @@ mod tests {
     }
 
     fn reply_on(memory: &mut [u8]) -> Reply {
-        Reply { name: String::new(), mapping: 0, base: memory.as_mut_ptr(), generation: 0 }
+        Reply {
+            name: String::new(),
+            mapping: 0,
+            base: memory.as_mut_ptr(),
+            generation: 0,
+        }
     }
 
     #[test]
@@ -1301,7 +1550,14 @@ mod tests {
     }
 
     extern "system" {
-        fn CreateFileMappingA(file: isize, attributes: *const u8, protect: u32, size_high: u32, size_low: u32, name: *const u8) -> isize;
+        fn CreateFileMappingA(
+            file: isize,
+            attributes: *const u8,
+            protect: u32,
+            size_high: u32,
+            size_low: u32,
+            name: *const u8,
+        ) -> isize;
     }
 
     #[test]
@@ -1316,7 +1572,12 @@ mod tests {
         unsafe { (larger.add(REPLY_CAPACITY) as *mut u32).write(32) };
         // The first memory: a second view of the same mapping, which the switch unmaps.
         let first = Reply::map(&ring, 1).unwrap();
-        let mut reply = Reply { name: ring.clone(), mapping: first.0, base: first.1, generation: 0 };
+        let mut reply = Reply {
+            name: ring.clone(),
+            mapping: first.0,
+            base: first.1,
+            generation: 0,
+        };
         reply.answer(9, 1, 4, 2, &[0x33; 32]);
         assert_eq!(reply.generation, 1);
         let answered = unsafe { std::slice::from_raw_parts(larger, REPLY_HEAD + 32) };

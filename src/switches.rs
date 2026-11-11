@@ -38,7 +38,14 @@ pub fn number_from_to<T: FromStr + Display + Copy + PartialOrd>(name: &str, defa
         return default;
     };
     let number = value.parse().ok().filter(|number| (least..=most).contains(number));
-    report(name, &value, number, &format!("a number from {least} to {most}"), &default.to_string()).unwrap_or(default)
+    report(
+        name,
+        &value,
+        number,
+        &format!("a number from {least} to {most}"),
+        &default.to_string(),
+    )
+    .unwrap_or(default)
 }
 
 /// One of the values in `allowed`: `None` when the switch is not set, or when it has another
@@ -88,13 +95,17 @@ pub fn bad_mode_line(call: &str, text: &str, expected: &str, instead: &str) -> S
 /// One log line with every switch that is set, for the start of the log. A name or a value
 /// that is not Unicode is shown lossily (`vars` would panic on it).
 pub fn log_set() {
-    let variables = std::env::vars_os().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()));
+    let variables =
+        std::env::vars_os().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()));
     crate::log!("{}", set_line(variables));
 }
 
 /// The switches among `variables`, in the order of their names.
 fn set_line(variables: impl Iterator<Item = (String, String)>) -> String {
-    let mut set: Vec<String> = variables.filter(|(name, _)| PREFIXES.iter().any(|prefix| name.starts_with(prefix))).map(|(name, value)| format!("{name}={value}")).collect();
+    let mut set: Vec<String> = variables
+        .filter(|(name, _)| PREFIXES.iter().any(|prefix| name.starts_with(prefix)))
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
     set.sort();
     if set.is_empty() {
         "switches: none set".to_string()
@@ -123,7 +134,12 @@ mod tests {
 
     #[test]
     fn a_set_switch_is_read_through_each_form() {
-        let (on_name, number_name, choice_name, not_set) = (test_switch("ON"), test_switch("NUMBER"), test_switch("CHOICE"), test_switch("NOT_SET"));
+        let (on_name, number_name, choice_name, not_set) = (
+            test_switch("ON"),
+            test_switch("NUMBER"),
+            test_switch("CHOICE"),
+            test_switch("NOT_SET"),
+        );
         std::env::set_var(&on_name, "1");
         std::env::set_var(&number_name, "12");
         std::env::set_var(&choice_name, "check");
@@ -133,7 +149,10 @@ mod tests {
         assert_eq!(number(&not_set, 3u32), 3);
         assert_eq!(number_from_to(&number_name, 64u32, 1, 512), 12);
         assert_eq!(choice(&choice_name, &["0", "check"]), Some("check"));
-        assert_eq!(parsed(&choice_name, "check", |value| (value == "check").then_some(7)), Some(7));
+        assert_eq!(
+            parsed(&choice_name, "check", |value| (value == "check").then_some(7)),
+            Some(7)
+        );
     }
 
     #[test]
@@ -146,7 +165,10 @@ mod tests {
         assert_eq!(choice(&bad, &["0", "check"]), None);
         std::env::set_var(&large, "5000");
         assert_eq!(number_from_to(&large, 64u32, 1, 512), 64);
-        assert_eq!(bad_value_line(&test_switch("X"), "many", "1 or 0", "not set"), format!("switch {}: not 1 or 0; not set", format!("{}=many", test_switch("X"))));
+        assert_eq!(
+            bad_value_line(&test_switch("X"), "many", "1 or 0", "not set"),
+            format!("switch {}: not 1 or 0; not set", format!("{}=many", test_switch("X")))
+        );
     }
 
     #[test]

@@ -127,7 +127,10 @@ impl Additions {
     /// the options (`ViewPart` of MGEApi) have no bit for them, and the shaders of the land and
     /// the statics in the view group have no shadow map binding. The shadow overlay is a part
     /// of the main view ([`Additions::SHADOW_CAST`], [`Additions::SHADOW_RECEIVE`]).
-    pub const TIER_DRAWN: Additions = Additions::LAND.with(Additions::STATICS).with(Additions::GRASS).with(Additions::GLOWS);
+    pub const TIER_DRAWN: Additions = Additions::LAND
+        .with(Additions::STATICS)
+        .with(Additions::GRASS)
+        .with(Additions::GLOWS);
 
     /// The drawn parts that go in the call at the start of the world of the view
     /// ([`crate::Extension::view_before_world`]): the land, the statics and the glows.
@@ -181,14 +184,24 @@ pub struct ViewKey {
 
 impl ViewKey {
     /// The main view of a frame.
-    pub const MAIN: ViewKey = ViewKey { slot: 0, kind: ViewKind::Main, place: None, repeat: 0 };
+    pub const MAIN: ViewKey = ViewKey {
+        slot: 0,
+        kind: ViewKind::Main,
+        place: None,
+        repeat: 0,
+    };
 
     /// The key of a view of its own from the plugin's view slot of its scene (0 to 31) and its
     /// place of the full tier. Slot 0 is the main view's, so the key counts from 1; a scene
     /// without a slot (not a view) has no options, so it gets no parts and its key is not
     /// used.
     pub fn of_view(view_slot: Option<u32>, kind: ViewKind, place: Option<u8>, repeat: u8) -> ViewKey {
-        ViewKey { slot: view_slot.map_or(0, |slot| slot + 1), kind, place, repeat }
+        ViewKey {
+            slot: view_slot.map_or(0, |slot| slot + 1),
+            kind,
+            place,
+            repeat,
+        }
     }
 }
 
@@ -230,14 +243,39 @@ mod tests {
     /// before the user interface scene and none after it.
     #[test]
     fn each_kind_has_its_additions() {
-        for part in [Additions::LAND, Additions::STATICS, Additions::GRASS, Additions::GLOWS, Additions::SHADOW_CAST, Additions::SHADOW_RECEIVE, Additions::WATER, Additions::REFLECTION, Additions::SKY_SHADER, Additions::POST_COVER, Additions::SHADE] {
+        for part in [
+            Additions::LAND,
+            Additions::STATICS,
+            Additions::GRASS,
+            Additions::GLOWS,
+            Additions::SHADOW_CAST,
+            Additions::SHADOW_RECEIVE,
+            Additions::WATER,
+            Additions::REFLECTION,
+            Additions::SKY_SHADER,
+            Additions::POST_COVER,
+            Additions::SHADE,
+        ] {
             assert!(ViewKind::Main.additions(false).contains(part));
             assert!(!ViewKind::Picture.additions(false).contains(part));
             assert!(!ViewKind::OtherScreen.additions(true).contains(part));
         }
         let other = ViewKind::OtherScreen.additions(false);
-        assert!(other.contains(Additions::SHADOW_RECEIVE) && other.contains(Additions::SHADE) && other.contains(Additions::POST_COVER));
-        for part in [Additions::LAND, Additions::STATICS, Additions::GRASS, Additions::GLOWS, Additions::SHADOW_CAST, Additions::WATER, Additions::REFLECTION, Additions::SKY_SHADER] {
+        assert!(
+            other.contains(Additions::SHADOW_RECEIVE)
+                && other.contains(Additions::SHADE)
+                && other.contains(Additions::POST_COVER)
+        );
+        for part in [
+            Additions::LAND,
+            Additions::STATICS,
+            Additions::GRASS,
+            Additions::GLOWS,
+            Additions::SHADOW_CAST,
+            Additions::WATER,
+            Additions::REFLECTION,
+            Additions::SKY_SHADER,
+        ] {
             assert!(!other.contains(part));
         }
         assert!(ViewKind::Picture.additions(true).is_empty());
@@ -252,11 +290,23 @@ mod tests {
     #[test]
     fn a_view_of_its_own_draws_the_land_the_statics_the_grass_the_glows_and_the_post() {
         let granted = Additions::from_option_parts(0b111111);
-        assert_eq!(tier_parts(ViewKind::Picture, granted), Additions::TIER_DRAWN.with(Additions::TIER_POST));
-        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b100000)), Additions::GLOWS);
-        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b10000)), Additions::TIER_POST);
+        assert_eq!(
+            tier_parts(ViewKind::Picture, granted),
+            Additions::TIER_DRAWN.with(Additions::TIER_POST)
+        );
+        assert_eq!(
+            tier_parts(ViewKind::Picture, Additions::from_option_parts(0b100000)),
+            Additions::GLOWS
+        );
+        assert_eq!(
+            tier_parts(ViewKind::Picture, Additions::from_option_parts(0b10000)),
+            Additions::TIER_POST
+        );
         // The water (bit 3) is not drawn in a view of its own yet.
-        assert_eq!(tier_parts(ViewKind::Picture, Additions::from_option_parts(0b01000)), Additions::NONE);
+        assert_eq!(
+            tier_parts(ViewKind::Picture, Additions::from_option_parts(0b01000)),
+            Additions::NONE
+        );
         assert_eq!(Additions::TIER_BEFORE.with(Additions::TIER_AFTER), Additions::TIER_DRAWN);
         assert!(Additions::TIER_BEFORE.intersect(Additions::TIER_AFTER).is_empty());
         assert!(Additions::TIER_DRAWN.intersect(Additions::TIER_POST).is_empty());
@@ -264,14 +314,25 @@ mod tests {
         assert_eq!(tier_parts(ViewKind::Main, Additions::ALL), Additions::NONE);
         assert_eq!(tier_parts(ViewKind::OtherScreen, Additions::LAND), Additions::LAND);
         // Another screen has the post cover of its kind, and the picture's post call is not for it.
-        assert_eq!(tier_parts(ViewKind::OtherScreen, ViewKind::OtherScreen.additions(false)), Additions::NONE);
+        assert_eq!(
+            tier_parts(ViewKind::OtherScreen, ViewKind::OtherScreen.additions(false)),
+            Additions::NONE
+        );
     }
 
     /// The key of a view of its own is not the main view's, and the slots stay apart.
     #[test]
     fn a_view_of_its_own_has_a_key_of_its_own() {
         let first = ViewKey::of_view(Some(0), ViewKind::Picture, Some(2), 0);
-        assert_eq!(first, ViewKey { slot: 1, kind: ViewKind::Picture, place: Some(2), repeat: 0 });
+        assert_eq!(
+            first,
+            ViewKey {
+                slot: 1,
+                kind: ViewKind::Picture,
+                place: Some(2),
+                repeat: 0
+            }
+        );
         assert_ne!(first, ViewKey::MAIN);
         assert_ne!(ViewKey::of_view(Some(1), ViewKind::Picture, Some(2), 0), first);
         assert_ne!(ViewKey::of_view(Some(0), ViewKind::OtherScreen, Some(2), 0), first);

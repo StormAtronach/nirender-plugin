@@ -32,9 +32,12 @@ extern "system" {
 /// The waits for the device lock while another thread held it: the count, the sum and the
 /// longest, in ticks of the performance counter. Index 0 is the main thread, index 1 every
 /// other thread (the cell worker, the loading screen's thread).
-static LOCK_WAITS: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
-static LOCK_WAIT_TICKS: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
-static LOCK_WAIT_LONGEST: [core::sync::atomic::AtomicU64; 2] = [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
+static LOCK_WAITS: [core::sync::atomic::AtomicU64; 2] =
+    [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
+static LOCK_WAIT_TICKS: [core::sync::atomic::AtomicU64; 2] =
+    [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
+static LOCK_WAIT_LONGEST: [core::sync::atomic::AtomicU64; 2] =
+    [core::sync::atomic::AtomicU64::new(0), core::sync::atomic::AtomicU64::new(0)];
 
 /// The report line of the waits for the device lock.
 pub fn lock_wait_report() -> String {
@@ -146,12 +149,17 @@ impl InstallState {
     /// another thread installs it.
     pub fn begin(&self) -> bool {
         use core::sync::atomic::Ordering;
-        self.0.compare_exchange(Self::NONE, Self::INSTALLING, Ordering::AcqRel, Ordering::Acquire).is_ok()
+        self.0
+            .compare_exchange(Self::NONE, Self::INSTALLING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     /// The end of the install that `begin` let start: installed, or back to not installed.
     pub fn finish(&self, installed: bool) {
-        self.0.store(if installed { Self::INSTALLED } else { Self::NONE }, core::sync::atomic::Ordering::Release);
+        self.0.store(
+            if installed { Self::INSTALLED } else { Self::NONE },
+            core::sync::atomic::Ordering::Release,
+        );
     }
 
     /// True when the install has ended well.
@@ -218,7 +226,10 @@ pub fn off_thread(group: &'static str, name: &'static str) {
         Err(_) => false,
     };
     if first {
-        crate::log!("threads: the first call of {group} {name} from another thread (thread {})", unsafe { crate::win::GetCurrentThreadId() });
+        crate::log!(
+            "threads: the first call of {group} {name} from another thread (thread {})",
+            unsafe { crate::win::GetCurrentThreadId() }
+        );
     }
 }
 
@@ -228,7 +239,11 @@ pub fn census_text() -> String {
     if census.is_empty() {
         return "no call from another thread".to_string();
     }
-    census.iter().map(|((group, name), count)| format!("{group} {name} {count}")).collect::<Vec<_>>().join("\n")
+    census
+        .iter()
+        .map(|((group, name), count)| format!("{group} {name} {count}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -257,7 +272,11 @@ mod tests {
         static STATE: InstallState = InstallState::new();
         let winners = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..16).map(|_| scope.spawn(|| STATE.begin())).collect();
-            handles.into_iter().map(|handle| handle.join().unwrap()).filter(|&won| won).count()
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .filter(|&won| won)
+                .count()
         });
         assert_eq!(winners, 1);
     }

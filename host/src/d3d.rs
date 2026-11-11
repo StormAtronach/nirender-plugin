@@ -7,7 +7,12 @@ use crate::UNKNOWN;
 
 /// A D3DCOLOR as red, green, blue, alpha.
 pub(crate) fn color(argb: u32) -> [f32; 4] {
-    [(argb >> 16 & 255) as f32 / 255.0, (argb >> 8 & 255) as f32 / 255.0, (argb & 255) as f32 / 255.0, (argb >> 24) as f32 / 255.0]
+    [
+        (argb >> 16 & 255) as f32 / 255.0,
+        (argb >> 8 & 255) as f32 / 255.0,
+        (argb & 255) as f32 / 255.0,
+        (argb >> 24) as f32 / 255.0,
+    ]
 }
 
 pub(crate) fn known(value: u32, default: u32) -> u32 {
@@ -56,7 +61,10 @@ pub(crate) const D3DFMT_BC7: u32 = 0x2037_4342;
 /// True for a block format that [`decode_dxt`] can make pixels of: the DXT formats. A BC7
 /// texture of a size that the GPU cannot take as blocks has no such way.
 pub(crate) fn cpu_decodes(d3d_format: u32) -> bool {
-    matches!(d3d_format, 0x3154_5844 | 0x3254_5844 | 0x3354_5844 | 0x3454_5844 | 0x3554_5844)
+    matches!(
+        d3d_format,
+        0x3154_5844 | 0x3254_5844 | 0x3354_5844 | 0x3454_5844 | 0x3554_5844
+    )
 }
 
 /// How a texture update of a level lies in the stream, from [`texture_format`]: the bytes of a
@@ -121,10 +129,20 @@ fn bump_pixels(d3d_format: u32, source: &[u8]) -> Vec<u8> {
     // A number from 0 to `top` as a number from 0 to 127, rounded.
     let luminance = |value: u32, top: u32| ((value * 127 + top / 2) / top) as u8;
     if d3d_format == 60 {
-        return source.as_chunks::<2>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], 127, 127]).collect();
+        return source
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[1], 127, 127])
+            .collect();
     }
     if d3d_format == 62 {
-        return source.as_chunks::<4>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], luminance(pixel[2] as u32, 255), 127]).collect();
+        return source
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[1], luminance(pixel[2] as u32, 255), 127])
+            .collect();
     }
     // A number with a sign and 5 bits as one with 8 bits: 15 is 127, and -16 reads as -1.
     let signed = |value: u16| ((((value & 31) as i32 ^ 16) - 16) * 127 / 15).clamp(-128, 127) as i8 as u8;
@@ -152,8 +170,17 @@ pub(crate) fn decode_dxt(d3d_format: u32, width: usize, height: usize, source: &
             break;
         }
         let colors = &data[block - 8..];
-        let (c0, c1) = (u16::from_le_bytes([colors[0], colors[1]]), u16::from_le_bytes([colors[2], colors[3]]));
-        let wide = |c: u16| [((c & 31) * 255 / 31) as u32, ((c >> 5 & 63) * 255 / 63) as u32, ((c >> 11) * 255 / 31) as u32];
+        let (c0, c1) = (
+            u16::from_le_bytes([colors[0], colors[1]]),
+            u16::from_le_bytes([colors[2], colors[3]]),
+        );
+        let wide = |c: u16| {
+            [
+                ((c & 31) * 255 / 31) as u32,
+                ((c >> 5 & 63) * 255 / 63) as u32,
+                ((c >> 11) * 255 / 31) as u32,
+            ]
+        };
         let (a, b) = (wide(c0), wide(c1));
         // Blue, green, red, alpha for each of the 4 colours of the block.
         let mut palette = [[0u8; 4]; 4];
@@ -224,7 +251,12 @@ pub(crate) fn expand_16_bits(d3d_format: u32, source: &[u8]) -> Vec<u8> {
         let (red, green, blue, alpha) = match d3d_format {
             23 => (wide(p >> 11, 5), wide(p >> 5 & 63, 6), wide(p & 31, 5), 255),
             24 => (wide(p >> 10 & 31, 5), wide(p >> 5 & 31, 5), wide(p & 31, 5), 255),
-            25 => (wide(p >> 10 & 31, 5), wide(p >> 5 & 31, 5), wide(p & 31, 5), if p >> 15 != 0 { 255 } else { 0 }),
+            25 => (
+                wide(p >> 10 & 31, 5),
+                wide(p >> 5 & 31, 5),
+                wide(p & 31, 5),
+                if p >> 15 != 0 { 255 } else { 0 },
+            ),
             _ => (wide(p >> 8 & 15, 4), wide(p >> 4 & 15, 4), wide(p & 15, 4), wide(p >> 12, 4)),
         };
         pixels.extend_from_slice(&[blue, green, red, alpha]);
@@ -291,7 +323,11 @@ pub(crate) fn attributes(fvf: u32, stride: u32) -> Option<Vec<Attribute>> {
         // Vertices that are transformed already.
         return None;
     }
-    let mut list = vec![Attribute { location: 0, offset: 0, format: Float32x3 }];
+    let mut list = vec![Attribute {
+        location: 0,
+        offset: 0,
+        format: Float32x3,
+    }];
     let mut offset = 12u64;
     // D3DFVF_XYZ is 2. D3DFVF_XYZB1 to XYZB5 are 6 to 14: one float more for each step.
     let betas = (position as u64).saturating_sub(4) / 2;
@@ -301,19 +337,35 @@ pub(crate) fn attributes(fvf: u32, stride: u32) -> Option<Vec<Attribute>> {
         // The shader input has three floats. With fewer weights, the floats after them are
         // the next part of the vertex; the shader does not read those.
         if weights != 0 && offset + 12 <= stride as u64 {
-            list.push(Attribute { location: 7, offset, format: Float32x3 });
+            list.push(Attribute {
+                location: 7,
+                offset,
+                format: Float32x3,
+            });
         }
         if betas == 4 && fvf & 0x1000 != 0 {
-            list.push(Attribute { location: 8, offset: offset + 12, format: Uint8x4 });
+            list.push(Attribute {
+                location: 8,
+                offset: offset + 12,
+                format: Uint8x4,
+            });
         }
         offset += betas * 4;
     }
     if fvf & 0x10 != 0 {
-        list.push(Attribute { location: 1, offset, format: Float32x3 });
+        list.push(Attribute {
+            location: 1,
+            offset,
+            format: Float32x3,
+        });
         offset += 12;
     }
     if fvf & 0x40 != 0 {
-        list.push(Attribute { location: 2, offset, format: Unorm8x4 });
+        list.push(Attribute {
+            location: 2,
+            offset,
+            format: Unorm8x4,
+        });
         offset += 4;
     }
     if fvf & 0x80 != 0 {
@@ -321,7 +373,11 @@ pub(crate) fn attributes(fvf: u32, stride: u32) -> Option<Vec<Attribute>> {
     }
     let sets = (fvf >> 8 & 0xF).min(4);
     for set in 0..sets {
-        list.push(Attribute { location: 3 + set, offset, format: Float32x2 });
+        list.push(Attribute {
+            location: 3 + set,
+            offset,
+            format: Float32x2,
+        });
         offset += 8;
     }
     Some(list)
@@ -330,7 +386,9 @@ pub(crate) fn attributes(fvf: u32, stride: u32) -> Option<Vec<Attribute>> {
 /// The formats of the shader inputs, by location, for the inputs that a vertex does not have.
 pub(crate) const INPUT_FORMATS: [wgpu::VertexFormat; 9] = {
     use wgpu::VertexFormat::*;
-    [Float32x3, Float32x3, Unorm8x4, Float32x2, Float32x2, Float32x2, Float32x2, Float32x3, Uint8x4]
+    [
+        Float32x3, Float32x3, Unorm8x4, Float32x2, Float32x2, Float32x2, Float32x2, Float32x3, Uint8x4,
+    ]
 };
 
 #[cfg(test)]
@@ -350,10 +408,19 @@ mod tests {
         // U -128, V 127, and the four luminance values at the ends. X becomes an alpha of 1.
         let source = [0x80, 0x7f, 0, 9, 0x80, 0x7f, 127, 9, 0x7f, 0x80, 128, 9, 0x7f, 0x80, 255, 9];
         let made = gpu_pixels(62, &source);
-        assert_eq!(made, [0x80, 0x7f, 0, 127, 0x80, 0x7f, 63, 127, 0x7f, 0x80, 64, 127, 0x7f, 0x80, 127, 127]);
-        assert_eq!((read_signed(made[0]), read_signed(made[1]), read_signed(made[3])), (-1.0, 1.0, 1.0));
+        assert_eq!(
+            made,
+            [0x80, 0x7f, 0, 127, 0x80, 0x7f, 63, 127, 0x7f, 0x80, 64, 127, 0x7f, 0x80, 127, 127]
+        );
+        assert_eq!(
+            (read_signed(made[0]), read_signed(made[1]), read_signed(made[3])),
+            (-1.0, 1.0, 1.0)
+        );
         for (index, value) in [0.0f32, 127.0, 128.0, 255.0].into_iter().enumerate() {
-            assert!((read_signed(made[index * 4 + 2]) - value / 255.0).abs() <= 1.0 / 254.0, "luminance {value}");
+            assert!(
+                (read_signed(made[index * 4 + 2]) - value / 255.0).abs() <= 1.0 / 254.0,
+                "luminance {value}"
+            );
         }
     }
 
@@ -378,7 +445,15 @@ mod tests {
         assert!(expands(60));
         let made = gpu_pixels(60, &[0x80, 0x7f, 0x7f, 0x80]);
         assert_eq!(made, [0x80, 0x7f, 127, 127, 0x7f, 0x80, 127, 127]);
-        assert_eq!((read_signed(made[0]), read_signed(made[1]), read_signed(made[2]), read_signed(made[3])), (-1.0, 1.0, 1.0, 1.0));
+        assert_eq!(
+            (
+                read_signed(made[0]),
+                read_signed(made[1]),
+                read_signed(made[2]),
+                read_signed(made[3])
+            ),
+            (-1.0, 1.0, 1.0, 1.0)
+        );
     }
 
     #[test]

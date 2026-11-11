@@ -3,8 +3,8 @@
 //! index of the light, and the keys of the lights of a draw in its shape record.
 
 use crate::checked::Open;
-use crate::main_thread::{MainCell, MainThread};
 use crate::gen::layouts::{NiDX8LightManager as LM, NiDX8LightManager_LightEntry as LE, NiDX8Renderer as R, NiLight as L};
+use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 
 /// `TListItem`: data, next.
@@ -65,7 +65,11 @@ pub fn state_part(t: &MainThread) -> crate::state_summary::Part {
             part.add(&words);
         }
     }
-    part.note = format!("records sent {}, world lights' records {}", *RECORDS.get(t), crate::world_lights::key_records());
+    part.note = format!(
+        "records sent {}, world lights' records {}",
+        *RECORDS.get(t),
+        crate::world_lights::key_records()
+    );
     part
 }
 
@@ -146,7 +150,6 @@ pub unsafe fn note_values(t: &MainThread, key: u32, values: &[u32; 26], radius: 
 
 /// The words of the colours in the device values (`D3DLIGHT8`: diffuse, specular, ambient).
 pub const COLOUR_WORDS: core::ops::Range<usize> = 1..13;
-
 
 /// Notes the lights of the light manager of the renderer, as the state of the draw has
 /// them: sends the ones that are new or changed, and returns the keys of all of them.

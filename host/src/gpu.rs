@@ -34,7 +34,10 @@ const ERRORS_SHOWN: u64 = 20;
 
 /// Sets the handlers of the errors and of the loss of `device`.
 pub fn watch(device: &wgpu::Device, adapter: &wgpu::AdapterInfo) {
-    let name = format!("{} ({:?}, driver {} {})", adapter.name, adapter.backend, adapter.driver, adapter.driver_info);
+    let name = format!(
+        "{} ({:?}, driver {} {})",
+        adapter.name, adapter.backend, adapter.driver, adapter.driver_info
+    );
     device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
         let count = ERRORS.fetch_add(1, Ordering::Relaxed) + 1;
         let kind = match &error {
@@ -125,7 +128,15 @@ pub enum PassReason {
 }
 
 /// The names of [`PassReason`], in its order.
-pub const PASS_REASONS: [&str; 7] = ["the frame's start", "a flush", "a target", "a clear", "the world's start", "after a copy", "after the extension"];
+pub const PASS_REASONS: [&str; 7] = [
+    "the frame's start",
+    "a flush",
+    "a target",
+    "a clear",
+    "the world's start",
+    "after a copy",
+    "after the extension",
+];
 
 static PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static BEGUN_PASSES: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
@@ -187,7 +198,10 @@ pub fn note_array_bind(origin: BindOrigin) {
 /// passes, and the binds of the texture arrays by [`BindOrigin`] (29..33).
 pub fn passes() -> [u64; PASS_COUNTS] {
     let mut out = [0u64; PASS_COUNTS];
-    for (slot, count) in out.iter_mut().zip(PASSES.iter().chain(&BEGUN_PASSES).chain(&DRAWN_PASSES).chain(&TABLE_PASSES)) {
+    for (slot, count) in out
+        .iter_mut()
+        .zip(PASSES.iter().chain(&BEGUN_PASSES).chain(&DRAWN_PASSES).chain(&TABLE_PASSES))
+    {
         *slot = count.load(Ordering::Relaxed);
     }
     out[28] = OTHER_PASSES.load(Ordering::Relaxed);
@@ -202,7 +216,12 @@ pub fn passes() -> [u64; PASS_COUNTS] {
 pub fn pass_line(delta: &[u64; PASS_COUNTS], frames: u64) -> String {
     let per = |n: u64| n as f64 / frames.max(1) as f64;
     let part = |counts: &[u64]| {
-        let reasons: Vec<String> = PASS_REASONS.iter().zip(counts).filter(|(_, n)| **n != 0).map(|(name, n)| format!("{name} {:.2}", per(*n))).collect();
+        let reasons: Vec<String> = PASS_REASONS
+            .iter()
+            .zip(counts)
+            .filter(|(_, n)| **n != 0)
+            .map(|(name, n)| format!("{name} {:.2}", per(*n)))
+            .collect();
         format!("{:.2} ({})", per(counts.iter().sum()), reasons.join(", "))
     };
     format!(
@@ -407,29 +426,43 @@ pub fn exit_now(code: u32) -> ! {
 pub fn memory_lines(device: &wgpu::Device) -> Vec<String> {
     let mut lines = match device.generate_allocator_report() {
         Some(report) => {
-            let allocations: Vec<(&str, u64)> = report.allocations.iter().map(|allocation| (allocation.name.as_str(), allocation.size)).collect();
-            allocator_lines(&allocations, report.blocks.len(), report.total_allocated_bytes, report.total_reserved_bytes)
+            let allocations: Vec<(&str, u64)> = report
+                .allocations
+                .iter()
+                .map(|allocation| (allocation.name.as_str(), allocation.size))
+                .collect();
+            allocator_lines(
+                &allocations,
+                report.blocks.len(),
+                report.total_allocated_bytes,
+                report.total_reserved_bytes,
+            )
         }
         None => vec!["memory: the backend gives no allocator report".to_string()],
     };
     let counters = device.get_internal_counters().hal;
-    lines.push(counter_line(&[
-        ("buffers", counters.buffers.read()),
-        // No count of the textures: wgpu-hal 30.0.1 on Vulkan adds to it only for an external
-        // texture (`add_raw_texture`) and takes from it at each `destroy_texture`, so it runs
-        // below zero. The texture memory below and the allocator's kinds count them.
-        ("texture views", counters.texture_views.read()),
-        ("bind groups", counters.bind_groups.read()),
-        ("bind group layouts", counters.bind_group_layouts.read()),
-        ("render pipelines", counters.render_pipelines.read()),
-        ("compute pipelines", counters.compute_pipelines.read()),
-        ("pipeline layouts", counters.pipeline_layouts.read()),
-        ("samplers", counters.samplers.read()),
-        ("command encoders", counters.command_encoders.read()),
-        ("shader modules", counters.shader_modules.read()),
-        ("query sets", counters.query_sets.read()),
-        ("fences", counters.fences.read()),
-    ], counters.buffer_memory.read(), counters.texture_memory.read(), counters.memory_allocations.read()));
+    lines.push(counter_line(
+        &[
+            ("buffers", counters.buffers.read()),
+            // No count of the textures: wgpu-hal 30.0.1 on Vulkan adds to it only for an external
+            // texture (`add_raw_texture`) and takes from it at each `destroy_texture`, so it runs
+            // below zero. The texture memory below and the allocator's kinds count them.
+            ("texture views", counters.texture_views.read()),
+            ("bind groups", counters.bind_groups.read()),
+            ("bind group layouts", counters.bind_group_layouts.read()),
+            ("render pipelines", counters.render_pipelines.read()),
+            ("compute pipelines", counters.compute_pipelines.read()),
+            ("pipeline layouts", counters.pipeline_layouts.read()),
+            ("samplers", counters.samplers.read()),
+            ("command encoders", counters.command_encoders.read()),
+            ("shader modules", counters.shader_modules.read()),
+            ("query sets", counters.query_sets.read()),
+            ("fences", counters.fences.read()),
+        ],
+        counters.buffer_memory.read(),
+        counters.texture_memory.read(),
+        counters.memory_allocations.read(),
+    ));
     lines
 }
 
@@ -453,7 +486,11 @@ fn allocation_kind(name: &str) -> String {
             in_digits = false;
         }
     }
-    if kind.is_empty() { "(no name)".to_string() } else { kind }
+    if kind.is_empty() {
+        "(no name)".to_string()
+    } else {
+        kind
+    }
 }
 
 fn megabytes(bytes: u64) -> f64 {
@@ -485,8 +522,14 @@ fn allocator_lines(allocations: &[(&str, u64)], blocks: usize, allocated: u64, r
         lines.push(format!("memory:   {:.1} MB in {count}: {kind}", megabytes(*bytes)));
     }
     if sorted.len() > KINDS_SHOWN {
-        let (bytes, count) = sorted[KINDS_SHOWN..].iter().fold((0u64, 0u32), |sum, (_, (bytes, count))| (sum.0 + bytes, sum.1 + count));
-        lines.push(format!("memory:   {:.1} MB in {count}: the {} other kinds", megabytes(bytes), sorted.len() - KINDS_SHOWN));
+        let (bytes, count) = sorted[KINDS_SHOWN..]
+            .iter()
+            .fold((0u64, 0u32), |sum, (_, (bytes, count))| (sum.0 + bytes, sum.1 + count));
+        lines.push(format!(
+            "memory:   {:.1} MB in {count}: the {} other kinds",
+            megabytes(bytes),
+            sorted.len() - KINDS_SHOWN
+        ));
     }
     lines
 }
@@ -518,7 +561,12 @@ mod memory_tests {
     #[test]
     fn the_report_sums_each_kind_and_shows_the_largest_first() {
         const MB: u64 = 1024 * 1024;
-        let allocations = [("statics pool 1", 64 * MB), ("statics pool 2", 64 * MB), ("shadow map", 16 * MB), ("Unlabeled buffer", 2 * MB)];
+        let allocations = [
+            ("statics pool 1", 64 * MB),
+            ("statics pool 2", 64 * MB),
+            ("shadow map", 16 * MB),
+            ("Unlabeled buffer", 2 * MB),
+        ];
         let lines = allocator_lines(&allocations, 3, 146 * MB, 200 * MB);
         assert_eq!(lines[0], "memory: wgpu's allocator: 146.0 MB in 4 allocations, 200.0 MB reserved in 3 blocks (54.0 MB free in them), 3 kinds");
         assert_eq!(lines[1], "memory:   128.0 MB in 2: statics pool #");
@@ -529,11 +577,21 @@ mod memory_tests {
 
     #[test]
     fn the_kinds_after_the_shown_ones_are_one_sum() {
-        let names: Vec<String> = (0..KINDS_SHOWN + 3).map(|index| format!("kind {}", char::from(b'a' + index as u8))).collect();
-        let allocations: Vec<(&str, u64)> = names.iter().enumerate().map(|(index, name)| (name.as_str(), 1000 - index as u64)).collect();
+        let names: Vec<String> = (0..KINDS_SHOWN + 3)
+            .map(|index| format!("kind {}", char::from(b'a' + index as u8)))
+            .collect();
+        let allocations: Vec<(&str, u64)> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.as_str(), 1000 - index as u64))
+            .collect();
         let lines = allocator_lines(&allocations, 1, 0, 0);
         assert_eq!(lines.len(), 1 + KINDS_SHOWN + 1);
-        assert!(lines.last().unwrap().ends_with(": the 3 other kinds"), "{}", lines.last().unwrap());
+        assert!(
+            lines.last().unwrap().ends_with(": the 3 other kinds"),
+            "{}",
+            lines.last().unwrap()
+        );
         assert!(lines.last().unwrap().contains(" in 3: "));
     }
 
@@ -543,12 +601,23 @@ mod memory_tests {
     #[ignore = "needs a GPU"]
     fn a_device_reports_its_allocations_by_kind_and_counts_its_objects() {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
-        let (device, _queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
-        let _buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("memory test pool 7"), size: 4 << 20, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let _buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("memory test pool 7"),
+            size: 4 << 20,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let _texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("memory test page 3"),
-            size: wgpu::Extent3d { width: 256, height: 256, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 256,
+                height: 256,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -564,7 +633,12 @@ mod memory_tests {
         assert!(lines.iter().any(|line| line.ends_with(": memory test page #")), "{lines:?}");
         // wgpu's own buffers count too (its zero-init and staging buffers).
         let objects = lines.last().unwrap();
-        let buffers: isize = objects.split("buffers ").nth(1).and_then(|rest| rest.split(',').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+        let buffers: isize = objects
+            .split("buffers ")
+            .nth(1)
+            .and_then(|rest| rest.split(',').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
         assert!(buffers >= 1 && !objects.contains("texture memory 0.0 MB"), "{objects}");
     }
 
@@ -586,10 +660,17 @@ mod submission_tests {
     #[ignore = "needs a GPU"]
     fn the_last_submission_can_be_waited_for() {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
         let first = submit(&queue, [device.create_command_encoder(&Default::default()).finish()]);
-        let wait_for = |index: Option<wgpu::SubmissionIndex>| device.poll(wgpu::PollType::Wait { submission_index: index, timeout: Some(Duration::from_secs(10)) });
+        let wait_for = |index: Option<wgpu::SubmissionIndex>| {
+            device.poll(wgpu::PollType::Wait {
+                submission_index: index,
+                timeout: Some(Duration::from_secs(10)),
+            })
+        };
         assert!(wait_for(Some(first)).is_ok());
         let second = submit(&queue, [device.create_command_encoder(&Default::default()).finish()]);
         let last = last_submission().expect("a submit was made");

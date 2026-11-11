@@ -33,7 +33,10 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::collections::HashMap;
 
 use crate::engine::get_image_converter;
-use crate::gen::layouts::{NiDX8SourceTextureData as SD, NiPixelData as PD, NiPropertyState as PS, NiScreenPolygon as SP, NiSourceTexture as ST, NiTexture as T, NiTexturingProperty as TP, NiTexturingProperty_Map as TM};
+use crate::gen::layouts::{
+    NiDX8SourceTextureData as SD, NiPixelData as PD, NiPropertyState as PS, NiScreenPolygon as SP, NiSourceTexture as ST,
+    NiTexture as T, NiTexturingProperty as TP, NiTexturingProperty_Map as TM,
+};
 use crate::mem::rd;
 use crate::ports::{ni, textures};
 use crate::sync::LockCell;
@@ -102,7 +105,10 @@ pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;
     }
-    use crate::mwse_native::{claim, claim_all, NATIVE_OVERRIDE_FOG_BLOB, NATIVE_OVERRIDE_FOG_RENDER, NATIVE_OVERRIDE_RENDER_TARGET_LOCK, NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK};
+    use crate::mwse_native::{
+        claim, claim_all, NATIVE_OVERRIDE_FOG_BLOB, NATIVE_OVERRIDE_FOG_RENDER, NATIVE_OVERRIDE_RENDER_TARGET_LOCK,
+        NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK,
+    };
     // The unlock first: it must know the locks of this module before any is given.
     let claims = claim_all(&[
         (NATIVE_OVERRIDE_RENDER_TARGET_UNLOCK, unlock_detour as *const () as usize),
@@ -131,7 +137,14 @@ pub unsafe fn install() {
             return;
         }
     }
-    crate::log!("map fog: the plugin keeps the fog of war on the CPU; a lock of a fog texture reads the copy{}", if check_on() { " (NIRENDER_FOG_CHECK=1: each lock also reads the GPU)" } else { "" });
+    crate::log!(
+        "map fog: the plugin keeps the fog of war on the CPU; a lock of a fog texture reads the copy{}",
+        if check_on() {
+            " (NIRENDER_FOG_CHECK=1: each lock also reads the GPU)"
+        } else {
+            ""
+        }
+    );
 }
 
 /// The device texture (the handle of the own host) of a rendered texture, or 0.
@@ -141,7 +154,11 @@ unsafe fn handle_of(rendered: usize) -> u32 {
     }
     let data: usize = rd(rendered, T::rendererData);
     let as_rendered = if data != 0 { textures::data_get_as_rendered(data) } else { 0 };
-    if as_rendered != 0 { textures::data_get_d3d_texture(as_rendered) as u32 } else { 0 }
+    if as_rendered != 0 {
+        textures::data_get_d3d_texture(as_rendered) as u32
+    } else {
+        0
+    }
 }
 
 /// A texture is freed, or pixels are copied into it: its copy is old.
@@ -158,11 +175,20 @@ unsafe extern "thiscall" fn render_fog_detour(this: usize, texture: usize, bitma
         if let Some((width, height)) = crate::own_host::texture_size(handle) {
             let lock = crate::sync::device_lock();
             // The clear: black. The blobs come through `draw_blob_detour`.
-            COPIES.get(&lock).get_or_insert_with(HashMap::new).insert(handle, Copy { width, height, pixels: vec![0; (width * height * 4) as usize], blobs: Vec::new() });
+            COPIES.get(&lock).get_or_insert_with(HashMap::new).insert(
+                handle,
+                Copy {
+                    width,
+                    height,
+                    pixels: vec![0; (width * height * 4) as usize],
+                    blobs: Vec::new(),
+                },
+            );
             REBUILDS.fetch_add(1, Ordering::Relaxed);
         }
     }
-    let original: unsafe extern "thiscall" fn(usize, usize, usize, u32) = core::mem::transmute(RENDER_FOG_ORIGINAL.load(Ordering::Relaxed));
+    let original: unsafe extern "thiscall" fn(usize, usize, usize, u32) =
+        core::mem::transmute(RENDER_FOG_ORIGINAL.load(Ordering::Relaxed));
     original(this, texture, bitmap, flag);
 }
 
@@ -172,7 +198,8 @@ unsafe extern "thiscall" fn render_fog_detour(this: usize, texture: usize, bitma
 unsafe extern "thiscall" fn draw_blob_detour(this: usize, texture: usize, x: i32, y: i32, size: u32) {
     // The handle first: the function can let go of the last reference to the texture.
     let handle = handle_of(texture);
-    let original: unsafe extern "thiscall" fn(usize, usize, i32, i32, u32) = core::mem::transmute(DRAW_BLOB_ORIGINAL.load(Ordering::Relaxed));
+    let original: unsafe extern "thiscall" fn(usize, usize, i32, i32, u32) =
+        core::mem::transmute(DRAW_BLOB_ORIGINAL.load(Ordering::Relaxed));
     original(this, texture, x, y, size);
     if handle == 0 || NO_BLOB.load(Ordering::Relaxed) {
         return;
@@ -187,7 +214,9 @@ unsafe extern "thiscall" fn draw_blob_detour(this: usize, texture: usize, x: i32
         return;
     }
     let mut copies = COPIES.get(&lock);
-    let Some(copy) = copies.as_mut().and_then(|copies| copies.get_mut(&handle)) else { return };
+    let Some(copy) = copies.as_mut().and_then(|copies| copies.get_mut(&handle)) else {
+        return;
+    };
     let blob_open = BLOB.get(&lock);
     let blob = blob_open.as_ref().unwrap();
     draw_blob(copy, blob, x as i16 as f32, y as i16 as f32, f32::from_bits(size));
@@ -261,7 +290,11 @@ fn sample(blob: &Blob, u: f32, v: f32) -> [f32; 4] {
 /// device format of the texture, then widened or decoded.
 unsafe fn read_blob(lock: &crate::sync::DeviceLock) -> bool {
     let world: usize = rd(WORLD_CONTROLLER, 0);
-    let polygon: usize = if world != 0 { rd(world + MAP_RENDER_TARGET, SCREEN_POLYGON) } else { 0 };
+    let polygon: usize = if world != 0 {
+        rd(world + MAP_RENDER_TARGET, SCREEN_POLYGON)
+    } else {
+        0
+    };
     let state: usize = if polygon != 0 { rd(polygon, SP::propertyState) } else { 0 };
     let texturing: usize = if state != 0 { rd(state, PS::propTexturing) } else { 0 };
     let maps: usize = if texturing != 0 { rd(texturing, TP::maps_storage) } else { 0 };
@@ -274,7 +307,11 @@ unsafe fn read_blob(lock: &crate::sync::DeviceLock) -> bool {
     let d3d_format: u32 = rd(data, SD::format_d3dFormat);
     let converter = get_image_converter();
     let filename: usize = rd(texture, ST::filenameOnPC);
-    let source: usize = if filename != 0 { textures::converter_read_file(converter, filename, 0) } else { rd(texture, ST::pixelData) };
+    let source: usize = if filename != 0 {
+        textures::converter_read_file(converter, filename, 0)
+    } else {
+        rd(texture, ST::pixelData)
+    };
     if source == 0 {
         return false;
     }
@@ -282,7 +319,10 @@ unsafe fn read_blob(lock: &crate::sync::DeviceLock) -> bool {
     let converted = textures::converter_convert(converter, source, data + SD::format, source, 0);
     let mut ok = false;
     if converted != 0 {
-        let (width, height): (u32, u32) = (rd(rd::<usize>(converted, PD::mipmapWidths), 0), rd(rd::<usize>(converted, PD::mipmapHeights), 0));
+        let (width, height): (u32, u32) = (
+            rd(rd::<usize>(converted, PD::mipmapWidths), 0),
+            rd(rd::<usize>(converted, PD::mipmapHeights), 0),
+        );
         let bytes: u32 = rd(converted, PD::bytesPerPixel);
         let offsets: usize = rd(converted, PD::mipmapOffsets);
         let (start, end): (u32, u32) = (rd(offsets, 0), rd(offsets, 4));
@@ -290,9 +330,16 @@ unsafe fn read_blob(lock: &crate::sync::DeviceLock) -> bool {
         let level = core::slice::from_raw_parts(pixels, end.saturating_sub(start) as usize);
         let texels: Option<Vec<u8>> = match (d3d_format, bytes) {
             (21, 4) => Some(level[..(width * height * 4) as usize].to_vec()),
-            (22, 4) => Some(level[..(width * height * 4) as usize].chunks_exact(4).flat_map(|p| [p[0], p[1], p[2], 255]).collect()),
+            (22, 4) => Some(
+                level[..(width * height * 4) as usize]
+                    .chunks_exact(4)
+                    .flat_map(|p| [p[0], p[1], p[2], 255])
+                    .collect(),
+            ),
             (23..=26, 2) => Some(widen_16_bits(d3d_format, &level[..(width * height * 2) as usize])),
-            (DXT1, _) if width % 4 == 0 && height % 4 == 0 && level.len() >= (width / 4 * height / 4 * 8) as usize => Some(decode_dxt1(width, height, level)),
+            (DXT1, _) if width % 4 == 0 && height % 4 == 0 && level.len() >= (width / 4 * height / 4 * 8) as usize => {
+                Some(decode_dxt1(width, height, level))
+            }
             _ => None,
         };
         if let Some(folder) = crate::switches::text("NIRENDER_FOG_DUMP") {
@@ -322,7 +369,12 @@ fn widen_16_bits(d3d_format: u32, source: &[u8]) -> Vec<u8> {
         let (red, green, blue, alpha) = match d3d_format {
             23 => (wide(p >> 11, 5), wide(p >> 5 & 63, 6), wide(p & 31, 5), 255),
             24 => (wide(p >> 10 & 31, 5), wide(p >> 5 & 31, 5), wide(p & 31, 5), 255),
-            25 => (wide(p >> 10 & 31, 5), wide(p >> 5 & 31, 5), wide(p & 31, 5), if p >> 15 != 0 { 255 } else { 0 }),
+            25 => (
+                wide(p >> 10 & 31, 5),
+                wide(p >> 5 & 31, 5),
+                wide(p & 31, 5),
+                if p >> 15 != 0 { 255 } else { 0 },
+            ),
             _ => (wide(p >> 8 & 15, 4), wide(p >> 4 & 15, 4), wide(p & 15, 4), wide(p >> 12, 4)),
         };
         pixels.extend_from_slice(&[blue, green, red, alpha]);
@@ -344,7 +396,10 @@ fn decode_dxt1(width: u32, height: u32, blocks: &[u8]) -> Vec<u8> {
         for bx in 0..width / 4 {
             let block = &blocks[at..at + 8];
             at += 8;
-            let (c0, c1) = (u16::from_le_bytes([block[0], block[1]]), u16::from_le_bytes([block[2], block[3]]));
+            let (c0, c1) = (
+                u16::from_le_bytes([block[0], block[1]]),
+                u16::from_le_bytes([block[2], block[3]]),
+            );
             let (a, b) = (colour(c0), colour(c1));
             let mut palette = [[0i32; 4]; 4];
             palette[0] = [a[0], a[1], a[2], 255];
@@ -380,7 +435,8 @@ fn decode_dxt1(width: u32, height: u32, blocks: &[u8]) -> Vec<u8> {
 /// A fog texture with a copy gets the copy's pixels.
 unsafe extern "thiscall" fn lock_detour(this: usize, texture: usize) -> usize {
     let engine = |texture: usize| -> usize {
-        let original: unsafe extern "thiscall" fn(usize, usize) -> usize = core::mem::transmute(LOCK_ORIGINAL.load(Ordering::Relaxed));
+        let original: unsafe extern "thiscall" fn(usize, usize) -> usize =
+            core::mem::transmute(LOCK_ORIGINAL.load(Ordering::Relaxed));
         original(this, texture)
     };
     let handle = handle_of(texture);
@@ -389,7 +445,12 @@ unsafe extern "thiscall" fn lock_detour(this: usize, texture: usize) -> usize {
         return engine(texture);
     }
     let lock = crate::sync::device_lock();
-    let Some(pixels) = COPIES.get(&lock).as_ref().and_then(|copies| copies.get(&handle)).map(|copy| (copy.width, copy.pixels.clone())) else {
+    let Some(pixels) = COPIES
+        .get(&lock)
+        .as_ref()
+        .and_then(|copies| copies.get(&handle))
+        .map(|copy| (copy.width, copy.pixels.clone()))
+    else {
         ENGINE_LOCKS.fetch_add(1, Ordering::Relaxed);
         drop(lock);
         return engine(texture);
@@ -400,7 +461,10 @@ unsafe extern "thiscall" fn lock_detour(this: usize, texture: usize) -> usize {
     let (width, pixels) = pixels;
     let rect = Box::new([width * 4, pixels.as_ptr() as u32]);
     let address = &*rect as *const [u32; 2] as usize;
-    GIVEN.get(&lock).get_or_insert_with(HashMap::new).insert(address, (rect, pixels));
+    GIVEN
+        .get(&lock)
+        .get_or_insert_with(HashMap::new)
+        .insert(address, (rect, pixels));
     LOCKS.fetch_add(1, Ordering::Relaxed);
     drop(lock);
     // As the engine function: one reference let go.
@@ -417,16 +481,21 @@ unsafe extern "thiscall" fn unlock_detour(this: usize, rect: usize, copy_back: u
             return;
         }
     }
-    let original: unsafe extern "thiscall" fn(usize, usize, u32) = core::mem::transmute(UNLOCK_ORIGINAL.load(Ordering::Relaxed));
+    let original: unsafe extern "thiscall" fn(usize, usize, u32) =
+        core::mem::transmute(UNLOCK_ORIGINAL.load(Ordering::Relaxed));
     original(this, rect, copy_back);
 }
 
 /// The test of `NIRENDER_FOG_CHECK=1`: the texture from the GPU against the copy, and the
 /// tests of the map menu (green over 2 outside, over 32 inside) for each pixel.
 unsafe fn check(lock: &crate::sync::DeviceLock, handle: u32) {
-    let Some((width, height, pixels)) = crate::capture::read_pixels(handle) else { return };
+    let Some((width, height, pixels)) = crate::capture::read_pixels(handle) else {
+        return;
+    };
     let copies = COPIES.get(lock);
-    let Some(copy) = copies.as_ref().and_then(|copies| copies.get(&handle)) else { return };
+    let Some(copy) = copies.as_ref().and_then(|copies| copies.get(&handle)) else {
+        return;
+    };
     CHECKS.fetch_add(1, Ordering::Relaxed);
     if (width, height) != (copy.width, copy.height) {
         CHECK_PIXELS_OFF.fetch_add(width * height, Ordering::Relaxed);
@@ -434,7 +503,10 @@ unsafe fn check(lock: &crate::sync::DeviceLock, handle: u32) {
     }
     let (mut off, mut largest, mut tests) = (0u32, 0u32, 0u32);
     for (gpu, cpu) in pixels.chunks_exact(4).zip(copy.pixels.chunks_exact(4)) {
-        let difference = (0..3).map(|c| (gpu[c] as i32 - cpu[c] as i32).unsigned_abs()).max().unwrap_or(0);
+        let difference = (0..3)
+            .map(|c| (gpu[c] as i32 - cpu[c] as i32).unsigned_abs())
+            .max()
+            .unwrap_or(0);
         if difference > 0 {
             off += 1;
             largest = largest.max(difference);
@@ -482,7 +554,11 @@ pub fn report() -> String {
         BLOBS.load(Ordering::Relaxed),
         LOCKS.load(Ordering::Relaxed),
         ENGINE_LOCKS.load(Ordering::Relaxed),
-        if NO_BLOB.load(Ordering::Relaxed) { " (the fog texture was not read)" } else { "" },
+        if NO_BLOB.load(Ordering::Relaxed) {
+            " (the fog texture was not read)"
+        } else {
+            ""
+        },
     );
     if check_on() {
         text.push_str(&format!(
@@ -505,12 +581,21 @@ mod tests {
         let mut texels = vec![0u8; 16 * 16 * 4];
         let at = (8 * 16 + 8) * 4;
         texels[at..at + 4].copy_from_slice(&[255, 255, 255, 255]);
-        Blob { width: 16, height: 16, texels }
+        Blob {
+            width: 16,
+            height: 16,
+            texels,
+        }
     }
 
     #[test]
     fn a_blob_adds_to_the_pixels_whose_positions_are_in_its_square() {
-        let mut copy = Copy { width: 64, height: 64, pixels: vec![7; 64 * 64 * 4], blobs: Vec::new() };
+        let mut copy = Copy {
+            width: 64,
+            height: 64,
+            pixels: vec![7; 64 * 64 * 4],
+            blobs: Vec::new(),
+        };
         // Centre (8/16, 8/16), size 4/16 = 16 pixels. Columns at c/64 in [24/64, 40/64): 24 to
         // 39. Rows at 1 - r/64 in the same: r/64 in (24/64, 40/64]: 25 to 40.
         let mut blob = grey_blob();
@@ -523,7 +608,12 @@ mod tests {
 
     #[test]
     fn the_screen_polygon_y_counts_from_the_bottom_row() {
-        let mut copy = Copy { width: 64, height: 64, pixels: vec![0; 64 * 64 * 4], blobs: Vec::new() };
+        let mut copy = Copy {
+            width: 64,
+            height: 64,
+            pixels: vec![0; 64 * 64 * 4],
+            blobs: Vec::new(),
+        };
         let mut blob = grey_blob();
         blob.texels.iter_mut().for_each(|t| *t = 10);
         // A blob at the top of the polygon's space (y = 2/16) is near the last rows.

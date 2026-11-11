@@ -68,7 +68,15 @@ fn fold(totals: &mut Vec<ViewTotal>, number: u32, frame: &[(&'static str, u64, u
                 total.frames += 1;
                 total.places += places;
             }
-            None => totals.push(ViewTotal { name, ticks, worst: ticks, frames: 1, first_frame: number, worst_frame: number, places }),
+            None => totals.push(ViewTotal {
+                name,
+                ticks,
+                worst: ticks,
+                frames: 1,
+                first_frame: number,
+                worst_frame: number,
+                places,
+            }),
         }
     }
 }
@@ -77,8 +85,24 @@ fn fold(totals: &mut Vec<ViewTotal>, number: u32, frame: &[(&'static str, u64, u
 mod tests {
     use super::*;
 
-    fn total(name: &'static str, ticks: u64, worst: u64, frames: u32, first_frame: u32, worst_frame: u32, places: u64) -> ViewTotal {
-        ViewTotal { name, ticks, worst, frames, first_frame, worst_frame, places }
+    fn total(
+        name: &'static str,
+        ticks: u64,
+        worst: u64,
+        frames: u32,
+        first_frame: u32,
+        worst_frame: u32,
+        places: u64,
+    ) -> ViewTotal {
+        ViewTotal {
+            name,
+            ticks,
+            worst,
+            frames,
+            first_frame,
+            worst_frame,
+            places,
+        }
     }
 
     #[test]

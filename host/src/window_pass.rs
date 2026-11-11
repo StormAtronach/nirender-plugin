@@ -67,25 +67,50 @@ impl Scale {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: fragment,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: fragment,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: fragment, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("scaled picture"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("scaled picture"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scaled picture"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("scaled picture"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let _long = crate::LongStep::begin();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scaled picture"),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
@@ -93,7 +118,11 @@ impl Scale {
                 module: &module,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview_mask: None,
             cache: None,
@@ -105,13 +134,30 @@ impl Scale {
             ..Default::default()
         });
         let floats: Vec<u8> = identity_ramp().iter().flat_map(|value| value.to_le_bytes()).collect();
-        let identity = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("identity ramp"), contents: &floats, usage: wgpu::BufferUsages::UNIFORM });
-        Scale { layout, pipeline, sampler, identity }
+        let identity = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("identity ramp"),
+            contents: &floats,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        Scale {
+            layout,
+            pipeline,
+            sampler,
+            identity,
+        }
     }
 
     /// Draws `source` (the back buffer) into the rectangle `rect` of `target` (the picture of
     /// the window), black outside it, through `ramp` (the gamma pass's table) or the identity.
-    pub(crate) fn draw(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::Texture, target: &wgpu::Texture, rect: [u32; 4], ramp: Option<&wgpu::Buffer>) {
+    pub(crate) fn draw(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::Texture,
+        target: &wgpu::Texture,
+        rect: [u32; 4],
+        ramp: Option<&wgpu::Buffer>,
+    ) {
         let source_view = source.create_view(&Default::default());
         let target_view = target.create_view(&Default::default());
         let group = gpu::frame_group(
@@ -120,9 +166,18 @@ impl Scale {
                 label: Some("scaled picture"),
                 layout: &self.layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: ramp.unwrap_or(&self.identity).as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&source_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: ramp.unwrap_or(&self.identity).as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
                 ],
             },
         );
@@ -133,7 +188,10 @@ impl Scale {
                 view: &target_view,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -155,13 +213,23 @@ impl Scale {
 /// The back buffer into the picture of the window at its own size, the part that the two have:
 /// through the gamma ramp of the device, or a plain copy for an identity ramp. The window shots
 /// take it as it is (their picture has the back buffer's size).
-pub(crate) fn exact(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, gamma: Option<&gamma::Gamma>, back_buffer: &wgpu::Texture, window: &wgpu::Texture) {
+pub(crate) fn exact(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    gamma: Option<&gamma::Gamma>,
+    back_buffer: &wgpu::Texture,
+    window: &wgpu::Texture,
+) {
     match gamma {
         Some(gamma) => gamma.draw(device, encoder, back_buffer, window),
         None => encoder.copy_texture_to_texture(
             back_buffer.as_image_copy(),
             window.as_image_copy(),
-            wgpu::Extent3d { width: back_buffer.width().min(window.width()), height: back_buffer.height().min(window.height()), depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: back_buffer.width().min(window.width()),
+                height: back_buffer.height().min(window.height()),
+                depth_or_array_layers: 1,
+            },
         ),
     }
 }
@@ -176,12 +244,29 @@ pub(crate) struct ToWindow {
 }
 
 impl ToWindow {
-    pub(crate) fn draw(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, gamma: Option<&gamma::Gamma>, back_buffer: &wgpu::Texture, window: &wgpu::Texture) {
+    pub(crate) fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        gamma: Option<&gamma::Gamma>,
+        back_buffer: &wgpu::Texture,
+        window: &wgpu::Texture,
+    ) {
         let picture = (back_buffer.width(), back_buffer.height());
         let rect = fit(picture, (window.width(), window.height()));
         if self.fitted != Some(rect) {
             self.fitted = Some(rect);
-            println!("window: the picture {} x {} drawn at {} x {} at {}, {} in {} x {}", picture.0, picture.1, rect[2], rect[3], rect[0], rect[1], window.width(), window.height());
+            println!(
+                "window: the picture {} x {} drawn at {} x {} at {}, {} in {} x {}",
+                picture.0,
+                picture.1,
+                rect[2],
+                rect[3],
+                rect[0],
+                rect[1],
+                window.width(),
+                window.height()
+            );
         }
         // Only a window of the picture's size: a larger one (one more column) would keep
         // undefined pixels beside the copy, and the scaled draw clears them black.

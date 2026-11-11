@@ -6,8 +6,9 @@
 //! calls. They use the heap through `operator new` and `operator delete`.
 
 use crate::d3d::{
-    d3d_check_depth_stencil_match, d3d_check_device_format, d3d_check_device_type, d3d_enum_adapter_modes, d3d_get_adapter_count,
-    d3d_get_adapter_display_mode, d3d_get_adapter_identifier, d3d_get_adapter_mode_count, d3d_get_device_caps,
+    d3d_check_depth_stencil_match, d3d_check_device_format, d3d_check_device_type, d3d_enum_adapter_modes,
+    d3d_get_adapter_count, d3d_get_adapter_display_mode, d3d_get_adapter_identifier, d3d_get_adapter_mode_count,
+    d3d_get_device_caps,
 };
 use crate::gen::layouts::{
     NiDX8AdapterDesc as AD, NiDX8AdapterDesc_ModeDesc as MD, NiDX8DeviceDesc as DD, NiDX8DeviceDesc_ScreenFormatInfo as SFI,
@@ -194,7 +195,11 @@ mod eng {
         }
         let storage: usize = rd(array, ARRAY_STORAGE);
         let value: usize = rd(element, 0);
-        let old: usize = if index < rd::<u32>(array, ARRAY_END) { rd(storage, index as usize * 4) } else { 0 };
+        let old: usize = if index < rd::<u32>(array, ARRAY_END) {
+            rd(storage, index as usize * 4)
+        } else {
+            0
+        };
         if index >= rd::<u32>(array, ARRAY_END) {
             wr(array, ARRAY_END, index + 1);
         }
@@ -238,7 +243,16 @@ mod eng {
     }
     pub fn hash_map_vtbl() -> usize {
         static VTBL: OnceLock<[usize; 5]> = OnceLock::new();
-        VTBL.get_or_init(|| [0, hash_key as *const () as usize, cmp_key as *const () as usize, make_pair as *const () as usize, dtor_pair as *const () as usize]).as_ptr() as usize
+        VTBL.get_or_init(|| {
+            [
+                0,
+                hash_key as *const () as usize,
+                cmp_key as *const () as usize,
+                make_pair as *const () as usize,
+                dtor_pair as *const () as usize,
+            ]
+        })
+        .as_ptr() as usize
     }
     pub fn depth_formats() -> usize {
         static FORMATS: [u32; DEPTH_FORMAT_COUNT] = [70, 71, 73, 75, 80, 77, 79];
@@ -261,7 +275,11 @@ unsafe fn list_init(list: usize) {
 /// `NiTListAllocator::Data::ctor`.
 unsafe fn list_grow(list: usize) {
     let mut block = eng::operator_new(BLOCK_SIZE);
-    block = if block != 0 { eng::list_block_ctor(block, rd(list, LIST_BLOCK_ITEMS)) } else { 0 };
+    block = if block != 0 {
+        eng::list_block_ctor(block, rd(list, LIST_BLOCK_ITEMS))
+    } else {
+        0
+    };
     wr::<usize>(block, BLOCK_NEXT, rd(list, LIST_BLOCKS));
     wr(list, LIST_BLOCKS, block);
     wr::<usize>(list, LIST_FREE, rd(block, BLOCK_ITEMS));
@@ -318,7 +336,15 @@ fn abs_difference(a: u32, b: u32) -> i32 {
 /// `this` points at a block of the size of `ScreenFormatInfo` that is not constructed yet; `d3d` at
 /// the live `IDirect3D8` that the engine enumerates with, and `adapter`, `device_type` and `format`
 /// are values that it accepts.
-pub unsafe fn screen_format_info_ctor(this: usize, d3d: usize, adapter: u32, device_type: u32, format: u32, fullscreen: u8, windowed: u8) -> usize {
+pub unsafe fn screen_format_info_ctor(
+    this: usize,
+    d3d: usize,
+    adapter: u32,
+    device_type: u32,
+    format: u32,
+    fullscreen: u8,
+    windowed: u8,
+) -> usize {
     crate::shadow::touch(&screen_format_info_ctor_port::STATE);
     let map = this + SFI::validDepthStencils;
     wr(map, HM::vtbl, eng::hash_map_vtbl());
@@ -387,7 +413,12 @@ fn depth_stencil_bits(format: u32) -> (u32, u32) {
 /// # Safety
 ///
 /// `this` points at a live `ScreenFormatInfo` whose map holds live lists of depth formats.
-pub unsafe fn screen_format_info_find_closest_depth_stencil_format(this: usize, format: u32, depth_bits: u32, stencil_bits: u32) -> u32 {
+pub unsafe fn screen_format_info_find_closest_depth_stencil_format(
+    this: usize,
+    format: u32,
+    depth_bits: u32,
+    stencil_bits: u32,
+) -> u32 {
     crate::shadow::touch(&screen_format_info_find_closest_depth_stencil_format_port::STATE);
     let map = this + SFI::validDepthStencils;
     let node = hash_map::find(map, format);
@@ -424,7 +455,13 @@ pub unsafe fn screen_format_info_find_closest_depth_stencil_format(this: usize, 
 ///
 /// `this` points at a block of the size of `NiDX8DeviceDesc` that is not constructed yet; `d3d` at
 /// the live `IDirect3D8`, and `adapter` is one of its adapters.
-pub unsafe fn device_desc_ctor(this: usize, d3d: usize, adapter: u32, device_type: u32, current_display_format: u32) -> usize {
+pub unsafe fn device_desc_ctor(
+    this: usize,
+    d3d: usize,
+    adapter: u32,
+    device_type: u32,
+    current_display_format: u32,
+) -> usize {
     crate::shadow::touch(&device_desc_ctor_port::STATE);
     let list = this + DD::screenFormats;
     list_init(list);
@@ -440,10 +477,24 @@ pub unsafe fn device_desc_ctor(this: usize, d3d: usize, adapter: u32, device_typ
             let mut fullscreen = 0u8;
             let mut windowed = 0u8;
             if d3d_enum_adapter_modes(d3d, adapter, index, mode.as_mut_ptr() as usize) == 0 {
-                d3d_check_device_type(d3d, adapter, rd(this, DD::deviceType), mode[MODE_FORMAT], mode[MODE_FORMAT], 0);
+                d3d_check_device_type(
+                    d3d,
+                    adapter,
+                    rd(this, DD::deviceType),
+                    mode[MODE_FORMAT],
+                    mode[MODE_FORMAT],
+                    0,
+                );
                 fullscreen = 1;
             }
-            if d3d_check_device_type(d3d, adapter, rd(this, DD::deviceType), current_display_format, mode[MODE_FORMAT], 1) == 0
+            if d3d_check_device_type(
+                d3d,
+                adapter,
+                rd(this, DD::deviceType),
+                current_display_format,
+                mode[MODE_FORMAT],
+                1,
+            ) == 0
                 && rd::<u32>(this, DD::caps_Caps2) & CAPS2_CAN_RENDER_WINDOWED != 0
             {
                 windowed = 1;
@@ -451,7 +502,15 @@ pub unsafe fn device_desc_ctor(this: usize, d3d: usize, adapter: u32, device_typ
             if (fullscreen != 0 || windowed != 0) && !device_desc_has_format(this, mode[MODE_FORMAT]) {
                 let block = eng::operator_new(SFI::SIZE);
                 let info = if block != 0 {
-                    screen_format_info_ctor(block, d3d, adapter, rd(this, DD::deviceType), mode[MODE_FORMAT], fullscreen, windowed)
+                    screen_format_info_ctor(
+                        block,
+                        d3d,
+                        adapter,
+                        rd(this, DD::deviceType),
+                        mode[MODE_FORMAT],
+                        fullscreen,
+                        windowed,
+                    )
                 } else {
                     0
                 };
@@ -675,7 +734,11 @@ pub unsafe fn adapter_desc_ctor(this: usize, d3d: usize, adapter_index: u32) -> 
             let mut i = 0u32;
             loop {
                 let desc: usize = rd(rd::<usize>(modes, ARRAY_STORAGE), i as usize * 4);
-                if desc != 0 && rd::<u32>(desc, MD::d3dFormat) == format && rd::<u32>(desc, MD::width) == width && rd::<u32>(desc, MD::height) == height {
+                if desc != 0
+                    && rd::<u32>(desc, MD::d3dFormat) == format
+                    && rd::<u32>(desc, MD::width) == width
+                    && rd::<u32>(desc, MD::height) == height
+                {
                     if refresh != 0x7FFF_FFFF && refresh != 0 {
                         let rates = desc + MD::listRefreshRates;
                         let mut iterator: usize = rd(desc, MD::listRefreshRates_head);
@@ -745,11 +808,19 @@ pub unsafe fn adapter_desc_ctor(this: usize, d3d: usize, adapter_index: u32) -> 
     }
 
     let block = eng::operator_new(DD::SIZE);
-    let hal = if block != 0 { device_desc_ctor(block, d3d, adapter_index, 1, current[MODE_FORMAT]) } else { 0 };
+    let hal = if block != 0 {
+        device_desc_ctor(block, d3d, adapter_index, 1, current[MODE_FORMAT])
+    } else {
+        0
+    };
     wr(this, AD::HALDeviceDesc, hal);
     let block = eng::operator_new(DD::SIZE);
     if block != 0 {
-        wr(this, AD::REFDeviceDesc, device_desc_ctor(block, d3d, adapter_index, 2, current[MODE_FORMAT]));
+        wr(
+            this,
+            AD::REFDeviceDesc,
+            device_desc_ctor(block, d3d, adapter_index, 2, current[MODE_FORMAT]),
+        );
     } else {
         wr::<u32>(this, AD::REFDeviceDesc, 0);
     }
@@ -763,7 +834,13 @@ pub unsafe fn adapter_desc_ctor(this: usize, d3d: usize, adapter_index: u32) -> 
 ///
 /// `this` points at a live `NiDX8AdapterDesc`, and `inout_refresh_rate` at a word that the function
 /// reads and can write.
-pub unsafe fn adapter_desc_find_closest_mode(this: usize, format: u32, width: u32, height: u32, inout_refresh_rate: usize) -> usize {
+pub unsafe fn adapter_desc_find_closest_mode(
+    this: usize,
+    format: u32,
+    width: u32,
+    height: u32,
+    inout_refresh_rate: usize,
+) -> usize {
     crate::shadow::touch(&adapter_desc_find_closest_mode_port::STATE);
     let mut result = 0usize;
     if rd::<u32>(this, AD::modeListCount) == 0 {
@@ -772,7 +849,11 @@ pub unsafe fn adapter_desc_find_closest_mode(this: usize, format: u32, width: u3
     let mut i = 0u32;
     loop {
         let desc: usize = rd(rd::<usize>(this, AD::modeList_storage), i as usize * 4);
-        if desc != 0 && rd::<u32>(desc, MD::d3dFormat) == format && rd::<u32>(desc, MD::width) == width && rd::<u32>(desc, MD::height) == height {
+        if desc != 0
+            && rd::<u32>(desc, MD::d3dFormat) == format
+            && rd::<u32>(desc, MD::width) == width
+            && rd::<u32>(desc, MD::height) == height
+        {
             let mut refresh: u32 = rd(inout_refresh_rate, 0);
             if refresh != 0x7FFF_FFFF && refresh != 0 {
                 let mut item: usize = rd(desc, MD::listRefreshRates_head);
@@ -995,73 +1076,115 @@ unsafe fn ctor_regions(set: &mut crate::shadow::Regions, this: usize, size: usiz
     set.allocates();
 }
 
-port_thiscall!(screen_format_info_ctor_port, 0x6B1600, "NiDX8DeviceDesc::ScreenFormatInfo::ctor",
+port_thiscall!(
+    screen_format_info_ctor_port,
+    0x6B1600,
+    "NiDX8DeviceDesc::ScreenFormatInfo::ctor",
     fn(this, d3d: usize, adapter: u32, device_type: u32, format: u32, fullscreen: u8, windowed: u8) -> usize,
     compare_eax = true,
     regions = |set| ctor_regions(set, this, SFI::SIZE),
-    rust = screen_format_info_ctor);
+    rust = screen_format_info_ctor
+);
 
-port_thiscall!(screen_format_info_find_closest_depth_stencil_format_port, 0x6B1940,
+port_thiscall!(
+    screen_format_info_find_closest_depth_stencil_format_port,
+    0x6B1940,
     "NiDX8DeviceDesc::ScreenFormatInfo::findClosestDepthStencilFormat",
     fn(this, format: u32, depth_bits: u32, stencil_bits: u32) -> u32,
     compare_eax = true,
     regions = |set| {},
-    rust = screen_format_info_find_closest_depth_stencil_format);
+    rust = screen_format_info_find_closest_depth_stencil_format
+);
 
-port_thiscall!(device_desc_ctor_port, 0x6B1AB0, "NiDX8DeviceDesc::ctor",
+port_thiscall!(
+    device_desc_ctor_port,
+    0x6B1AB0,
+    "NiDX8DeviceDesc::ctor",
     fn(this, d3d: usize, adapter: u32, device_type: u32, current_display_format: u32) -> usize,
     compare_eax = true,
     regions = |set| ctor_regions(set, this, DD::SIZE),
-    rust = device_desc_ctor);
+    rust = device_desc_ctor
+);
 
-port_thiscall!(device_desc_dtor_port, 0x6B1D60, "NiDX8DeviceDesc::dtor",
+port_thiscall!(
+    device_desc_dtor_port,
+    0x6B1D60,
+    "NiDX8DeviceDesc::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| device_desc_dtor_regions(set, this),
-    rust = device_desc_dtor);
+    rust = device_desc_dtor
+);
 
-port_thiscall!(device_desc_get_screen_format_enum_port, 0x6B1EC0, "NiDX8DeviceDesc::getScreenFormatEnum",
+port_thiscall!(
+    device_desc_get_screen_format_enum_port,
+    0x6B1EC0,
+    "NiDX8DeviceDesc::getScreenFormatEnum",
     fn(this, is_windowed: u8, bit_depth: u32) -> u32,
     compare_eax = true,
     regions = |set| {},
-    rust = device_desc_get_screen_format_enum);
+    rust = device_desc_get_screen_format_enum
+);
 
-port_thiscall!(device_desc_find_closest_depth_stencil_for_screen_format_port, 0x6B21D0,
+port_thiscall!(
+    device_desc_find_closest_depth_stencil_for_screen_format_port,
+    0x6B21D0,
     "NiDX8DeviceDesc::findClosestDepthStencilForScreenFormat",
     fn(this, screen_format: u32, target_format: u32, depth_bits: u32, stencil_bits: u32) -> u32,
     compare_eax = true,
     regions = |set| {},
-    rust = device_desc_find_closest_depth_stencil_for_screen_format);
+    rust = device_desc_find_closest_depth_stencil_for_screen_format
+);
 
-port_thiscall!(adapter_desc_ctor_port, 0x6B2260, "NiDX8AdapterDesc::ctor",
+port_thiscall!(
+    adapter_desc_ctor_port,
+    0x6B2260,
+    "NiDX8AdapterDesc::ctor",
     fn(this, d3d: usize, adapter_index: u32) -> usize,
     compare_eax = true,
     regions = |set| ctor_regions(set, this, AD::SIZE),
-    rust = adapter_desc_ctor);
+    rust = adapter_desc_ctor
+);
 
-port_thiscall!(adapter_desc_find_closest_mode_port, 0x6B25D0, "NiDX8AdapterDesc::findClosestMode",
+port_thiscall!(
+    adapter_desc_find_closest_mode_port,
+    0x6B25D0,
+    "NiDX8AdapterDesc::findClosestMode",
     fn(this, format: u32, width: u32, height: u32, inout_refresh_rate: usize) -> usize,
     compare_eax = true,
     regions = |set| set.add(inout_refresh_rate, 4),
-    rust = adapter_desc_find_closest_mode);
+    rust = adapter_desc_find_closest_mode
+);
 
-port_thiscall!(system_desc_ctor_port, 0x6B26A0, "NiDX8SystemDesc::ctor",
+port_thiscall!(
+    system_desc_ctor_port,
+    0x6B26A0,
+    "NiDX8SystemDesc::ctor",
     fn(this, d3d: usize) -> usize,
     compare_eax = true,
     regions = |set| ctor_regions(set, this, SD::SIZE),
-    rust = system_desc_ctor);
+    rust = system_desc_ctor
+);
 
-port_thiscall!(system_desc_dtor_port, 0x6B2800, "NiDX8SystemDesc::dtor",
+port_thiscall!(
+    system_desc_dtor_port,
+    0x6B2800,
+    "NiDX8SystemDesc::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| system_desc_dtor_regions(set, this),
-    rust = system_desc_dtor);
+    rust = system_desc_dtor
+);
 
-port_cdecl!(get_bpp_from_format_port, 0x6B2B80, "NiDX8SystemDesc_static::GetBPPFromFormat",
+port_cdecl!(
+    get_bpp_from_format_port,
+    0x6B2B80,
+    "NiDX8SystemDesc_static::GetBPPFromFormat",
     fn(format: u32) -> u32,
     compare_eax = true,
     regions = |set| {},
-    rust = get_bpp_from_format);
+    rust = get_bpp_from_format
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &screen_format_info_ctor_port::STATE,
@@ -1168,23 +1291,55 @@ mod tests {
         wr(out, 0, fake(this).current);
         0
     }
-    unsafe extern "system" fn check_device_type(this: usize, adapter: u32, device_type: u32, display: u32, back_buffer: u32, windowed: u32) -> u32 {
-        fake(this).log(format!("CheckDeviceType {adapter} {device_type} {display} {back_buffer} {windowed}"));
+    unsafe extern "system" fn check_device_type(
+        this: usize,
+        adapter: u32,
+        device_type: u32,
+        display: u32,
+        back_buffer: u32,
+        windowed: u32,
+    ) -> u32 {
+        fake(this).log(format!(
+            "CheckDeviceType {adapter} {device_type} {display} {back_buffer} {windowed}"
+        ));
         0
     }
-    unsafe extern "system" fn check_device_format(this: usize, adapter: u32, device_type: u32, adapter_format: u32, usage: u32, resource: u32, format: u32) -> u32 {
+    unsafe extern "system" fn check_device_format(
+        this: usize,
+        adapter: u32,
+        device_type: u32,
+        adapter_format: u32,
+        usage: u32,
+        resource: u32,
+        format: u32,
+    ) -> u32 {
         let d3d = fake(this);
-        d3d.log(format!("CheckDeviceFormat {adapter} {device_type} {adapter_format} {usage} {resource} {format}"));
-        let known = if usage == 1 { d3d.targets.contains(&format) } else { d3d.depths.contains(&format) };
+        d3d.log(format!(
+            "CheckDeviceFormat {adapter} {device_type} {adapter_format} {usage} {resource} {format}"
+        ));
+        let known = if usage == 1 {
+            d3d.targets.contains(&format)
+        } else {
+            d3d.depths.contains(&format)
+        };
         if known {
             0
         } else {
             0x8876_086A
         }
     }
-    unsafe extern "system" fn check_depth_stencil_match(this: usize, adapter: u32, device_type: u32, adapter_format: u32, target: u32, depth: u32) -> u32 {
+    unsafe extern "system" fn check_depth_stencil_match(
+        this: usize,
+        adapter: u32,
+        device_type: u32,
+        adapter_format: u32,
+        target: u32,
+        depth: u32,
+    ) -> u32 {
         let d3d = fake(this);
-        d3d.log(format!("CheckDepthStencilMatch {adapter} {device_type} {adapter_format} {target} {depth}"));
+        d3d.log(format!(
+            "CheckDepthStencilMatch {adapter} {device_type} {adapter_format} {target} {depth}"
+        ));
         if d3d.no_match.contains(&(target, depth)) {
             0x8876_086A
         } else {
@@ -1216,7 +1371,10 @@ mod tests {
             match call {
                 Heap::New(block, _) => live.push(block),
                 Heap::Delete(block) => {
-                    let at = live.iter().position(|&b| b == block).expect("a block that was not allocated is freed");
+                    let at = live
+                        .iter()
+                        .position(|&b| b == block)
+                        .expect("a block that was not allocated is freed");
                     live.remove(at);
                 }
             }
@@ -1248,10 +1406,30 @@ mod tests {
             for format in [27, 28, 41, 50, 52] {
                 assert_eq!(get_bpp_from_format(format), 8, "{format}");
             }
-            for format in [0x31545844, 0x32545844, 0x33545844, 0x34545844, 0x35545844, 0x32595559, 0x59565955, 100] {
+            for format in [
+                0x31545844, 0x32545844, 0x33545844, 0x34545844, 0x35545844, 0x32595559, 0x59565955, 100,
+            ] {
                 assert_eq!(get_bpp_from_format(format), 0, "{format:#x}");
             }
-            for format in [1, 19, 31, 42, 53, 66, 72, 74, 76, 78, 81, 99, 103, 0x31545845, 0x36545844, 0x8000_0000, 0xFFFF_FFFF] {
+            for format in [
+                1,
+                19,
+                31,
+                42,
+                53,
+                66,
+                72,
+                74,
+                76,
+                78,
+                81,
+                99,
+                103,
+                0x31545845,
+                0x36545844,
+                0x8000_0000,
+                0xFFFF_FFFF,
+            ] {
                 assert_eq!(get_bpp_from_format(format), 0xFFFF_FFFF, "{format:#x}");
             }
         }
@@ -1290,7 +1468,10 @@ mod tests {
 
             // The heap calls of target 22: buckets, list, item block (2 items), node, and a
             // second item block for the third depth format.
-            let sizes: Vec<usize> = heap_log().iter().filter_map(|c| if let Heap::New(_, size) = c { Some(*size) } else { None }).collect();
+            let sizes: Vec<usize> = heap_log()
+                .iter()
+                .filter_map(|c| if let Heap::New(_, size) = c { Some(*size) } else { None })
+                .collect();
             assert_eq!(&sizes[..8], [0x94, 0x18, 8, 24, 8, 24, 0xC, 0x18]);
             // Target 25 has only its list, and the constructor frees it with no item block.
             assert_eq!(sizes.len(), 12);
@@ -1312,7 +1493,14 @@ mod tests {
         heap_reset();
         let mut d3d = FakeD3d::new();
         d3d.adapters = 2;
-        d3d.modes = vec![[640, 480, 60, 23], [640, 480, 75, 23], [800, 600, 0, 23], [800, 600, 85, 23], [640, 480, 60, 22], [640, 480, 72, 23]];
+        d3d.modes = vec![
+            [640, 480, 60, 23],
+            [640, 480, 75, 23],
+            [800, 600, 0, 23],
+            [800, 600, 85, 23],
+            [640, 480, 60, 22],
+            [640, 480, 72, 23],
+        ];
         let mut system = [0u8; SD::SIZE];
         let this = system.as_mut_ptr() as usize;
         unsafe {
@@ -1357,10 +1545,16 @@ mod tests {
             let found = adapter_desc_find_closest_mode(adapter, 23, 640, 480, &mut refresh as *mut u32 as usize);
             assert_eq!((found, refresh), (rd::<usize>(modes, 0), 60));
             refresh = 0x7FFF_FFFF;
-            assert_eq!(adapter_desc_find_closest_mode(adapter, 22, 640, 480, &mut refresh as *mut u32 as usize), rd::<usize>(modes, 8));
+            assert_eq!(
+                adapter_desc_find_closest_mode(adapter, 22, 640, 480, &mut refresh as *mut u32 as usize),
+                rd::<usize>(modes, 8)
+            );
             assert_eq!(refresh, 0x7FFF_FFFF);
             refresh = 85;
-            assert_eq!(adapter_desc_find_closest_mode(adapter, 22, 800, 600, &mut refresh as *mut u32 as usize), 0);
+            assert_eq!(
+                adapter_desc_find_closest_mode(adapter, 22, 800, 600, &mut refresh as *mut u32 as usize),
+                0
+            );
             assert_eq!(refresh, 85);
 
             // The HAL device has one screen format for each display format of the modes.
@@ -1382,14 +1576,32 @@ mod tests {
             assert_eq!(device_desc_get_screen_format_enum(hal, 0, 32), 3);
             assert_eq!(device_desc_get_screen_format_enum(hal, 0, 16), 4);
             assert_eq!(device_desc_get_screen_format_enum(hal, 0, 24), 0);
-            assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 22, 32, 0), 77);
-            assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 22, 16, 0), 80);
+            assert_eq!(
+                device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 22, 32, 0),
+                77
+            );
+            assert_eq!(
+                device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 22, 16, 0),
+                80
+            );
             // With stencil the request becomes 24 depth bits and 8 stencil bits. For one stencil
             // bit with 16 bit depth it becomes 15 depth bits and 1 stencil bit.
-            assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 16, 4), 75);
-            assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 32, 1), 77);
-            assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 16, 1), 80);
-            assert_eq!(device_desc_find_closest_depth_stencil_for_screen_format(hal, 21, 22, 32, 0), 0);
+            assert_eq!(
+                device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 16, 4),
+                75
+            );
+            assert_eq!(
+                device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 32, 1),
+                77
+            );
+            assert_eq!(
+                device_desc_find_closest_depth_stencil_for_screen_format(hal, 22, 23, 16, 1),
+                80
+            );
+            assert_eq!(
+                device_desc_find_closest_depth_stencil_for_screen_format(hal, 21, 22, 32, 0),
+                0
+            );
 
             // The reference device has no caps, so it has no screen formats.
             let reference: usize = rd(adapter, AD::REFDeviceDesc);
@@ -1426,13 +1638,16 @@ mod tests {
             assert_eq!(rd::<u32>(this, DD::screenFormats_allocator_count), 2);
             assert_eq!(device_desc_get_screen_format_enum(this, 1, 0), 0);
             assert_eq!(device_desc_get_screen_format_enum(this, 0, 32), 3);
-            assert_eq!(&d3d.calls.borrow()[..5], [
-                "GetDeviceCaps 0 1",
-                "GetAdapterModeCount 0",
-                "EnumAdapterModes 0 0",
-                "CheckDeviceType 0 1 22 22 0",
-                "CheckDeviceType 0 1 22 22 1",
-            ]);
+            assert_eq!(
+                &d3d.calls.borrow()[..5],
+                [
+                    "GetDeviceCaps 0 1",
+                    "GetAdapterModeCount 0",
+                    "EnumAdapterModes 0 0",
+                    "CheckDeviceType 0 1 22 22 0",
+                    "CheckDeviceType 0 1 22 22 1",
+                ]
+            );
             device_desc_dtor(this);
             assert_eq!(live_blocks(), Vec::<usize>::new());
             assert_eq!(rd::<u32>(this, DD::screenFormats_count), 0);

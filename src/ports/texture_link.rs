@@ -14,10 +14,16 @@
 //! the first texture that it makes, and the second run of a comparison would get it.
 
 use super::{ni, textures};
-use crate::main_thread::{MainCell, MainThread};
-use crate::engine::{cdecl1, critical_section_lock, critical_section_unlock, get_image_converter, operator_new, pixel_format_copy, CREATE_CRITICAL_SECTION};
-use crate::gen::layouts::{NiDX8PixelFormat as PF, NiDX8Renderer as R, NiDX8SourceTextureData as SD, NiPixelData as PD, NiSourceTexture as ST, NiTexture as T};
+use crate::engine::{
+    cdecl1, critical_section_lock, critical_section_unlock, get_image_converter, operator_new, pixel_format_copy,
+    CREATE_CRITICAL_SECTION,
+};
+use crate::gen::layouts::{
+    NiDX8PixelFormat as PF, NiDX8Renderer as R, NiDX8SourceTextureData as SD, NiPixelData as PD, NiSourceTexture as ST,
+    NiTexture as T,
+};
 use crate::link::{TextureV1, TEXTURE_DYNAMIC};
+use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
 use crate::ports::ni::REF_COUNT;
 
@@ -68,7 +74,11 @@ unsafe fn texture_made(converted: usize) {
 /// table ([`crate::d3d::format_with_tag`]). The tag is in the converted pixel data, not in the
 /// format of the texture data, which is a copy of the renderer's DXT5 entry.
 unsafe fn format_of_pixels(converted: usize, table_format: u32) -> u32 {
-    crate::d3d::format_with_tag(rd(converted, PD::format_format), rd(converted, PD::format_channelMasks), table_format)
+    crate::d3d::format_with_tag(
+        rd(converted, PD::format_format),
+        rd(converted, PD::format_channelMasks),
+        table_format,
+    )
 }
 
 /// The Direct3D format of the texture of `this`, made from `converted`.
@@ -118,7 +128,10 @@ pub unsafe fn install_format_rule() -> bool {
     if rd::<[u8; 6]>(CREATE_TEXTURE_CALL, 0) != GAME_CODE {
         return false;
     }
-    crate::win::patch(CREATE_TEXTURE_CALL, &create_call_bytes(create_texture_call as *const () as u32))
+    crate::win::patch(
+        CREATE_TEXTURE_CALL,
+        &create_call_bytes(create_texture_call as *const () as u32),
+    )
 }
 
 /// Makes the D3D8 texture of `this` on the device and copies each level of `converted` into
@@ -201,7 +214,11 @@ unsafe fn fitting_format(this: usize, pixel_data: usize, prefs: usize, renderer:
 unsafe fn description_of(this: usize, texture: usize, converted: usize) -> TextureV1 {
     TextureV1 {
         struct_size: core::mem::size_of::<TextureV1>() as u32,
-        flags: if rd::<u8>(texture, ST::isStatic) == 0 { TEXTURE_DYNAMIC } else { 0 },
+        flags: if rd::<u8>(texture, ST::isStatic) == 0 {
+            TEXTURE_DYNAMIC
+        } else {
+            0
+        },
         width: rd(this, SD::width),
         height: rd(this, SD::height),
         levels: rd(converted, PD::mipmapLevels),
@@ -239,7 +256,9 @@ pub unsafe fn file_name_of(texture: usize) -> String {
     if filename == 0 {
         return String::from("(no file)");
     }
-    core::ffi::CStr::from_ptr(filename as *const core::ffi::c_char).to_string_lossy().into_owned()
+    core::ffi::CStr::from_ptr(filename as *const core::ffi::c_char)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Opens a file as the engine's `ReadImageFile` 0x6F6570 does, and closes it. That function
@@ -306,7 +325,11 @@ pub unsafe fn read_for_file(texture: usize, data: usize, write: impl FnOnce(&Tex
         ni::add_reference(pixel_data);
     }
     // Only pixels read here may be the converter's destination.
-    let destination = if filename != 0 && pixel_data != rd::<usize>(renderer, R::defaultTexturePixelData) { pixel_data } else { 0 };
+    let destination = if filename != 0 && pixel_data != rd::<usize>(renderer, R::defaultTexturePixelData) {
+        pixel_data
+    } else {
+        0
+    };
     let converted = textures::converter_convert(converter, pixel_data, format, destination, rd(data, SD::bMipMap));
     let result = if converted != 0 {
         write(&description_of(data, texture, converted));
@@ -418,14 +441,14 @@ pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
         let size: u32 = rd(offsets, levels as usize * 4);
         let d3d_format = if link { 0 } else { make_on_device(this, converted) };
         if link {
-        wr(this, SD::levels, levels);
+            wr(this, SD::levels, levels);
 
-        let description = description_of(this, texture, converted);
-        critical_section_lock(CREATE_CRITICAL_SECTION, NAME_CREATE_SURFACE);
-        let handle = crate::link_client::texture_create(&description);
-        critical_section_unlock(CREATE_CRITICAL_SECTION);
-        wr(this, SD::d3dTexture, handle);
-        texture_made(converted);
+            let description = description_of(this, texture, converted);
+            critical_section_lock(CREATE_CRITICAL_SECTION, NAME_CREATE_SURFACE);
+            let handle = crate::link_client::texture_create(&description);
+            critical_section_unlock(CREATE_CRITICAL_SECTION);
+            wr(this, SD::d3dTexture, handle);
+            texture_made(converted);
         }
 
         let palette: usize = rd(pixel_data, PD::palette);
@@ -478,10 +501,14 @@ pub unsafe fn create(t: &MainThread, texture: usize, renderer: usize) -> usize {
 }
 
 // The call is always a skip: see the head of this file.
-port_cdecl!(create_port, 0x6BFA50, "NiDX8SourceTextureData_static::Create",
+port_cdecl!(
+    create_port,
+    0x6BFA50,
+    "NiDX8SourceTextureData_static::Create",
     fn(texture: usize, renderer: usize) -> usize,
     compare_eax = false,
     regions = |set| set.skip(),
-    rust_main = create);
+    rust_main = create
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[&create_port::STATE];

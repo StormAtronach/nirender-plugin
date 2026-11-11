@@ -6,7 +6,9 @@
 
 use crate::engine::{thiscall1, thiscall3, thiscall4, vcall0, virtual_at};
 use crate::gen::layouts;
-use crate::gen::layouts::{NiAVObject as AV, NiCamera as C, NiGeometry as G, NiGeometryData as GD, NiRenderer as R, NiTimeController as TC};
+use crate::gen::layouts::{
+    NiAVObject as AV, NiCamera as C, NiGeometry as G, NiGeometryData as GD, NiRenderer as R, NiTimeController as TC,
+};
 use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
 use crate::ports::ni;
@@ -40,11 +42,15 @@ const RENDERER_REGISTER_OBJECT: usize = 0x6F5070;
 // The shapes
 // ---------------------------------------------------------------------------------------
 
-port_thiscall!(push_state_port, 0x6F3F40, "NiGeometry::pushStateToRenderer",
+port_thiscall!(
+    push_state_port,
+    0x6F3F40,
+    "NiGeometry::pushStateToRenderer",
     fn(this, renderer: usize) -> (),
     compare_eax = false,
     regions = |set| push_state_regions(set, this, renderer),
-    rust = push_state_to_renderer);
+    rust = push_state_to_renderer
+);
 
 /// Makes the shape's property state and effect state the renderer's current ones, with
 /// the references counted. A shape without a property state leaves the renderer's.
@@ -143,7 +149,11 @@ unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32
         return true;
     }
     let renderer = rd::<usize>(camera, C::spRenderer);
-    let accumulator = if renderer != 0 { rd::<usize>(renderer, R::accumulator) } else { 0 };
+    let accumulator = if renderer != 0 {
+        rd::<usize>(renderer, R::accumulator)
+    } else {
+        0
+    };
     if accumulator == 0 {
         crate::instance_stream::walk_place(t, this);
     } else if crate::ports::base::is_main_accumulator(t, accumulator) {
@@ -165,11 +175,15 @@ unsafe fn count_render_call(primitives: u32, vertices: u32) {
     wr(COUNT_VERTS_RENDERED, 0, rd::<u32>(COUNT_VERTS_RENDERED, 0) + vertices);
 }
 
-port_thiscall!(tri_shape_display_port, 0x6E4F90, "NiTriShape::Display",
+port_thiscall!(
+    tri_shape_display_port,
+    0x6E4F90,
+    "NiTriShape::Display",
     fn(this, camera: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust_main = tri_shape_display);
+    rust_main = tri_shape_display
+);
 
 /// The states, the accumulator, the controllers, then `RenderShape` of the renderer with
 /// the shape's data, skin, world transform and world bound; and the counts of the frame.
@@ -183,26 +197,44 @@ pub unsafe fn tri_shape_display(t: &MainThread, this: usize, camera: usize) {
     crate::shadow::touch(&tri_shape_display_port::STATE);
     // A shape the helper draws from its table: the plugin notes its changes, and the engine
     // does not display it.
-    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && retained_display(t, this, camera, crate::link::DRAW_SHAPE) {
+    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0
+        && retained_display(t, this, camera, crate::link::DRAW_SHAPE)
+    {
         return;
     }
     if crate::link_client::water_plane_display_skipped(t, this) {
         return;
     }
-    let Some(renderer) = shape_display_start(this, camera) else { return };
+    let Some(renderer) = shape_display_start(this, camera) else {
+        return;
+    };
     let skin = rd::<usize>(this, G::skinInstance);
     let data = rd::<usize>(this, G::spModelData);
     let bound = vcall0(this, SLOT_GET_WORLD_BOUND) as usize;
-    thiscall4(virtual_at(renderer, SLOT_RENDER_SHAPE), renderer, data as u32, skin as u32, (this + AV::worldTransform) as u32, bound as u32);
+    thiscall4(
+        virtual_at(renderer, SLOT_RENDER_SHAPE),
+        renderer,
+        data as u32,
+        skin as u32,
+        (this + AV::worldTransform) as u32,
+        bound as u32,
+    );
     let data = rd::<usize>(this, G::spModelData);
-    count_render_call(vcall0(data, SLOT_GET_ACTIVE_TRIANGLE_COUNT), vcall0(data, SLOT_GET_ACTIVE_VERTEX_COUNT));
+    count_render_call(
+        vcall0(data, SLOT_GET_ACTIVE_TRIANGLE_COUNT),
+        vcall0(data, SLOT_GET_ACTIVE_VERTEX_COUNT),
+    );
 }
 
-port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
+port_thiscall!(
+    tri_strips_display_port,
+    0x742660,
+    "NiTriStrips::Display",
     fn(this, camera: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust_main = tri_strips_display);
+    rust_main = tri_strips_display
+);
 
 /// As `NiTriShape::Display`, with `RenderTristrips`; the counts take the triangle count and
 /// the vertex count of the data as they are.
@@ -214,17 +246,28 @@ port_thiscall!(tri_strips_display_port, 0x742660, "NiTriStrips::Display",
 /// with the shape's data, skin, world transform and world bound.
 pub unsafe fn tri_strips_display(t: &MainThread, this: usize, camera: usize) {
     crate::shadow::touch(&tri_strips_display_port::STATE);
-    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0 && retained_display(t, this, camera, crate::link::DRAW_STRIPS) {
+    if rd::<u16>(this, AV::flags) & crate::instance_stream::RETAINED_BIT != 0
+        && retained_display(t, this, camera, crate::link::DRAW_STRIPS)
+    {
         return;
     }
     if crate::link_client::water_plane_display_skipped(t, this) {
         return;
     }
-    let Some(renderer) = shape_display_start(this, camera) else { return };
+    let Some(renderer) = shape_display_start(this, camera) else {
+        return;
+    };
     let skin = rd::<usize>(this, G::skinInstance);
     let data = rd::<usize>(this, G::spModelData);
     let bound = vcall0(this, SLOT_GET_WORLD_BOUND) as usize;
-    thiscall4(virtual_at(renderer, SLOT_RENDER_TRISTRIPS), renderer, data as u32, skin as u32, (this + AV::worldTransform) as u32, bound as u32);
+    thiscall4(
+        virtual_at(renderer, SLOT_RENDER_TRISTRIPS),
+        renderer,
+        data as u32,
+        skin as u32,
+        (this + AV::worldTransform) as u32,
+        bound as u32,
+    );
     let data = rd::<usize>(this, G::spModelData);
     count_render_call(rd::<u16>(data, GD::SIZE) as u32, rd::<u16>(data, GD::vertexCount) as u32);
 }
@@ -232,11 +275,15 @@ pub unsafe fn tri_strips_display(t: &MainThread, this: usize, camera: usize) {
 /// The number of active particles of a `NiParticlesData`, at the end of its geometry data.
 const PARTICLES_NUM_ACTIVE: usize = layouts::NiParticlesData::numActive;
 
-port_thiscall!(particles_display_port, 0x6DD3E0, "NiParticles::Display",
+port_thiscall!(
+    particles_display_port,
+    0x6DD3E0,
+    "NiParticles::Display",
     fn(this, camera: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = particles_display);
+    rust = particles_display
+);
 
 /// As `NiTriShape::Display`, with `RenderPoints` (no skin); the counts take the active
 /// particles for both.
@@ -247,23 +294,35 @@ port_thiscall!(particles_display_port, 0x6DD3E0, "NiParticles::Display",
 /// renderer is set (the function takes it from the camera and calls its virtual functions).
 pub unsafe fn particles_display(this: usize, camera: usize) {
     crate::shadow::touch(&particles_display_port::STATE);
-    let Some(renderer) = shape_display_start(this, camera) else { return };
+    let Some(renderer) = shape_display_start(this, camera) else {
+        return;
+    };
     render_points(this, renderer);
 }
 
 unsafe fn render_points(this: usize, renderer: usize) {
     let data = rd::<usize>(this, G::spModelData);
     let bound = vcall0(this, SLOT_GET_WORLD_BOUND) as usize;
-    thiscall3(virtual_at(renderer, SLOT_RENDER_POINTS), renderer, data as u32, (this + AV::worldTransform) as u32, bound as u32);
+    thiscall3(
+        virtual_at(renderer, SLOT_RENDER_POINTS),
+        renderer,
+        data as u32,
+        (this + AV::worldTransform) as u32,
+        bound as u32,
+    );
     let active = rd::<u16>(rd::<usize>(this, G::spModelData), PARTICLES_NUM_ACTIVE) as u32;
     count_render_call(active, active);
 }
 
-port_thiscall!(auto_normal_particles_display_port, 0x6D3540, "NiAutoNormalParticles::Display",
+port_thiscall!(
+    auto_normal_particles_display_port,
+    0x6D3540,
+    "NiAutoNormalParticles::Display",
     fn(this, camera: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = auto_normal_particles_display);
+    rust = auto_normal_particles_display
+);
 
 /// As `NiParticles::Display`, with the normal of each active particle set to the direction
 /// towards the camera first.
@@ -275,8 +334,14 @@ port_thiscall!(auto_normal_particles_display_port, 0x6D3540, "NiAutoNormalPartic
 /// (12 bytes each) as the data's count of active particles: the function writes that many.
 pub unsafe fn auto_normal_particles_display(this: usize, camera: usize) {
     crate::shadow::touch(&auto_normal_particles_display_port::STATE);
-    let Some(renderer) = shape_display_start(this, camera) else { return };
-    let normal = [-rd::<f32>(camera, C::kWorldDir), -rd::<f32>(camera, C::kWorldDir + 4), -rd::<f32>(camera, C::kWorldDir + 8)];
+    let Some(renderer) = shape_display_start(this, camera) else {
+        return;
+    };
+    let normal = [
+        -rd::<f32>(camera, C::kWorldDir),
+        -rd::<f32>(camera, C::kWorldDir + 4),
+        -rd::<f32>(camera, C::kWorldDir + 8),
+    ];
     let data = rd::<usize>(this, G::spModelData);
     let normals = rd::<usize>(data, GD::normals);
     if normals != 0 {
@@ -290,11 +355,15 @@ pub unsafe fn auto_normal_particles_display(this: usize, camera: usize) {
     render_points(this, renderer);
 }
 
-port_thiscall!(lines_display_port, 0x6DA850, "NiLines::Display",
+port_thiscall!(
+    lines_display_port,
+    0x6DA850,
+    "NiLines::Display",
     fn(this, camera: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = lines_display);
+    rust = lines_display
+);
 
 /// As `NiTriShape::Display`, with `RenderLines` (no skin) and no counts.
 ///
@@ -304,21 +373,33 @@ port_thiscall!(lines_display_port, 0x6DA850, "NiLines::Display",
 /// renderer is set (the function takes it from the camera and calls its virtual functions).
 pub unsafe fn lines_display(this: usize, camera: usize) {
     crate::shadow::touch(&lines_display_port::STATE);
-    let Some(renderer) = shape_display_start(this, camera) else { return };
+    let Some(renderer) = shape_display_start(this, camera) else {
+        return;
+    };
     let data = rd::<usize>(this, G::spModelData);
     let bound = vcall0(this, SLOT_GET_WORLD_BOUND) as usize;
-    thiscall3(virtual_at(renderer, SLOT_RENDER_LINES), renderer, data as u32, (this + AV::worldTransform) as u32, bound as u32);
+    thiscall3(
+        virtual_at(renderer, SLOT_RENDER_LINES),
+        renderer,
+        data as u32,
+        (this + AV::worldTransform) as u32,
+        bound as u32,
+    );
 }
 
 // ---------------------------------------------------------------------------------------
 // The end of a geometry
 // ---------------------------------------------------------------------------------------
 
-port_thiscall!(geometry_dtor_port, 0x6F3DB0, "NiGeometry::dtor",
+port_thiscall!(
+    geometry_dtor_port,
+    0x6F3DB0,
+    "NiGeometry::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust_main = geometry_dtor);
+    rust_main = geometry_dtor
+);
 
 /// The destructor of a geometry: the plugin forgets the shape (its retained instance of
 /// `instance_stream`), then the engine code runs.

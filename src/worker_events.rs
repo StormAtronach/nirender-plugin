@@ -42,7 +42,12 @@ enum Event {
 }
 
 const KINDS: usize = 4;
-const KIND_NAMES: [&str; KINDS] = ["shapes destroyed", "textures freed", "lights destroyed", "geometry data destroyed"];
+const KIND_NAMES: [&str; KINDS] = [
+    "shapes destroyed",
+    "textures freed",
+    "lights destroyed",
+    "geometry data destroyed",
+];
 
 impl Event {
     fn kind(self) -> usize {
@@ -125,7 +130,9 @@ unsafe fn name_of(object: usize) -> String {
     if at == 0 {
         return String::from("-");
     }
-    core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned()
+    core::ffi::CStr::from_ptr(at as *const core::ffi::c_char)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The shape's name, its ancestors' names from the parent up (at most 8), and the engine
@@ -152,7 +159,12 @@ unsafe fn note_of(shape: usize) -> String {
         }
     }
     let addresses: Vec<String> = addresses.iter().map(|a| format!("{a:#x}")).collect();
-    format!("shape 0x{shape:x} '{}' under {}; stack words in the engine: {}", names[0], names[1..].join(" < "), addresses.join(" "))
+    format!(
+        "shape 0x{shape:x} '{}' under {}; stack words in the engine: {}",
+        names[0],
+        names[1..].join(" < "),
+        addresses.join(" ")
+    )
 }
 
 unsafe fn on_texture_data_dtor(args: &[usize]) {
@@ -209,12 +221,21 @@ pub fn install() {
     // The end of a removal of geometry data on the cell worker, for the crossings of the
     // geometry cache (`ports::geometry`).
     if let Some(port) = crate::ports::all().find(|port| port.name == "NiRenderer_static::RemoveGeometryData") {
-        port.after_off_thread.store(crate::ports::geometry::worker_removal_ends as *const () as usize, Ordering::Relaxed);
+        port.after_off_thread.store(
+            crate::ports::geometry::worker_removal_ends as *const () as usize,
+            Ordering::Relaxed,
+        );
     }
     if missing.is_empty() {
-        crate::log!("worker events: {} ports write their events from the engine's cell worker", HOOKS.len());
+        crate::log!(
+            "worker events: {} ports write their events from the engine's cell worker",
+            HOOKS.len()
+        );
     } else {
-        crate::log!("worker events: no port for {}; their events from the cell worker are lost", missing.join(", "));
+        crate::log!(
+            "worker events: no port for {}; their events from the cell worker are lost",
+            missing.join(", ")
+        );
     }
 }
 
@@ -255,7 +276,10 @@ pub unsafe fn drain() {
             Event::GeometryGone(data, unique) => crate::geometry_stream::gone(t, data, unique),
         }
         if APPLIED[event.kind()].fetch_add(1, Ordering::Relaxed) == 0 {
-            crate::log!("worker events: the first of the {} applied on the main thread", KIND_NAMES[event.kind()]);
+            crate::log!(
+                "worker events: the first of the {} applied on the main thread",
+                KIND_NAMES[event.kind()]
+            );
         }
     }
     log_notes();
@@ -275,7 +299,14 @@ unsafe fn log_notes() {
 
 pub fn report() -> String {
     let parts: Vec<String> = (0..KINDS)
-        .map(|k| format!("{} {} queued, {} applied", KIND_NAMES[k], QUEUED[k].load(Ordering::Relaxed), APPLIED[k].load(Ordering::Relaxed)))
+        .map(|k| {
+            format!(
+                "{} {} queued, {} applied",
+                KIND_NAMES[k],
+                QUEUED[k].load(Ordering::Relaxed),
+                APPLIED[k].load(Ordering::Relaxed)
+            )
+        })
         .collect();
     format!(
         "worker events (C26, C27): {}; of the shapes destroyed, {} were instances of the table",
@@ -295,7 +326,9 @@ mod tests {
     #[test]
     fn the_end_of_a_removal_is_the_hook_of_the_other_threads() {
         install();
-        let port = crate::ports::all().find(|port| port.name == "NiRenderer_static::RemoveGeometryData").expect("the port");
+        let port = crate::ports::all()
+            .find(|port| port.name == "NiRenderer_static::RemoveGeometryData")
+            .expect("the port");
         let removal_ends = crate::ports::geometry::worker_removal_ends as *const () as usize;
         assert_eq!(port.after_off_thread.load(Ordering::Relaxed), removal_ends);
         assert_eq!(port.after.load(Ordering::Relaxed), 0);
@@ -312,7 +345,9 @@ mod tests {
         // The hook keeps to the queue: the mark stays until the main thread applies the event.
         assert!(is_unreadable(data));
         let mut queue = QUEUE.lock().unwrap();
-        let at = queue.iter().position(|event| matches!(event, Event::TextureFreed(freed) if *freed == data));
+        let at = queue
+            .iter()
+            .position(|event| matches!(event, Event::TextureFreed(freed) if *freed == data));
         queue.remove(at.expect("the hook writes the address into the queue"));
         drop(queue);
         forget_unreadable(data);
@@ -327,7 +362,13 @@ mod tests {
             on_texture_data_dtor(&[other]);
         }
         mark_unreadable(data);
-        let waiting = |address: usize| QUEUE.lock().unwrap().iter().any(|event| matches!(event, Event::TextureFreed(freed) if *freed == address));
+        let waiting = |address: usize| {
+            QUEUE
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, Event::TextureFreed(freed) if *freed == address))
+        };
         assert!(!waiting(data), "the free from before the mark stays in the queue");
         assert!(waiting(other), "the free of another address went too");
         assert!(is_unreadable(data));

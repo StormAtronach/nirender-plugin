@@ -36,7 +36,9 @@ pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;
     }
-    if let Err(error) = crate::mwse_native::subscribe(crate::mwse_native::NATIVE_EVENT_ACCUMULATOR_FINISHED, accumulator_finished) {
+    if let Err(error) =
+        crate::mwse_native::subscribe(crate::mwse_native::NATIVE_EVENT_ACCUMULATOR_FINISHED, accumulator_finished)
+    {
         crate::log!("queue flush: {error}: the helper places the flush as before");
         INSTALLED.finish(false);
         return;
@@ -47,7 +49,11 @@ pub unsafe fn install() {
 
 /// The report line.
 pub fn report() -> String {
-    format!("queue flush: {} draws of a queue, {} events of the main queue", FINISHED.load(Ordering::Relaxed), EVENTS.load(Ordering::Relaxed))
+    format!(
+        "queue flush: {} draws of a queue, {} events of the main queue",
+        FINISHED.load(Ordering::Relaxed),
+        EVENTS.load(Ordering::Relaxed)
+    )
 }
 
 unsafe extern "C" fn accumulator_finished(_user: *mut core::ffi::c_void, packet: *const core::ffi::c_void) {

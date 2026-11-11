@@ -9,7 +9,10 @@ use super::*;
 /// practices of wgpu have it. A `queue.write_buffer` goes to the GPU before all the command
 /// buffers of that submit: a buffer that two of them read must not get two values in a frame.
 /// It also carries the frame's named GPU stamps ([`FrameCommands::stamps`]).
-pub struct FrameCommands(pub(crate) core::cell::RefCell<Vec<wgpu::CommandBuffer>>, pub(crate) Rc<crate::stamps::Stamps>);
+pub struct FrameCommands(
+    pub(crate) core::cell::RefCell<Vec<wgpu::CommandBuffer>>,
+    pub(crate) Rc<crate::stamps::Stamps>,
+);
 
 impl Default for FrameCommands {
     fn default() -> FrameCommands {
@@ -129,7 +132,11 @@ impl SceneView<'_> {
     /// the pixel's samples (for a draw with an alpha test, as the transparency antialiasing
     /// of Direct3D 9 does); it needs more than one sample.
     pub fn multisample(&self, alpha_to_coverage: bool) -> wgpu::MultisampleState {
-        wgpu::MultisampleState { count: self.samples, mask: !0, alpha_to_coverage_enabled: alpha_to_coverage && self.samples > 1 }
+        wgpu::MultisampleState {
+            count: self.samples,
+            mask: !0,
+            alpha_to_coverage_enabled: alpha_to_coverage && self.samples > 1,
+        }
     }
 }
 
@@ -281,9 +288,18 @@ pub struct Reads {
 }
 
 impl Reads {
-    pub const ALL: Reads = Reads { picture: true, depth: true };
-    pub const NONE: Reads = Reads { picture: false, depth: false };
-    pub const DEPTH: Reads = Reads { picture: false, depth: true };
+    pub const ALL: Reads = Reads {
+        picture: true,
+        depth: true,
+    };
+    pub const NONE: Reads = Reads {
+        picture: false,
+        depth: false,
+    };
+    pub const DEPTH: Reads = Reads {
+        picture: false,
+        depth: true,
+    };
 }
 
 /// The most reach of a light in the clusters: one cell of the game.
@@ -311,7 +327,11 @@ pub fn light_reach(light: &LightData) -> f32 {
 /// and a draw takes a clustered light only when the light is one of its own, so the reach
 /// only bins it.
 pub(crate) fn cluster_reach(light: &LightData) -> f32 {
-    let reach = if light.cone[3] > 0.0 { 1.0 / light.cone[3] } else { attenuation_reach(light) };
+    let reach = if light.cone[3] > 0.0 {
+        1.0 / light.cone[3]
+    } else {
+        attenuation_reach(light)
+    };
     reach.min(LIGHT_REACH_MAX).max(0.0)
 }
 
@@ -330,7 +350,11 @@ fn attenuation_reach(light: &LightData) -> f32 {
         LIGHT_REACH_MAX
     };
     let range = light.direction[3];
-    if range > 0.0 { reach.min(range) } else { reach }
+    if range > 0.0 {
+        reach.min(range)
+    } else {
+        reach
+    }
 }
 
 /// The facts of a draw that are not in its uniform, for [`Extension::shade`] and
@@ -358,7 +382,15 @@ pub struct DrawFacts {
 /// write. A slot of the table takes the shade of its kind (`retained::slot_kind`).
 pub const TABLE_KINDS: [DrawFacts; 8] = {
     const FORMS: [(bool, u32, u32); 4] = [(false, 0, 0), (true, 5, 6), (true, 2, 6), (true, 5, 2)];
-    let mut kinds = [DrawFacts { class: 12, blend_enable: false, source_blend: 0, destination_blend: 0, depth_write: false, specular_power: 0.0, emissive: [0.0; 4] }; 8];
+    let mut kinds = [DrawFacts {
+        class: 12,
+        blend_enable: false,
+        source_blend: 0,
+        destination_blend: 0,
+        depth_write: false,
+        specular_power: 0.0,
+        emissive: [0.0; 4],
+    }; 8];
     let mut k = 0;
     while k < 8 {
         let (blend, source, destination) = FORMS[k / 2];
@@ -392,7 +424,13 @@ pub struct TableShade {
 
 impl Default for TableShade {
     fn default() -> TableShade {
-        TableShade { ambient_scale: [1.0; 3], extension5: [0.0; 4], extension7: [0.0; 4], radial_fog: false, flags: [0; 8] }
+        TableShade {
+            ambient_scale: [1.0; 3],
+            extension5: [0.0; 4],
+            extension7: [0.0; 4],
+            radial_fog: false,
+            flags: [0; 8],
+        }
     }
 }
 
@@ -650,7 +688,13 @@ pub trait Extension {
     /// texture). The frame's data that [`Extension::before_world`] made are reused; this call
     /// does not redo the work of the frame. Returns true when the depth target must be cleared
     /// after the call, as [`Extension::before_world`] does. The default draws nothing.
-    fn view_before_world(&mut self, _scene: &SceneView, _parts: Additions, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) -> bool {
+    fn view_before_world(
+        &mut self,
+        _scene: &SceneView,
+        _parts: Additions,
+        _pass: &mut wgpu::RenderPass<'static>,
+        _replay: &mut dyn Replay,
+    ) -> bool {
         false
     }
 
@@ -659,7 +703,14 @@ pub trait Extension {
     /// flush of its sorted queue, or at its end. The scene, the pass and `parts` are as in
     /// [`Extension::view_before_world`]; the matrices are those of the game's projection in the
     /// view. The default draws nothing.
-    fn view_after_world(&mut self, _scene: &SceneView, _parts: Additions, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
+    fn view_after_world(
+        &mut self,
+        _scene: &SceneView,
+        _parts: Additions,
+        _pass: &mut wgpu::RenderPass<'static>,
+        _replay: &mut dyn Replay,
+    ) {
+    }
 
     /// The renderer calls this one time in a scene of a picture that has the post chain in its
     /// options ([`Additions::TIER_POST`]), at the end of the scene, after
@@ -669,7 +720,14 @@ pub trait Extension {
     /// the call writes its result there. The scene, `parts` and the key are as in
     /// [`Extension::view_before_world`]. The call reads and writes nothing of the main view's
     /// picture or post state. The default draws nothing.
-    fn view_post(&mut self, _scene: &SceneView, _parts: Additions, _encoder: &mut wgpu::CommandEncoder, _target: &wgpu::TextureView) {}
+    fn view_post(
+        &mut self,
+        _scene: &SceneView,
+        _parts: Additions,
+        _encoder: &mut wgpu::CommandEncoder,
+        _target: &wgpu::TextureView,
+    ) {
+    }
 
     /// The renderer calls this one time in a frame, at the end of the world scene of the
     /// game: its draws without a sort are in the picture and in the depth target, and the
@@ -686,7 +744,14 @@ pub trait Extension {
     /// far: for a refraction. `scene.before_depth` is the depth of what `before_world` drew,
     /// when it gave true. MGE XE draws its water in place of the water plane of the game
     /// (class 10).
-    fn draw_class(&mut self, _class: u32, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _replay: &mut dyn Replay) {}
+    fn draw_class(
+        &mut self,
+        _class: u32,
+        _scene: &SceneView,
+        _pass: &mut wgpu::RenderPass<'static>,
+        _replay: &mut dyn Replay,
+    ) {
+    }
 
     /// Takes a shape of the world of the game away from the renderer, when
     /// [`FrameParameters::hold`] is true: none of its passes is drawn, and the extension gets
@@ -715,7 +780,14 @@ pub trait Extension {
     /// picture of the frame before the call and `scene.depth` the depth of the game so far:
     /// for a refraction. `scene.before_depth` is the depth of what `before_world` drew, when
     /// it gave true. Called when a shape was held, or when `wants_held` says so.
-    fn draw_held(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
+    fn draw_held(
+        &mut self,
+        _scene: &SceneView,
+        _pass: &mut wgpu::RenderPass<'static>,
+        _held: &[HeldDraw],
+        _replay: &mut dyn Replay,
+    ) {
+    }
 
     /// True when the extension draws this held shape in its place in the order of the game,
     /// in `draw_held_in_place`, and not in `draw_held`: for a shape whose look depends on the
@@ -747,7 +819,14 @@ pub trait Extension {
     /// other draw between them, come in one call: `scene.picture` does not have them. The pass,
     /// `scene.picture` (a copy of the picture there), `scene.depth` and `scene.lights` are as for
     /// `draw_held`.
-    fn draw_held_in_place(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _held: &[HeldDraw], _replay: &mut dyn Replay) {}
+    fn draw_held_in_place(
+        &mut self,
+        _scene: &SceneView,
+        _pass: &mut wgpu::RenderPass<'static>,
+        _held: &[HeldDraw],
+        _replay: &mut dyn Replay,
+    ) {
+    }
 
     /// True when the extension wants its call `draw_held` in this frame without a held shape,
     /// for draws of its own at that place in the frame: MGE XE draws the water among its
@@ -778,7 +857,14 @@ pub trait Extension {
     /// is the depth of the draws of the game (1 where the game drew nothing), and
     /// `scene.picture` is a copy of the picture as it is now. MGE XE lets the draws of the
     /// game near the end of their view range go into its distant land here.
-    fn blend(&mut self, _scene: &SceneView, _pass: &mut wgpu::RenderPass<'static>, _before: &wgpu::TextureView, _depth: &wgpu::TextureView) {}
+    fn blend(
+        &mut self,
+        _scene: &SceneView,
+        _pass: &mut wgpu::RenderPass<'static>,
+        _before: &wgpu::TextureView,
+        _depth: &wgpu::TextureView,
+    ) {
+    }
 
     /// What `call` reads of the picture and of the depth, asked just before the call: the
     /// renderer copies only these, and gives [`None`] in [`SceneView`] for the others. A picture

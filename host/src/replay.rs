@@ -120,7 +120,10 @@ impl Replay for Replayer<'_> {
         let mut arrays_bound = false;
         let mut stages_bound: Option<Rc<wgpu::BindGroup>> = None;
         for kept in self.kept {
-            if view.classes & (1 << kept.class.min(31)) == 0 || (view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0)) || (view.translucent_only && !kept.translucent()) {
+            if view.classes & (1 << kept.class.min(31)) == 0
+                || (view.opaque_only && (kept.key.blend[0] != 0 || kept.key.depth[1] == 0))
+                || (view.translucent_only && !kept.translucent())
+            {
                 continue;
             }
             let mut data = kept.data;
@@ -150,7 +153,12 @@ impl Replay for Replayer<'_> {
             if let Some(projection) = view.projection {
                 data.projection = crate::depth::gpu_projection(&projection);
             }
-            data.pixel = [1.0 / view.target_size.0.max(1) as f32, -1.0 / view.target_size.1.max(1) as f32, 0.0, 0.0];
+            data.pixel = [
+                1.0 / view.target_size.0.max(1) as f32,
+                -1.0 / view.target_size.1.max(1) as f32,
+                0.0,
+                0.0,
+            ];
             if let Some(plane) = view.clip_plane {
                 data.clip_plane = plane_of_draw(plane, kept.origin);
             }
@@ -168,7 +176,9 @@ impl Replay for Replayer<'_> {
                     other => other,
                 };
             }
-            let Some(pipeline) = self.renderer.pipeline(key) else { continue };
+            let Some(pipeline) = self.renderer.pipeline(key) else {
+                continue;
+            };
             let (start, n) = (kept.instances.0 as usize, kept.instances.1 as usize);
             let Some(first_instance) = self.renderer.copy_of_draw(&data, &self.instances[start..start + n]) else {
                 self.renderer.counts.no_record += 1;

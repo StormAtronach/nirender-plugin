@@ -10,7 +10,10 @@ use crate::d3d::{
     D3DRS_ZWRITEENABLE,
 };
 use crate::engine;
-use crate::gen::layouts::{NiAlphaProperty, NiDX8RenderState as RS, NiFogProperty, NiMaterialProperty, NiPropertyState, NiStencilProperty, NiZBufferProperty};
+use crate::gen::layouts::{
+    NiAlphaProperty, NiDX8RenderState as RS, NiFogProperty, NiMaterialProperty, NiPropertyState, NiStencilProperty,
+    NiZBufferProperty,
+};
 use crate::mem::{rd, wr};
 use crate::ports::material;
 use crate::x87;
@@ -201,7 +204,15 @@ pub unsafe fn update_fog_states(this: usize, fog_property: usize) {
     if fog_property == rd::<usize>(this, RS::currentFogProperty) && rd::<u8>(this, RS::changed) == 0 {
         return;
     }
-    wr(this, RS::currentFogProperty, if engine::fault() == 2 { fog_property + 4 } else { fog_property });
+    wr(
+        this,
+        RS::currentFogProperty,
+        if engine::fault() == 2 {
+            fog_property + 4
+        } else {
+            fog_property
+        },
+    );
     if (rd::<u8>(fog_property, PROPERTY_FLAGS) >> 1) & 1 == 0 {
         set_render_state(this, D3DRS_FOGENABLE, 0, 0);
         return;
@@ -247,7 +258,10 @@ pub unsafe fn set_stencil_states(this: usize, stencil: usize) {
     let enabled = rd::<u8>(stencil, NiStencilProperty::enabled);
     if enabled != 0 {
         let action = |index: u32| rd::<u32>(this, RS::stencilActionMapping + index as usize * 4);
-        let func: u32 = rd(this, RS::stencilFuncMapping + rd::<u32>(stencil, NiStencilProperty::testFunc) as usize * 4);
+        let func: u32 = rd(
+            this,
+            RS::stencilFuncMapping + rd::<u32>(stencil, NiStencilProperty::testFunc) as usize * 4,
+        );
         set_if_changed(this, D3DRS_STENCILFUNC, func);
         set_if_changed(this, D3DRS_STENCILREF, rd(stencil, NiStencilProperty::reference));
         set_if_changed(this, D3DRS_STENCILMASK, rd(stencil, NiStencilProperty::mask));
@@ -285,7 +299,10 @@ pub unsafe fn update_d3d_state(this: usize, property_state: usize) {
 
     let z_buffer: usize = rd(property_state, NiPropertyState::propZBuffer);
     set_if_changed(this, D3DRS_ZWRITEENABLE, (flags_of(z_buffer) >> 1) & 1);
-    let mut z_func: u32 = rd(this, RS::zFuncMapping + rd::<u32>(z_buffer, NiZBufferProperty::testFunction) as usize * 4);
+    let mut z_func: u32 = rd(
+        this,
+        RS::zFuncMapping + rd::<u32>(z_buffer, NiZBufferProperty::testFunction) as usize * 4,
+    );
     if flags_of(z_buffer) & 1 == 0 {
         z_func = D3DCMP_ALWAYS;
     }
@@ -324,71 +341,115 @@ unsafe fn update_d3d_state_regions(set: &mut crate::shadow::Regions, this: usize
     set.add(entry, material::ENTRY_SIZE);
 }
 
-port_thiscall!(set_render_state_port, 0x65ED60, "NiRenderState::SetRenderState",
+port_thiscall!(
+    set_render_state_port,
+    0x65ED60,
+    "NiRenderState::SetRenderState",
     fn(this, state: u32, value: u32, save: u8) -> (),
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
-    rust = set_render_state);
+    rust = set_render_state
+);
 
-port_thiscall!(set_texture_stage_state_with_save_port, 0x65EDE0, "NiDX8RenderState::setTextureStageStateWithSave",
+port_thiscall!(
+    set_texture_stage_state_with_save_port,
+    0x65EDE0,
+    "NiDX8RenderState::setTextureStageStateWithSave",
     fn(this, stage: u32, state: u32, value: u32, save: u8) -> (),
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
-    rust = set_texture_stage_state_with_save);
+    rust = set_texture_stage_state_with_save
+);
 
-port_thiscall!(setting_set_value_port, 0x65EEB0, "NiRenderStateSetting::SetValue",
+port_thiscall!(
+    setting_set_value_port,
+    0x65EEB0,
+    "NiRenderStateSetting::SetValue",
     fn(this, value: u32, save: u8) -> (),
     compare_eax = false,
     regions = |set| set.add(this, 8),
-    rust = setting_set_value);
+    rust = setting_set_value
+);
 
-port_thiscall!(update_d3d_state_port, 0x6B82A0, "NiDX8RenderState::updateD3DState",
+port_thiscall!(
+    update_d3d_state_port,
+    0x6B82A0,
+    "NiDX8RenderState::updateD3DState",
     fn(this, property_state: usize) -> (),
     compare_eax = false,
     regions = |set| update_d3d_state_regions(set, this, property_state),
-    rust = update_d3d_state);
+    rust = update_d3d_state
+);
 
-port_thiscall!(set_multisampling_port, 0x6B8410, "NiDX8RenderState::setMultisampling",
+port_thiscall!(
+    set_multisampling_port,
+    0x6B8410,
+    "NiDX8RenderState::setMultisampling",
     fn(this, enable: u8) -> (),
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
-    rust = set_multisampling);
+    rust = set_multisampling
+);
 
-port_thiscall!(set_z_buffer_enable_port, 0x6B8440, "NiDX8RenderState::setZBufferEnable",
+port_thiscall!(
+    set_z_buffer_enable_port,
+    0x6B8440,
+    "NiDX8RenderState::setZBufferEnable",
     fn(this, use_w_buffer: u8) -> (),
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
-    rust = set_z_buffer_enable);
+    rust = set_z_buffer_enable
+);
 
-port_thiscall!(update_alpha_states_port, 0x6B8480, "NiDX8RenderState::updateAlphaStates",
+port_thiscall!(
+    update_alpha_states_port,
+    0x6B8480,
+    "NiDX8RenderState::updateAlphaStates",
     fn(this, alpha_property: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
-    rust = update_alpha_states);
+    rust = update_alpha_states
+);
 
-port_thiscall!(next_frame_port, 0x6B85F0, "NiDX8RenderState::nextFrame",
+port_thiscall!(
+    next_frame_port,
+    0x6B85F0,
+    "NiDX8RenderState::nextFrame",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| set.add(this, RS::SIZE),
-    rust = next_frame);
+    rust = next_frame
+);
 
-port_thiscall!(reset_texture_stage_states_port, 0x6B8610, "NiDX8RenderState::resetTextureStateStates",
+port_thiscall!(
+    reset_texture_stage_states_port,
+    0x6B8610,
+    "NiDX8RenderState::resetTextureStateStates",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
-    rust = reset_texture_stage_states);
+    rust = reset_texture_stage_states
+);
 
-port_thiscall!(update_fog_states_port, 0x6B8A00, "NiDX8RenderState::updateFogStates",
+port_thiscall!(
+    update_fog_states_port,
+    0x6B8A00,
+    "NiDX8RenderState::updateFogStates",
     fn(this, fog_property: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
-    rust = update_fog_states);
+    rust = update_fog_states
+);
 
-port_thiscall!(set_stencil_states_port, 0x6B8C10, "NiDX8RenderState::setStencilStates",
+port_thiscall!(
+    set_stencil_states_port,
+    0x6B8C10,
+    "NiDX8RenderState::setStencilStates",
     fn(this, stencil: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(this, RS::SIZE),
-    rust = set_stencil_states);
+    rust = set_stencil_states
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &set_render_state_port::STATE,

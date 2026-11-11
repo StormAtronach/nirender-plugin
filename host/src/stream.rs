@@ -85,7 +85,13 @@ pub(crate) struct Stream {
 
 impl Stream {
     /// The data of one pass of the shape in progress for the shader.
-    pub(crate) fn draw_data(&self, derived: &material::Derived, pass: &Pass, counts: &mut Counts, frame_lights: &mut Vec<LightData>) -> DrawData {
+    pub(crate) fn draw_data(
+        &self,
+        derived: &material::Derived,
+        pass: &Pass,
+        counts: &mut Counts,
+        frame_lights: &mut Vec<LightData>,
+    ) -> DrawData {
         let shape = &self.shape;
         let mut data = DrawData::zeroed();
         let fvf = shape.fvf;
@@ -109,11 +115,20 @@ impl Stream {
         data.material_ambient = material[4..8].try_into().unwrap();
         data.material_emissive = material[12..16].try_into().unwrap();
         // An emissive-only draw has a black ambient and no light (`Derived::no_lights`).
-        data.scene_ambient = if derived.no_lights { [0.0, 0.0, 0.0, 1.0] } else { color(known(shape.ambient, 0)) };
+        data.scene_ambient = if derived.no_lights {
+            [0.0, 0.0, 0.0, 1.0]
+        } else {
+            color(known(shape.ambient, 0))
+        };
         // The fog of the draw: the colour, the start, the end, the range fog flag.
         if let (true, Some(fog)) = (derived.fog, self.shape_fog) {
             data.fog_color = color(fog[0]);
-            data.fog = [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32];
+            data.fog = [
+                f32::from_bits(fog[1]),
+                f32::from_bits(fog[2]),
+                1.0,
+                (fog[3] != 0) as u32 as f32,
+            ];
             // The fog of the extension is for the world only: `fog_range` is set for a draw of
             // the world views (the scene kind), and empty for any other draw. A shape with a fog
             // property of its own keeps its range, as it does in the table (`draw_fog` of the shader).
@@ -151,7 +166,11 @@ impl Stream {
             alpha_test[2],
         ];
 
-        let lights = if derived.no_lights { 0 } else { shape.lights.len() / STATE_LIGHT_SIZE };
+        let lights = if derived.no_lights {
+            0
+        } else {
+            shape.lights.len() / STATE_LIGHT_SIZE
+        };
         counts.most_lights = counts.most_lights.max(lights as u32);
         data.light_range = [frame_lights.len() as u32, lights as u32, 0, flat_shading_bit(derived)];
         data.counts[0] = lights as u32;
@@ -185,7 +204,12 @@ impl Stream {
                 data.stages[stages] = StageData {
                     color: [stage.color[0], stage.color[1], stage.color[2], 1],
                     alpha: [stage.alpha[0], stage.alpha[1], stage.alpha[2], 0],
-                    coordinate: [coordinate >> 16 & 7, coordinate & 3, transform & 7, (transform & 256 != 0) as u32],
+                    coordinate: [
+                        coordinate >> 16 & 7,
+                        coordinate & 3,
+                        transform & 7,
+                        (transform & 256 != 0) as u32,
+                    ],
                     bump: [stage.bump[0], stage.bump[1], stage.bump[2], stage.bump[3]],
                     luminance: [stage.bump[4], stage.bump[5], 0.0, 0.0],
                     slots: [0; 4],

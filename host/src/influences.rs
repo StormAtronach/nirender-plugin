@@ -30,7 +30,13 @@ pub(crate) type ListRange = (u64, u64);
 /// matrix with only the place of the shape, which comes with the bones of each instance.
 pub(crate) fn bones_needed(list: &[u8]) -> u32 {
     let entry = ENTRY_BYTES as usize;
-    (0..list.len() / entry).map(|i| u32::from_le_bytes([list[i * entry], list[i * entry + 1], list[i * entry + 2], list[i * entry + 3]]).saturating_add(1)).max().unwrap_or(0)
+    (0..list.len() / entry)
+        .map(|i| {
+            u32::from_le_bytes([list[i * entry], list[i * entry + 1], list[i * entry + 2], list[i * entry + 3]])
+                .saturating_add(1)
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The first entry of each vertex moved by `first`, for vertices of `stride` bytes.
@@ -54,7 +60,12 @@ struct ListSpace {
 
 impl ListSpace {
     fn new(size: u64) -> ListSpace {
-        ListSpace { bytes: vec![0; size as usize], free: vec![(0, size)], used: 0, grown: 0 }
+        ListSpace {
+            bytes: vec![0; size as usize],
+            free: vec![(0, size)],
+            used: 0,
+            grown: 0,
+        }
     }
 
     /// Takes a range for the entries and copies them there: the range, its first entry as the
@@ -101,7 +112,10 @@ fn make_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
 
 impl Influences {
     pub(crate) fn new(device: &wgpu::Device) -> Influences {
-        Influences { buffer: make_buffer(device, FIRST_BYTES), space: ListSpace::new(FIRST_BYTES) }
+        Influences {
+            buffer: make_buffer(device, FIRST_BYTES),
+            space: ListSpace::new(FIRST_BYTES),
+        }
     }
 
     /// Takes a range for the entries, and writes them. Returns the range, and its first entry
@@ -174,7 +188,9 @@ mod tests {
         assert_eq!(b_first as u64, b.0 / ENTRY_BYTES);
         assert!(space.bytes.len() as u64 >= 32 + 800);
         assert!(space.bytes[..32].iter().all(|&byte| byte == 0xAA));
-        assert!(space.bytes[b.0 as usize..(b.0 + b.1) as usize].iter().all(|&byte| byte == 0xBB));
+        assert!(space.bytes[b.0 as usize..(b.0 + b.1) as usize]
+            .iter()
+            .all(|&byte| byte == 0xBB));
         assert_eq!(space.used, 832);
     }
 

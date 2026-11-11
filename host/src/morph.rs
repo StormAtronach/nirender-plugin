@@ -90,16 +90,28 @@ pub(crate) struct Morphs {
 }
 
 fn buffer(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage,
+        mapped_at_creation: false,
+    })
 }
 
 impl Morphs {
     pub(crate) fn new(device: &wgpu::Device) -> Morphs {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("morphs"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("morphs"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
         let entry = |binding: u32, ty: wgpu::BufferBindingType, dynamic: bool| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: dynamic, min_binding_size: None },
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset: dynamic,
+                min_binding_size: None,
+            },
             count: None,
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -111,7 +123,11 @@ impl Morphs {
                 entry(3, wgpu::BufferBindingType::Uniform, true),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("morphs"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("morphs"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let _long = crate::LongStep::begin();
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("morphs"),
@@ -129,14 +145,29 @@ impl Morphs {
             layout,
             targets: HashMap::new(),
             data: Vec::new(),
-            buffer: buffer(device, "morphs, the targets", capacity as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST),
+            buffer: buffer(
+                device,
+                "morphs, the targets",
+                capacity as u64 * 4,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            ),
             capacity,
             weights: Vec::new(),
-            weights_buffer: buffer(device, "morphs, the weights", weights_capacity as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST),
+            weights_buffer: buffer(
+                device,
+                "morphs, the weights",
+                weights_capacity as u64 * 4,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            ),
             weights_capacity,
             jobs: Vec::new(),
             job_of: HashMap::new(),
-            jobs_buffer: buffer(device, "morphs, the jobs", jobs_capacity, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST),
+            jobs_buffer: buffer(
+                device,
+                "morphs, the jobs",
+                jobs_capacity,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            ),
             jobs_capacity,
             steps: 0,
             skipped: 0,
@@ -144,7 +175,16 @@ impl Morphs {
     }
 
     /// The targets of a geometry (`MORPH_TARGETS`): `count` targets of `vertices` positions.
-    pub(crate) fn put_targets(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, handle: u32, unique: u32, count: u32, vertices: u32, floats: &[f32]) {
+    pub(crate) fn put_targets(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        handle: u32,
+        unique: u32,
+        count: u32,
+        vertices: u32,
+        floats: &[f32],
+    ) {
         self.targets.remove(&handle);
         let first = self.data.len();
         if first + floats.len() > self.capacity {
@@ -152,7 +192,12 @@ impl Morphs {
             let first = self.data.len();
             if first + floats.len() > self.capacity {
                 self.capacity = (first + floats.len()).next_power_of_two();
-                self.buffer = buffer(device, "morphs, the targets", self.capacity as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+                self.buffer = buffer(
+                    device,
+                    "morphs, the targets",
+                    self.capacity as u64 * 4,
+                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                );
             }
             // The jobs of this frame name floats of the old order: a new buffer or a new order
             // takes them out; their geometries keep the vertices of their records.
@@ -164,7 +209,15 @@ impl Morphs {
         let first = self.data.len();
         self.data.extend_from_slice(floats);
         queue.write_buffer(&self.buffer, first as u64 * 4, bytemuck::cast_slice(floats));
-        self.targets.insert(handle, Targets { unique, count, vertices, first: first as u32 });
+        self.targets.insert(
+            handle,
+            Targets {
+                unique,
+                count,
+                vertices,
+                first: first as u32,
+            },
+        );
     }
 
     /// The floats of the geometries that are held, from the start; the others go.
@@ -188,8 +241,19 @@ impl Morphs {
     /// The weights of a new revision of a geometry (`MORPH_WEIGHTS`): a job of this frame writes
     /// the sum into the positions of `geometry`'s vertices. False when it cannot: the
     /// geometry's vertices stay those of its record.
-    pub(crate) fn step(&mut self, device: &wgpu::Device, handle: u32, unique: u32, weights: &[f32], geometry: &Geometry) -> bool {
-        let Some(targets) = self.targets.get(&handle).filter(|t| t.unique == unique && t.count as usize == weights.len()) else {
+    pub(crate) fn step(
+        &mut self,
+        device: &wgpu::Device,
+        handle: u32,
+        unique: u32,
+        weights: &[f32],
+        geometry: &Geometry,
+    ) -> bool {
+        let Some(targets) = self
+            .targets
+            .get(&handle)
+            .filter(|t| t.unique == unique && t.count as usize == weights.len())
+        else {
             self.skipped += 1;
             return false;
         };
@@ -232,23 +296,45 @@ impl Morphs {
         }
         if self.weights.len() > self.weights_capacity {
             self.weights_capacity = self.weights.len().next_power_of_two();
-            self.weights_buffer = buffer(device, "morphs, the weights", self.weights_capacity as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+            self.weights_buffer = buffer(
+                device,
+                "morphs, the weights",
+                self.weights_capacity as u64 * 4,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            );
         }
         queue.write_buffer(&self.weights_buffer, 0, bytemuck::cast_slice(&self.weights));
         let needed = self.jobs.len() as u64 * JOB_STRIDE;
         if needed > self.jobs_capacity {
             self.jobs_capacity = needed.next_power_of_two();
-            self.jobs_buffer = buffer(device, "morphs, the jobs", self.jobs_capacity, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+            self.jobs_buffer = buffer(
+                device,
+                "morphs, the jobs",
+                self.jobs_capacity,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            );
         }
         let mut values = vec![0u8; needed as usize];
         for (n, job) in self.jobs.iter().enumerate() {
-            let words: [u32; 8] = [job.first, job.count, job.vertices, job.first_weight, job.first_word, job.stride_words, 0, 0];
+            let words: [u32; 8] = [
+                job.first,
+                job.count,
+                job.vertices,
+                job.first_weight,
+                job.first_word,
+                job.stride_words,
+                0,
+                0,
+            ];
             values[n * JOB_STRIDE as usize..n * JOB_STRIDE as usize + 32].copy_from_slice(bytemuck::cast_slice(&words));
         }
         queue.write_buffer(&self.jobs_buffer, 0, &values);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("morphs") });
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("morphs"), timestamp_writes: None });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("morphs"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(&self.pipeline);
             let mut bound: Option<(Rc<wgpu::Buffer>, wgpu::BindGroup)> = None;
             for (n, job) in self.jobs.iter().enumerate() {
@@ -257,12 +343,25 @@ impl Morphs {
                         label: Some("morphs"),
                         layout: &self.layout,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: self.buffer.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 1, resource: self.weights_buffer.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 2, resource: job.buffer.as_entire_binding() },
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: self.buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: self.weights_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: job.buffer.as_entire_binding(),
+                            },
                             wgpu::BindGroupEntry {
                                 binding: 3,
-                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.jobs_buffer, offset: 0, size: core::num::NonZeroU64::new(32) }),
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: &self.jobs_buffer,
+                                    offset: 0,
+                                    size: core::num::NonZeroU64::new(32),
+                                }),
                             },
                         ],
                     });

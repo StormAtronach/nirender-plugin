@@ -62,7 +62,11 @@ fn push(is_entry: bool, here: Place) -> Mark {
         let mut stack = stack.borrow_mut();
         if is_entry {
             if let Some(outer) = stack.iter().rposition(|&(entry, _)| entry) {
-                let call = stack[outer + 1..].iter().rev().find(|&&(entry, _)| !entry).map(|&(_, place)| place);
+                let call = stack[outer + 1..]
+                    .iter()
+                    .rev()
+                    .find(|&&(entry, _)| !entry)
+                    .map(|&(_, place)| place);
                 note(stack[outer].1, call, here);
             }
         }
@@ -98,7 +102,10 @@ mod tests {
         drop(outer);
         assert!(after_first > before);
         // The places are those of this test, not of the module's closures.
-        let line = LOGGED.lock().unwrap().iter().any(|&(outer, _, _)| unsafe { &*(outer as *const Location) }.file().ends_with("entry_trace.rs") && unsafe { &*(outer as *const Location) }.line() == outer_line);
+        let line = LOGGED.lock().unwrap().iter().any(|&(outer, _, _)| {
+            unsafe { &*(outer as *const Location) }.file().ends_with("entry_trace.rs")
+                && unsafe { &*(outer as *const Location) }.line() == outer_line
+        });
         assert!(line, "the outer entry is the test's own line");
         assert_eq!(STACK.with(|stack| stack.borrow().len()), 0);
         // Entries one after the other are no nesting.
@@ -110,7 +117,11 @@ mod tests {
 }
 
 fn note(outer: Place, call: Option<Place>, inner: Place) {
-    let key = (outer as *const _ as usize, call.map_or(0, |place| place as *const _ as usize), inner as *const _ as usize);
+    let key = (
+        outer as *const _ as usize,
+        call.map_or(0, |place| place as *const _ as usize),
+        inner as *const _ as usize,
+    );
     let Ok(mut logged) = LOGGED.lock() else { return };
     if logged.contains(&key) {
         return;

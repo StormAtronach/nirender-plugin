@@ -62,7 +62,10 @@ pub(crate) struct StageBase {
 
 impl StageBase {
     pub(crate) fn of(data: &DrawData) -> StageBase {
-        StageBase { coordinates: data.stages.map(|stage| stage.coordinate), transforms: data.texture_transforms }
+        StageBase {
+            coordinates: data.stages.map(|stage| stage.coordinate),
+            transforms: data.texture_transforms,
+        }
     }
 
     pub(crate) fn restore(&self, data: &mut DrawData) {
@@ -120,21 +123,41 @@ mod tests {
 
     #[test]
     fn the_matrix_gives_the_engines_coordinates_after_several_updates() {
-        let states = [[0.0, 0.0, 1.0, 1.0], [0.1, -0.2, 1.0, 1.0], [0.35, 0.4, 2.0, 0.5], [-0.7, 0.05, 0.25, 3.0]];
+        let states = [
+            [0.0, 0.0, 1.0, 1.0],
+            [0.1, -0.2, 1.0, 1.0],
+            [0.35, 0.4, 2.0, 0.5],
+            [-0.7, 0.05, 0.25, 3.0],
+        ];
         let start = [[0.0f32, 0.0], [1.0, 1.0], [0.3, 0.8], [-2.5, 4.0]];
         // The helper holds the vertices of the state `base`; the engine goes on from there.
         for base in 0..states.len() {
             let mut held: Vec<[f32; 2]> = start.to_vec();
             for step in 1..=base {
-                held = held.iter().map(|&uv| engine_step(uv, states[step - 1], states[step])).collect();
+                held = held
+                    .iter()
+                    .map(|&uv| engine_step(uv, states[step - 1], states[step]))
+                    .collect();
             }
             let mut engine = held.clone();
             for now in base + 1..states.len() {
-                engine = engine.iter().map(|&uv| engine_step(uv, states[now - 1], states[now])).collect();
-                let m = UvAnimation { set: 0, base: states[base], now: states[now] }.matrix().unwrap();
+                engine = engine
+                    .iter()
+                    .map(|&uv| engine_step(uv, states[now - 1], states[now]))
+                    .collect();
+                let m = UvAnimation {
+                    set: 0,
+                    base: states[base],
+                    now: states[now],
+                }
+                .matrix()
+                .unwrap();
                 for (h, e) in held.iter().zip(&engine) {
                     let got = apply(&m, *h);
-                    assert!((got[0] - e[0]).abs() < 1e-4 && (got[1] - e[1]).abs() < 1e-4, "base {base} now {now}: {got:?} against {e:?}");
+                    assert!(
+                        (got[0] - e[0]).abs() < 1e-4 && (got[1] - e[1]).abs() < 1e-4,
+                        "base {base} now {now}: {got:?} against {e:?}"
+                    );
                 }
             }
         }
@@ -143,8 +166,20 @@ mod tests {
     #[test]
     fn no_step_and_a_zero_tiling_give_no_matrix() {
         let state = [0.2, 0.3, 1.5, 0.5];
-        assert!(UvAnimation { set: 0, base: state, now: state }.matrix().is_none());
-        assert!(UvAnimation { set: 0, base: [0.0, 0.0, 0.0, 1.0], now: state }.matrix().is_none());
+        assert!(UvAnimation {
+            set: 0,
+            base: state,
+            now: state
+        }
+        .matrix()
+        .is_none());
+        assert!(UvAnimation {
+            set: 0,
+            base: [0.0, 0.0, 0.0, 1.0],
+            now: state
+        }
+        .matrix()
+        .is_none());
     }
 
     #[test]
@@ -154,7 +189,11 @@ mod tests {
         data.stages[0].coordinate = [0, 0, 0, 0];
         data.stages[1].coordinate = [0, 1, 0, 0];
         data.stages[2].coordinate = [2, 0, 3, 0];
-        let uv = UvAnimation { set: 0, base: [0.0, 0.0, 1.0, 1.0], now: [0.25, 0.0, 1.0, 1.0] };
+        let uv = UvAnimation {
+            set: 0,
+            base: [0.0, 0.0, 1.0, 1.0],
+            now: [0.25, 0.0, 1.0, 1.0],
+        };
         compose(&mut data, &uv);
         assert_eq!(data.stages[0].coordinate[2], 2);
         assert_eq!(data.texture_transforms[0][8], -0.25);
@@ -172,7 +211,11 @@ mod tests {
         let mut stage = IDENTITY;
         stage[0] = 2.0;
         data.texture_transforms[0] = stage;
-        let uv = UvAnimation { set: 0, base: [0.0, 0.0, 1.0, 1.0], now: [0.25, 0.0, 1.0, 1.0] };
+        let uv = UvAnimation {
+            set: 0,
+            base: [0.0, 0.0, 1.0, 1.0],
+            now: [0.25, 0.0, 1.0, 1.0],
+        };
         compose(&mut data, &uv);
         // (u - 0.25) * 2 for u = 1.
         assert_eq!(apply(&data.texture_transforms[0], [1.0, 0.0])[0], 1.5);

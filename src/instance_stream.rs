@@ -47,14 +47,21 @@
 use crate::ptr_hash::{HashMap, HashSet};
 
 use crate::capture;
+use crate::checked::Open;
 use crate::engine::vcall0;
 use crate::gen::layouts::{InterfaceNiTimeController, NiAVObject, NiGeometry, NiProperty, NiPropertyState, NiRTTI};
-use crate::gen::layouts::{NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L, NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP};
-use crate::link::{CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES, SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_OTHER, SCENE_RACE_MENU_HEAD, SCENE_WATER, SCENE_WATER_REFLECTION, SCENE_WORLD};
-use crate::checked::Open;
+use crate::gen::layouts::{
+    NiDX8LightManager_LightEntry as E, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DL, NiLight as L,
+    NiPropertyState as PS, NiTimeController as TC, NiZBufferProperty as ZP,
+};
+use crate::link::{
+    CLASS_LANDSCAPE, CLASS_OBJECT, CLASS_SKY_DOME, CLASS_SKY_OTHER, CLASS_UNKNOWN, CLASS_WEATHER_PARTICLES,
+    SCENE_CHARACTER_PREVIEW, SCENE_LOCAL_MAP, SCENE_OTHER, SCENE_RACE_MENU_HEAD, SCENE_WATER, SCENE_WATER_REFLECTION,
+    SCENE_WORLD,
+};
 use crate::main_thread::{MainCell, MainThread};
-use crate::view_slots::{Click, Opening, ViewKey, ViewTable, VIEW_SLOTS};
 use crate::mem::{rd, wr};
+use crate::view_slots::{Click, Opening, ViewKey, ViewTable, VIEW_SLOTS};
 
 const CONTROLLERS: usize = NiAVObject::controllers;
 const PARENT: usize = NiAVObject::parentNode;
@@ -359,7 +366,14 @@ struct ShownList {
 
 impl ShownList {
     const fn new() -> ShownList {
-        ShownList { ids: Vec::new(), send: 1, open: false, sends: [0; 2], ids_sent: 0, most: 0 }
+        ShownList {
+            ids: Vec::new(),
+            send: 1,
+            open: false,
+            sends: [0; 2],
+            ids_sent: 0,
+            most: 0,
+        }
     }
 
     /// The instance joins the send in progress, once. A display before the list opened (a mode
@@ -458,64 +472,109 @@ fn tables_try(mt: &MainThread) -> Option<Open<'_, Tables>> {
 /// The table, for a holder of the proof of the main thread; made at the first open.
 #[track_caller]
 fn tables(mt: &MainThread) -> Open<'_, Tables> {
-    TABLES.get(mt).map(|tables| tables.get_or_insert_with(|| Tables {
-        instances: HashMap::default(),
-        rejected: HashSet::default(),
-        next_id: 1,
-        frame: 0,
-        generation: 1,
-        pending: None,
-        mode: None,
-        world_camera: 0,
-        scene_kind: SCENE_OTHER,
-        scene_route: Route::Main,
-        scene_view: None,
-        shown: ShownList::new(),
-        light_records: 0,
-        skipped: 0,
-        scene_serial: 0,
-        values_scene: u64::MAX,
-        scene_frame: u32::MAX,
-        scene_values: (0, None),
-        scene_mixed: 0,
-        effects: HashMap::default(),
-        effect_notes: 0,
-        texture_notes: 0,
-        periodic_changes: [0; crate::material_stream::GROUPS],
-        scratch_bones: Vec::new(),
-        bone_records: 0,
-        bone_failures: 0,
-        places_without_bones: 0,
-        skin_scene_mixed: 0,
-        light_noted: Vec::new(),
-        scratch_entry: [0; E::SIZE / 4],
-        scratch_lights: Vec::new(),
-        scratch_keys: Vec::new(),
-        fast_draws: 0,
-        records: 0,
-        handle_updates: 0,
-        value_updates: 0,
-        deletes: 0,
-        ends_without_record: 0,
-        particle_draws: 0,
-        particle_instances_made: 0,
-        rejected_by: [0; REASONS],
-        skipped_by: [0; 5],
-    }))
+    TABLES.get(mt).map(|tables| {
+        tables.get_or_insert_with(|| Tables {
+            instances: HashMap::default(),
+            rejected: HashSet::default(),
+            next_id: 1,
+            frame: 0,
+            generation: 1,
+            pending: None,
+            mode: None,
+            world_camera: 0,
+            scene_kind: SCENE_OTHER,
+            scene_route: Route::Main,
+            scene_view: None,
+            shown: ShownList::new(),
+            light_records: 0,
+            skipped: 0,
+            scene_serial: 0,
+            values_scene: u64::MAX,
+            scene_frame: u32::MAX,
+            scene_values: (0, None),
+            scene_mixed: 0,
+            effects: HashMap::default(),
+            effect_notes: 0,
+            texture_notes: 0,
+            periodic_changes: [0; crate::material_stream::GROUPS],
+            scratch_bones: Vec::new(),
+            bone_records: 0,
+            bone_failures: 0,
+            places_without_bones: 0,
+            skin_scene_mixed: 0,
+            light_noted: Vec::new(),
+            scratch_entry: [0; E::SIZE / 4],
+            scratch_lights: Vec::new(),
+            scratch_keys: Vec::new(),
+            fast_draws: 0,
+            records: 0,
+            handle_updates: 0,
+            value_updates: 0,
+            deletes: 0,
+            ends_without_record: 0,
+            particle_draws: 0,
+            particle_instances_made: 0,
+            rejected_by: [0; REASONS],
+            skipped_by: [0; 5],
+        })
+    })
 }
 
 impl Instance {
     /// An instance of a shape at its first draw: no record of it went yet.
     #[allow(clippy::too_many_arguments)]
-    fn new(id: u32, class: u32, geometry: u32, material: u32, generation: u32, skinned: bool, live: bool, points: bool) -> Instance {
-        Instance { id, class, geometry, material, rotation: [0; 12], software: false, stored: [0; 3], colours: [0; 14], bound: [0.0; 4], posed_bound: [0.0; 4], transform: [0; TRANSFORM_WORDS], lights: Vec::new(), ambient: 0xFF00_0000, listed_send: 0, under_billboard: false, views_frame: 0, frame_views: 0, sent: false, relative: false, filled: false, generation, skinned, live, recheck: false, kind: 0, properties: [0; PROPERTY_SLOTS], checked: 0, effect_versions: [(0, 0); 2], sorted_blend: false, queued: u32::MAX, points }
+    fn new(
+        id: u32,
+        class: u32,
+        geometry: u32,
+        material: u32,
+        generation: u32,
+        skinned: bool,
+        live: bool,
+        points: bool,
+    ) -> Instance {
+        Instance {
+            id,
+            class,
+            geometry,
+            material,
+            rotation: [0; 12],
+            software: false,
+            stored: [0; 3],
+            colours: [0; 14],
+            bound: [0.0; 4],
+            posed_bound: [0.0; 4],
+            transform: [0; TRANSFORM_WORDS],
+            lights: Vec::new(),
+            ambient: 0xFF00_0000,
+            listed_send: 0,
+            under_billboard: false,
+            views_frame: 0,
+            frame_views: 0,
+            sent: false,
+            relative: false,
+            filled: false,
+            generation,
+            skinned,
+            live,
+            recheck: false,
+            kind: 0,
+            properties: [0; PROPERTY_SLOTS],
+            checked: 0,
+            effect_versions: [(0, 0); 2],
+            sorted_blend: false,
+            queued: u32::MAX,
+            points,
+        }
     }
 }
 
 impl Tables {
     /// The mode, from `NIRENDER_RETAINED` at the first call.
     fn mode(&mut self) -> Mode {
-        *self.mode.get_or_insert_with(|| crate::switches::parsed("NIRENDER_RETAINED", Mode::EXPECTED, Mode::parse).unwrap_or(Mode::Gpu))
+        *self.mode.get_or_insert_with(|| {
+            crate::switches::parsed("NIRENDER_RETAINED", Mode::EXPECTED, Mode::parse).unwrap_or(Mode::Gpu)
+        })
     }
 }
 
@@ -741,7 +800,9 @@ fn note_display(t: &mut Tables, shape: usize) {
 
 /// True when the draw function of the instance is that of strips.
 fn instance_strips(t: &Tables, shape: usize) -> bool {
-    t.instances.get(&shape).is_some_and(|instance| instance.kind == crate::link::DRAW_STRIPS)
+    t.instances
+        .get(&shape)
+        .is_some_and(|instance| instance.kind == crate::link::DRAW_STRIPS)
 }
 
 /// Sends the bones of a skinned instance (`INSTANCE_BONES`) with the shape's world bound.
@@ -820,7 +881,10 @@ pub unsafe fn frame_tick(mt: &MainThread) {
     crate::worker_events::drain();
     // The change notes that Lua made on another thread (MWSE fires some events on the cell
     // worker): the main thread notes them here.
-    let queued = OFF_THREAD_CHANGES.lock().map(|mut q| core::mem::take(&mut *q)).unwrap_or_default();
+    let queued = OFF_THREAD_CHANGES
+        .lock()
+        .map(|mut q| core::mem::take(&mut *q))
+        .unwrap_or_default();
     for address in queued {
         note_change(mt, address);
     }
@@ -865,8 +929,16 @@ fn view_line_due(n: u64) -> bool {
 fn key_words(key: ViewKey) -> String {
     match key {
         ViewKey::Screen { camera } => format!("camera 0x{camera:x} into the back buffer"),
-        ViewKey::Texture { camera, root, target, again } => {
-            format!("camera 0x{camera:x}, root 0x{root:x}, target 0x{target:x}, again {again}{}", if again > 0 { " (a second slot for the key)" } else { "" })
+        ViewKey::Texture {
+            camera,
+            root,
+            target,
+            again,
+        } => {
+            format!(
+                "camera 0x{camera:x}, root 0x{root:x}, target 0x{target:x}, again {again}{}",
+                if again > 0 { " (a second slot for the key)" } else { "" }
+            )
         }
     }
 }
@@ -922,7 +994,15 @@ pub fn view_open_with_first(mt: &MainThread, click: &Click) -> (u32, u32) {
         *takes += 1;
         if let Some(key) = views.key(opened.slot).filter(|_| view_line_due(*takes)) {
             let back = if opened.taken_back { " (taken back)" } else { "" };
-            crate::log!("views: take {} at frame {}: slot {}{back}, scene kind {}, {}; {} slots in use", *takes, views.frame(), opened.slot, click.kind, key_words(key), views.in_use());
+            crate::log!(
+                "views: take {} at frame {}: slot {}{back}, scene kind {}, {}; {} slots in use",
+                *takes,
+                views.frame(),
+                opened.slot,
+                click.kind,
+                key_words(key),
+                views.in_use()
+            );
         }
     }
     if opened.new {
@@ -957,7 +1037,9 @@ pub fn view_swap(mt: &MainThread, target: Option<usize>) {
 /// close, and the second slots go. Their retirements wait for [`write_flush_retirements`] after
 /// the flush's own record, so that the helper runs their views first.
 pub fn view_flush(mt: &MainThread) {
-    let Some(end) = VIEWS.get(mt).as_mut().map(|views| views.flush(false)) else { return };
+    let Some(end) = VIEWS.get(mt).as_mut().map(|views| views.flush(false)) else {
+        return;
+    };
     RETIRED_VIEWS.get(mt).extend(end.retired);
 }
 
@@ -1013,7 +1095,9 @@ pub static VIEW_TARGETS_OFF_MAIN: core::sync::atomic::AtomicU64 = core::sync::at
 /// Present, the end of the frame (`frame_tick`): the views close in the view table, and the
 /// second and idle slots retire.
 fn view_present(mt: &MainThread) {
-    let Some(end) = VIEWS.get(mt).as_mut().map(|views| views.present()) else { return };
+    let Some(end) = VIEWS.get(mt).as_mut().map(|views| views.present()) else {
+        return;
+    };
     RETIRED_VIEWS.get(mt).extend(end.retired);
 }
 
@@ -1074,10 +1158,17 @@ pub unsafe fn seen(mt: &MainThread, shape: usize, kind: u32, class_out: &mut u32
     let t = &mut *tables_open;
     let instance = t.instances.get_mut(&shape)?;
     // A change of MWSE's flag sends the geometry again, with the notes of the draw.
-    let software = instance.skinned && crate::ports::draw::skinned_in_software(kind == crate::link::DRAW_STRIPS, rd(shape, GEOMETRY_MODEL_DATA));
+    let software = instance.skinned
+        && crate::ports::draw::skinned_in_software(kind == crate::link::DRAW_STRIPS, rd(shape, GEOMETRY_MODEL_DATA));
     let software_changed = instance.software != software;
     instance.software = software;
-    if software_changed || !instance.filled || !instance.sent || instance.live || instance.generation != t.generation || instance.id.wrapping_add(t.frame) % CHECK_FRAMES == 0 {
+    if software_changed
+        || !instance.filled
+        || !instance.sent
+        || instance.live
+        || instance.generation != t.generation
+        || instance.id.wrapping_add(t.frame) % CHECK_FRAMES == 0
+    {
         return None;
     }
     *class_out = instance.class;
@@ -1089,7 +1180,17 @@ pub unsafe fn seen(mt: &MainThread, shape: usize, kind: u32, class_out: &mut u32
 /// After the notes of a draw: decides if the shape is retained, and makes the draw in
 /// progress pending for `draw` when it is. `property_state` and `effect_state` are those
 /// of the renderer for the draw.
-pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: bool, points: bool, class: u32, geometry: u32, material: u32, property_state: usize) {
+pub unsafe fn consider(
+    mt: &MainThread,
+    shape: usize,
+    eligible: bool,
+    skinned: bool,
+    points: bool,
+    class: u32,
+    geometry: u32,
+    material: u32,
+    property_state: usize,
+) {
     let cause = if !eligible {
         Some(0)
     } else if geometry == 0 {
@@ -1137,18 +1238,43 @@ pub unsafe fn consider(mt: &MainThread, shape: usize, eligible: bool, skinned: b
     }
     if points && t.particle_instances_made <= 100 {
         let text: usize = rd(shape, 8);
-        let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        let name = if text != 0 {
+            core::ffi::CStr::from_ptr(text as *const core::ffi::c_char)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            String::new()
+        };
         let parent: usize = rd(shape, crate::gen::layouts::NiAVObject::parentNode);
-        let parent_text: usize = if parent != 0 { rd(parent, crate::gen::layouts::NiObjectNET::name) } else { 0 };
-        let parent_name = if parent_text != 0 { core::ffi::CStr::from_ptr(parent_text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
-        crate::log!("particles: instance {} of class {class}, '{name}' under '{parent_name}'", t.next_id);
+        let parent_text: usize = if parent != 0 {
+            rd(parent, crate::gen::layouts::NiObjectNET::name)
+        } else {
+            0
+        };
+        let parent_name = if parent_text != 0 {
+            core::ffi::CStr::from_ptr(parent_text as *const core::ffi::c_char)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            String::new()
+        };
+        crate::log!(
+            "particles: instance {} of class {class}, '{name}' under '{parent_name}'",
+            t.next_id
+        );
     }
     // The engine changes the sky by writes of its vertices with a new revision, not with
     // controllers: a sky instance is live from the start.
     if sky_table_class(class) {
         live = true;
         let text: usize = rd(shape, 8);
-        let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        let name = if text != 0 {
+            core::ffi::CStr::from_ptr(text as *const core::ffi::c_char)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            String::new()
+        };
         crate::log!("sky: instance {} of class {class}, '{name}'", t.next_id);
     }
     let id = t.next_id;
@@ -1226,7 +1352,11 @@ fn sky_mode() -> u8 {
     use core::sync::atomic::Ordering::Relaxed;
     match SKY_MODE.load(Relaxed) {
         0 => {
-            let mode = if crate::switches::choice("NIRENDER_SKY", &["count", "on"]) == Some("count") { 1 } else { 2 };
+            let mode = if crate::switches::choice("NIRENDER_SKY", &["count", "on"]) == Some("count") {
+                1
+            } else {
+                2
+            };
             SKY_MODE.store(mode, Relaxed);
             mode
         }
@@ -1293,14 +1423,16 @@ pub fn set_weather_draws(on: bool) {
     WEATHER_DRAWS.store(on, core::sync::atomic::Ordering::Relaxed);
 }
 
-
 /// What the table knows of a shape, for a log line: an instance (with its id and kind),
 /// rejected, or not considered.
 pub unsafe fn describe(mt: &MainThread, shape: usize) -> String {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     if let Some(instance) = t.instances.get(&shape) {
-        format!("instance {} (particles {}, class {}, live {})", instance.id, instance.points, instance.class, instance.live)
+        format!(
+            "instance {} (particles {}, class {}, live {})",
+            instance.id, instance.points, instance.class, instance.live
+        )
     } else if t.rejected.contains(&shape) {
         "rejected".to_string()
     } else {
@@ -1325,21 +1457,44 @@ fn sky_table_class(class: u32) -> bool {
 /// set in the log line ("sky", "weather"). Logs each shape once: the name, the class,
 /// the handles, whether the material is modelled, the reject reason, live, the depth and alpha
 /// flags, and the controllers on the shape, above it and on its properties.
-pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, plain_world_shape: bool, geometry: u32, material: u32, property_state: usize) {
+pub unsafe fn sky_census(
+    mt: &MainThread,
+    what: &str,
+    shape: usize,
+    class: u32,
+    plain_world_shape: bool,
+    geometry: u32,
+    material: u32,
+    property_state: usize,
+) {
     let seen = &mut *SKY_SEEN.get(mt);
     if seen.contains(&shape) {
         return;
     }
     seen.push(shape);
     let text: usize = rd(shape, 8);
-    let name = if text != 0 { core::ffi::CStr::from_ptr(text as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+    let name = if text != 0 {
+        core::ffi::CStr::from_ptr(text as *const core::ffi::c_char)
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        String::new()
+    };
     let mut live = false;
     let reason = reject_reason(shape, property_state, &mut live);
-    let (z_flags, z_function) = match if property_state != 0 { rd::<usize>(property_state, PS::propZBuffer) } else { 0 } {
+    let (z_flags, z_function) = match if property_state != 0 {
+        rd::<usize>(property_state, PS::propZBuffer)
+    } else {
+        0
+    } {
         0 => (None, None),
         z => (Some(rd::<u16>(z, PROPERTY_FLAGS)), Some(rd::<u32>(z, ZP::testFunction))),
     };
-    let alpha_flags = match if property_state != 0 { rd::<usize>(property_state, PS::propAlpha) } else { 0 } {
+    let alpha_flags = match if property_state != 0 {
+        rd::<usize>(property_state, PS::propAlpha)
+    } else {
+        0
+    } {
         0 => None,
         alpha => Some(rd::<u16>(alpha, PROPERTY_FLAGS)),
     };
@@ -1354,7 +1509,16 @@ pub unsafe fn sky_census(mt: &MainThread, what: &str, shape: usize, class: u32, 
         }
         node = rd(node, PARENT);
     }
-    let property_controllers = if property_state != 0 { (0..STATE_COUNT).filter(|slot| { let p: usize = rd(property_state, STATE_FIRST + slot * 4); p != 0 && rd::<usize>(p, CONTROLLERS) != 0 }).count() } else { 0 };
+    let property_controllers = if property_state != 0 {
+        (0..STATE_COUNT)
+            .filter(|slot| {
+                let p: usize = rd(property_state, STATE_FIRST + slot * 4);
+                p != 0 && rd::<usize>(p, CONTROLLERS) != 0
+            })
+            .count()
+    } else {
+        0
+    };
     crate::log!(
         "{what} census: '{name}' class {class}, world shape {plain_world_shape}, geometry {geometry:#x}, material {material:#x}, modelled {}, reject {reason:?}, live {live}, zbuffer flags {z_flags:?} function {z_function:?}, alpha flags {alpha_flags:?}, controllers: shape {}, nodes above {node_controllers}, properties {property_controllers}",
         crate::material_stream::last_modelled(mt),
@@ -1434,7 +1598,12 @@ impl Tables {
         }
         self.ends_without_record += 1;
         if self.ends_without_record <= MOST_END_LINES {
-            crate::log!("instances: instance {} {how} with no record since a reset: class {}, geometry {:#x}", instance.id, instance.class, instance.geometry);
+            crate::log!(
+                "instances: instance {} {how} with no record since a reset: class {}, geometry {:#x}",
+                instance.id,
+                instance.class,
+                instance.geometry
+            );
         }
     }
 
@@ -1471,7 +1640,21 @@ pub unsafe fn reject_pending(mt: &MainThread, shape: usize, reason_later: bool) 
 /// Returns false when the shape has no exact translation (the draw then goes as a shape
 /// record, and the shape is rejected), and in a scene of [`Route::Engine`] (the draw goes as
 /// the engine's shape record, and the instance stays).
-pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], relative: bool, colours: &[u32; 14], effects: Option<&[u32]>, fog: Option<[u32; 4]>, ambient: u32, lights: &[u32], bones: &[u8], bone_count: u32, queued: bool) -> bool {
+pub unsafe fn draw(
+    mt: &MainThread,
+    shape: usize,
+    id: u32,
+    world: &[f32; 16],
+    relative: bool,
+    colours: &[u32; 14],
+    effects: Option<&[u32]>,
+    fog: Option<[u32; 4]>,
+    ambient: u32,
+    lights: &[u32],
+    bones: &[u8],
+    bone_count: u32,
+    queued: bool,
+) -> bool {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     // A world scene into a target that the helper does not have: no table draws there, so the
@@ -1479,7 +1662,9 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     if matches!(t.scene_route, Route::Engine(_)) {
         return false;
     }
-    let Some(instance) = t.instances.get_mut(&shape) else { return false };
+    let Some(instance) = t.instances.get_mut(&shape) else {
+        return false;
+    };
     if instance.class == CLASS_WEATHER_PARTICLES && !weather_draws() {
         return false;
     }
@@ -1497,7 +1682,11 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
     let rotation: [u32; 12] = core::array::from_fn(|i| world[i].to_bits());
     let stored: [u32; 3] = if skinned { [0; 3] } else { rd(shape, WORLD_TRANSLATION) };
     let bound: [f32; 4] = if skinned { [0.0; 4] } else { rd(shape, WORLD_BOUND) };
-    let changed = !instance.filled || instance.rotation != rotation || instance.stored != stored || instance.colours != *colours || instance.bound.map(f32::to_bits) != bound.map(f32::to_bits);
+    let changed = !instance.filled
+        || instance.rotation != rotation
+        || instance.stored != stored
+        || instance.colours != *colours
+        || instance.bound.map(f32::to_bits) != bound.map(f32::to_bits);
     if changed || !instance.sent {
         let exact = if skinned {
             [0.0; 3]
@@ -1511,7 +1700,13 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         if instance.filled && changed {
             t.value_updates += 1;
             if t.value_updates <= 4 {
-                let what = if instance.rotation != rotation { "rotation" } else if instance.stored != stored { "translation" } else { "colours" };
+                let what = if instance.rotation != rotation {
+                    "rotation"
+                } else if instance.stored != stored {
+                    "translation"
+                } else {
+                    "colours"
+                };
                 crate::log!("instances: the {what} of instance {id} changed (shape 0x{shape:x})");
             }
         }
@@ -1549,7 +1744,11 @@ pub unsafe fn draw(mt: &MainThread, shape: usize, id: u32, world: &[f32; 16], re
         words[26..40].copy_from_slice(colours);
         words[40..44].copy_from_slice(&bound.map(f32::to_bits));
         let name_at: usize = rd(shape, 8);
-        let name: &[u8] = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes() } else { &[] };
+        let name: &[u8] = if name_at != 0 {
+            core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes()
+        } else {
+            &[]
+        };
         capture::instance(&words, &name[..name.len().min(96)]);
         t.records += 1;
     }
@@ -1646,7 +1845,11 @@ unsafe fn send_instance(mt: &MainThread, shape: usize, instance: &Instance, exac
     words[26..40].copy_from_slice(&instance.colours);
     words[40..44].copy_from_slice(&instance.bound.map(f32::to_bits));
     let name_at: usize = rd(shape, 8);
-    let name: &[u8] = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes() } else { &[] };
+    let name: &[u8] = if name_at != 0 {
+        core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_bytes()
+    } else {
+        &[]
+    };
     (*RECORD_COUNTS.get(mt))[RC_NAME_BYTES] += name.len().min(96) as u64;
     capture::instance(&words, &name[..name.len().min(96)]);
 }
@@ -1708,7 +1911,9 @@ unsafe fn note_light_once(mt: &MainThread, t: &mut Tables, light: usize, key: u3
     let mut values: [u32; 26] = rd(entry, E::d3dLight);
     // A light that is off or too dim gives no light, as the light manager does not turn it on
     // for a draw: the instances keep its key, and the record has zero colours.
-    if rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < f32::from_bits(crate::ports::light_manager::MIN_DIMMER) {
+    if rd::<u8>(light, L::enabled) == 0
+        || rd::<f32>(light, L::dimmer) < f32::from_bits(crate::ports::light_manager::MIN_DIMMER)
+    {
         values[crate::light_stream::COLOUR_WORDS].fill(0);
         counts[LC_DARK] += 1;
     }
@@ -1934,7 +2139,11 @@ pub fn note_materials_again(mt: &MainThread, materials: &[u32]) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let generation = t.generation;
-    let marked = mark_for_note(t.instances.values_mut().map(|i| (i.material, &mut i.generation)), &gone, generation);
+    let marked = mark_for_note(
+        t.instances.values_mut().map(|i| (i.material, &mut i.generation)),
+        &gone,
+        generation,
+    );
     t.texture_notes += marked;
 }
 
@@ -2084,7 +2293,11 @@ pub unsafe fn walk_place(mt: &MainThread, shape: usize) {
         return;
     }
     let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
-    let alpha: usize = if property_state != 0 { rd(property_state, PS::propAlpha) } else { 0 };
+    let alpha: usize = if property_state != 0 {
+        rd(property_state, PS::propAlpha)
+    } else {
+        0
+    };
     if alpha == 0 || rd::<u16>(alpha, PROPERTY_FLAGS) & 1 == 0 {
         return;
     }
@@ -2142,7 +2355,12 @@ impl FrameDisplays {
     const NAMES: [&'static str; 3] = ["main view", "views of their own", "the engine's path"];
 
     const fn new() -> FrameDisplays {
-        FrameDisplays { frame: [0; 3], sum: [0; 3], worst: [0; 3], frames: 0 }
+        FrameDisplays {
+            frame: [0; 3],
+            sum: [0; 3],
+            worst: [0; 3],
+            frames: 0,
+        }
     }
 
     fn count(&mut self, route: Route) {
@@ -2211,7 +2429,10 @@ pub fn route_of(kind: u32, back_buffer: bool, known_target: bool) -> Route {
 /// take yet, and the work of those views.
 pub fn engine_path_report(mt: &MainThread) -> String {
     let counts = *ENGINE_PATH_DISPLAYS.get(mt);
-    let names = ENGINE_PATH_SCENES.iter().map(|&(_, name)| name).chain(["a target the helper lacks"]);
+    let names = ENGINE_PATH_SCENES
+        .iter()
+        .map(|&(_, name)| name)
+        .chain(["a target the helper lacks"]);
     let parts: Vec<String> = names.zip(counts).map(|(name, count)| format!("{name} {count}")).collect();
     format!(
         "{} displays of retained shapes on the engine's path outside the table's scenes ({}); {} in scenes into the back buffer outside the main view's list; {} places in views of their own; {}",
@@ -2275,7 +2496,11 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         let mut tables_open = tables(mt);
         let t = &mut *tables_open;
         let (frame, generation) = (t.frame, t.generation);
-        let properties = if property_state != 0 { core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4)) } else { [0; PROPERTY_SLOTS] };
+        let properties = if property_state != 0 {
+            core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4))
+        } else {
+            [0; PROPERTY_SLOTS]
+        };
         // Lua changed the shape or one of its properties since its last check.
         if let Some(instance) = t.instances.get_mut(&shape) {
             check_notes(mt, instance, shape, &properties);
@@ -2327,9 +2552,20 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     let t = &mut *tables_open;
     // The texture effects of the shape, read while the shape displays (it holds its effect
     // state): each at most once a frame, whatever number of shapes it lights.
-    let effects = if effect_state != 0 { [rd::<usize>(effect_state, DES::environmentMap), rd(effect_state, DES::fogMap)] } else { [0; 2] };
+    let effects = if effect_state != 0 {
+        [rd::<usize>(effect_state, DES::environmentMap), rd(effect_state, DES::fogMap)]
+    } else {
+        [0; 2]
+    };
     let effect_versions = effects.map(|effect| {
-        let version = if effect == 0 { 0 } else { t.effects.entry(effect).or_default().observe(frame, || crate::material_stream::effect_signature(mt, renderer, effect)) };
+        let version = if effect == 0 {
+            0
+        } else {
+            t.effects
+                .entry(effect)
+                .or_default()
+                .observe(frame, || crate::material_stream::effect_signature(mt, renderer, effect))
+        };
         (effect, version)
     });
     let Some(instance) = t.instances.get_mut(&shape) else {
@@ -2343,10 +2579,19 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     // And when an effect of the shape changed: its material record copies the effect.
     // A flag of MWSE changed on the data of a skinned shape: the geometry goes again with
     // another form of its bone influences.
-    let software = instance.skinned && crate::ports::draw::skinned_in_software(instance.kind == crate::link::DRAW_STRIPS, rd(shape, GEOMETRY_MODEL_DATA));
+    let software = instance.skinned
+        && crate::ports::draw::skinned_in_software(
+            instance.kind == crate::link::DRAW_STRIPS,
+            rd(shape, GEOMETRY_MODEL_DATA),
+        );
     let software_changed = instance.software != software;
     instance.software = software;
-    let event_due = note_every() || instance.live || !instance.sent || effects_changed || software_changed || instance.generation != generation;
+    let event_due = note_every()
+        || instance.live
+        || !instance.sent
+        || effects_changed
+        || software_changed
+        || instance.generation != generation;
     let due = event_due || id.wrapping_add(frame).is_multiple_of(CHECK_FRAMES);
     if due && !event_due && periodic_reject(mt, t, shape, property_state) {
         return false;
@@ -2396,7 +2641,11 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     // when it moved), the bound, the colours. A skinned instance keeps the identity and no
     // bound in its record: its bones and its bound go in `INSTANCE_BONES` below.
     let skinned = instance.skinned;
-    let (transform, bound): ([u32; TRANSFORM_WORDS], [f32; 4]) = if skinned { (instance.transform, instance.bound) } else { (rd(shape, WORLD), rd(shape, WORLD_BOUND)) };
+    let (transform, bound): ([u32; TRANSFORM_WORDS], [f32; 4]) = if skinned {
+        (instance.transform, instance.bound)
+    } else {
+        (rd(shape, WORLD), rd(shape, WORLD_BOUND))
+    };
     let colours = crate::shape_stream::material_values(property_state);
     let moved = instance.transform != transform;
     let bound_changed = instance.bound.map(f32::to_bits) != bound.map(f32::to_bits);
@@ -2458,7 +2707,11 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     if skinned && t.scene_frame == frame {
         let ambient = crate::ports::light_manager::ambient_of_state(effect_state);
         let cell_fog = crate::engine::game_fog_property();
-        let fog = if cell_fog != 0 { crate::shape_stream::fog_values_of(renderer, cell_fog) } else { crate::shape_stream::fog_values(renderer, property_state) };
+        let fog = if cell_fog != 0 {
+            crate::shape_stream::fog_values_of(renderer, cell_fog)
+        } else {
+            crate::shape_stream::fog_values(renderer, property_state)
+        };
         if (ambient, fog) != t.scene_values {
             t.skin_scene_mixed += 1;
             if t.skin_scene_mixed <= 4 {
@@ -2560,7 +2813,11 @@ pub unsafe fn world_scene(mt: &MainThread, camera_root: usize, frustum: &[f32; 6
     let cell_fog = crate::engine::game_fog_property();
     // `frustum`: left, right, top, bottom, near, far.
     let (near, far) = (frustum[4].to_bits(), frustum[5].to_bits());
-    let fog = if cell_fog != 0 { crate::shape_stream::scene_fog_values_of(renderer, cell_fog, near, far) } else { None };
+    let fog = if cell_fog != 0 {
+        crate::shape_stream::scene_fog_values_of(renderer, cell_fog, near, far)
+    } else {
+        None
+    };
     let fog_color = (cell_fog != 0).then(|| crate::shape_stream::scene_fog_color_of(cell_fog));
     t.values_scene = t.scene_serial;
     t.scene_frame = frame;
@@ -2622,7 +2879,9 @@ unsafe fn scene_sun(mt: &MainThread, t: &mut Tables) -> Option<[u32; 26]> {
     let enabled: u8 = rd(light, L::enabled);
     let dimmer: f32 = rd(light, L::dimmer);
     if enabled == 0 || dimmer < f32::from_bits(crate::ports::light_manager::MIN_DIMMER) {
-        log_once(format!("the sky light 0x{light:x} is off or dim: enabled {enabled}, dimmer {dimmer}"));
+        log_once(format!(
+            "the sky light 0x{light:x} is off or dim: enabled {enabled}, dimmer {dimmer}"
+        ));
         return None;
     }
     let entry = t.scratch_entry.as_mut_ptr() as usize;
@@ -2654,20 +2913,48 @@ unsafe fn scene_sun(mt: &MainThread, t: &mut Tables) -> Option<[u32; 26]> {
 
 pub unsafe fn report(mt: &MainThread) -> String {
     // Copies of the counts: each table opens once here.
-    let (rechecks, change_notes, queue_counts, walk_places) = (*RECHECKS.get(mt), *CHANGE_NOTES.get(mt), *QUEUE_COUNTS.get(mt), *WALK_PLACES.get(mt));
+    let (rechecks, change_notes, queue_counts, walk_places) = (
+        *RECHECKS.get(mt),
+        *CHANGE_NOTES.get(mt),
+        *QUEUE_COUNTS.get(mt),
+        *WALK_PLACES.get(mt),
+    );
     let change_ms = (*CHANGE_TICKS.get(mt)).map(|ticks| ticks as f64 * 1000.0 / capture::ticks_per_second() as f64);
     let (notes, clears) = CHANGES.get(mt).as_ref().map_or((0, 0), |notes| (notes.count, notes.clears));
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     let reasons = ["node kind", "at the record", "depth function", "parent chain too long"];
-    let mut rejected: Vec<String> = reasons.iter().zip(t.rejected_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
+    let mut rejected: Vec<String> = reasons
+        .iter()
+        .zip(t.rejected_by.iter())
+        .filter(|(_, n)| **n != 0)
+        .map(|(r, n)| format!("{r} {n}"))
+        .collect();
     let later = *LATER_BY.get(mt);
     if later.iter().any(|&n| n != 0) {
-        rejected.push(format!("at the record by cause: geometry {}, material {}, not modelled {}, translation {}", later[0], later[1], later[2], later[3]));
+        rejected.push(format!(
+            "at the record by cause: geometry {}, material {}, not modelled {}, translation {}",
+            later[0], later[1], later[2], later[3]
+        ));
     }
-    let shown_line = format!("{}; {} reads of the back buffer found the table open", t.shown.line(), SHOWN_TABLES_BUSY.load(core::sync::atomic::Ordering::Relaxed));
-    let causes = ["not a plain world draw of a retained class", "no geometry", "no material", "path off", "not modelled"];
-    let skipped: Vec<String> = causes.iter().zip(t.skipped_by.iter()).filter(|(_, n)| **n != 0).map(|(r, n)| format!("{r} {n}")).collect();
+    let shown_line = format!(
+        "{}; {} reads of the back buffer found the table open",
+        t.shown.line(),
+        SHOWN_TABLES_BUSY.load(core::sync::atomic::Ordering::Relaxed)
+    );
+    let causes = [
+        "not a plain world draw of a retained class",
+        "no geometry",
+        "no material",
+        "path off",
+        "not modelled",
+    ];
+    let skipped: Vec<String> = causes
+        .iter()
+        .zip(t.skipped_by.iter())
+        .filter(|(_, n)| **n != 0)
+        .map(|(r, n)| format!("{r} {n}"))
+        .collect();
     format!(
         "instances: mode {}, {} retained ({} live, {} skinned, {} bone records, {} left out of the main view's list with no bones, {} places left out with no bones, {} works with other scene values), {} rejected ({}), draws not taken ({}), {} fast draws, {} displays skipped ({} with other scene values), {} instance records, {} updates of the handles, {} of the values, {} deletes ({} with no record since a reset), {} light records",
         t.mode().name(),
@@ -2784,9 +3071,27 @@ mod tests {
         unsafe {
             let before = crate::shadow::main_thread_for_test();
             let mt = MainThread::claim();
-            let world = Click { kind: SCENE_WORLD, camera: 0x7900_0000, root: 0x7900_1000, target: None, world_camera: true };
-            let shadow = Click { kind: SCENE_SHADOW_CASTERS, camera: 0x7900_2000, root: 0x7900_3000, target: None, world_camera: false };
-            let picture = Click { kind: SCENE_OTHER, camera: 0x7900_0000, root: 0x7900_1000, target: Some(0x7900_4000), world_camera: false };
+            let world = Click {
+                kind: SCENE_WORLD,
+                camera: 0x7900_0000,
+                root: 0x7900_1000,
+                target: None,
+                world_camera: true,
+            };
+            let shadow = Click {
+                kind: SCENE_SHADOW_CASTERS,
+                camera: 0x7900_2000,
+                root: 0x7900_3000,
+                target: None,
+                world_camera: false,
+            };
+            let picture = Click {
+                kind: SCENE_OTHER,
+                camera: 0x7900_0000,
+                root: 0x7900_1000,
+                target: Some(0x7900_4000),
+                world_camera: false,
+            };
             // No view before the recording starts: no Present would retire its slot.
             assert_eq!(view_open(&mt, &picture), 0);
             capture::test_record_deletes(true);
@@ -2812,7 +3117,13 @@ mod tests {
     /// A texture view whose items ran: gives its slot. The view closes at a swap into its target
     /// and a flush runs its items.
     fn a_texture_view_whose_items_ran(mt: &MainThread, target: usize) -> u8 {
-        let picture = Click { kind: SCENE_OTHER, camera: target + 0x100, root: target + 0x200, target: Some(target), world_camera: false };
+        let picture = Click {
+            kind: SCENE_OTHER,
+            camera: target + 0x100,
+            root: target + 0x200,
+            target: Some(target),
+            world_camera: false,
+        };
         let slot = (view_open(mt, &picture) - 1) as u8;
         view_swap(mt, Some(target));
         view_flush(mt);
@@ -2836,7 +3147,10 @@ mod tests {
                 view_target_destroyed(&mt, 0x7940_4000);
             }
             assert!(PENDING_TARGETS.get(&mt).is_empty());
-            assert!(RETIRED_VIEWS.get(&mt).is_empty(), "the retirement waited although the stream records");
+            assert!(
+                RETIRED_VIEWS.get(&mt).is_empty(),
+                "the retirement waited although the stream records"
+            );
             assert_eq!(VIEWS.get(&mt).as_ref().and_then(|views| views.key(slot)), None);
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
@@ -2862,7 +3176,13 @@ mod tests {
             }
             assert_eq!(*PENDING_TARGETS.get(&mt), vec![0x7950_4000]);
             assert_eq!(key(&mt), kept);
-            let next = Click { kind: SCENE_OTHER, camera: 0x7951_0000, root: 0x7951_1000, target: Some(0x7951_4000), world_camera: false };
+            let next = Click {
+                kind: SCENE_OTHER,
+                camera: 0x7951_0000,
+                root: 0x7951_1000,
+                target: Some(0x7951_4000),
+                world_camera: false,
+            };
             assert!(view_open(&mt, &next) > 0);
             assert!(PENDING_TARGETS.get(&mt).is_empty());
             assert_ne!(key(&mt), kept);
@@ -2914,11 +3234,23 @@ mod tests {
             let in_use = || VIEWS.get(&mt).as_ref().map_or(0, ViewTable::in_use);
             let start = in_use();
             for kind in [SCENE_LOCAL_MAP, SCENE_CHARACTER_PREVIEW, SCENE_WATER_REFLECTION] {
-                let click = Click { kind, camera: 0x7970_0000, root: 0x7970_1000, target: Some(0x7970_4000), world_camera: false };
+                let click = Click {
+                    kind,
+                    camera: 0x7970_0000,
+                    root: 0x7970_1000,
+                    target: Some(0x7970_4000),
+                    world_camera: false,
+                };
                 assert_eq!(view_of_scene(&mt, &click, route_of(kind, false, true)), (0, 0));
             }
             assert_eq!(in_use(), start);
-            let picture = Click { kind: SCENE_OTHER, camera: 0x7970_0000, root: 0x7970_1000, target: Some(0x7970_4000), world_camera: false };
+            let picture = Click {
+                kind: SCENE_OTHER,
+                camera: 0x7970_0000,
+                root: 0x7970_1000,
+                target: Some(0x7970_4000),
+                world_camera: false,
+            };
             assert!(view_of_scene(&mt, &picture, route_of(SCENE_OTHER, false, true)).0 > 0);
             view_swap(&mt, Some(0x7970_4000));
             take_retired_views(&mt);
@@ -2936,7 +3268,13 @@ mod tests {
             let before = crate::shadow::main_thread_for_test();
             let mt = MainThread::claim();
             capture::test_record_deletes(true);
-            let picture = Click { kind: SCENE_OTHER, camera: 0x7910_0000, root: 0x7910_1000, target: Some(0x7910_4000), world_camera: false };
+            let picture = Click {
+                kind: SCENE_OTHER,
+                camera: 0x7910_0000,
+                root: 0x7910_1000,
+                target: Some(0x7910_4000),
+                world_camera: false,
+            };
             assert!(view_open(&mt, &picture) > 0);
             let flushes = VIEWS.get(&mt).as_ref().map(ViewTable::flushes);
             assert_eq!(capture::copy_tile(0x7910_4000, 0x7910_5000), None);
@@ -2955,11 +3293,24 @@ mod tests {
     fn the_view_take_lines_name_a_second_slot_and_keep_their_rate() {
         assert!((1..=64).all(view_line_due));
         assert!(!view_line_due(65) && !view_line_due(127) && view_line_due(128) && view_line_due(1024));
-        let again = key_words(ViewKey::Texture { camera: 0x10, root: 0x20, target: 0x30, again: 1 });
+        let again = key_words(ViewKey::Texture {
+            camera: 0x10,
+            root: 0x20,
+            target: 0x30,
+            again: 1,
+        });
         assert!(again.ends_with("again 1 (a second slot for the key)"), "{again}");
-        let first = key_words(ViewKey::Texture { camera: 0x10, root: 0x20, target: 0x30, again: 0 });
+        let first = key_words(ViewKey::Texture {
+            camera: 0x10,
+            root: 0x20,
+            target: 0x30,
+            again: 0,
+        });
         assert!(first.ends_with("again 0"), "{first}");
-        assert_eq!(key_words(ViewKey::Screen { camera: 0x10 }), "camera 0x10 into the back buffer");
+        assert_eq!(
+            key_words(ViewKey::Screen { camera: 0x10 }),
+            "camera 0x10 into the back buffer"
+        );
     }
 
     /// A note before a display marks the shape at that display, once. A display with no new
@@ -3014,10 +3365,30 @@ mod tests {
             copy
         };
         // 10 and 11 share property 100; 12 holds 101 in two slots; 13 holds 102.
-        let shapes = [(10, slots(&[100, 0, 103])), (11, slots(&[100])), (12, slots(&[101, 101])), (13, slots(&[102]))];
+        let shapes = [
+            (10, slots(&[100, 0, 103])),
+            (11, slots(&[100])),
+            (12, slots(&[101, 101])),
+            (13, slots(&[102])),
+        ];
         let set = |addresses: &[usize]| addresses.iter().copied().collect::<HashSet<usize>>();
-        let by_scan = |changed: &HashSet<usize>| shapes.iter().filter(|(shape, properties)| changed.contains(shape) || properties.iter().any(|p| *p != 0 && changed.contains(p))).map(|(shape, _)| *shape).collect::<HashSet<usize>>();
-        let all_notes = [set(&[100]), set(&[101]), set(&[13]), set(&[103, 102]), set(&[999]), set(&[100, 101, 102, 103, 10, 11, 12, 13, 999])];
+        let by_scan = |changed: &HashSet<usize>| {
+            shapes
+                .iter()
+                .filter(|(shape, properties)| {
+                    changed.contains(shape) || properties.iter().any(|p| *p != 0 && changed.contains(p))
+                })
+                .map(|(shape, _)| *shape)
+                .collect::<HashSet<usize>>()
+        };
+        let all_notes = [
+            set(&[100]),
+            set(&[101]),
+            set(&[13]),
+            set(&[103, 102]),
+            set(&[999]),
+            set(&[100, 101, 102, 103, 10, 11, 12, 13, 999]),
+        ];
         for changed in &all_notes {
             let mut notes = ChangeNotes::default();
             notes.note(5000);
@@ -3026,10 +3397,16 @@ mod tests {
             for &address in changed {
                 notes.note(address);
             }
-            let by_display = shapes.iter().filter(|(shape, properties)| notes.hits(checked, *shape, properties)).map(|(shape, _)| *shape).collect::<HashSet<usize>>();
+            let by_display = shapes
+                .iter()
+                .filter(|(shape, properties)| notes.hits(checked, *shape, properties))
+                .map(|(shape, _)| *shape)
+                .collect::<HashSet<usize>>();
             assert_eq!(by_display, by_scan(changed), "notes {changed:?}");
             // Checked after the notes: no shape is hit again.
-            assert!(shapes.iter().all(|(shape, properties)| !notes.hits(notes.count, *shape, properties)));
+            assert!(shapes
+                .iter()
+                .all(|(shape, properties)| !notes.hits(notes.count, *shape, properties)));
         }
         assert_eq!(by_scan(&set(&[100])), set(&[10, 11]));
 
@@ -3040,7 +3417,10 @@ mod tests {
         assert!(!notes.hits(0, 12, properties_12));
         let checked_12 = notes.count;
         notes.note(101);
-        assert!(notes.hits(0, 10, properties_10), "a shape not displayed in the note's frame missed it");
+        assert!(
+            notes.hits(0, 10, properties_10),
+            "a shape not displayed in the note's frame missed it"
+        );
         assert!(notes.hits(checked_12, 12, properties_12));
 
         // A new instance at an address that a note named before it.
@@ -3057,7 +3437,10 @@ mod tests {
         assert_eq!(notes.clears, 0);
         notes.note(0x9_0000);
         assert_eq!((notes.clears, notes.changed.len()), (1, 1));
-        assert!(notes.hits(checked, 10, properties_10), "a clear did not mark a shape checked before it");
+        assert!(
+            notes.hits(checked, 10, properties_10),
+            "a clear did not mark a shape checked before it"
+        );
         assert!(!notes.hits(notes.count, 10, properties_10));
         // A note again of an object already kept clears nothing.
         notes.note(0x9_0000);
@@ -3160,7 +3543,11 @@ mod tests {
             }
             t.shown.discard();
             let mode = t.mode.replace(Mode::Gpu);
-            ListTest { _memory: memory, shapes, mode }
+            ListTest {
+                _memory: memory,
+                shapes,
+                mode,
+            }
         }
 
         /// The table as it was before the test.
@@ -3177,7 +3564,21 @@ mod tests {
 
     /// A draw of the retained shape, with the values of [`ListTest`].
     unsafe fn table_draw(mt: &MainThread, shape: usize, id: u32) -> bool {
-        draw(mt, shape, id, &[0.0; 16], true, &[0; 14], None, None, 0xFF00_0000, &[], &[], 0, false)
+        draw(
+            mt,
+            shape,
+            id,
+            &[0.0; 16],
+            true,
+            &[0; 14],
+            None,
+            None,
+            0xFF00_0000,
+            &[],
+            &[],
+            0,
+            false,
+        )
     }
 
     /// The ids of the main view's send in progress.
@@ -3250,7 +3651,14 @@ mod tests {
             let shown = take_shown_list(&mt);
             let records = capture::frame_end_records(5, 9, shown.as_deref(), &[3]);
             let tags: Vec<u32> = records.iter().map(|(tag, _)| *tag).collect();
-            assert_eq!(tags, vec![capture::tag::INSTANCE_SHOWN, capture::tag::FRAME_END, capture::tag::FRAME_EVENT]);
+            assert_eq!(
+                tags,
+                vec![
+                    capture::tag::INSTANCE_SHOWN,
+                    capture::tag::FRAME_END,
+                    capture::tag::FRAME_EVENT
+                ]
+            );
             assert_eq!(records[0].1, [1u32.to_le_bytes(), 75u32.to_le_bytes()].concat());
             // No scene of the list since the send: no list at the next Present.
             assert_eq!(take_shown_list(&mt), None);
@@ -3295,9 +3703,20 @@ mod tests {
     /// the back buffer (`Route::Main`). No other kind is in the set.
     #[test]
     fn may_queue_needs_the_kind_and_the_list_needs_the_kind_and_route_main() {
-        use crate::link::{SCENE_FIRST_PERSON, SCENE_SHADOW_CASTERS, SCENE_SHADOW_VOLUME, SCENE_SORTED_ALPHA, SCENE_SPLASH, SCENE_UI};
+        use crate::link::{
+            SCENE_FIRST_PERSON, SCENE_SHADOW_CASTERS, SCENE_SHADOW_VOLUME, SCENE_SORTED_ALPHA, SCENE_SPLASH, SCENE_UI,
+        };
         assert!(main_view_kind(SCENE_WORLD) && main_view_kind(SCENE_WATER));
-        for kind in [SCENE_OTHER, SCENE_SORTED_ALPHA, SCENE_SHADOW_VOLUME, SCENE_SHADOW_CASTERS, SCENE_FIRST_PERSON, SCENE_UI, SCENE_SPLASH, SCENE_LOCAL_MAP] {
+        for kind in [
+            SCENE_OTHER,
+            SCENE_SORTED_ALPHA,
+            SCENE_SHADOW_VOLUME,
+            SCENE_SHADOW_CASTERS,
+            SCENE_FIRST_PERSON,
+            SCENE_UI,
+            SCENE_SPLASH,
+            SCENE_LOCAL_MAP,
+        ] {
             assert!(!main_view_kind(kind), "kind {kind}");
             assert!(!lists_main_view(kind, Route::Main), "kind {kind}");
         }

@@ -5,16 +5,16 @@
 use core::arch::asm;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::main_thread::{MainCell, MainThread};
 use crate::d3d;
 use crate::engine::{vcall0, vcall1, NI_REF_OBJECT_COUNT, VTBL_NI_ALPHA_PROPERTY, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts;
 use crate::gen::layouts::{
     NiAccumulator as ACC, NiDX8ConfigurableTexturePipeline as CTP, NiDX8MaterialManager as MM, NiDX8RenderState as RS,
     NiDX8TexturePass as TP, NiDX8TextureStage as TS, NiMaterialProperty as MP, NiRenderer as R,
-    NiRendererSpecificProperty as RSP, NiRendererSpecificProperty_RenderData7 as RD7, THashMap as HM,
-    THashMap_Node as HN, D3DCAPS8,
+    NiRendererSpecificProperty as RSP, NiRendererSpecificProperty_RenderData7 as RD7, THashMap as HM, THashMap_Node as HN,
+    D3DCAPS8,
 };
+use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
 use crate::ports::ni::{self, REF_COUNT};
 use crate::ports::{hash_map, light_manager, material, render_state, texture_pass_a, texture_pass_b, texture_pipeline};
@@ -239,7 +239,11 @@ unsafe fn array_add(array: usize, element: usize) {
                     let slot = storage.wrapping_add((at as usize).wrapping_mul(4));
                     if rd::<usize>(slot, 0) != 0 {
                         wr::<usize>(slot, 0, 0);
-                        wr(array, ARRAY_FILLED_COUNT, rd::<u32>(array, ARRAY_FILLED_COUNT).wrapping_sub(1));
+                        wr(
+                            array,
+                            ARRAY_FILLED_COUNT,
+                            rd::<u32>(array, ARRAY_FILLED_COUNT).wrapping_sub(1),
+                        );
                     }
                     let end: u32 = rd(array, ARRAY_END_INDEX);
                     at = at.wrapping_add(1);
@@ -272,7 +276,13 @@ unsafe fn array_add(array: usize, element: usize) {
             return;
         }
     }
-    let count = |delta: u32| wr(array, ARRAY_FILLED_COUNT, rd::<u32>(array, ARRAY_FILLED_COUNT).wrapping_add(delta));
+    let count = |delta: u32| {
+        wr(
+            array,
+            ARRAY_FILLED_COUNT,
+            rd::<u32>(array, ARRAY_FILLED_COUNT).wrapping_add(delta),
+        )
+    };
     let stored = || rd::<usize>(rd::<usize>(array, ARRAY_STORAGE), index as usize * 4);
     if index >= rd::<u32>(array, ARRAY_END_INDEX) {
         wr(array, ARRAY_END_INDEX, index.wrapping_add(1));
@@ -336,7 +346,11 @@ pub unsafe fn renderer_ctor(this: usize) -> usize {
                 let mut at = 0usize;
                 loop {
                     let nodes: usize = rd(block, 4);
-                    wr(nodes.wrapping_add(at), NODE_NEXT, nodes.wrapping_add(at).wrapping_add(NODE_SIZE));
+                    wr(
+                        nodes.wrapping_add(at),
+                        NODE_NEXT,
+                        nodes.wrapping_add(at).wrapping_add(NODE_SIZE),
+                    );
                     at += NODE_SIZE;
                     left -= 1;
                     if left == 0 {
@@ -564,7 +578,9 @@ fn window_to_buffer(x: u32, width: u32, y: u32, height: u32, one: u32) -> (u32, 
 /// scale (`mwse_native::NATIVE_REQUEST_UI_SCALE`); MGE XE wrote them before (`MWBridge::setUIScale`),
 /// and still does on Direct3D 9.
 pub(crate) const UI_SCALE_PATCH_AT: usize = 0x6F5157;
-pub(crate) const UI_SCALE_PATCH: [u8; 14] = [0xA1, 0xDC, 0x67, 0x7C, 0x00, 0x8B, 0x78, 0x78, 0x8B, 0x40, 0x7C, 0x90, 0x90, 0x90];
+pub(crate) const UI_SCALE_PATCH: [u8; 14] = [
+    0xA1, 0xDC, 0x67, 0x7C, 0x00, 0x8B, 0x78, 0x78, 0x8B, 0x40, 0x7C, 0x90, 0x90, 0x90,
+];
 const WC_VIEW_WIDTH: usize = layouts::WorldController::viewWidth;
 const WC_VIEW_HEIGHT: usize = layouts::WorldController::viewHeight;
 
@@ -580,7 +596,10 @@ const WC_VIEW_HEIGHT: usize = layouts::WorldController::viewHeight;
 pub unsafe fn renderer_map_window_point_to_buffer_point(this: usize, x: u32, y: u32, out_x: usize, out_y: usize) -> u8 {
     crate::shadow::touch(&renderer_map_window_point_to_buffer_point_port::STATE);
     let (width, height) = match ui_scale_world_controller() {
-        0 => (vcall0(this, SLOT_GET_BACKBUFFER_WIDTH), vcall0(this, SLOT_GET_BACKBUFFER_HEIGHT)),
+        0 => (
+            vcall0(this, SLOT_GET_BACKBUFFER_WIDTH),
+            vcall0(this, SLOT_GET_BACKBUFFER_HEIGHT),
+        ),
         world_controller => (rd(world_controller, WC_VIEW_WIDTH), rd(world_controller, WC_VIEW_HEIGHT)),
     };
     if width == 0 || height == 0 {
@@ -609,7 +628,11 @@ unsafe fn map_one() -> u32 {
 #[cfg(not(test))]
 unsafe fn ui_scale_world_controller() -> usize {
     let in_view_size = crate::mwse_native::ui_scale().is_some_and(|scale| scale.pick_ray_in_view_size != 0);
-    if in_view_size { rd(crate::engine::WORLD_CONTROLLER, 0) } else { 0 }
+    if in_view_size {
+        rd(crate::engine::WORLD_CONTROLLER, 0)
+    } else {
+        0
+    }
 }
 
 /// The world controller of a test: the address of its fields, or 0 for a game without the patch.
@@ -753,7 +776,10 @@ pub unsafe fn renderer_begin_batch(this: usize, property_state: usize, effect_st
 /// destructor cannot run two times.
 unsafe fn renderer_begin_batch_regions(set: &mut Regions, this: usize, property_state: usize, effect_state: usize) {
     set.add(this, R::SIZE);
-    for (member, new) in [(R::currentPropertyState, property_state), (R::currentEffectState, effect_state)] {
+    for (member, new) in [
+        (R::currentPropertyState, property_state),
+        (R::currentEffectState, effect_state),
+    ] {
         let now: usize = rd(this, member);
         if now != new {
             if !release_regions(set, now) {
@@ -813,7 +839,14 @@ pub unsafe fn renderer_stub_returns_true(_this: usize, _a: u32) -> u8 {
 /// # Safety
 ///
 /// No condition: the function returns a constant. It is `unsafe` as every port function is.
-pub unsafe fn renderer_precache_geometry(_this: usize, _geometry: usize, _flags: u32, _property: usize, _bones_per_partition: u32, _bones_per_vertex: u32) -> u8 {
+pub unsafe fn renderer_precache_geometry(
+    _this: usize,
+    _geometry: usize,
+    _flags: u32,
+    _property: usize,
+    _bones_per_partition: u32,
+    _bones_per_vertex: u32,
+) -> u8 {
     crate::shadow::touch(&renderer_precache_geometry_port::STATE);
     0
 }
@@ -1440,7 +1473,11 @@ pub unsafe fn render_state_ctor(this: usize, device: usize, caps: usize) -> usiz
     ni::pointer_assign(this + RS::alphaProperty, alpha_property);
 
     ctor_mapping_tables(this);
-    core::ptr::copy_nonoverlapping(caps as *const u32, (this + RS::deviceCapabilities) as *mut u32, D3DCAPS8::SIZE / 4);
+    core::ptr::copy_nonoverlapping(
+        caps as *const u32,
+        (this + RS::deviceCapabilities) as *mut u32,
+        D3DCAPS8::SIZE / 4,
+    );
     wr::<u32>(this, RS::flags, 0);
     wr::<u8>(this, RS::field_1F4, 0);
     wr::<u8>(this, RS::changed, 0);
@@ -1528,7 +1565,10 @@ pub unsafe fn render_state_create(device: usize, caps: usize, flag_2: u8, flag_8
     crate::shadow::touch(&render_state_create_port::STATE);
     let block = eng::operator_new(RS::SIZE);
     if block == 0 {
-        crate::log!("render state: operator new gave 0 for {} bytes; no render state (the game's code would write through 0)", RS::SIZE);
+        crate::log!(
+            "render state: operator new gave 0 for {} bytes; no render state (the game's code would write through 0)",
+            RS::SIZE
+        );
         return 0;
     }
     let this = render_state_ctor(block, device, caps);
@@ -1681,7 +1721,18 @@ pub unsafe fn texture_pass_deleting_dtor(this: usize, flags: u8) -> usize {
 /// # Safety
 ///
 /// No condition: the function returns a constant. It is `unsafe` as every port function is.
-pub unsafe fn texture_pass_stub_returns_0_2(_this: usize, _a: u32, _b: u32, _c: u32, _d: u32, _e: u32, _f: u32, _g: u32, _h: u32, _i: u32) -> u32 {
+pub unsafe fn texture_pass_stub_returns_0_2(
+    _this: usize,
+    _a: u32,
+    _b: u32,
+    _c: u32,
+    _d: u32,
+    _e: u32,
+    _f: u32,
+    _g: u32,
+    _h: u32,
+    _i: u32,
+) -> u32 {
     crate::shadow::touch(&texture_pass_stub_returns_0_2_port::STATE);
     0
 }
@@ -1691,7 +1742,17 @@ pub unsafe fn texture_pass_stub_returns_0_2(_this: usize, _a: u32, _b: u32, _c: 
 /// # Safety
 ///
 /// No condition: the function returns a constant. It is `unsafe` as every port function is.
-pub unsafe fn texture_pass_stub_returns_0(_this: usize, _a: u32, _b: u32, _c: u32, _d: u32, _e: u32, _f: u32, _g: u32, _h: u32) -> u32 {
+pub unsafe fn texture_pass_stub_returns_0(
+    _this: usize,
+    _a: u32,
+    _b: u32,
+    _c: u32,
+    _d: u32,
+    _e: u32,
+    _f: u32,
+    _g: u32,
+    _h: u32,
+) -> u32 {
     crate::shadow::touch(&texture_pass_stub_returns_0_port::STATE);
     0
 }
@@ -1798,371 +1859,593 @@ fn freed(set: &mut Regions, flags: u8) {
 // Ports
 // ---------------------------------------------------------------------------------------------
 
-port_thiscall!(renderer_ctor_port, 0x6F4E30, "NiRenderer::ctor",
+port_thiscall!(
+    renderer_ctor_port,
+    0x6F4E30,
+    "NiRenderer::ctor",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| renderer_ctor_regions(set, this),
-    rust = renderer_ctor);
+    rust = renderer_ctor
+);
 
-port_thiscall!(renderer_deleting_dtor_port, 0x6F4F60, "NiRenderer::deleting_dtor",
+port_thiscall!(
+    renderer_deleting_dtor_port,
+    0x6F4F60,
+    "NiRenderer::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| {
         renderer_dtor_regions(set, this);
         freed(set, flags)
     },
-    rust = renderer_deleting_dtor);
+    rust = renderer_deleting_dtor
+);
 
-port_thiscall!(renderer_dtor_port, 0x6F4F80, "NiRenderer::dtor",
+port_thiscall!(
+    renderer_dtor_port,
+    0x6F4F80,
+    "NiRenderer::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| renderer_dtor_regions(set, this),
-    rust = renderer_dtor);
+    rust = renderer_dtor
+);
 
 // The call is a skip when there is an accumulator. The accumulator keeps the geometry in memory
 // of its own class.
-port_thiscall!(renderer_register_object_port, 0x6F5070, "NiRenderer::RegisterObject",
+port_thiscall!(
+    renderer_register_object_port,
+    0x6F5070,
+    "NiRenderer::RegisterObject",
     fn(this, geometry: usize) -> u8,
     compare_eax = true,
-    regions = |set| if rd::<usize>(this, R::accumulator) != 0 { set.skip() },
-    rust = renderer_register_object);
+    regions = |set| if rd::<usize>(this, R::accumulator) != 0 {
+        set.skip()
+    },
+    rust = renderer_register_object
+);
 
-port_cdecl!(renderer_remove_effect_port, 0x6F5090, "NiRenderer_static::RemoveEffect",
+port_cdecl!(
+    renderer_remove_effect_port,
+    0x6F5090,
+    "NiRenderer_static::RemoveEffect",
     fn(effect: usize) -> (),
     compare_eax = false,
     regions = |set| for_each_renderer_regions(set),
-    rust = renderer_remove_effect);
+    rust = renderer_remove_effect
+);
 
-port_cdecl!(renderer_remove_geometry_data_port, 0x6F50C0, "NiRenderer_static::RemoveGeometryData",
+port_cdecl!(
+    renderer_remove_geometry_data_port,
+    0x6F50C0,
+    "NiRenderer_static::RemoveGeometryData",
     fn(data: usize) -> (),
     compare_eax = false,
     regions = |set| for_each_renderer_regions(set),
-    rust = renderer_remove_geometry_data);
+    rust = renderer_remove_geometry_data
+);
 
-port_cdecl!(renderer_remove_skin_partition_port, 0x6F50F0, "NiRenderer_static::RemoveSkinPartitionRendererData",
+port_cdecl!(
+    renderer_remove_skin_partition_port,
+    0x6F50F0,
+    "NiRenderer_static::RemoveSkinPartitionRendererData",
     fn(partition: usize) -> (),
     compare_eax = false,
     regions = |set| for_each_renderer_regions(set),
-    rust = renderer_remove_skin_partition);
+    rust = renderer_remove_skin_partition
+);
 
-port_cdecl!(renderer_remove_material_port, 0x6F5120, "NiRenderer_static::RemoveMaterial",
+port_cdecl!(
+    renderer_remove_material_port,
+    0x6F5120,
+    "NiRenderer_static::RemoveMaterial",
     fn(material: usize) -> (),
     compare_eax = false,
     regions = |set| for_each_renderer_regions(set),
-    rust = renderer_remove_material);
+    rust = renderer_remove_material
+);
 
-port_thiscall!(renderer_map_window_point_to_buffer_point_port, 0x6F5150, "NiRenderer::MapWindowPointToBufferPoint",
+port_thiscall!(
+    renderer_map_window_point_to_buffer_point_port,
+    0x6F5150,
+    "NiRenderer::MapWindowPointToBufferPoint",
     fn(this, x: u32, y: u32, out_x: usize, out_y: usize) -> u8,
     compare_eax = true,
     regions = |set| {
         set.add(out_x, 4);
         set.add(out_y, 4)
     },
-    rust = renderer_map_window_point_to_buffer_point);
+    rust = renderer_map_window_point_to_buffer_point
+);
 
 // The call is always a skip. The function displays a scene object. The objects below the
 // scene object write memory that no list of regions can name.
-port_thiscall!(renderer_render_from_cluster_accumulator_port, 0x6F51D0, "NiRenderer::renderFromClusterAccumulator",
+port_thiscall!(
+    renderer_render_from_cluster_accumulator_port,
+    0x6F51D0,
+    "NiRenderer::renderFromClusterAccumulator",
     fn(this, camera: usize, scene_object: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust_main = renderer_render_from_cluster_accumulator);
+    rust_main = renderer_render_from_cluster_accumulator
+);
 
-port_thiscall!(renderer_begin_batch_port, 0x6F5380, "NiRenderer::BeginBatch",
+port_thiscall!(
+    renderer_begin_batch_port,
+    0x6F5380,
+    "NiRenderer::BeginBatch",
     fn(this, property_state: usize, effect_state: usize) -> (),
     compare_eax = false,
     regions = |set| renderer_begin_batch_regions(set, this, property_state, effect_state),
-    rust = renderer_begin_batch);
+    rust = renderer_begin_batch
+);
 
-port_thiscall!(renderer_add_viewer_strings_port, 0x6F5400, "NiRenderer::AddViewerStrings",
+port_thiscall!(
+    renderer_add_viewer_strings_port,
+    0x6F5400,
+    "NiRenderer::AddViewerStrings",
     fn(this, strings: usize) -> (),
     compare_eax = false,
     regions = |set| array_regions(set, strings),
-    rust = renderer_add_viewer_strings);
+    rust = renderer_add_viewer_strings
+);
 
-port_thiscall!(renderer_get_rtti_port, 0x6F5630, "NiRenderer::GetRTTI",
+port_thiscall!(
+    renderer_get_rtti_port,
+    0x6F5630,
+    "NiRenderer::GetRTTI",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_get_rtti);
+    rust = renderer_get_rtti
+);
 
-port_thiscall!(renderer_set_use_w_buffer_port, 0x6F5640, "NiRenderer::SetUseWBuffer",
+port_thiscall!(
+    renderer_set_use_w_buffer_port,
+    0x6F5640,
+    "NiRenderer::SetUseWBuffer",
     fn(this, use_w_buffer: u8) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_set_use_w_buffer);
+    rust = renderer_set_use_w_buffer
+);
 
-port_thiscall!(renderer_stub_returns_true_port, 0x6F5660, "NiRenderer::stub_returnsTrue",
+port_thiscall!(
+    renderer_stub_returns_true_port,
+    0x6F5660,
+    "NiRenderer::stub_returnsTrue",
     fn(this, a: u32) -> u8,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_stub_returns_true);
+    rust = renderer_stub_returns_true
+);
 
-port_thiscall!(renderer_precache_geometry_port, 0x6F5680, "NiRenderer::PrecacheGeometry",
+port_thiscall!(
+    renderer_precache_geometry_port,
+    0x6F5680,
+    "NiRenderer::PrecacheGeometry",
     fn(this, geometry: usize, flags: u32, property: usize, bones_per_partition: u32, bones_per_vertex: u32) -> u8,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_precache_geometry);
+    rust = renderer_precache_geometry
+);
 
-port_thiscall!(renderer_stub_returns_800000_port, 0x6F5690, "NiRenderer::stub_returns800000",
+port_thiscall!(
+    renderer_stub_returns_800000_port,
+    0x6F5690,
+    "NiRenderer::stub_returns800000",
     fn(this, a: u32, b: u32) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_stub_returns_800000);
+    rust = renderer_stub_returns_800000
+);
 
-port_thiscall!(renderer_get_texture_memory_stats_port, 0x6F56A0, "NiRenderer::GetTextureMemoryStats",
+port_thiscall!(
+    renderer_get_texture_memory_stats_port,
+    0x6F56A0,
+    "NiRenderer::GetTextureMemoryStats",
     fn(this, a: u32, b: u32) -> u8,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_get_texture_memory_stats);
+    rust = renderer_get_texture_memory_stats
+);
 
-port_thiscall!(renderer_get_texture_stats_port, 0x6A9C40, "NiRenderer::GetTextureStats",
+port_thiscall!(
+    renderer_get_texture_stats_port,
+    0x6A9C40,
+    "NiRenderer::GetTextureStats",
     fn(this, a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) -> u8,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_get_texture_stats);
+    rust = renderer_get_texture_stats
+);
 
-port_thiscall!(renderer_constant_false_8_port, 0x6A9C60, "NiRenderer::constantFalse@8",
+port_thiscall!(
+    renderer_constant_false_8_port,
+    0x6A9C60,
+    "NiRenderer::constantFalse@8",
     fn(this, a: u32, b: u32) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_constant_false_8);
+    rust = renderer_constant_false_8
+);
 
-port_thiscall!(render_data_7_deleting_dtor_port, 0x65F560, "NiRendererSpecificProperty::RenderData7::deleting_dtor",
+port_thiscall!(
+    render_data_7_deleting_dtor_port,
+    0x65F560,
+    "NiRendererSpecificProperty::RenderData7::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| {
         render_data_7_dtor_regions(set, this);
         freed(set, flags)
     },
-    rust = render_data_7_deleting_dtor);
+    rust = render_data_7_deleting_dtor
+);
 
-port_thiscall!(render_data_base_deleting_dtor_port, 0x65F580, "NiRendererSpecificProperty::RenderDataBase::deleting_dtor",
+port_thiscall!(
+    render_data_base_deleting_dtor_port,
+    0x65F580,
+    "NiRendererSpecificProperty::RenderDataBase::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| {
         set.add(this, 4);
         freed(set, flags)
     },
-    rust = render_data_base_deleting_dtor);
+    rust = render_data_base_deleting_dtor
+);
 
-port_thiscall!(render_data_7_dtor_port, 0x65F5A0, "NiRendererSpecificProperty::RenderData7::dtor",
+port_thiscall!(
+    render_data_7_dtor_port,
+    0x65F5A0,
+    "NiRendererSpecificProperty::RenderData7::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| render_data_7_dtor_regions(set, this),
-    rust = render_data_7_dtor);
+    rust = render_data_7_dtor
+);
 
-port_thiscall!(render_data_base_dtor_port, 0x6DC7F0, "NiRendererSpecificProperty::RenderDataBase::dtor",
+port_thiscall!(
+    render_data_base_dtor_port,
+    0x6DC7F0,
+    "NiRendererSpecificProperty::RenderDataBase::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.add(this, 4),
-    rust = render_data_base_dtor);
+    rust = render_data_base_dtor
+);
 
-port_thiscall!(property_ctor_port, 0x6DC800, "NiRendererSpecificProperty::ctor",
+port_thiscall!(
+    property_ctor_port,
+    0x6DC800,
+    "NiRendererSpecificProperty::ctor",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| property_ctor_regions(set, this),
-    rust = property_ctor);
+    rust = property_ctor
+);
 
-port_thiscall!(property_deleting_dtor_port, 0x6DC820, "NiRendererSpecificProperty::deleting_dtor",
+port_thiscall!(
+    property_deleting_dtor_port,
+    0x6DC820,
+    "NiRendererSpecificProperty::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| {
         property_dtor_regions(set, this);
         freed(set, flags)
     },
-    rust = property_deleting_dtor);
+    rust = property_deleting_dtor
+);
 
-port_thiscall!(property_dtor_port, 0x6DC840, "NiRendererSpecificProperty::dtor",
+port_thiscall!(
+    property_dtor_port,
+    0x6DC840,
+    "NiRendererSpecificProperty::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| property_dtor_regions(set, this),
-    rust = property_dtor);
+    rust = property_dtor
+);
 
-port_thiscall!(property_create_clone_port, 0x6DC8A0, "NiRendererSpecificProperty::CreateClone",
+port_thiscall!(
+    property_create_clone_port,
+    0x6DC8A0,
+    "NiRendererSpecificProperty::CreateClone",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| property_create_clone_regions(set, this),
-    rust = property_create_clone);
+    rust = property_create_clone
+);
 
 // The call is always a skip. The function reads the property from the stream, and a second
 // read of the stream is not possible.
-port_cdecl!(property_create_from_stream_port, 0x6DC920, "NiRendererSpecificProperty_static::CreateFromStream",
+port_cdecl!(
+    property_create_from_stream_port,
+    0x6DC920,
+    "NiRendererSpecificProperty_static::CreateFromStream",
     fn(stream: usize, out: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = property_create_from_stream);
+    rust = property_create_from_stream
+);
 
 // The call is always a skip. `NiObjectNET::RegisterStreamables` puts the object and the
 // things that it holds into tables of the stream.
-port_thiscall!(property_register_streamables_port, 0x6DCAE0, "NiRendererSpecificProperty::RegisterStreamables",
+port_thiscall!(
+    property_register_streamables_port,
+    0x6DCAE0,
+    "NiRendererSpecificProperty::RegisterStreamables",
     fn(this, stream: usize) -> u8,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = property_register_streamables);
+    rust = property_register_streamables
+);
 
-port_thiscall!(property_is_equal_port, 0x6DCB00, "NiRendererSpecificProperty::IsEqual",
+port_thiscall!(
+    property_is_equal_port,
+    0x6DCB00,
+    "NiRendererSpecificProperty::IsEqual",
     fn(this, other: usize) -> u8,
     compare_eax = true,
     regions = |set| (),
-    rust = property_is_equal);
+    rust = property_is_equal
+);
 
-port_thiscall!(property_add_viewer_strings_port, 0x6DCB20, "NiRendererSpecificProperty::AddViewerStrings",
+port_thiscall!(
+    property_add_viewer_strings_port,
+    0x6DCB20,
+    "NiRendererSpecificProperty::AddViewerStrings",
     fn(this, strings: usize) -> (),
     compare_eax = false,
     regions = |set| array_regions(set, strings),
-    rust = property_add_viewer_strings);
+    rust = property_add_viewer_strings
+);
 
-port_thiscall!(property_get_rtti_port, 0x6DCCA0, "NiRendererSpecificProperty::GetRTTI",
+port_thiscall!(
+    property_get_rtti_port,
+    0x6DCCA0,
+    "NiRendererSpecificProperty::GetRTTI",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = property_get_rtti);
+    rust = property_get_rtti
+);
 
-port_thiscall!(property_get_type_port, 0x6DCCD0, "NiRendererSpecificProperty::GetType",
+port_thiscall!(
+    property_get_type_port,
+    0x6DCCD0,
+    "NiRendererSpecificProperty::GetType",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = property_get_type);
+    rust = property_get_type
+);
 
 // The call is always a skip. The constructor takes a reference to the device, and that cannot
 // occur two times.
-port_thiscall!(render_state_ctor_port, 0x6B7D70, "NiDX8RenderState::ctor",
+port_thiscall!(
+    render_state_ctor_port,
+    0x6B7D70,
+    "NiDX8RenderState::ctor",
     fn(this, device: usize, caps: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = render_state_ctor);
+    rust = render_state_ctor
+);
 
-port_thiscall!(render_state_deleting_dtor_port, 0x6B80B0, "NiDX8RenderState::deleting_dtor",
+port_thiscall!(
+    render_state_deleting_dtor_port,
+    0x6B80B0,
+    "NiDX8RenderState::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| {
         render_state_dtor_regions(set, this);
         freed(set, flags)
     },
-    rust = render_state_deleting_dtor);
+    rust = render_state_deleting_dtor
+);
 
-port_thiscall!(render_state_dtor_port, 0x6B80D0, "NiDX8RenderState::dtor",
+port_thiscall!(
+    render_state_dtor_port,
+    0x6B80D0,
+    "NiDX8RenderState::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| render_state_dtor_regions(set, this),
-    rust = render_state_dtor);
+    rust = render_state_dtor
+);
 
 // The call is always a skip. The function runs the constructor, and the constructor takes a
 // reference to the device.
-port_cdecl!(render_state_create_port, 0x6B81E0, "NiDX8RenderState_static::Create",
+port_cdecl!(
+    render_state_create_port,
+    0x6B81E0,
+    "NiDX8RenderState_static::Create",
     fn(device: usize, caps: usize, flag_2: u8, flag_8: u8, flag_4: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = render_state_create);
+    rust = render_state_create
+);
 
-port_thiscall!(render_state_purge_material_port, 0x6B8600, "NiDX8RenderState::PurgeMaterial",
+port_thiscall!(
+    render_state_purge_material_port,
+    0x6B8600,
+    "NiDX8RenderState::PurgeMaterial",
     fn(this, material: usize) -> (),
     compare_eax = false,
     regions = |set| material_manager_purge_material_regions(set, material),
-    rust = render_state_purge_material);
+    rust = render_state_purge_material
+);
 
-port_thiscall!(render_state_initialize_port, 0x6B8680, "NiDX8RenderState::Initialize_maybe",
+port_thiscall!(
+    render_state_initialize_port,
+    0x6B8680,
+    "NiDX8RenderState::Initialize_maybe",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| render_state_initialize_regions(set, this),
-    rust = render_state_initialize);
+    rust = render_state_initialize
+);
 
-port_thiscall!(render_state_init_from_device_caps_port, 0x6B8930, "NiDX8RenderState::initFromDeviceCaps",
+port_thiscall!(
+    render_state_init_from_device_caps_port,
+    0x6B8930,
+    "NiDX8RenderState::initFromDeviceCaps",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| render_state_init_from_device_caps_regions(set, this),
-    rust = render_state_init_from_device_caps);
+    rust = render_state_init_from_device_caps
+);
 
-port_thiscall!(material_manager_ctor_port, 0x6C22C0, "NiDX8MaterialManager::ctor",
+port_thiscall!(
+    material_manager_ctor_port,
+    0x6C22C0,
+    "NiDX8MaterialManager::ctor",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| material_manager_ctor_regions(set, this),
-    rust = material_manager_ctor);
+    rust = material_manager_ctor
+);
 
-port_thiscall!(material_manager_deleting_dtor_port, 0x6C2350, "NiDX8MaterialManager::deleting_dtor",
+port_thiscall!(
+    material_manager_deleting_dtor_port,
+    0x6C2350,
+    "NiDX8MaterialManager::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| {
         material_manager_dtor_regions(set, this);
         freed(set, flags)
     },
-    rust = material_manager_deleting_dtor);
+    rust = material_manager_deleting_dtor
+);
 
-port_thiscall!(material_manager_initialize_port, 0x6C2370, "NiDX8MaterialManager::Initialize_maybe",
+port_thiscall!(
+    material_manager_initialize_port,
+    0x6C2370,
+    "NiDX8MaterialManager::Initialize_maybe",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| material_manager_initialize_regions(set, this),
-    rust = material_manager_initialize);
+    rust = material_manager_initialize
+);
 
-port_thiscall!(material_manager_dtor_port, 0x6C2450, "NiDX8MaterialManager::dtor",
+port_thiscall!(
+    material_manager_dtor_port,
+    0x6C2450,
+    "NiDX8MaterialManager::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| material_manager_dtor_regions(set, this),
-    rust = material_manager_dtor);
+    rust = material_manager_dtor
+);
 
-port_thiscall!(material_manager_purge_material_port, 0x6C26A0, "NiDX8MaterialManager::PurgeMaterial",
+port_thiscall!(
+    material_manager_purge_material_port,
+    0x6C26A0,
+    "NiDX8MaterialManager::PurgeMaterial",
     fn(this, material: usize) -> (),
     compare_eax = false,
     regions = |set| material_manager_purge_material_regions(set, material),
-    rust = material_manager_purge_material);
+    rust = material_manager_purge_material
+);
 
 // The destructors of the texture pass, of its subpass, of the pipeline and of the light
 // manager release device objects. They also delete other objects. Thus a call of one of their
 // deleting destructors is always a skip.
-port_thiscall!(texture_pass_deleting_dtor_port, 0x6B3380, "NiDX8TexturePass::deleting_dtor",
+port_thiscall!(
+    texture_pass_deleting_dtor_port,
+    0x6B3380,
+    "NiDX8TexturePass::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = texture_pass_deleting_dtor);
+    rust = texture_pass_deleting_dtor
+);
 
-port_thiscall!(texture_pass_stub_returns_0_2_port, 0x6B41A0, "NiDX8TexturePass::stub_returns0_2",
+port_thiscall!(
+    texture_pass_stub_returns_0_2_port,
+    0x6B41A0,
+    "NiDX8TexturePass::stub_returns0_2",
     fn(this, a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32, i: u32) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = texture_pass_stub_returns_0_2);
+    rust = texture_pass_stub_returns_0_2
+);
 
-port_thiscall!(texture_pass_stub_returns_0_port, 0x6B56A0, "NiDX8TexturePass::stub_returns0",
+port_thiscall!(
+    texture_pass_stub_returns_0_port,
+    0x6B56A0,
+    "NiDX8TexturePass::stub_returns0",
     fn(this, a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = texture_pass_stub_returns_0);
+    rust = texture_pass_stub_returns_0
+);
 
-port_thiscall!(subpass_deleting_dtor_port, 0x6B77C0, "NiDX8TexturePass::$1::deleting_dtor",
+port_thiscall!(
+    subpass_deleting_dtor_port,
+    0x6B77C0,
+    "NiDX8TexturePass::$1::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = subpass_deleting_dtor);
+    rust = subpass_deleting_dtor
+);
 
-port_thiscall!(pipeline_deleting_dtor_port, 0x6B8D80, "NiDX8ConfigurableTexturePipeline::deleting_dtor",
+port_thiscall!(
+    pipeline_deleting_dtor_port,
+    0x6B8D80,
+    "NiDX8ConfigurableTexturePipeline::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = pipeline_deleting_dtor);
+    rust = pipeline_deleting_dtor
+);
 
-port_thiscall!(pipeline_apply_pixel_shader_port, 0x6B9E70, "NiDX8ConfigurableTexturePipeline::applyPixelShader",
+port_thiscall!(
+    pipeline_apply_pixel_shader_port,
+    0x6B9E70,
+    "NiDX8ConfigurableTexturePipeline::applyPixelShader",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| pipeline_apply_shader_regions(set, this),
-    rust = pipeline_apply_pixel_shader);
+    rust = pipeline_apply_pixel_shader
+);
 
-port_thiscall!(pipeline_apply_vertex_shader_port, 0x6B9E80, "NiDX8ConfigurableTexturePipeline::applyVertexShader",
+port_thiscall!(
+    pipeline_apply_vertex_shader_port,
+    0x6B9E80,
+    "NiDX8ConfigurableTexturePipeline::applyVertexShader",
     fn(this, handle: u32) -> u32,
     compare_eax = true,
     regions = |set| pipeline_apply_shader_regions(set, this),
-    rust = pipeline_apply_vertex_shader);
+    rust = pipeline_apply_vertex_shader
+);
 
-port_thiscall!(light_manager_deleting_dtor_port, 0x6BAEA0, "NiDX8LightManager::deleting_dtor",
+port_thiscall!(
+    light_manager_deleting_dtor_port,
+    0x6BAEA0,
+    "NiDX8LightManager::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = light_manager_deleting_dtor);
+    rust = light_manager_deleting_dtor
+);
 
-port_thiscall!(texture_stage_deleting_dtor_port, 0x6C1A50, "NiDX8TextureStage::deleting_dtor",
+port_thiscall!(
+    texture_stage_deleting_dtor_port,
+    0x6C1A50,
+    "NiDX8TextureStage::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| texture_stage_deleting_dtor_regions(set, this, flags),
-    rust = texture_stage_deleting_dtor);
+    rust = texture_stage_deleting_dtor
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &renderer_ctor_port::STATE,
@@ -2297,7 +2580,8 @@ mod tests {
     fn mapping_tables_hold_the_d3d_values() {
         let mut block = vec![0xAAu8; RS::SIZE];
         let this = block.as_mut_ptr() as usize;
-        let table = |offset: usize, len: usize| -> Vec<u32> { (0..len).map(|i| unsafe { rd(this, offset + i * 4) }).collect() };
+        let table =
+            |offset: usize, len: usize| -> Vec<u32> { (0..len).map(|i| unsafe { rd(this, offset + i * 4) }).collect() };
         unsafe {
             ctor_alpha_mapping(this);
             ctor_mapping_tables(this);
@@ -2347,7 +2631,11 @@ mod tests {
             // The game code tests the D3DBLEND value against the caps as bits. ONE (2) finds the
             // bit of ONE. ZERO (1) finds the bit of ZERO. SRCCOLOR (3) finds the two bits. The
             // other values follow the same rule.
-            let expected = |caps: u32| (0..11).filter(|&i| ALPHA_MAPPING[i] & caps != 0).fold(0u32, |bits, i| bits | 1 << i);
+            let expected = |caps: u32| {
+                (0..11)
+                    .filter(|&i| ALPHA_MAPPING[i] & caps != 0)
+                    .fold(0u32, |bits, i| bits | 1 << i)
+            };
             assert_eq!(rd::<u32>(this, RS::sourceBlendCaps), expected(0x33));
             assert_eq!(rd::<u32>(this, RS::destBlendCaps), expected(1));
             assert_eq!(expected(1), 0b101_0101_0110);
@@ -2366,7 +2654,11 @@ mod tests {
         let mut new_property = object(&vtable, 5);
         let mut renderer = [0u8; R::SIZE];
         let this = renderer.as_mut_ptr() as usize;
-        let (op, oe, np) = (old_property.as_mut_ptr() as usize, old_effect.as_mut_ptr() as usize, new_property.as_mut_ptr() as usize);
+        let (op, oe, np) = (
+            old_property.as_mut_ptr() as usize,
+            old_effect.as_mut_ptr() as usize,
+            new_property.as_mut_ptr() as usize,
+        );
         unsafe {
             wr(this, R::currentPropertyState, op);
             wr(this, R::currentEffectState, oe);
@@ -2391,7 +2683,10 @@ mod tests {
 
     #[test]
     fn register_object_returns_a_clean_bool() {
-        let vtable = vtable_of(register_low_byte as *const () as usize, SLOT_ACCUMULATOR_REGISTER_OBJECT / 4 + 1);
+        let vtable = vtable_of(
+            register_low_byte as *const () as usize,
+            SLOT_ACCUMULATOR_REGISTER_OBJECT / 4 + 1,
+        );
         let mut accumulator = object(&vtable, 1);
         let mut renderer = [0u8; R::SIZE];
         let this = renderer.as_mut_ptr() as usize;
@@ -2452,7 +2747,11 @@ mod tests {
         let read = |at: usize| UI_SCALE_PATCH[at - UI_SCALE_PATCH_AT];
         let no_module = |_at: usize| "?".to_string();
         assert!((0..UI_SCALE_PATCH.len()).all(|i| crate::ports::follows(UI_SCALE_PATCH_AT + i, read, no_module)));
-        assert!(!crate::ports::follows(UI_SCALE_PATCH_AT, |at| if at == UI_SCALE_PATCH_AT + 13 { 0xCC } else { read(at) }, no_module));
+        assert!(!crate::ports::follows(
+            UI_SCALE_PATCH_AT,
+            |at| if at == UI_SCALE_PATCH_AT + 13 { 0xCC } else { read(at) },
+            no_module
+        ));
     }
 
     fn array(storage: &mut [usize], end: u32, filled: u32, grow: u32) -> [u32; 6] {
