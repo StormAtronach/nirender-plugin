@@ -21,9 +21,11 @@ A line that starts with `#` is a note. A run on the list in a side worktree stay
 clean_merged_worktrees.py does not remove that tree, as a copy of the run would not be on the list.
 """
 import bisect
+import contextlib
 import ctypes
 import ctypes.wintypes as wt
 import glob
+import importlib.util
 import json
 import os
 import re
@@ -658,7 +660,163 @@ def set_treatment(age_days, cited, kept, used, current_known=True):
     return "go"
 
 
+# The folder of slot.py (the docs checkout of the tools), and the hours of a cleaner's reservation of the game: the bound
+# when a run dies, as a run ends its reservation at once (W363).
+HARNESS = common.docs_place("docs", "scripts", "test-harness-2026-10-03")
+RESERVE_HOURS = 3.0
+
+
+class GameNotFree(Exception):
+    """The game slot cannot be kept free for a cleaning with --apply (W363)."""
+
+
+def load_slot_tool(harness=None):
+    """slot.py of the docs checkout (`HARNESS`) as a module of its own, or None when there is none. slot.py reads its
+    state folder when it loads."""
+    path = os.path.join(harness or HARNESS, "slot.py")
+    if not os.path.isfile(path):
+        return None
+    spec = importlib.util.spec_from_file_location("slot_of_the_cleaner", path)
+    slots = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(slots)
+    return slots
+
+
+@contextlib.contextmanager
+def game_kept_free(tool, slots=None):
+    """Keeps every new take of the game slot out while a cleaning with --apply runs, the take of the cleaner's own
+    session too: `reserve game --all-sessions` with the tool's label, ended on every exit path (W363). A game hold that
+    runs no game lapses after 15 minutes, and a queued game could then start in the middle of the cleaning. Raises
+    GameNotFree when there is no slot.py or it has no such reservation, when a reservation of the game runs (it may be
+    the owner's quiet window, which the end of this one must not end), and when a game hold stands (a reservation does
+    not stop a holder). With the enforcement of the slots off it keeps nothing, and gives None for the label."""
+    slots = slots or load_slot_tool()
+    if slots is None:
+        raise GameNotFree("there is no slot.py in %s, so the run cannot keep the game slot free" % HARNESS)
+    if not slots.enforcing():
+        yield None
+        return
+    if not hasattr(slots, "ALL_SESSIONS"):
+        raise GameNotFree("the slot.py in %s has no reservation for all sessions (W363)" % os.path.dirname(slots.__file__))
+
+    label = "%s: E: cleanup, pid %d" % (tool, os.getpid())
+    try:
+        reservation = slots.live_reservation("game", time.time())
+        if reservation is not None:
+            raise GameNotFree("the game slot is reserved by %s" % slots.describe_reservation(reservation))
+        reply = slots.reserve("game", label, time.time() + RESERVE_HOURS * 3600, all_sessions=True)
+    except slots.StateError as error:
+        raise GameNotFree("the state of the slots cannot be read now: %s" % error) from error
+    if reply.code != slots.DONE:
+        raise GameNotFree(reply.text.splitlines()[0])
+    log_line("the game slot is reserved for this run: %s" % label, True)
+
+    try:
+        try:
+            holder = slots.read_record(slots.holder_path("game"), slots.Holder)
+            stands = holder is not None and slots.in_force(holder, time.time())
+        except slots.StateError as error:
+            raise GameNotFree("the state of the slots cannot be read now: %s" % error) from error
+        if stands:
+            raise GameNotFree("the game slot is held by %s, and a holder may start a game" % slots.describe_holder(holder))
+        yield label
+    finally:
+        end_reservation(slots, label)
+
+
+def end_reservation(slots, label, tries=5):
+    """Ends the cleaner's reservation of the game. A busy state is asked again; a reservation that stays ends at its
+    time, and the line says how to end it at once."""
+    for attempt in range(tries):
+        try:
+            log_line(slots.unreserve("game", all_sessions_label=label).text.splitlines()[0], True)
+            return
+        except (slots.StateError, OSError) as error:
+            failure = error
+            if attempt + 1 < tries:
+                time.sleep(1)
+    log_line("THE RESERVATION STAYS until its time (%g h): %s. To end it: slot.py unreserve game --all-sessions \"%s\"" % (RESERVE_HOURS, failure, label), True)
+
+
+def self_test_game_kept_free(harness=None):
+    """The reservation of the game for a cleaning (W363), with slot.py on a scratch state. A slot.py from before W363 is
+    skipped with a line: the docs commit of W363 comes first."""
+    names = ("SLOT_DIR", "CLAUDE_CODE_SESSION_ID", "SLOT_OVERRIDE", "SLOT_GAME_IMAGE", "SLOT_COMPILERS", "SLOT_REPLAY_IMAGE",
+             "SLOT_PROJECT_FOLDERS", "SLOT_FREE_MEMORY_GB")
+    saved = {name: os.environ.get(name) for name in names}
+    saved_log = globals()["LOG"]
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as state:
+        os.environ.update(SLOT_DIR=state, CLAUDE_CODE_SESSION_ID="cleaner-self-test", SLOT_GAME_IMAGE="no-such-program.exe",
+                          SLOT_COMPILERS="no-such-program.exe", SLOT_REPLAY_IMAGE="no-such-program.exe", SLOT_PROJECT_FOLDERS="",
+                          SLOT_FREE_MEMORY_GB="64")
+        os.environ.pop("SLOT_OVERRIDE", None)
+        globals()["LOG"] = os.path.join(state, "clean.log")
+        try:
+            slots = load_slot_tool(harness)
+            if slots is None or not hasattr(slots, "ALL_SESSIONS"):
+                print("skipped: the reservation of the game (W363): the slot.py in %s has no --all-sessions" % (harness or HARNESS))
+                return
+
+            def refusal():
+                try:
+                    with game_kept_free("test.py", slots):
+                        pass
+                except GameNotFree as error:
+                    return str(error)
+                return None
+
+            # With the enforcement off nothing is kept, and nothing is reserved.
+            with game_kept_free("test.py", slots) as label:
+                assert label is None and slots.live_reservation("game", time.time()) is None
+            slots.set_enforcement("on")
+
+            # The run's own session cannot take the game while the run holds the reservation.
+            with game_kept_free("test.py", slots) as label:
+                assert label == "test.py: E: cleanup, pid %d" % os.getpid(), label
+                reply = slots.take("game", "X: game")
+                assert reply.code == slots.QUEUED and "reserved by " + label in reply.text, reply.text
+                slots.leave("game", "X: game")
+            # The null: after the run the same take passes.
+            assert slots.live_reservation("game", time.time()) is None
+            assert slots.take("game", "X: game").code == slots.DONE
+            slots.release("game", "X: game")
+
+            # A fault of the run ends the reservation too.
+            try:
+                with game_kept_free("test.py", slots):
+                    raise KeyError("a test")
+            except KeyError:
+                pass
+            assert slots.live_reservation("game", time.time()) is None
+
+            # A running reservation refuses the run, and stays: here the session's own quiet window.
+            slots.reserve("game", "X: quiet", time.time() + 600)
+            refused = refusal()
+            assert refused is not None and "reserved by X: quiet" in refused, refused
+            assert slots.live_reservation("game", time.time()).who == "X: quiet"
+            slots.unreserve("game")
+
+            # A game hold that stands refuses the run, and leaves no reservation.
+            assert slots.take("game", "X: holds").code == slots.DONE
+            refused = refusal()
+            assert refused is not None and "held by X: holds" in refused, refused
+            assert slots.live_reservation("game", time.time()) is None
+            slots.release("game", "X: holds")
+            assert refusal() is None
+
+            # No slot.py: the run refuses.
+            assert load_slot_tool(state) is None
+        finally:
+            globals()["LOG"] = saved_log
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
 def self_test_common():
+    self_test_game_kept_free()
     assert same_or_under("C:\\a\\b\\c", "C:\\a\\b") and not same_or_under("C:\\a\\bc", "C:\\a\\b")
     assert set_number("f195") == 195 and set_number("play185") == 185 and set_number("f91-null") is None and set_number("playset") is None
     assert kept_set_numbers("f195", ["f27", "f104p", "f193", "f195", "vd-a28"]) == {195, 193}
