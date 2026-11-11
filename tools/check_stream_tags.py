@@ -18,7 +18,8 @@ helper's reader (`host/src/tag.rs`).
    - `words(&x.map(..))` of such an array; `bytes_of(x)` of a struct of `src/link.rs` with a size
      assertion; `x.to_le_bytes()` of an integer; `[a, b].concat()` of such parts;
    - a part of a local list of parts (`tables[i]`, `vec![..]`, `[..]`).
-   Any other part is variable. A tag of SIZE_EXCEPTIONS is not compared; the check prints why.
+   Any other part is variable. A record of RUN_TIME (a tag and the function that writes it) is
+   not compared; the check prints why.
    A variable part adds 0 to the fixed part. So the check does not find an extra part that it
    cannot read (for example a call `&crate::link::four()`) in the record of a fixed-length tag:
    that record still passes.
