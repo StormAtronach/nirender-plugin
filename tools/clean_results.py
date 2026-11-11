@@ -46,6 +46,11 @@ Others go 30 days after their newest write. When local.bat names no set that is 
 
 The tool refuses while a game or a helper runs. A removal never goes through a link. Each act goes to
 E:\\nirender-keep\\clean-worktrees.log.
+
+With --apply and the enforcement of the slots on, the tool reserves the game slot for all sessions
+(slot.py's `reserve --all-sessions`, W363) for its run, and ends the reservation on every exit path: a game hold that
+runs no game lapses after 15 minutes, so a hold cannot keep the game free. It refuses when there is no slot.py, when a
+reservation of the game runs, and when a game hold stands (`clean_common.game_kept_free`).
 """
 import argparse
 import ctypes
@@ -61,7 +66,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # `python -I` leaves the folder of the script off the path.
 sys.path.insert(0, HERE)
 import clean_common as common  # noqa: E402
-from clean_common import DUMP_DAYS, KEEP_ROOT, SETS, Evidence, current_set, files_in, games_in, gigabytes, is_heavy, is_link, is_link_entry, kept_set_names, log_line, long_path, processes, project_trees, remove_file, remove_tree, run_age_days, run_treatment, set_number, set_treatment, users_of, walk  # noqa: E402
+from clean_common import DUMP_DAYS, KEEP_ROOT, SETS, Evidence, GameNotFree, current_set, files_in, game_kept_free, games_in, gigabytes, is_heavy, is_link, is_link_entry, kept_set_names, log_line, long_path, processes, project_trees, remove_file, remove_tree, run_age_days, run_treatment, set_number, set_treatment, users_of, walk  # noqa: E402
 
 RUN_PLACES = ["E:\\nirender-results"]
 DUMP_PLACES = ["C:\\tmp\\mwdumps", common.KEPT_DUMPS]
@@ -389,6 +394,19 @@ def main():
     args = parser.parse_args()
     if args.self_test:
         return self_test()
+    if not args.apply:
+        return clean(args)
+    # No game may start in the middle of the cleaning (W363).
+    try:
+        with game_kept_free("clean_results.py"):
+            return clean(args)
+    except GameNotFree as error:
+        print("NOTHING DONE: %s" % error)
+        return 1
+
+
+def clean(args):
+    """The list, and with --apply the acts (inside `game_kept_free`)."""
     running, _ = processes()
     games = games_in(running)
     if games and (args.apply or not args.during_game):
