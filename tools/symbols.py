@@ -45,9 +45,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clean_common import KEEP_LIST  # noqa: E402
-from common import local, sibling  # noqa: E402
+from common import docs_place, local  # noqa: E402
 
-HARNESS_DIR = local("harness", sibling("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
+HARNESS_DIR = local("harness", docs_place("docs", "scripts", "test-harness-2026-10-03"))
 
 
 def symbol_store():

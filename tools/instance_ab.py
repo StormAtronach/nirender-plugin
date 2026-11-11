@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import BUILD_PARTS, NOT_RUN_EXIT, REPO, build_missing, capture_format_in, local, main_checkout  # noqa: E402
+from common import BUILD_PARTS, NOT_RUN_EXIT, build_missing, capture_format_in, docs_place, docs_root, local, missing_docs_text  # noqa: E402
 
 PASS, FAIL, NOT_RUN = 0, 1, NOT_RUN_EXIT
 KEEP_FOLDER = "E:\\nirender-keep\\merge-step"
@@ -407,18 +407,15 @@ def replay(stage, folder, build, out, tag):
     return done.returncode, done.stdout + done.stderr, pictures
 
 
-HARNESS_PATH = ("moreFPS", "docs", "scripts", "test-harness-2026-10-03")
+HARNESS_PATH = ("docs", "scripts", "test-harness-2026-10-03")
 
 
 def harness_folder():
-    """The folder of slot.py: in the moreFPS beside this tree, else beside the main checkout (a worktree group in
-    C:/tmp has no moreFPS next to it)."""
-    for repo in (REPO, main_checkout()):
-        if repo:
-            folder = os.path.join(os.path.dirname(repo), *HARNESS_PATH)
-            if os.path.isfile(os.path.join(folder, "slot.py")):
-                return folder
-    raise RuntimeError("no slot.py beside %s or beside the main checkout" % REPO)
+    """The folder of slot.py, in the docs checkout of the tools (common.docs_place)."""
+    folder = docs_place(*HARNESS_PATH)
+    if not os.path.isfile(os.path.join(folder, "slot.py")):
+        raise RuntimeError(missing_docs_text(docs_root(), HARNESS_PATH + ("slot.py",)))
+    return folder
 
 
 def slot_lines():
