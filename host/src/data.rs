@@ -406,6 +406,9 @@ pub(crate) struct Counts {
     pub(crate) arrays_kept: u64,
     pub(crate) arrays_laid_out: u64,
     pub(crate) array_groups_made: u64,
+    /// The asks for the small group of the arrays that took the group of a frame before
+    /// (`small_array_group`).
+    pub(crate) small_groups_kept: u64,
     /// The most textures of a frame in the arrays, and the stages that found no slot.
     pub(crate) most_frame_textures: u32,
     pub(crate) over_array_cap: u32,

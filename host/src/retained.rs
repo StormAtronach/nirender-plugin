@@ -1471,8 +1471,7 @@ impl Renderer {
         }
         self.pinned_index.insert(handle, index);
         self.counts.pinned_most = self.counts.pinned_most.max(self.pinned_textures.len() as u32);
-        self.array_group = None;
-        self.array_variants.clear();
+        self.forget_array_groups();
         slot as u32
     }
 
@@ -1497,8 +1496,7 @@ impl Renderer {
         // The arrays stay from frame to frame: the slot lets the texture go now.
         if index < self.pinned_in_frame && index + 1 < self.frame_texture_views.len() {
             self.frame_texture_views[index + 1] = self.white.clone();
-            self.array_group = None;
-            self.array_variants.clear();
+            self.forget_array_groups();
         }
         let at = self.pinned_free.partition_point(|&free| free > index);
         self.pinned_free.insert(at, index);
@@ -1527,8 +1525,7 @@ impl Renderer {
         }
         let sampler = self.sampler(values);
         self.pinned_samplers.push((values, sampler));
-        self.array_group = None;
-        self.array_variants.clear();
+        self.forget_array_groups();
         self.pinned_samplers.len() as u32
     }
 

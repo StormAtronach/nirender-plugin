@@ -799,6 +799,10 @@ struct Renderer {
     frame_samplers: Vec<Rc<wgpu::Sampler>>,
     array_group: Option<Rc<wgpu::BindGroup>>,
     array_variants: FxHashMap<u32, Rc<wgpu::BindGroup>>,
+    /// The small group of the arrays (`Renderer::small_array_group`): the slots of the frame
+    /// it was made for, the group, and the slot of each texture in it. It stays from frame to
+    /// frame as the group of the frame does, and goes with it (`forget_array_groups`).
+    small_array_group: Option<(Vec<u32>, Rc<wgpu::BindGroup>, Rc<FxHashMap<u32, u32>>)>,
     /// How the world shader takes the textures (tier A: the arrays above; tier C: the groups
     /// below; `request::TextureTier`).
     pub(crate) tier: request::TextureTier,
@@ -1125,7 +1129,7 @@ struct Player {
     /// The group of the textures of the game's draws before the world and after the post
     /// chain, with the slot of each texture in it, for the items in progress
     /// (`run_items_inner`, `issue`).
-    small_arrays: Option<(Rc<wgpu::BindGroup>, FxHashMap<u32, u32>)>,
+    small_arrays: Option<(Rc<wgpu::BindGroup>, Rc<FxHashMap<u32, u32>>)>,
     /// The copy of the draw in progress for the small group: its first instance among the
     /// frame's instances (`mark_small_draws`).
     small_copy: Option<u32>,

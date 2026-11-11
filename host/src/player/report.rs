@@ -374,10 +374,11 @@ impl Player {
             );
         } else {
             println!(
-                "texture arrays: kept from the frame before in {} frames, laid out again in {}, groups made {}; the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {}, dropped from the end {} (pinned now {}, free {}, the most {}), stages drawn from a slot of the frame until their pinned slot came {}, retained textures pinned before their record {}, pinned slots in use that took another texture {} with other facts and {} with the same",
+                "texture arrays: kept from the frame before in {} frames, laid out again in {}, groups made {} (small groups kept from a frame before {}); the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {}, dropped from the end {} (pinned now {}, free {}, the most {}), stages drawn from a slot of the frame until their pinned slot came {}, retained textures pinned before their record {}, pinned slots in use that took another texture {} with other facts and {} with the same",
                 c.arrays_kept,
                 c.arrays_laid_out,
                 c.array_groups_made,
+                c.small_groups_kept,
                 c.most_frame_textures,
                 c.over_array_cap,
                 c.pinned_over,

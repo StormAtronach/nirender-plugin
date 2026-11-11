@@ -825,6 +825,7 @@ impl Renderer {
             frame_samplers: Vec::new(),
             array_group: None,
             array_variants: FxHashMap::default(),
+            small_array_group: None,
             tier,
             stage_groups: StageGroups::default(),
             geometries: FxHashMap::default(),
@@ -882,8 +883,7 @@ impl Renderer {
         self.frame_texture_views.clear();
         self.frame_sampler_slots.clear();
         self.frame_samplers.clear();
-        self.array_group = None;
-        self.array_variants.clear();
+        self.forget_array_groups();
         self.frame_texture_views.push(self.white.clone());
         let plain = self.sampler(material::sampler_states(0, 0));
         self.frame_samplers.push(plain);
@@ -934,8 +934,7 @@ impl Renderer {
             }
         }
         if changed {
-            self.array_group = None;
-            self.array_variants.clear();
+            self.forget_array_groups();
             self.counts.textures_replaced += 1;
         }
         self.textures.insert(handle, view);
@@ -965,8 +964,7 @@ impl Renderer {
         self.frame_texture_slots.insert(handle, slot);
         self.counts.most_frame_textures = self.counts.most_frame_textures.max(slot + 1);
         // The groups made so far lack this texture.
-        self.array_group = None;
-        self.array_variants.clear();
+        self.forget_array_groups();
         slot
     }
 
@@ -985,9 +983,17 @@ impl Renderer {
         let slot = self.frame_samplers.len() as u32;
         self.frame_samplers.push(sampler);
         self.frame_sampler_slots.insert(values, slot);
+        self.forget_array_groups();
+        slot
+    }
+
+    /// Drops the groups of the arrays (the group of the frame, its variants for the targets,
+    /// and the small group): a view or a sampler of the arrays changed, or a slot came. The
+    /// next use makes them again.
+    pub(crate) fn forget_array_groups(&mut self) {
         self.array_group = None;
         self.array_variants.clear();
-        slot
+        self.small_array_group = None;
     }
 
     /// The group of the arrays of the frame for a pass into `target` (a rendered texture of
@@ -1104,10 +1110,22 @@ impl Renderer {
     /// into the back buffer, and the slot of each texture in it. The slot 0 of the frame stays
     /// 0: every draw samples all its stages, and an unused stage has the slot 0. The samplers
     /// are those of the frame. A bind of a group costs wgpu work for each of its textures.
-    pub(crate) fn small_array_group(&mut self, slots: &[u32]) -> (Rc<wgpu::BindGroup>, FxHashMap<u32, u32>) {
+    ///
+    /// The group stays for the next frames that ask for the same slots, until a change of the
+    /// arrays drops it with the group of the frame ([`Renderer::forget_array_groups`]): a
+    /// steady frame makes no group. A group holds a place for each element of the layout's
+    /// arrays in the backend (Direct3D 12 fills the rest of an array with null views), and that
+    /// place comes back only when the GPU has run the frames that used it.
+    pub(crate) fn small_array_group(&mut self, slots: &[u32]) -> (Rc<wgpu::BindGroup>, Rc<FxHashMap<u32, u32>>) {
         let mut slots: Vec<u32> = slots.iter().copied().filter(|&slot| slot != 0).collect();
         slots.sort_unstable();
         slots.dedup();
+        if let Some((kept, group, remap)) = &self.small_array_group {
+            if *kept == slots {
+                self.counts.small_groups_kept += 1;
+                return (group.clone(), remap.clone());
+            }
+        }
         let mut remap = FxHashMap::default();
         remap.insert(0, 0);
         let view = |slot: u32| {
@@ -1116,7 +1134,7 @@ impl Renderer {
                 .map_or(&*self.white, |view| &**view)
         };
         let mut views: Vec<&wgpu::TextureView> = vec![view(0)];
-        for slot in slots {
+        for &slot in &slots {
             remap.insert(slot, views.len() as u32);
             views.push(view(slot));
         }
@@ -1139,6 +1157,8 @@ impl Renderer {
                 ],
             },
         ));
+        let remap = Rc::new(remap);
+        self.small_array_group = Some((slots, group.clone(), remap.clone()));
         (group, remap)
     }
 
@@ -1904,8 +1924,7 @@ impl Renderer {
                 if slot as usize > self.pinned_in_frame {
                     self.frame_texture_views[slot as usize] = self.white.clone();
                     self.frame_texture_slots.remove(&handle);
-                    self.array_group = None;
-                    self.array_variants.clear();
+                    self.forget_array_groups();
                 }
             }
             self.counts.textures_gone += 1;
