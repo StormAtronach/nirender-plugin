@@ -200,6 +200,17 @@ def pdb_of(binary, name, guid, age, pdb_dirs):
     return None
 
 
+def build_name(folder):
+    """The transaction name of a build folder: a play set's name f<N> as it is; any other name with the first 8 hex
+    digits of the md5 of its d3d8.dll, for example "build-1a2b3c4d". A plain word such as "build" would be pinned by
+    any keep-list line that has that word."""
+    base = os.path.basename(os.path.normpath(folder))
+    d3d8 = os.path.join(folder, "d3d8.dll")
+    if re.fullmatch(r"f\d+", base, re.I) or not os.path.isfile(d3d8):
+        return base
+    return "%s-%s" % (base, md5_of(d3d8)[:8])
+
+
 def tree_pdb_dirs(*trees):
     """The pdb folders of build trees (render-link, nirender-plugin), for a build made from them."""
     return [os.path.join(tree, *parts) for tree in trees for parts in TREE_PDB_DIRS]
@@ -620,6 +631,17 @@ def self_test_in(work):
     assert pin_of(Transaction("9", "c", "md5 x.dll=%s" % hashlib.md5(open(c_binaries[0], "rb").read()).hexdigest(), set()), keep_lines(keep)[0])
     assert not pin_of(Transaction("9", "f23", "md5", set()), ["E:\\x\towner: f231\t2026-11-11"]), "f23 matched f231"
     assert pin_of(Transaction("9", "f231", "md5", set()), ["E:\\x\towner: f231, f232\t2026-11-11"])
+    # The name of a build folder: f<N> as it is; another name with its d3d8.dll's md5, so that a plain word in a keep
+    # line ("its build plan") does not pin it. The null: the plain name "build" is pinned by that line.
+    named = os.path.join(work, "names")
+    for folder in ("f232", "build", "empty"):
+        os.makedirs(os.path.join(named, folder))
+        if folder != "empty":
+            with open(os.path.join(named, folder, "d3d8.dll"), "wb") as file:
+                file.write(b"abc")
+    assert [build_name(os.path.join(named, folder)) for folder in ("f232", "build", "empty")] == ["f232", "build-90015098", "empty"]
+    plan = ["E:\\x\topen: the design page and its build plan\t2026-11-11"]
+    assert pin_of(Transaction("9", "build", "md5", set()), plan) and not pin_of(Transaction("9", "build-90015098", "md5", set()), plan)
 
     # A timing run puts the add off; the next add takes it. The null: with the gate free, it goes in at once.
     e_binaries, _ = build("e", ["Executor"])

@@ -1808,10 +1808,11 @@ def add_symbols(mge_build, plugin_dll, add=symbols.add):
     """The symbol store (W345): the pdbs of the run's build, beside its binaries or kept by the play set of its name;
     a timing run puts the add off until its game slot is free (D297). The run's plugin can be of another tree than the
     build, so it goes in as a build of its own, "plugin-<md5 8>" (W352): the build's name pins only the build's pdbs.
-    A play set's own plugin is in the set's transaction already, and its add is "in the store". Returns the lines."""
-    build_name = os.path.basename(os.path.normpath(mge_build))
+    A play set's own plugin is in the set's transaction already, and its add is "in the store". A build folder that is
+    not a play set f<N> is named with the md5 of its d3d8.dll (symbols.build_name). Returns the lines."""
+    folder_name = os.path.basename(os.path.normpath(mge_build))
     binaries = [os.path.join(mge_build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")]
-    lines = [add(build_name, binaries, [os.path.join(PDB_KEEP, build_name)])]
+    lines = [add(symbols.build_name(mge_build), binaries, [os.path.join(PDB_KEEP, folder_name)])]
     if plugin_dll and os.path.isfile(plugin_dll):
         lines.append(add("plugin-" + symbols.md5_of(plugin_dll)[:8], [plugin_dll]))
     return lines
@@ -1837,6 +1838,14 @@ def self_test_add_symbols():
         # A run without the plugin, or with no file at its path, adds the build only.
         calls.clear()
         assert len(add_symbols(build, None, add)) == 1 and len(add_symbols(build, plugin + "x", add)) == 1 and len(calls) == 2
+        # A build folder that is not a play set is named with its d3d8.dll's md5; its pdb folder keeps the plain name.
+        calls.clear()
+        other = os.path.join(folder, "build")
+        os.makedirs(other)
+        with open(os.path.join(other, "d3d8.dll"), "wb") as file:
+            file.write(b"abc")
+        add_symbols(other, None, add)
+        assert calls[0][0] == "build-90015098" and calls[0][2] == [os.path.join(PDB_KEEP, "build")], calls[0]
 
 
 def self_test():
