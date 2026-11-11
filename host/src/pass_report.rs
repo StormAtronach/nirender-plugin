@@ -4,10 +4,10 @@
 //! [`note_ran`] when it works inside the game's pass or makes a copy. A pass inside a part
 //! ([`note_inner_pass`]) is counted by name in the census only. Where it does not run,
 //! [`note_skipped`] gives a fixed reason ([`Skip`]). The key of a part is its name and the kind
-//! of the view it runs in ([`in_view`]). Where a GPU stamp exists for the part, its name is the
+//! of the view it runs in (`in_view`). Where a GPU stamp exists for the part, its name is the
 //! stamp's name: one name for the count and for the time.
 //!
-//! At the end of a frame ([`end_frame`]) the frame's set of parts is compared with the set of
+//! At the end of a frame (`end_frame`) the frame's set of parts is compared with the set of
 //! the frame before. A set that differs and was not seen before prints one block; a set seen
 //! before is only counted. A part that an earlier frame noted, and that has no note in this
 //! frame, in a view of a kind that this frame has, shows "not run, reason unknown": its skip
@@ -15,7 +15,7 @@
 //! that runs only when a record of the stream asks for it ([`on_request`]: a map tile, the
 //! depth of the first person) is not a skip in a frame without that record; in a frame where
 //! its call came and it noted neither a run nor a skip, it is "reason unknown" too. The
-//! totals print at the exit ([`exit_lines`]).
+//! totals print at the exit (`exit_lines`).
 //!
 //! Nothing reads the report to choose what to draw. The calls add to counts in memory; no draw,
 //! pipeline or GPU state depends on them.
@@ -260,7 +260,7 @@ pub(crate) fn in_view(kind: ViewKind) -> ViewGuard {
     ViewGuard(())
 }
 
-/// The guard of [`in_view`].
+/// The guard of `in_view`.
 #[must_use]
 pub struct ViewGuard(());
 
