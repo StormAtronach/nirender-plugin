@@ -10,7 +10,9 @@ The checks of each list:
 - `check_readme.py`: every switch the code reads is in README.md, and every switch README.md
   names is read; every path README names exists. With `--mge` (the MGE XE list): MGE XE's
   switches against its RENDERER.md.
-- `check_contract.py`: `contract/mge_render_link.h` against `src/link.rs`.
+- `check_contract.py`: `contract/mge_render_link.h` against `src/link.rs`; with `--mge` (the MGE XE
+  list): also each export of the plugin that d3d8.dll looks up by name against the plugin's
+  export of that name.
 - `check_stream_tags.py`: the tag numbers of the plugin's writer (`src/capture.rs`) against the
   helper's reader (`host/src/tag.rs`), and the fixed length of each record against the reader's
   `least_length`.
@@ -133,7 +135,7 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "stream tags", "stream tags parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
@@ -141,7 +143,7 @@ LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 # The option that gives each check of the MGE XE tree another tree than the render-link sibling
 # (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
-MGE_OPTION = {"mge readme": "--mge-dir", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge"}
+MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge"}
 
 
 def self_test():

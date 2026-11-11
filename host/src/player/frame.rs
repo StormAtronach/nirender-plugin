@@ -714,8 +714,8 @@ impl Player {
         for (buffer, row, width, height, path) in std::mem::take(&mut self.early_pictures) {
             save_picture(&self.renderer.device, &buffer, row, width, height, blue_first, &path);
         }
-        self.renderer.counts.times[TIME_END] += clock.elapsed();
         crate::pass_report::end_frame();
+        self.renderer.counts.times[TIME_END] += clock.elapsed();
     }
 }
 
