@@ -74,8 +74,8 @@ mod eng {
     use crate::mem::rd;
 
     pub use crate::engine::{
-        critical_section_ctor, critical_section_dtor, critical_section_lock, critical_section_unlock, list_allocator_block_ctor,
-        operator_delete, operator_new, texture_manager_clear_hash_map,
+        critical_section_ctor, critical_section_dtor, critical_section_lock, critical_section_unlock,
+        list_allocator_block_ctor, operator_delete, operator_new, texture_manager_clear_hash_map,
     };
     pub use crate::ports::ni::ref_object_count_add;
 
@@ -149,7 +149,11 @@ mod eng {
         wr::<u32>(block, 0, 0);
         wr(block, 4, items);
         for i in 0..count as usize {
-            wr::<usize>(items, i * 12 + 4, if i + 1 < count as usize { items + (i + 1) * 12 } else { 0 });
+            wr::<usize>(
+                items,
+                i * 12 + 4,
+                if i + 1 < count as usize { items + (i + 1) * 12 } else { 0 },
+            );
         }
         block
     }
@@ -251,7 +255,11 @@ unsafe fn disable_device_lights(this: usize) {
         wr::<u32>(item, ITEM_DATA, 0);
         wr::<usize>(item, ITEM_NEXT, rd(this, M::deviceLights_allocator_freeList));
         wr(this, M::deviceLights_allocator_freeList, item);
-        wr(this, M::deviceLights_count, rd::<u32>(this, M::deviceLights_count).wrapping_sub(1));
+        wr(
+            this,
+            M::deviceLights_count,
+            rd::<u32>(this, M::deviceLights_count).wrapping_sub(1),
+        );
         device_light_enable(rd(this, M::device), rd(light, L::index), 0);
     }
 }
@@ -564,7 +572,9 @@ pub unsafe fn set_state(this: usize, state: usize, texturing: usize, vertex_colo
         set_render_state(render_state(), D3DRS_LIGHTING, 1, 0);
         wr::<u8>(this, M::d3dLightingState, 1);
     }
-    if state != rd::<usize>(this, M::lastState) || rd::<u8>(this, M::useAmbientDiffuse) != rd::<u8>(this, M::lastUseAmbientDiffuse) {
+    if state != rd::<usize>(this, M::lastState)
+        || rd::<u8>(this, M::useAmbientDiffuse) != rd::<u8>(this, M::lastUseAmbientDiffuse)
+    {
         update_lights(this, state);
         let use_ambient_diffuse: u8 = rd(this, M::useAmbientDiffuse);
         wr(this, M::lastState, state);
@@ -637,7 +647,11 @@ pub unsafe fn remove_light(this: usize, light: usize) {
                 eng::list_dealloc_item(list, item);
             }
         }
-        wr(this, M::deviceLights_count, rd::<u32>(this, M::deviceLights_count).wrapping_sub(1));
+        wr(
+            this,
+            M::deviceLights_count,
+            rd::<u32>(this, M::deviceLights_count).wrapping_sub(1),
+        );
         break;
     }
     eng::critical_section_unlock(cs);
@@ -680,11 +694,20 @@ pub unsafe fn update_lights(this: usize, state: usize) {
             if light_get_type(light) == 0 {
                 let dimmer: u32 = rd(light, L::dimmer);
                 let now: u32 = rd(ambient_ptr, 0);
-                eng::packed_color_set_red(ambient_ptr, x87_ambient_channel((now >> 16) & 0xFF, dimmer, rd(light, L::ambientColor_r)));
+                eng::packed_color_set_red(
+                    ambient_ptr,
+                    x87_ambient_channel((now >> 16) & 0xFF, dimmer, rd(light, L::ambientColor_r)),
+                );
                 let now: u32 = rd(ambient_ptr, 0);
-                eng::packed_color_set_green(ambient_ptr, x87_ambient_channel((now >> 8) & 0xFF, dimmer, rd(light, L::ambientColor_g)));
+                eng::packed_color_set_green(
+                    ambient_ptr,
+                    x87_ambient_channel((now >> 8) & 0xFF, dimmer, rd(light, L::ambientColor_g)),
+                );
                 let now: u32 = rd(ambient_ptr, 0);
-                eng::packed_color_set_blue(ambient_ptr, x87_ambient_channel(now & 0xFF, dimmer, rd(light, L::ambientColor_b)));
+                eng::packed_color_set_blue(
+                    ambient_ptr,
+                    x87_ambient_channel(now & 0xFF, dimmer, rd(light, L::ambientColor_b)),
+                );
                 continue;
             }
 
@@ -732,7 +755,11 @@ pub unsafe fn update_lights(this: usize, state: usize) {
                 wr(this, M::deviceLights_tail, item);
             }
             wr(this, M::deviceLights_head, item);
-            wr(this, M::deviceLights_count, rd::<u32>(this, M::deviceLights_count).wrapping_add(1));
+            wr(
+                this,
+                M::deviceLights_count,
+                rd::<u32>(this, M::deviceLights_count).wrapping_add(1),
+            );
         }
     }
 
@@ -758,16 +785,29 @@ pub(crate) unsafe fn ambient_of_state(state: usize) -> u32 {
     while iter != 0 {
         let light: usize = rd(iter, DL::effect);
         iter = rd(iter, DL::next);
-        if light == 0 || rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < f32::from_bits(MIN_DIMMER) || light_get_type(light) != 0 {
+        if light == 0
+            || rd::<u8>(light, L::enabled) == 0
+            || rd::<f32>(light, L::dimmer) < f32::from_bits(MIN_DIMMER)
+            || light_get_type(light) != 0
+        {
             continue;
         }
         let dimmer: u32 = rd(light, L::dimmer);
         let now: u32 = rd(ambient_ptr, 0);
-        eng::packed_color_set_red(ambient_ptr, x87_ambient_channel((now >> 16) & 0xFF, dimmer, rd(light, L::ambientColor_r)));
+        eng::packed_color_set_red(
+            ambient_ptr,
+            x87_ambient_channel((now >> 16) & 0xFF, dimmer, rd(light, L::ambientColor_r)),
+        );
         let now: u32 = rd(ambient_ptr, 0);
-        eng::packed_color_set_green(ambient_ptr, x87_ambient_channel((now >> 8) & 0xFF, dimmer, rd(light, L::ambientColor_g)));
+        eng::packed_color_set_green(
+            ambient_ptr,
+            x87_ambient_channel((now >> 8) & 0xFF, dimmer, rd(light, L::ambientColor_g)),
+        );
         let now: u32 = rd(ambient_ptr, 0);
-        eng::packed_color_set_blue(ambient_ptr, x87_ambient_channel(now & 0xFF, dimmer, rd(light, L::ambientColor_b)));
+        eng::packed_color_set_blue(
+            ambient_ptr,
+            x87_ambient_channel(now & 0xFF, dimmer, rd(light, L::ambientColor_b)),
+        );
     }
     rd(ambient_ptr, 0)
 }
@@ -789,16 +829,29 @@ pub(crate) unsafe fn ambient_of_effect_lists(nodes: &[usize]) -> u32 {
             let light: usize = rd(item, 0);
             item = rd(item, 4);
             seen += 1;
-            if light == 0 || rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < f32::from_bits(MIN_DIMMER) || light_get_type(light) != 0 {
+            if light == 0
+                || rd::<u8>(light, L::enabled) == 0
+                || rd::<f32>(light, L::dimmer) < f32::from_bits(MIN_DIMMER)
+                || light_get_type(light) != 0
+            {
                 continue;
             }
             let dimmer: u32 = rd(light, L::dimmer);
             let now: u32 = rd(ambient_ptr, 0);
-            eng::packed_color_set_red(ambient_ptr, x87_ambient_channel((now >> 16) & 0xFF, dimmer, rd(light, L::ambientColor_r)));
+            eng::packed_color_set_red(
+                ambient_ptr,
+                x87_ambient_channel((now >> 16) & 0xFF, dimmer, rd(light, L::ambientColor_r)),
+            );
             let now: u32 = rd(ambient_ptr, 0);
-            eng::packed_color_set_green(ambient_ptr, x87_ambient_channel((now >> 8) & 0xFF, dimmer, rd(light, L::ambientColor_g)));
+            eng::packed_color_set_green(
+                ambient_ptr,
+                x87_ambient_channel((now >> 8) & 0xFF, dimmer, rd(light, L::ambientColor_g)),
+            );
             let now: u32 = rd(ambient_ptr, 0);
-            eng::packed_color_set_blue(ambient_ptr, x87_ambient_channel(now & 0xFF, dimmer, rd(light, L::ambientColor_b)));
+            eng::packed_color_set_blue(
+                ambient_ptr,
+                x87_ambient_channel(now & 0xFF, dimmer, rd(light, L::ambientColor_b)),
+            );
         }
     }
     rd(ambient_ptr, 0)
@@ -872,7 +925,10 @@ unsafe fn add_update_lights(set: &mut Regions, this: usize, state: usize, use_am
     while iter != 0 {
         let light: usize = rd(iter, DL::effect);
         iter = rd(iter, DL::next);
-        if rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < f32::from_bits(MIN_DIMMER) || light_get_type(light) == 0 {
+        if rd::<u8>(light, L::enabled) == 0
+            || rd::<f32>(light, L::dimmer) < f32::from_bits(MIN_DIMMER)
+            || light_get_type(light) == 0
+        {
             continue;
         }
         needed += 1;
@@ -990,63 +1046,99 @@ unsafe fn reset_render_states_regions(set: &mut Regions, this: usize) {
     set.add(rd(this, M::renderState), RS::SIZE);
 }
 
-port_thiscall!(light_entry_update_port, 0x6BAB00, "NiDX8LightManager::LightEntry::Update",
+port_thiscall!(
+    light_entry_update_port,
+    0x6BAB00,
+    "NiDX8LightManager::LightEntry::Update",
     fn(this, light: usize) -> u8,
     compare_eax = true,
     regions = |set| set.add(this, E::SIZE),
-    rust = light_entry_update);
+    rust = light_entry_update
+);
 
 // The call is always a skip. The constructor makes a critical section and adds a reference to
 // the device. The dry device passes `AddRef` on, thus two runs add two references.
-port_thiscall!(ctor_port, 0x6BAD10, "NiDX8LightManager::ctor",
+port_thiscall!(
+    ctor_port,
+    0x6BAD10,
+    "NiDX8LightManager::ctor",
     fn(this, render_state: usize, device: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = ctor);
+    rust = ctor
+);
 
-port_thiscall!(reset_render_states_port, 0x6BAEC0, "NiDX8LightManager::resetRenderStates",
+port_thiscall!(
+    reset_render_states_port,
+    0x6BAEC0,
+    "NiDX8LightManager::resetRenderStates",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| reset_render_states_regions(set, this),
-    rust = reset_render_states);
+    rust = reset_render_states
+);
 
 // The call is always a skip. The destructor releases the reference to the device and deletes
 // the critical section. These cannot run twice.
-port_thiscall!(dtor_port, 0x6BAF90, "NiDX8LightManager::dtor",
+port_thiscall!(
+    dtor_port,
+    0x6BAF90,
+    "NiDX8LightManager::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = dtor);
+    rust = dtor
+);
 
-port_thiscall!(next_frame_port, 0x6BB190, "NiDX8LightManager::nextFrame",
+port_thiscall!(
+    next_frame_port,
+    0x6BB190,
+    "NiDX8LightManager::nextFrame",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| next_frame_regions(set, this),
-    rust = next_frame);
+    rust = next_frame
+);
 
-port_thiscall!(set_state_port, 0x6BB200, "NiDX8LightManager::setState",
+port_thiscall!(
+    set_state_port,
+    0x6BB200,
+    "NiDX8LightManager::setState",
     fn(this, state: usize, texturing: usize, vertex_color: usize) -> (),
     compare_eax = false,
     regions = |set| set_state_regions(set, this, state, texturing, vertex_color),
-    rust = set_state);
+    rust = set_state
+);
 
-port_thiscall!(remove_light_port, 0x6BB4E0, "NiDX8LightManager::RemoveLight",
+port_thiscall!(
+    remove_light_port,
+    0x6BB4E0,
+    "NiDX8LightManager::RemoveLight",
     fn(this, light: usize) -> (),
     compare_eax = false,
     regions = |set| remove_light_regions(set, this, light),
-    rust = remove_light);
+    rust = remove_light
+);
 
-port_thiscall!(update_lights_port, 0x6BB6C0, "NiDX8LightManager::updateLights",
+port_thiscall!(
+    update_lights_port,
+    0x6BB6C0,
+    "NiDX8LightManager::updateLights",
     fn(this, state: usize) -> (),
     compare_eax = false,
     regions = |set| update_lights_regions(set, this, state),
-    rust = update_lights);
+    rust = update_lights
+);
 
-port_thiscall!(release_lights_port, 0x6BBB40, "NiDX8LightManager::ReleaseLights",
+port_thiscall!(
+    release_lights_port,
+    0x6BBB40,
+    "NiDX8LightManager::ReleaseLights",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| release_lights_regions(set, this),
-    rust = release_lights);
+    rust = release_lights
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &light_entry_update_port::STATE,
@@ -1067,8 +1159,8 @@ mod tests {
     use super::*;
     use crate::d3d::{DEVICE_ADD_REF, DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT};
     use crate::ports::hash_map::{
-        SLOT_CMP_KEY as MAP_VTBL_CMP_KEY, SLOT_DTOR_KEY_VALUE_PAIR as MAP_VTBL_DTOR_KEY_VALUE_PAIR, SLOT_HASH_KEY as MAP_VTBL_HASH_KEY,
-        SLOT_MAKE_KEY_VALUE_PAIR as MAP_VTBL_MAKE_KEY_VALUE_PAIR,
+        SLOT_CMP_KEY as MAP_VTBL_CMP_KEY, SLOT_DTOR_KEY_VALUE_PAIR as MAP_VTBL_DTOR_KEY_VALUE_PAIR,
+        SLOT_HASH_KEY as MAP_VTBL_HASH_KEY, SLOT_MAKE_KEY_VALUE_PAIR as MAP_VTBL_MAKE_KEY_VALUE_PAIR,
     };
 
     thread_local! {
@@ -1146,7 +1238,11 @@ mod tests {
         wr(device_vtable, DEVICE_ADD_REF, dev_add_ref as *const () as usize);
         wr(device_vtable, DEVICE_SET_LIGHT, dev_set_light as *const () as usize);
         wr(device_vtable, DEVICE_LIGHT_ENABLE, dev_light_enable as *const () as usize);
-        wr(device_vtable, crate::d3d::DEVICE_SET_RENDER_STATE, dev_set_render_state as *const () as usize);
+        wr(
+            device_vtable,
+            crate::d3d::DEVICE_SET_RENDER_STATE,
+            dev_set_render_state as *const () as usize,
+        );
         let device = leak(4);
         wr(device, 0, device_vtable);
 
@@ -1224,7 +1320,10 @@ mod tests {
     fn x87_sequences_on_exact_values() {
         assert_eq!(f32::from_bits(x87_mul(3.0f32.to_bits(), 0.5f32.to_bits())), 1.5);
         // 0 / 255 + 0.5 * 0.25
-        assert_eq!(f32::from_bits(x87_ambient_channel(0, 0.5f32.to_bits(), 0.25f32.to_bits())), 0.125);
+        assert_eq!(
+            f32::from_bits(x87_ambient_channel(0, 0.5f32.to_bits(), 0.25f32.to_bits())),
+            0.125
+        );
         assert_eq!(x87_spot_angle(0, core::f32::consts::PI.to_bits()), 0);
         let angle = f32::from_bits(x87_spot_angle(90.0f32.to_bits(), core::f32::consts::PI.to_bits()));
         assert!((angle - core::f32::consts::PI).abs() < 1e-5);
@@ -1311,7 +1410,10 @@ mod tests {
             wr::<u32>(rs, RS::renderStateSettings + D3DRS_AMBIENTMATERIALSOURCE as usize * 8, 1);
 
             assert_eq!(ctor(fresh, rs, device), fresh);
-            assert_eq!(calls(), [(1, 0, 0), (50, D3DRS_LIGHTING, 0), (50, D3DRS_AMBIENTMATERIALSOURCE, 0)]);
+            assert_eq!(
+                calls(),
+                [(1, 0, 0), (50, D3DRS_LIGHTING, 0), (50, D3DRS_AMBIENTMATERIALSOURCE, 0)]
+            );
             assert_eq!(rd::<u32>(fresh, M::vtbl), VTBL_LIGHT_MANAGER);
             assert_eq!(rd::<u32>(fresh, M::lightEntries_bucketCount), 37);
             assert_eq!(rd::<u32>(fresh, M::deviceLights_allocator_count), 2);
@@ -1351,7 +1453,13 @@ mod tests {
             let ambient_total = 0xFF80_4000;
             assert_eq!(
                 calls(),
-                [(44, 12, 1), (46, 12, 1), (44, 17, 3), (46, 17, 1), (50, D3DRS_AMBIENT, ambient_total)]
+                [
+                    (44, 12, 1),
+                    (46, 12, 1),
+                    (44, 17, 3),
+                    (46, 17, 1),
+                    (50, D3DRS_AMBIENT, ambient_total)
+                ]
             );
             assert_eq!(rd::<u32>(m, M::ambientLightingState), ambient_total);
             assert_eq!(setting(&w, D3DRS_AMBIENT), ambient_total);
@@ -1377,7 +1485,9 @@ mod tests {
             let mut set = Regions::new();
             add_update_lights(&mut set, m, state, 1);
             assert_eq!(set.as_slice().len(), 5);
-            assert!(set.as_slice().contains(&(hash_map::find_value(m + M::lightEntries, 12), E::SIZE)));
+            assert!(set
+                .as_slice()
+                .contains(&(hash_map::find_value(m + M::lightEntries, 12), E::SIZE)));
             update_lights(m, state);
             assert_eq!(calls(), [(46, 17, 0), (46, 12, 0), (44, 12, 1), (46, 12, 1), (46, 17, 1)]);
 
@@ -1397,7 +1507,12 @@ mod tests {
             let free: usize = rd(m, M::deviceLights_allocator_freeList);
             assert_eq!(
                 set.as_slice(),
-                [(m, M::SIZE), (w.render_state, RS::SIZE), (buckets + (30 % BUCKETS) * 4, 4), (free, ITEM_SIZE)]
+                [
+                    (m, M::SIZE),
+                    (w.render_state, RS::SIZE),
+                    (buckets + (30 % BUCKETS) * 4, 4),
+                    (free, ITEM_SIZE)
+                ]
             );
 
             // A light whose node has no entry, as after ReleaseLights: the node is a region.
@@ -1417,7 +1532,12 @@ mod tests {
             let w = world();
             let m = w.manager;
             wr::<u8>(m, M::useAmbientDiffuse, 1);
-            let lights = [light(type_point, 1), light(type_point, 2), light(type_point, 3), light(type_point, 4)];
+            let lights = [
+                light(type_point, 1),
+                light(type_point, 2),
+                light(type_point, 3),
+                light(type_point, 4),
+            ];
             let state = effect_state(&lights);
             update_lights(m, state);
             calls();
@@ -1487,7 +1607,12 @@ mod tests {
             set_state(m, state, texturing, vertex_color);
             assert_eq!(
                 calls(),
-                [(50, D3DRS_LIGHTING, 1), (44, 3, 1), (46, 3, 1), (50, D3DRS_AMBIENT, 0xFF00_0000)]
+                [
+                    (50, D3DRS_LIGHTING, 1),
+                    (44, 3, 1),
+                    (46, 3, 1),
+                    (50, D3DRS_AMBIENT, 0xFF00_0000)
+                ]
             );
             assert_eq!(rd::<u32>(m, M::applyMode), 2);
             assert_eq!(rd::<u8>(m, M::d3dLightingState), 1);
@@ -1502,7 +1627,10 @@ mod tests {
             // Vertex colours as ambient and diffuse.
             wr::<u32>(vertex_color, VC::sourceMode, 2);
             set_state(m, state, texturing, vertex_color);
-            assert_eq!(calls(), [(50, D3DRS_AMBIENTMATERIALSOURCE, 1), (50, D3DRS_DIFFUSEMATERIALSOURCE, 1)]);
+            assert_eq!(
+                calls(),
+                [(50, D3DRS_AMBIENTMATERIALSOURCE, 1), (50, D3DRS_DIFFUSEMATERIALSOURCE, 1)]
+            );
             assert_eq!(rd::<u32>(m, M::sourceVertexMode), 2);
 
             // Vertex colours as emissive.
@@ -1510,7 +1638,11 @@ mod tests {
             set_state(m, state, texturing, vertex_color);
             assert_eq!(
                 calls(),
-                [(50, D3DRS_EMISSIVEMATERIALSOURCE, 1), (50, D3DRS_AMBIENTMATERIALSOURCE, 0), (50, D3DRS_DIFFUSEMATERIALSOURCE, 0)]
+                [
+                    (50, D3DRS_EMISSIVEMATERIALSOURCE, 1),
+                    (50, D3DRS_AMBIENTMATERIALSOURCE, 0),
+                    (50, D3DRS_DIFFUSEMATERIALSOURCE, 0)
+                ]
             );
             assert_eq!(rd::<u32>(m, M::sourceVertexMode), 1);
 

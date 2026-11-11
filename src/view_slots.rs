@@ -40,7 +40,10 @@ pub const RETIRE_FRAMES: u32 = 60;
 
 /// A scene of this kind is a scene of a view.
 pub fn is_view(kind: u32) -> bool {
-    !matches!(kind, SCENE_SHADOW_VOLUME | SCENE_SHADOW_CASTERS | SCENE_FIRST_PERSON | SCENE_UI | SCENE_SPLASH)
+    !matches!(
+        kind,
+        SCENE_SHADOW_VOLUME | SCENE_SHADOW_CASTERS | SCENE_FIRST_PERSON | SCENE_UI | SCENE_SPLASH
+    )
 }
 
 /// The key of a view.
@@ -50,7 +53,12 @@ pub enum ViewKey {
     Screen { camera: usize },
     /// A camera into a texture. `again` counts the scenes of the same camera, root and target
     /// before this one since the last flush.
-    Texture { camera: usize, root: usize, target: usize, again: u32 },
+    Texture {
+        camera: usize,
+        root: usize,
+        target: usize,
+        again: u32,
+    },
 }
 
 /// A scene's start, as the view table reads it.
@@ -125,7 +133,16 @@ struct Slot {
 
 impl Slot {
     fn new(key: ViewKey, frame: u32, flush: u32) -> Slot {
-        Slot { key, last_frame: frame, last_flush: flush, closed_order: 0, roots: Vec::new(), last_roots: Vec::new(), open: false, dead: false }
+        Slot {
+            key,
+            last_frame: frame,
+            last_flush: flush,
+            closed_order: 0,
+            roots: Vec::new(),
+            last_roots: Vec::new(),
+            open: false,
+            dead: false,
+        }
     }
 
     /// A second slot: its key's own slot was used in the same flush (rule 2).
@@ -190,11 +207,29 @@ impl ViewTable {
             None => ViewKey::Screen { camera: click.camera },
             Some(target) => {
                 let scenes = self.since_flush.entry((click.camera, click.root, target)).or_insert(0);
-                ViewKey::Texture { camera: click.camera, root: click.root, target, again: *scenes }
+                ViewKey::Texture {
+                    camera: click.camera,
+                    root: click.root,
+                    target,
+                    again: *scenes,
+                }
             }
         };
         let first = match key {
-            ViewKey::Texture { camera, root, target, again } if again > 0 => self.by_key.get(&ViewKey::Texture { camera, root, target, again: 0 }).copied(),
+            ViewKey::Texture {
+                camera,
+                root,
+                target,
+                again,
+            } if again > 0 => self
+                .by_key
+                .get(&ViewKey::Texture {
+                    camera,
+                    root,
+                    target,
+                    again: 0,
+                })
+                .copied(),
             _ => None,
         };
         let (slot, new, taken_back) = if click.world_camera && click.target.is_none() {
@@ -231,7 +266,12 @@ impl ViewTable {
         if click.target.is_none() && !entry.roots.contains(&click.root) {
             entry.roots.push(click.root);
         }
-        Opening::Opened(Opened { slot, new, taken_back, first })
+        Opening::Opened(Opened {
+            slot,
+            new,
+            taken_back,
+            first,
+        })
     }
 
     /// The slot that closed longest ago and that the take-back may use: not the main view's,
@@ -264,7 +304,11 @@ impl ViewTable {
     /// again gets its first slot.
     pub fn flush(&mut self, forced: bool) -> FrameEnd {
         let mut end = FrameEnd::default();
-        let open_into_textures = self.slots.iter_mut().flatten().filter(|slot| slot.open && slot.targets_texture());
+        let open_into_textures = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .filter(|slot| slot.open && slot.targets_texture());
         for slot in open_into_textures {
             self.closes += 1;
             self.root_changes += slot.close(self.closes) as u64;
@@ -284,7 +328,10 @@ impl ViewTable {
     pub fn target_gone(&mut self, target: usize) -> Vec<u8> {
         let mut retired = Vec::new();
         for (index, entry) in self.slots.iter_mut().enumerate() {
-            let Some(slot) = entry.as_mut().filter(|slot| !slot.dead && matches!(slot.key, ViewKey::Texture { target: into, .. } if into == target)) else {
+            let Some(slot) = entry
+                .as_mut()
+                .filter(|slot| !slot.dead && matches!(slot.key, ViewKey::Texture { target: into, .. } if into == target))
+            else {
                 continue;
             };
             self.by_key.remove(&slot.key);
@@ -368,7 +415,11 @@ impl ViewTable {
                 self.closes += 1;
                 self.root_changes += slot.close(self.closes) as u64;
                 end.closed += 1;
-            } else if index != MAIN_VIEW as usize && !slot.second() && !slot.dead && self.frame.wrapping_sub(slot.last_frame) >= RETIRE_FRAMES {
+            } else if index != MAIN_VIEW as usize
+                && !slot.second()
+                && !slot.dead
+                && self.frame.wrapping_sub(slot.last_frame) >= RETIRE_FRAMES
+            {
                 self.by_key.remove(&slot.key);
                 *entry = None;
                 self.retired += 1;
@@ -417,26 +468,53 @@ mod tests {
     const WATER_ROOT: usize = 0x3000;
 
     fn world(kind: u32, root: usize) -> Click {
-        Click { kind, camera: WORLD_CAMERA, root, target: None, world_camera: true }
+        Click {
+            kind,
+            camera: WORLD_CAMERA,
+            root,
+            target: None,
+            world_camera: true,
+        }
     }
 
     fn texture(camera: usize, root: usize, target: usize) -> Click {
-        Click { kind: SCENE_OTHER, camera, root, target: Some(target), world_camera: false }
+        Click {
+            kind: SCENE_OTHER,
+            camera,
+            root,
+            target: Some(target),
+            world_camera: false,
+        }
     }
 
     /// A slot opened, `new` or not, with no take-back.
     fn opened(slot: u8, new: bool) -> Opening {
-        Opening::Opened(Opened { slot, new, taken_back: false, first: None })
+        Opening::Opened(Opened {
+            slot,
+            new,
+            taken_back: false,
+            first: None,
+        })
     }
 
     /// A second slot (new) of a key whose first scene of the flush took the slot `first`.
     fn opened_again(slot: u8, first: u8) -> Opening {
-        Opening::Opened(Opened { slot, new: true, taken_back: false, first: Some(first) })
+        Opening::Opened(Opened {
+            slot,
+            new: true,
+            taken_back: false,
+            first: Some(first),
+        })
     }
 
     /// A slot taken back from another key (rule 4).
     fn taken_back(slot: u8) -> Opening {
-        Opening::Opened(Opened { slot, new: true, taken_back: true, first: None })
+        Opening::Opened(Opened {
+            slot,
+            new: true,
+            taken_back: true,
+            first: None,
+        })
     }
 
     /// The slot of an opening.
@@ -484,7 +562,13 @@ mod tests {
     #[test]
     fn the_world_and_water_clicks_of_a_frame_are_the_main_view() {
         let mut views = ViewTable::default();
-        let shadow = Click { kind: SCENE_SHADOW_CASTERS, camera: 0x5000, root: 0x5100, target: None, world_camera: false };
+        let shadow = Click {
+            kind: SCENE_SHADOW_CASTERS,
+            camera: 0x5000,
+            root: 0x5100,
+            target: None,
+            world_camera: false,
+        };
         for frame in 0..3 {
             assert_eq!(views.open(&world(SCENE_WORLD, WORLD_ROOT)), opened(MAIN_VIEW, frame == 0));
             assert_eq!(views.open(&shadow), Opening::NotView);
@@ -533,7 +617,17 @@ mod tests {
         assert_eq!(views.frame(), 1);
         // A frame with no swap: Present closes view 0.
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
-        assert_eq!(closing(&mut views, ViewTable::present), (vec![MAIN_VIEW], 0, FrameEnd { closed: 1, retired: vec![] }));
+        assert_eq!(
+            closing(&mut views, ViewTable::present),
+            (
+                vec![MAIN_VIEW],
+                0,
+                FrameEnd {
+                    closed: 1,
+                    retired: vec![]
+                }
+            )
+        );
     }
 
     /// JoP's visibility test calls `swapBuffers` with a texture as the target (the Reviewer's
@@ -554,7 +648,17 @@ mod tests {
         views.open(&world(SCENE_WATER, WATER_ROOT));
         assert_eq!(swap(&mut views, None), (vec![MAIN_VIEW], 0));
         // The other texture view had no swap: Present closes it.
-        assert_eq!(closing(&mut views, ViewTable::present), (vec![2], 0, FrameEnd { closed: 1, retired: vec![] }));
+        assert_eq!(
+            closing(&mut views, ViewTable::present),
+            (
+                vec![2],
+                0,
+                FrameEnd {
+                    closed: 1,
+                    retired: vec![]
+                }
+            )
+        );
     }
 
     /// A texture key keeps its slot: after a flush in the frame, and in the next frame.
@@ -571,7 +675,13 @@ mod tests {
         assert_eq!(views.open(&texture(WORLD_CAMERA, 0x4000, 0x9000)), opened(2, true));
         views.present();
         assert_eq!(views.open(&test), opened(1, false));
-        let screen = Click { kind: SCENE_OTHER, camera: 0x6000, root: WORLD_ROOT, target: None, world_camera: false };
+        let screen = Click {
+            kind: SCENE_OTHER,
+            camera: 0x6000,
+            root: WORLD_ROOT,
+            target: None,
+            world_camera: false,
+        };
         assert_eq!(views.open(&screen), opened(3, true));
         assert_eq!(swap(&mut views, None), (vec![3], 0));
     }
@@ -585,7 +695,17 @@ mod tests {
         for frame in 0..2 {
             assert_eq!(views.open(&mirror), opened(1, frame == 0));
             assert_eq!(views.open(&mirror), opened_again(2, 1));
-            assert_eq!(closing(&mut views, ViewTable::present), (vec![1, 2], 0, FrameEnd { closed: 2, retired: vec![2] }));
+            assert_eq!(
+                closing(&mut views, ViewTable::present),
+                (
+                    vec![1, 2],
+                    0,
+                    FrameEnd {
+                        closed: 2,
+                        retired: vec![2]
+                    }
+                )
+            );
         }
         assert_eq!(views.in_use(), 1);
         assert_eq!((views.second_slots, views.most_second_in_flush), (2, 1));
@@ -613,14 +733,30 @@ mod tests {
     fn a_flush_closes_the_texture_views_and_frees_the_second_slots() {
         let mut views = ViewTable::default();
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
-        let screen = Click { kind: SCENE_OTHER, camera: 0x6000, root: WORLD_ROOT, target: None, world_camera: false };
+        let screen = Click {
+            kind: SCENE_OTHER,
+            camera: 0x6000,
+            root: WORLD_ROOT,
+            target: None,
+            world_camera: false,
+        };
         views.open(&screen);
         let map = texture(0x8000, WORLD_ROOT, 0x9000);
         let map_water = texture(0x8000, WATER_ROOT, 0x9000);
         assert_eq!(views.open(&map), opened(2, true));
         assert_eq!(views.open(&map_water), opened(3, true));
         assert_eq!(views.open(&map), opened_again(4, 2));
-        assert_eq!(closing(&mut views, |views| views.flush(false)), (vec![2, 3, 4], 0, FrameEnd { closed: 3, retired: vec![4] }));
+        assert_eq!(
+            closing(&mut views, |views| views.flush(false)),
+            (
+                vec![2, 3, 4],
+                0,
+                FrameEnd {
+                    closed: 3,
+                    retired: vec![4]
+                }
+            )
+        );
         for _ in 0..6 {
             assert_eq!(views.open(&map), opened(2, false));
             assert_eq!(views.open(&map_water), opened(3, false));
@@ -657,7 +793,10 @@ mod tests {
         let mut views = ViewTable::default();
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
         for i in 1..VIEW_SLOTS {
-            assert_eq!(slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0000 + i))), Some(i as u8));
+            assert_eq!(
+                slot_of(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0000 + i))),
+                Some(i as u8)
+            );
         }
         assert_eq!(views.in_use(), VIEW_SLOTS);
         // Every slot is open or used since the last flush.
@@ -669,11 +808,35 @@ mod tests {
         let end = views.flush(true);
         assert_eq!((end.closed, end.retired), (VIEW_SLOTS - 2, vec![]));
         assert_eq!(views.forced_flushes, 1);
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)), Opening::Opened(Opened { slot: 5, new: true, taken_back: true, first: None }));
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x20_0001)), Opening::Opened(Opened { slot: 1, new: true, taken_back: true, first: None }));
+        assert_eq!(
+            views.open(&texture(0x7000, WORLD_ROOT, 0x20_0000)),
+            Opening::Opened(Opened {
+                slot: 5,
+                new: true,
+                taken_back: true,
+                first: None
+            })
+        );
+        assert_eq!(
+            views.open(&texture(0x7000, WORLD_ROOT, 0x20_0001)),
+            Opening::Opened(Opened {
+                slot: 1,
+                new: true,
+                taken_back: true,
+                first: None
+            })
+        );
         assert_eq!(views.taken_back, 2);
         // The old key of slot 5 starts again in another slot at its next scene.
-        assert_eq!(views.open(&texture(0x7000, WORLD_ROOT, 0x10_0005)), Opening::Opened(Opened { slot: 2, new: true, taken_back: true, first: None }));
+        assert_eq!(
+            views.open(&texture(0x7000, WORLD_ROOT, 0x10_0005)),
+            Opening::Opened(Opened {
+                slot: 2,
+                new: true,
+                taken_back: true,
+                first: None
+            })
+        );
         assert_eq!(views.in_use(), VIEW_SLOTS);
     }
 
@@ -716,7 +879,10 @@ mod tests {
     #[test]
     fn a_close_at_present_counts_its_root_change() {
         let mut views = ViewTable::default();
-        let one_closed = || FrameEnd { closed: 1, retired: vec![] };
+        let one_closed = || FrameEnd {
+            closed: 1,
+            retired: vec![],
+        };
         views.open(&world(SCENE_WORLD, WORLD_ROOT));
         assert_eq!(closing(&mut views, ViewTable::present), (vec![MAIN_VIEW], 0, one_closed()));
         // The NPC's node in place of the world root (JoP's Isolate Subject), with no swap.
@@ -750,7 +916,15 @@ mod tests {
         // The flush runs the items; then the two dead slots go, and the second slots too.
         let end = views.flush(false);
         assert_eq!(end.retired, vec![1, 2]);
-        assert_eq!(views.key(4), Some(ViewKey::Texture { camera: 0x7000, root: WORLD_ROOT, target: 0x9000, again: 0 }));
+        assert_eq!(
+            views.key(4),
+            Some(ViewKey::Texture {
+                camera: 0x7000,
+                root: WORLD_ROOT,
+                target: 0x9000,
+                again: 0
+            })
+        );
         // 0x9100's slot was last used before this flush: free at once.
         assert_eq!(views.target_gone(0x9100), vec![3]);
         assert_eq!((views.targets_gone, views.retired), (3, 3));

@@ -2,7 +2,10 @@
 //! the length that a record of each tag needs before the player reads it ([`needed`]).
 
 use crate::retained::BONE_BYTES;
-use crate::{word, CALL_CLEAR, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL, CALL_VIEWPORT, COMMAND_TRANSFORM, EFFECT_STAGE_WORDS};
+use crate::{
+    word, CALL_CLEAR, CALL_COPY_PIXELS, CALL_CREATE_TEXTURE, CALL_RENDER_TARGET, CALL_TEXTURE_LEVEL, CALL_VIEWPORT,
+    COMMAND_TRANSFORM, EFFECT_STAGE_WORDS,
+};
 
 pub const TEXTURE: u32 = 1;
 // Tags 2 and 7 are retired (step R7b): this build does not know them, and no other tag takes
@@ -107,11 +110,51 @@ pub const INSTANCE_SHOWN: u32 = 49;
 /// Every tag of this build. A new tag goes here with its constant, read by the player or not:
 /// a test asks that each constant is here.
 pub const KNOWN: [u32; 46] = [
-    TEXTURE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, HEADER, TEXTURE_UPDATE,
-    READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW,
-    INSTANCE_DELETE, INSTANCE_LIGHTS, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED,
-    INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE,
-    MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK, EFFECT_CHAIN_GONE,
+    TEXTURE,
+    SCENE_BEGIN,
+    SCENE_END,
+    FRAME_EVENT,
+    OBJECT,
+    COMMAND,
+    CALL,
+    FRAME_END,
+    HEADER,
+    TEXTURE_UPDATE,
+    READ_PIXELS,
+    SHOT,
+    DRAW_UP,
+    EXTENSION,
+    MARK,
+    GEOMETRY,
+    MATERIAL,
+    SHAPE,
+    LIGHT,
+    OVERLAY,
+    INSTANCE,
+    INSTANCE_DRAW,
+    INSTANCE_DELETE,
+    INSTANCE_LIGHTS,
+    RETAINED_SCENE,
+    INSTANCE_BONES,
+    COPY_TILE,
+    INSTANCE_QUEUED,
+    INSTANCE_WALK,
+    LIGHT_GONE,
+    WORLD_LIGHTS,
+    INSTANCE_PARTICLES,
+    GAMMA_RAMP,
+    TEXTURE_GONE,
+    GEOMETRY_GONE,
+    MATERIAL_GONE,
+    INSTANCE_MOVE,
+    GEOMETRY_UV,
+    MORPH_TARGETS,
+    MORPH_WEIGHTS,
+    SIZE,
+    INSTANCE_CENSUS,
+    EFFECT_CHAIN,
+    EFFECT_TURN_CHECK,
+    EFFECT_CHAIN_GONE,
     INSTANCE_SHOWN,
 ];
 
@@ -330,8 +373,51 @@ mod tests {
 
     /// Every tag the player reads: all the known tags.
     const READ_TAGS: [u32; 46] = [
-        HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, OBJECT, COMMAND, CALL, FRAME_END, READ_PIXELS, SHOT, DRAW_UP, EXTENSION, MARK, GEOMETRY, MATERIAL, SHAPE, LIGHT, OVERLAY, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS,
-        RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_CENSUS, EFFECT_CHAIN, EFFECT_TURN_CHECK, EFFECT_CHAIN_GONE,
+        HEADER,
+        TEXTURE,
+        TEXTURE_UPDATE,
+        SCENE_BEGIN,
+        SCENE_END,
+        FRAME_EVENT,
+        OBJECT,
+        COMMAND,
+        CALL,
+        FRAME_END,
+        READ_PIXELS,
+        SHOT,
+        DRAW_UP,
+        EXTENSION,
+        MARK,
+        GEOMETRY,
+        MATERIAL,
+        SHAPE,
+        LIGHT,
+        OVERLAY,
+        INSTANCE,
+        INSTANCE_DRAW,
+        INSTANCE_DELETE,
+        INSTANCE_LIGHTS,
+        RETAINED_SCENE,
+        INSTANCE_BONES,
+        COPY_TILE,
+        INSTANCE_QUEUED,
+        INSTANCE_WALK,
+        LIGHT_GONE,
+        WORLD_LIGHTS,
+        INSTANCE_PARTICLES,
+        GAMMA_RAMP,
+        TEXTURE_GONE,
+        GEOMETRY_GONE,
+        MATERIAL_GONE,
+        INSTANCE_MOVE,
+        GEOMETRY_UV,
+        MORPH_TARGETS,
+        MORPH_WEIGHTS,
+        SIZE,
+        INSTANCE_CENSUS,
+        EFFECT_CHAIN,
+        EFFECT_TURN_CHECK,
+        EFFECT_CHAIN_GONE,
         INSTANCE_SHOWN,
     ];
 
@@ -431,10 +517,23 @@ mod tests {
                     continue;
                 }
                 let needed = needed(tag, &record[..cut]);
-                assert!(needed > cut, "tag {tag} ({}): a record of {cut} bytes passes with {needed} needed", name(tag));
-                assert!(needed <= record.len(), "tag {tag} ({}): {needed} needed from a cut of {cut} bytes, more than the whole record of {}", name(tag), record.len());
+                assert!(
+                    needed > cut,
+                    "tag {tag} ({}): a record of {cut} bytes passes with {needed} needed",
+                    name(tag)
+                );
+                assert!(
+                    needed <= record.len(),
+                    "tag {tag} ({}): {needed} needed from a cut of {cut} bytes, more than the whole record of {}",
+                    name(tag),
+                    record.len()
+                );
             }
-            assert!(needed(tag, &record) <= record.len(), "tag {tag} ({}): the whole record is refused", name(tag));
+            assert!(
+                needed(tag, &record) <= record.len(),
+                "tag {tag} ({}): the whole record is refused",
+                name(tag)
+            );
         }
     }
 
@@ -460,7 +559,44 @@ mod tests {
 
     #[test]
     fn every_record_with_a_fixed_head_has_a_least_length() {
-        for tag in [HEADER, TEXTURE, TEXTURE_UPDATE, SCENE_BEGIN, SCENE_END, FRAME_EVENT, READ_PIXELS, CALL, COMMAND, OBJECT, GEOMETRY, MATERIAL, SHAPE, LIGHT, INSTANCE, INSTANCE_DRAW, INSTANCE_DELETE, INSTANCE_LIGHTS, RETAINED_SCENE, INSTANCE_BONES, COPY_TILE, INSTANCE_QUEUED, INSTANCE_WALK, LIGHT_GONE, WORLD_LIGHTS, INSTANCE_PARTICLES, GAMMA_RAMP, TEXTURE_GONE, GEOMETRY_GONE, MATERIAL_GONE, INSTANCE_MOVE, GEOMETRY_UV, MORPH_TARGETS, MORPH_WEIGHTS, SIZE, INSTANCE_SHOWN] {
+        for tag in [
+            HEADER,
+            TEXTURE,
+            TEXTURE_UPDATE,
+            SCENE_BEGIN,
+            SCENE_END,
+            FRAME_EVENT,
+            READ_PIXELS,
+            CALL,
+            COMMAND,
+            OBJECT,
+            GEOMETRY,
+            MATERIAL,
+            SHAPE,
+            LIGHT,
+            INSTANCE,
+            INSTANCE_DRAW,
+            INSTANCE_DELETE,
+            INSTANCE_LIGHTS,
+            RETAINED_SCENE,
+            INSTANCE_BONES,
+            COPY_TILE,
+            INSTANCE_QUEUED,
+            INSTANCE_WALK,
+            LIGHT_GONE,
+            WORLD_LIGHTS,
+            INSTANCE_PARTICLES,
+            GAMMA_RAMP,
+            TEXTURE_GONE,
+            GEOMETRY_GONE,
+            MATERIAL_GONE,
+            INSTANCE_MOVE,
+            GEOMETRY_UV,
+            MORPH_TARGETS,
+            MORPH_WEIGHTS,
+            SIZE,
+            INSTANCE_SHOWN,
+        ] {
             assert!(least_length(tag) > 0, "tag {tag} has no least length");
         }
     }

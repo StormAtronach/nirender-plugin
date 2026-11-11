@@ -52,7 +52,12 @@ pub fn find(ea: usize) -> Option<&'static Func> {
 pub(crate) unsafe fn arena_alloc(bytes: &[u8]) -> Option<usize> {
     let mut base = ARENA.load(Ordering::Relaxed);
     if base == 0 {
-        base = win::VirtualAlloc(core::ptr::null_mut(), ARENA_SIZE, win::MEM_COMMIT_RESERVE, win::PAGE_EXECUTE_READWRITE) as usize;
+        base = win::VirtualAlloc(
+            core::ptr::null_mut(),
+            ARENA_SIZE,
+            win::MEM_COMMIT_RESERVE,
+            win::PAGE_EXECUTE_READWRITE,
+        ) as usize;
         if base == 0 {
             return None;
         }
@@ -86,8 +91,8 @@ pub enum Cleanup {
 /// `at` is the address of the thunk.
 pub fn entry_thunk_code(at: usize, detour: usize, stack_args: usize, cleanup: Cleanup) -> Vec<u8> {
     let mut code = vec![0x52, 0x51]; // push edx; push ecx
-    // This pushes the arguments again, the last one first. After each push the next argument
-    // is at the same offset.
+                                     // This pushes the arguments again, the last one first. After each push the next argument
+                                     // is at the same offset.
     let offset = 8 + 4 * stack_args;
     assert!(offset < 0x80);
     for _ in 0..stack_args {
@@ -165,7 +170,11 @@ pub unsafe fn install_raw(
     }
     let steal = head.len();
     if !head_matches(&live[..steal], head, relocs) {
-        return Err(format!("entry bytes differ from the database: {:02x?} against {:02x?}", &live[..steal], head));
+        return Err(format!(
+            "entry bytes differ from the database: {:02x?} against {:02x?}",
+            &live[..steal],
+            head
+        ));
     }
     let mut code = head.to_vec();
     let whole = steal < 5;
@@ -190,13 +199,24 @@ pub unsafe fn install_raw(
     finish(ea, at, steal.max(5), detour, stack_args, cleanup)
 }
 
-unsafe fn finish(ea: usize, trampoline: usize, steal: usize, detour: usize, stack_args: usize, cleanup: Cleanup) -> Result<usize, String> {
+unsafe fn finish(
+    ea: usize,
+    trampoline: usize,
+    steal: usize,
+    detour: usize,
+    stack_args: usize,
+    cleanup: Cleanup,
+) -> Result<usize, String> {
     // Reserve the place of the thunk first, because its code depends on its address.
     let size = entry_thunk_code(0, detour, stack_args, cleanup).len();
     let thunk = arena_alloc(&vec![0xCC; size]).ok_or("no memory for a thunk")?;
     let code = entry_thunk_code(thunk, detour, stack_args, cleanup);
     core::ptr::copy_nonoverlapping(code.as_ptr(), thunk as *mut u8, code.len());
-    win::FlushInstructionCache(win::GetCurrentProcess(), ARENA.load(Ordering::Relaxed) as *const c_void, ARENA_SIZE);
+    win::FlushInstructionCache(
+        win::GetCurrentProcess(),
+        ARENA.load(Ordering::Relaxed) as *const c_void,
+        ARENA_SIZE,
+    );
 
     let mut jump = vec![0xE9];
     jump.extend_from_slice(&rel32(ea + 5, thunk));
@@ -227,7 +247,10 @@ mod tests {
         let code = entry_thunk_code(0x1000, 0x2000, 3, Cleanup::Callee);
         assert_eq!(&code[..2], &[0x52, 0x51]);
         // three pushes of [esp+20]
-        assert_eq!(&code[2..14], &[0xFF, 0x74, 0x24, 20, 0xFF, 0x74, 0x24, 20, 0xFF, 0x74, 0x24, 20]);
+        assert_eq!(
+            &code[2..14],
+            &[0xFF, 0x74, 0x24, 20, 0xFF, 0x74, 0x24, 20, 0xFF, 0x74, 0x24, 20]
+        );
         assert_eq!(code[14], 0xE8);
         let rel = u32::from_le_bytes([code[15], code[16], code[17], code[18]]) as usize;
         assert_eq!(0x1000 + 19 + rel, 0x2000);
@@ -263,7 +286,12 @@ mod tests {
         // A scratch copy of the head of NiDX8Renderer::deleting_dtor whose call goes to `live_target`;
         // the database head names `database_target`.
         unsafe {
-            let block = win::VirtualAlloc(core::ptr::null_mut(), 0x1000, win::MEM_COMMIT_RESERVE, win::PAGE_EXECUTE_READWRITE) as usize;
+            let block = win::VirtualAlloc(
+                core::ptr::null_mut(),
+                0x1000,
+                win::MEM_COMMIT_RESERVE,
+                win::PAGE_EXECUTE_READWRITE,
+            ) as usize;
             assert_ne!(block, 0);
             let (database_target, live_target) = (block + 0x100, block + 0x200);
             let call = |target: usize| rel32(block + 8, target);
@@ -284,7 +312,12 @@ mod tests {
     #[test]
     fn the_hook_records_its_jump_and_the_bytes_it_displaced() {
         unsafe {
-            let block = win::VirtualAlloc(core::ptr::null_mut(), 0x1000, win::MEM_COMMIT_RESERVE, win::PAGE_EXECUTE_READWRITE) as usize;
+            let block = win::VirtualAlloc(
+                core::ptr::null_mut(),
+                0x1000,
+                win::MEM_COMMIT_RESERVE,
+                win::PAGE_EXECUTE_READWRITE,
+            ) as usize;
             assert_ne!(block, 0);
             // push ebp; mov ebp, esp; sub esp, 8: a head of 6 bytes, so the jump has one NOP of fill.
             let head = [0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08];

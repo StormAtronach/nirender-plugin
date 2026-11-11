@@ -48,12 +48,20 @@ impl Player {
             return pipeline.clone();
         }
         let device = &self.renderer.device;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("map tile copy"), source: wgpu::ShaderSource::Wgsl(TILE_SHADER.into()) });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("map tile copy"),
+            source: wgpu::ShaderSource::Wgsl(TILE_SHADER.into()),
+        });
         let _long = crate::LongStep::begin();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("map tile copy"),
             layout: None,
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
@@ -61,7 +69,11 @@ impl Player {
                 module: &module,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview_mask: None,
             cache: None,
@@ -87,26 +99,41 @@ impl Player {
         let pipeline = self.tile_pipeline(format);
         let read = ticket != 0 && self.tile_out.is_some();
         // The copy goes after the draws of the tile, which are in the commands of the frame.
-        let touch = super::split::Touch { reads: vec![target], writes: vec![texture] };
+        let touch = super::split::Touch {
+            reads: vec![target],
+            writes: vec![texture],
+        };
         let made = self.flush_split(Some(touch), |player| {
             let device = player.renderer.device.clone();
             let tile = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("map tile"),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
             let view = tile.create_view(&Default::default());
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("map tile copy"),
                 layout: &pipeline.get_bind_group_layout(0),
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source.create_view(&Default::default())) }],
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&source.create_view(&Default::default())),
+                }],
             });
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map tile copy") });
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("map tile copy"),
+            });
             {
                 crate::gpu::note_other_pass();
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -115,7 +142,10 @@ impl Player {
                         view: &view,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -128,13 +158,26 @@ impl Player {
             }
             let buffer = read.then(|| copy_picture(&device, &mut encoder, &tile, width, height));
             player.renderer.upload_indirect(&player.frame_args);
-            crate::gpu::submit(&player.renderer.queue, player.renderer.commands.take().into_iter().chain([encoder.finish()]));
+            crate::gpu::submit(
+                &player.renderer.queue,
+                player.renderer.commands.take().into_iter().chain([encoder.finish()]),
+            );
             if let Some((buffer, row)) = buffer {
                 let state = Arc::new(AtomicU8::new(0));
                 let mapped = state.clone();
-                buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| mapped.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release));
+                buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                    mapped.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release)
+                });
                 let blue_first = matches!(format, wgpu::TextureFormat::Bgra8Unorm);
-                player.tile_reads.push(TileRead { ticket, buffer, row, width, height, blue_first, state });
+                player.tile_reads.push(TileRead {
+                    ticket,
+                    buffer,
+                    row,
+                    width,
+                    height,
+                    blue_first,
+                    state,
+                });
             }
             (tile, view)
         });

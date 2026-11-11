@@ -7,15 +7,17 @@
 
 use core::mem::transmute;
 
-use crate::d3d::{device_add_ref, device_release, device_set_pixel_shader, device_set_vertex_shader, D3DTSS_TCI_CAMERASPACEPOSITION};
+use crate::d3d::{
+    device_add_ref, device_release, device_set_pixel_shader, device_set_vertex_shader, D3DTSS_TCI_CAMERASPACEPOSITION,
+};
 use crate::engine::{
     self, eh_vector_constructor_iterator, eh_vector_destructor_iterator, ni_object_release, ni_pointer_set, operator_delete,
-    FILTER_REMAP_MAGNIFY, FILTER_REMAP_MINIFY, FILTER_REMAP_MIP, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES, NI_REF_OBJECT_COUNT,
-    VTBL_NI_DX8_TEXTURE_PASS, VTBL_NI_REF_OBJECT,
+    FILTER_REMAP_MAGNIFY, FILTER_REMAP_MINIFY, FILTER_REMAP_MIP, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES,
+    NI_REF_OBJECT_COUNT, VTBL_NI_DX8_TEXTURE_PASS, VTBL_NI_REF_OBJECT,
 };
 use crate::gen::layouts::{
-    NiDX8RenderState as RS, NiDX8Renderer as R, NiDX8TexturePass as TP, NiDX8TexturePass__1 as SP, NiDX8TextureStage as TS, NiPixelData,
-    NiPixelFormat,
+    NiDX8RenderState as RS, NiDX8Renderer as R, NiDX8TexturePass as TP, NiDX8TexturePass__1 as SP, NiDX8TextureStage as TS,
+    NiPixelData, NiPixelFormat,
 };
 use crate::mem::{rd, wr};
 use crate::ports::ni::{self, release_and_clear, REF_COUNT};
@@ -117,7 +119,11 @@ unsafe fn array_set_size(this: usize, size: u32) {
             let entry = slot(this, index);
             if rd::<u32>(entry, 0) != 0 {
                 wr::<u32>(entry, 0, 0);
-                wr(this, TP::TArray_18_filledCount, rd::<u32>(this, TP::TArray_18_filledCount).wrapping_sub(1));
+                wr(
+                    this,
+                    TP::TArray_18_filledCount,
+                    rd::<u32>(this, TP::TArray_18_filledCount).wrapping_sub(1),
+                );
             }
             index += 1;
             if index >= rd::<u32>(this, TP::TArray_18_endIndex) {
@@ -145,7 +151,11 @@ unsafe fn array_clear_slot(this: usize, index: u32) {
         if index >= rd::<u32>(this, TP::TArray_18_endIndex) {
             wr(this, TP::TArray_18_endIndex, index + 1);
         } else if rd::<u32>(slot(this, index), 0) != 0 {
-            wr(this, TP::TArray_18_filledCount, rd::<u32>(this, TP::TArray_18_filledCount).wrapping_sub(1));
+            wr(
+                this,
+                TP::TArray_18_filledCount,
+                rd::<u32>(this, TP::TArray_18_filledCount).wrapping_sub(1),
+            );
         }
         wr::<u32>(slot(this, index), 0, 0);
     }
@@ -358,7 +368,8 @@ pub unsafe fn ctor(this: usize, renderer: usize) -> usize {
     wr::<u32>(this, TP::TArray_18_filledCount, 0);
     wr(this, TP::TArray_18_storage, engine::operator_new(4));
 
-    let bank = |offset: usize| eh_vector_constructor_iterator(this + offset, TS::SIZE, 8, TEXTURE_STAGE_CTOR, TEXTURE_STAGE_DTOR);
+    let bank =
+        |offset: usize| eh_vector_constructor_iterator(this + offset, TS::SIZE, 8, TEXTURE_STAGE_CTOR, TEXTURE_STAGE_DTOR);
     bank(TP::stage);
     texture_stage_ctor(this + TP::field_624);
     bank(TP::field_6F8);
@@ -477,12 +488,20 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
         wr(this, TP::deviceInterface, device);
         device_add_ref(device);
         wr::<u32>(this, TP::renderState, rd(renderer, R::renderState));
-        wr::<u32>(this, TP::configurableTexturePipeline, rd(renderer, R::configurableTexturePipeline));
+        wr::<u32>(
+            this,
+            TP::configurableTexturePipeline,
+            rd(renderer, R::configurableTexturePipeline),
+        );
         wr::<u32>(this, TP::textureManager, rd(renderer, R::textureManager));
     }
     let format: usize = rd(rd::<usize>(this, TP::renderer), R::defaultTextureFormats);
     let block = engine::operator_new(NiPixelData::SIZE);
-    let pixel_data = if block != 0 { engine::pixel_data_ctor_args(block, 2, 1, format, 1) } else { 0 };
+    let pixel_data = if block != 0 {
+        engine::pixel_data_ctor_args(block, 2, 1, format, 1)
+    } else {
+        0
+    };
     if pixel_data != 0 {
         ni::add_reference(pixel_data);
     }
@@ -525,7 +544,10 @@ pub unsafe fn init_renderer(this: usize, renderer: usize) -> u8 {
     // The port calls virtual function 4 of the texture manager (`GetFormatFromTexture`) with the
     // new texture.
     let manager: usize = rd(this, TP::textureManager);
-    let link: unsafe extern "thiscall" fn(usize, usize) -> u32 = transmute(rd::<usize>(rd::<usize>(manager, 0), crate::gen::layouts::InterfaceNiDX8TextureManager::GetFormatFromTexture));
+    let link: unsafe extern "thiscall" fn(usize, usize) -> u32 = transmute(rd::<usize>(
+        rd::<usize>(manager, 0),
+        crate::gen::layouts::InterfaceNiDX8TextureManager::GetFormatFromTexture,
+    ));
     link(manager, rd(this, TP::texture_CDC));
 
     for index in 0..STAGES_PER_BANK {
@@ -746,7 +768,10 @@ impl Drops {
 
 /// The storage of the array of sub-passes.
 unsafe fn add_storage(set: &mut Regions, this: usize) {
-    set.add(rd(this, TP::TArray_18_storage), rd::<u32>(this, TP::TArray_18_storageCount) as usize * 4);
+    set.add(
+        rd(this, TP::TArray_18_storage),
+        rd::<u32>(this, TP::TArray_18_storageCount) as usize * 4,
+    );
 }
 
 /// The call is a skip when the storage of the array does not have 2 slots. The function then
@@ -784,7 +809,10 @@ unsafe fn free_slots(subpass: usize) -> (u32, u32) {
     let used: u32 = rd(subpass, SUBPASS_SLOTS_USED_1);
     let limit: u32 = rd(MAX_TEXTURE_BLEND_STAGES, 0);
     let free_1 = if used == u32::MAX { limit } else { limit.wrapping_sub(used) };
-    (free_1, rd::<u32>(MAX_SIMULTANEOUS_TEXTURES, 0).wrapping_sub(rd(subpass, SUBPASS_SLOTS_USED_2)))
+    (
+        free_1,
+        rd::<u32>(MAX_SIMULTANEOUS_TEXTURES, 0).wrapping_sub(rd(subpass, SUBPASS_SLOTS_USED_2)),
+    )
 }
 
 /// The current sub-pass as the "acquire" functions find it, or 0 when they must make one.
@@ -800,7 +828,10 @@ unsafe fn current_subpass_without_allocation(this: usize) -> usize {
 /// slot is outside the array or has no sub-pass, because the function then allocates.
 unsafe fn advance_regions(set: &mut Regions, this: usize) {
     let next = rd::<u32>(this, TP::field_C).wrapping_add(1);
-    if next >= rd::<u32>(this, TP::count_10) || next >= rd::<u32>(this, TP::TArray_18_storageCount) || rd::<u32>(slot(this, next), 0) == 0 {
+    if next >= rd::<u32>(this, TP::count_10)
+        || next >= rd::<u32>(this, TP::TArray_18_storageCount)
+        || rd::<u32>(slot(this, next), 0) == 0
+    {
         set.skip();
     }
 }
@@ -845,70 +876,110 @@ unsafe fn acquire_subpass_for_pixel_shader_regions(set: &mut Regions, this: usiz
     }
 }
 
-port_thiscall!(reset_for_new_frame_port, 0x6B2FA0, "NiDX8TexturePass::resetForNewFrame",
+port_thiscall!(
+    reset_for_new_frame_port,
+    0x6B2FA0,
+    "NiDX8TexturePass::resetForNewFrame",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| reset_for_new_frame_regions(set, this),
-    rust = reset_for_new_frame);
+    rust = reset_for_new_frame
+);
 
 // The call is a skip always: the function allocates the storage of the array and the 2x1
 // texture.
-port_thiscall!(ctor_port, 0x6B33A0, "NiDX8TexturePass::ctor",
+port_thiscall!(
+    ctor_port,
+    0x6B33A0,
+    "NiDX8TexturePass::ctor",
     fn(this, renderer: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = ctor);
+    rust = ctor
+);
 
 // The call is a skip always: the function frees the sub-passes and the storage and releases
 // the device.
-port_thiscall!(dtor_port, 0x6B3590, "NiDX8TexturePass::dtor",
+port_thiscall!(
+    dtor_port,
+    0x6B3590,
+    "NiDX8TexturePass::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = dtor);
+    rust = dtor
+);
 
 // The call is a skip always: the function makes a `NiPixelData` and a `NiSourceTexture`.
-port_thiscall!(init_renderer_port, 0x6B38A0, "NiDX8TexturePass::initRenderer",
+port_thiscall!(
+    init_renderer_port,
+    0x6B38A0,
+    "NiDX8TexturePass::initRenderer",
     fn(this, renderer: usize) -> u8,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = init_renderer);
+    rust = init_renderer
+);
 
-port_thiscall!(set_stage_object_port, 0x6B3AB0, "NiDX8TexturePass::setStageObject",
+port_thiscall!(
+    set_stage_object_port,
+    0x6B3AB0,
+    "NiDX8TexturePass::setStageObject",
     fn(this, index: u32, subpass: usize) -> (),
     compare_eax = false,
     regions = |set| set_stage_object_regions(set, this, index),
-    rust = set_stage_object);
+    rust = set_stage_object
+);
 
-port_thiscall!(acquire_subpass_with_capacity_port, 0x6B3B30, "NiDX8TexturePass::acquireSubpassWithCapacity",
+port_thiscall!(
+    acquire_subpass_with_capacity_port,
+    0x6B3B30,
+    "NiDX8TexturePass::acquireSubpassWithCapacity",
     fn(this, need_2: u32, need_1: u32) -> usize,
     compare_eax = true,
     regions = |set| acquire_subpass_with_capacity_regions(set, this, need_2, need_1),
-    rust = acquire_subpass_with_capacity);
+    rust = acquire_subpass_with_capacity
+);
 
-port_thiscall!(init_or_check_subpass_port, 0x6B3D70, "NiDX8TexturePass::initOrCheckSubpass",
+port_thiscall!(
+    init_or_check_subpass_port,
+    0x6B3D70,
+    "NiDX8TexturePass::initOrCheckSubpass",
     fn(this, stage_kind: u32, need_1: u32, need_2: u32) -> u8,
     compare_eax = true,
     regions = |set| init_or_check_subpass_regions(set, this),
-    rust = init_or_check_subpass);
+    rust = init_or_check_subpass
+);
 
-port_thiscall!(acquire_subpass_for_pixel_shader_port, 0x6B3EE0, "NiDX8TexturePass::acquireSubpassForPixelShader",
+port_thiscall!(
+    acquire_subpass_for_pixel_shader_port,
+    0x6B3EE0,
+    "NiDX8TexturePass::acquireSubpassForPixelShader",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| acquire_subpass_for_pixel_shader_regions(set, this),
-    rust = acquire_subpass_for_pixel_shader);
+    rust = acquire_subpass_for_pixel_shader
+);
 
-port_thiscall!(apply_pixel_shader_port, 0x6B40F0, "NiDX8TexturePass::applyPixelShader",
+port_thiscall!(
+    apply_pixel_shader_port,
+    0x6B40F0,
+    "NiDX8TexturePass::applyPixelShader",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| set.add(rd(this, TP::renderState), RS::SIZE),
-    rust = apply_pixel_shader);
+    rust = apply_pixel_shader
+);
 
-port_thiscall!(apply_vertex_shader_port, 0x6B4140, "NiDX8TexturePass::applyVertexShader",
+port_thiscall!(
+    apply_vertex_shader_port,
+    0x6B4140,
+    "NiDX8TexturePass::applyVertexShader",
     fn(this, handle: u32) -> u32,
     compare_eax = true,
     regions = |set| set.add(rd(this, TP::renderState), RS::SIZE),
-    rust = apply_vertex_shader);
+    rust = apply_vertex_shader
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &reset_for_new_frame_port::STATE,
@@ -936,7 +1007,10 @@ mod tests {
 
     impl Pass {
         fn new(slots: usize) -> Pass {
-            let mut pass = Pass { bytes: vec![0u8; TP::SIZE], storage: vec![0u32; slots] };
+            let mut pass = Pass {
+                bytes: vec![0u8; TP::SIZE],
+                storage: vec![0u32; slots],
+            };
             unsafe {
                 wr(pass.this(), TP::TArray_18_storage, pass.storage.as_mut_ptr() as usize);
                 wr::<u32>(pass.this(), TP::TArray_18_storageCount, slots as u32);
@@ -994,9 +1068,15 @@ mod tests {
         unsafe {
             array_set_at(this, 1, 0x1000);
             array_set_at(this, 3, 0x2000);
-            assert_eq!((pass.get(TP::TArray_18_endIndex), pass.get(TP::TArray_18_filledCount)), (4, 2));
+            assert_eq!(
+                (pass.get(TP::TArray_18_endIndex), pass.get(TP::TArray_18_filledCount)),
+                (4, 2)
+            );
             array_set_at(this, 1, 0);
-            assert_eq!((pass.get(TP::TArray_18_endIndex), pass.get(TP::TArray_18_filledCount)), (4, 1));
+            assert_eq!(
+                (pass.get(TP::TArray_18_endIndex), pass.get(TP::TArray_18_filledCount)),
+                (4, 1)
+            );
             array_set_at(this, 2, 0);
             assert_eq!(pass.get(TP::TArray_18_filledCount), 1);
             // The index is past the storage. Nothing changes.

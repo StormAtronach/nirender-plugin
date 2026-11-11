@@ -23,7 +23,10 @@ impl Player {
         // A draw before the world or after the post chain into the back buffer takes the small
         // group of the arrays and the copy of its record with its slots in that group, made
         // before the upload of the frame (`mark_small_draws`).
-        let mut small = self.small_arrays.as_ref().filter(|_| self.small_copy.is_some() && self.pass_target.is_none());
+        let mut small = self
+            .small_arrays
+            .as_ref()
+            .filter(|_| self.small_copy.is_some() && self.pass_target.is_none());
         let mut copy = None;
         if let Some(plane) = side.filter(|_| split) {
             // A copy of the record with the plane, and instances that name it, now.
@@ -51,7 +54,9 @@ impl Player {
         }
         let arrays = match small {
             Some((group, _)) => group.clone(),
-            None if renderer.tier == crate::request::TextureTier::C => renderer.stage_group(draw.texture_handles, draw.sampler_values, self.pass_target),
+            None if renderer.tier == crate::request::TextureTier::C => {
+                renderer.stage_group(draw.texture_handles, draw.sampler_values, self.pass_target)
+            }
             None => renderer.array_group_for(self.pass_target),
         };
         let small = small.is_some();
@@ -69,8 +74,14 @@ impl Player {
         // A change of the state ends the run that is open.
         let same = self.pass_pipeline.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &pipeline))
             && self.pass_stencil == Some(draw.stencil_reference)
-            && self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices))
-            && self.pass_indexes.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.indexes))
+            && self
+                .pass_vertices
+                .as_ref()
+                .is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices))
+            && self
+                .pass_indexes
+                .as_ref()
+                .is_some_and(|bound| Rc::ptr_eq(bound, &draw.indexes))
             && self.bound.is(0, Some(&renderer.frame_group))
             && self.pass_arrays.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &arrays));
         if !same {
@@ -111,10 +122,18 @@ impl Player {
         self.bound.set(pass, 0, &renderer.frame_group);
         if !self.pass_arrays.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &arrays)) {
             pass.set_bind_group(1, &*arrays, &[]);
-            crate::gpu::note_array_bind(if small { crate::gpu::BindOrigin::Small } else { crate::gpu::BindOrigin::Game });
+            crate::gpu::note_array_bind(if small {
+                crate::gpu::BindOrigin::Small
+            } else {
+                crate::gpu::BindOrigin::Game
+            });
             self.pass_arrays = Some(arrays);
         }
-        if !self.pass_vertices.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices)) {
+        if !self
+            .pass_vertices
+            .as_ref()
+            .is_some_and(|bound| Rc::ptr_eq(bound, &draw.vertices))
+        {
             pass.set_vertex_buffer(0, draw.vertices.slice(..));
             self.pass_vertices = Some(draw.vertices.clone());
         }
@@ -126,13 +145,23 @@ impl Player {
             self.pass_shared = true;
         }
         let (first, count) = draw.range;
-        if !self.pass_indexes.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, &draw.indexes)) {
+        if !self
+            .pass_indexes
+            .as_ref()
+            .is_some_and(|bound| Rc::ptr_eq(bound, &draw.indexes))
+        {
             pass.set_index_buffer(draw.indexes.slice(..), wgpu::IndexFormat::Uint16);
             self.pass_indexes = Some(draw.indexes.clone());
         }
         if renderer.indirect && self.frame_args.len() + self.run_args.len() < renderer.indirect_capacity {
             // The draw joins the run; the run becomes one indirect call at its end.
-            self.run_args.push(IndirectArgs { index_count: count, instance_count: instances.1, first_index: first, base_vertex: draw.base_vertex, first_instance: instances.0 });
+            self.run_args.push(IndirectArgs {
+                index_count: count,
+                instance_count: instances.1,
+                first_index: first,
+                base_vertex: draw.base_vertex,
+                first_instance: instances.0,
+            });
         } else {
             if renderer.indirect {
                 renderer.counts.indirect_over += 1;
@@ -168,9 +197,18 @@ impl Player {
     /// in a view of its own or in the world scene of the back buffer, where the full tier or the
     /// main view's parts start the world.
     fn is_early_world_draw(&self, sky: bool, sky_hidden: bool, walk_marked: bool, held: bool) -> bool {
-        let world_scene = self.views.open().is_some() || (self.target.is_none() && self.plan.scene_kind == scene::SCENE_WORLD);
+        let world_scene =
+            self.views.open().is_some() || (self.target.is_none() && self.plan.scene_kind == scene::SCENE_WORLD);
         let extension_world = self.extension.is_some() && world_scene;
-        crate::retained::world_draw_is_early(extension_world, held, sky, sky_hidden, walk_marked, self.view_sky_seen, self.view_world_begun)
+        crate::retained::world_draw_is_early(
+            extension_world,
+            held,
+            sky,
+            sky_hidden,
+            walk_marked,
+            self.view_sky_seen,
+            self.view_world_begun,
+        )
     }
 
     /// The scene in progress starts its world for the extension (`at`): the draws of its world
@@ -188,7 +226,9 @@ impl Player {
         counts.early_draws += u64::from(early);
         if counts.early_scenes <= EARLY_DRAW_LINES {
             let [draws, sky] = self.view_scene_draws;
-            let into = self.target.map_or_else(|| String::from("the back buffer"), |handle| format!("texture {handle}"));
+            let into = self
+                .target
+                .map_or_else(|| String::from("the back buffer"), |handle| format!("texture {handle}"));
             println!("early world draws: frame {}, into {into}, at {at}: {early} draws of the world in the target before ({draws} draws in the scene so far, {sky} of the sky)", self.renderer.counts.frames);
         }
     }
@@ -247,11 +287,19 @@ impl Player {
     /// `indexes` entries of the index list of the geometry from `first_index`.
     /// Engine-rules R21 (the skill wgpu-renderer-dev).
     pub(crate) fn draw(&mut self, derived: &material::Derived, pass: &Pass, topology: u32, first_index: u32, indexes: u32) {
-        if self.segment_growth_at != 0 && self.target.and_then(|handle| self.renderer.targets.get(&handle)).is_some_and(|texture| texture.size.0 <= 64) {
+        if self.segment_growth_at != 0
+            && self
+                .target
+                .and_then(|handle| self.renderer.targets.get(&handle))
+                .is_some_and(|texture| texture.size.0 <= 64)
+        {
             self.segment_growth_at -= 1;
             if self.segment_growth_at == 0 {
                 self.renderer.force_segment_growth = true;
-                println!("buffers: the segment of the table grows on purpose, at frame {}", self.renderer.counts.frames);
+                println!(
+                    "buffers: the segment of the table grows on purpose, at frame {}",
+                    self.renderer.counts.frames
+                );
             }
         }
         if !self.stream.back_buffer {
@@ -264,7 +312,11 @@ impl Player {
         }
         // The first draw of the world scene (kind 1) into the back buffer: the answers of
         // the extension for the frame.
-        if self.extension.is_some() && self.parameters.is_none() && in_back_buffer && self.plan.scene_kind == scene::SCENE_WORLD {
+        if self.extension.is_some()
+            && self.parameters.is_none()
+            && in_back_buffer
+            && self.plan.scene_kind == scene::SCENE_WORLD
+        {
             self.ask_frame();
         }
         // The world of the game starts with the first draw of its world scene into the
@@ -278,8 +330,14 @@ impl Player {
         // the first draw.
         let sky = scene::sky_class(self.stream.object_class);
         // The stream marks the walk, and the scene's record says that the plugin walks its root.
-        let (extension, sky_hidden, walk_marked) = (self.extension.is_some(), self.stream.sky_hidden, self.stream.world_walk && self.views.scene_walk_due());
-        let (steps, hold) = self.plan_now().world_draw(extension, in_back_buffer, sky, sky_hidden, walk_marked);
+        let (extension, sky_hidden, walk_marked) = (
+            self.extension.is_some(),
+            self.stream.sky_hidden,
+            self.stream.world_walk && self.views.scene_walk_due(),
+        );
+        let (steps, hold) = self
+            .plan_now()
+            .world_draw(extension, in_back_buffer, sky, sky_hidden, walk_marked);
         // The world of a view of its own, by the main view's rule: the first draw after the
         // sky, or the first draw with the sky hidden; a stream that marks the walk starts it at
         // the event (`world_walk`), in a scene whose record says the plugin walks its root. A
@@ -298,7 +356,10 @@ impl Player {
         }
         // A draw of a class that the extension takes: the extension draws at the first one.
         let class = self.stream.object_class;
-        let (watched, shade, fog_range, sky) = self.parameters.as_ref().map_or((0, false, None, None), |p| (p.watched, p.shade, p.fog_range, p.sky));
+        let (watched, shade, fog_range, sky) = self
+            .parameters
+            .as_ref()
+            .map_or((0, false, None, None), |p| (p.watched, p.shade, p.fog_range, p.sky));
         if in_back_buffer && class < 32 && watched & (1 << class) != 0 {
             if self.replaced & (1 << class) == 0 {
                 self.replaced |= 1 << class;
@@ -316,14 +377,26 @@ impl Player {
             stride: shape.stride,
             topology,
             blend: pass.blend,
-            depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
+            depth: [
+                (derived.depth[0] != 0) as u32,
+                (derived.depth[1] != 0) as u32,
+                derived.depth[2],
+            ],
             cull: derived.cull,
             fill: derived.fill,
             // The back buffer of the game has no alpha (X8R8G8B8): a draw into it writes
             // none, and the alpha there stays 1, as a read of such a target gives.
-            color_write: if in_back_buffer { pass.color_write & 7 } else { pass.color_write },
+            color_write: if in_back_buffer {
+                pass.color_write & 7
+            } else {
+                pass.color_write
+            },
             // On, fail, depth fail, pass, function, mask, write mask.
-            stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
+            stencil: if stencil[0] == 0 {
+                [0; 7]
+            } else {
+                [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0]
+            },
             // The samples of the targets that the draw goes into, known now: the pass that
             // draws it opens later, when the items run.
             samples: if in_back_buffer { renderer.samples } else { 1 },
@@ -335,10 +408,15 @@ impl Player {
         }
         // The buffers of the geometry record of the shape.
         let frame = renderer.geometry_frame;
-        let Some((vertex_buffer, index_buffer, base_vertex, geometry_first)) = renderer.geometries.get_mut(&shape.geometry).filter(|g| first_index + indexes <= g.entries).map(|g| {
-            g.drawn_in = frame;
-            (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)
-        }) else {
+        let Some((vertex_buffer, index_buffer, base_vertex, geometry_first)) = renderer
+            .geometries
+            .get_mut(&shape.geometry)
+            .filter(|g| first_index + indexes <= g.entries)
+            .map(|g| {
+                g.drawn_in = frame;
+                (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)
+            })
+        else {
             renderer.counts.geometry_short += 1;
             return;
         };
@@ -352,7 +430,8 @@ impl Player {
         // kind that the plugin gives, not by the projection. The matrices of the post chain
         // come from the world camera only.
         let kind = self.plan.scene_kind;
-        let world = self.plan.world_begun && in_back_buffer && (scene::world_camera(kind) || kind == scene::SCENE_FIRST_PERSON);
+        let world =
+            self.plan.world_begun && in_back_buffer && (scene::world_camera(kind) || kind == scene::SCENE_FIRST_PERSON);
         if world && self.stream.projection[11] != 1.0 {
             renderer.counts.orthographic_world_draws += 1;
         }
@@ -368,7 +447,9 @@ impl Player {
             renderer.counts.shape_keeping += 1;
             return;
         }
-        let mut draw_data = self.stream.draw_data(derived, pass, &mut renderer.counts, &mut self.frame_lights);
+        let mut draw_data = self
+            .stream
+            .draw_data(derived, pass, &mut renderer.counts, &mut self.frame_lights);
         if let Some(uv) = renderer.geometries.get(&self.stream.shape.geometry).and_then(|g| g.uv) {
             crate::uv_animation::compose(&mut draw_data, &uv);
         }
@@ -400,7 +481,10 @@ impl Player {
         // world. The extension still gets them as lights of the frame. A view that shows the
         // light of each draw keeps them (`FrameParameters::debug_view`).
         let light_view = self.parameters.as_ref().is_some_and(FrameParameters::lights_view);
-        let blind = shaded && !light_view && crate::switches::switches().blind_light_key && crate::light_keys::colour_takes_no_light(&draw_data);
+        let blind = shaded
+            && !light_view
+            && crate::switches::switches().blind_light_key
+            && crate::light_keys::colour_takes_no_light(&draw_data);
         if blind {
             draw_data.light_range[1] = 0;
             renderer.counts.blind_light_draws += 1;
@@ -413,15 +497,24 @@ impl Player {
         let first = draw_data.light_range[0] as usize;
         let relative = shape.relative && self.stream.origin.is_some();
         // An emissive-only draw has no light (`Derived::no_lights`): none in its mask.
-        let noted = if derived.no_lights { 0 } else { shape.lights.len() / STATE_LIGHT_SIZE };
+        let noted = if derived.no_lights {
+            0
+        } else {
+            shape.lights.len() / STATE_LIGHT_SIZE
+        };
         for (i, light) in shape.lights.chunks_exact(STATE_LIGHT_SIZE).take(noted).enumerate() {
             if masked {
-                if let Some(slot) = renderer.clusters.note(word(light, 0), (first + i) as u32, relative, self.stream.origin) {
+                if let Some(slot) = renderer
+                    .clusters
+                    .note(word(light, 0), (first + i) as u32, relative, self.stream.origin)
+                {
                     draw_data.light_mask[slot as usize / 128][slot as usize / 32 % 4] |= 1 << (slot % 32);
                 }
             }
             if extension_lights {
-                renderer.extension_lights.note(word(light, 0), (first + i) as u32, relative, self.stream.origin);
+                renderer
+                    .extension_lights
+                    .note(word(light, 0), (first + i) as u32, relative, self.stream.origin);
             }
         }
         if takes_clusters(masked, noted) {
@@ -463,11 +556,17 @@ impl Player {
             renderer.counts.target_draws += 1;
         }
         // The stage key of the finished record: the fragment shader made for its stages.
-        let key = PipelineKey { stages: renderer.stage_shaders.id_of(&draw_data), ..key };
+        let key = PipelineKey {
+            stages: renderer.stage_shaders.id_of(&draw_data),
+            ..key
+        };
         // The record of the draw, and the instance that names it.
         let Some(record) = renderer.record(&draw_data) else { return };
         let instance = self.frame_instances.len() as u32;
-        self.frame_instances.push(Instance { world: IDENTITY, record: [record, 0, 0, 0] });
+        self.frame_instances.push(Instance {
+            world: IDENTITY,
+            record: [record, 0, 0, 0],
+        });
         let draw = Rc::new(Draw {
             class,
             // The world scene of the game is 1, with the sky at its start; its sorted draws

@@ -81,7 +81,10 @@ unsafe extern "C" fn main_thread_gate(l: LuaState) -> i32 {
     static REFUSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     if let Ok(mut refused) = REFUSED.lock() {
         if !refused.contains(&name) {
-            crate::log!("lua: nirender.{name} called on thread {} (not the main thread): refused", crate::win::GetCurrentThreadId());
+            crate::log!(
+                "lua: nirender.{name} called on thread {} (not the main thread): refused",
+                crate::win::GetCurrentThreadId()
+            );
             refused.push(name);
         }
     }
@@ -171,7 +174,12 @@ unsafe extern "C" fn capture(l: LuaState) -> i32 {
 /// true, or false and the problem.
 unsafe extern "C" fn stream(l: LuaState) -> i32 {
     let name = arg_str(l, 1).unwrap_or_default();
-    match crate::capture::start_stream(&name, lua_tonumber(l, 2) as u32, lua_tonumber(l, 3) as u32, lua_toboolean(l, 4) != 0) {
+    match crate::capture::start_stream(
+        &name,
+        lua_tonumber(l, 2) as u32,
+        lua_tonumber(l, 3) as u32,
+        lua_toboolean(l, 4) != 0,
+    ) {
         Ok(()) => {
             lua_pushboolean(l, 1);
             1
@@ -226,7 +234,11 @@ unsafe extern "C" fn loading_done(_: LuaState) -> i32 {
 /// `nirender.overlay([on])` turns the debug overlay of the host program on or off; without
 /// a value, to the other state. Returns the state.
 unsafe extern "C" fn overlay(l: LuaState) -> i32 {
-    let value = if lua_gettop(l) >= 1 { Some(lua_toboolean(l, 1) != 0) } else { None };
+    let value = if lua_gettop(l) >= 1 {
+        Some(lua_toboolean(l, 1) != 0)
+    } else {
+        None
+    };
     lua_pushboolean(l, crate::capture::overlay(value) as i32);
     1
 }
@@ -314,18 +326,26 @@ unsafe extern "C" fn port_times(l: LuaState) -> i32 {
         .enumerate()
         .map(|(i, port)| {
             let calls = port.live_calls.get();
-            let row = (crate::shadow::stamps_to_ms(port.live_stamps.take()), calls - last[i], port.name);
+            let row = (
+                crate::shadow::stamps_to_ms(port.live_stamps.take()),
+                calls - last[i],
+                port.name,
+            );
             last[i] = calls;
             row
         })
         .collect();
     rows.sort_by(|a, b| b.0.total_cmp(&a.0));
     let n = (lua_tonumber(l, 1) as usize).max(1);
-    let text: Vec<String> = rows.iter().take(n).filter(|row| row.1 != 0).map(|(ms, calls, name)| format!("{name} {calls} {ms:.1}")).collect();
+    let text: Vec<String> = rows
+        .iter()
+        .take(n)
+        .filter(|row| row.1 != 0)
+        .map(|(ms, calls, name)| format!("{name} {calls} {ms:.1}"))
+        .collect();
     push_str(l, &text.join("; "));
     1
 }
-
 
 /// `nirender.gameScreenshot()` makes the game take its own screenshot, as its screenshot
 /// key does: `WorldControllerRenderTarget::takeScreenshot` 0x42E620 of
@@ -364,35 +384,71 @@ unsafe extern "C" fn dump_device(l: LuaState) -> i32 {
     let _ = writeln!(text, "caps {}", hex(&caps));
     let parameters: [u32; 13] = crate::mem::rd(renderer, R::d3dPresentParameters);
     let _ = writeln!(text, "present {}", hex(&parameters));
-    let _ = writeln!(text, "behavior {:08x} type {}", crate::mem::rd::<u32>(renderer, R::d3dBehaviorFlags), crate::mem::rd::<u32>(renderer, R::d3dDeviceType));
+    let _ = writeln!(
+        text,
+        "behavior {:08x} type {}",
+        crate::mem::rd::<u32>(renderer, R::d3dBehaviorFlags),
+        crate::mem::rd::<u32>(renderer, R::d3dDeviceType)
+    );
     let mut direct3d = 0usize;
     transmute::<usize, unsafe extern "system" fn(usize, *mut usize) -> u32>(method(device, 6))(device, &mut direct3d);
     if direct3d != 0 {
         let mut mode = [0u32; 4];
-        transmute::<usize, unsafe extern "system" fn(usize, u32, *mut u32) -> u32>(method(direct3d, 8))(direct3d, 0, mode.as_mut_ptr());
+        transmute::<usize, unsafe extern "system" fn(usize, u32, *mut u32) -> u32>(method(direct3d, 8))(
+            direct3d,
+            0,
+            mode.as_mut_ptr(),
+        );
         let _ = writeln!(text, "display {}", hex(&mode));
         let count = transmute::<usize, unsafe extern "system" fn(usize, u32) -> u32>(method(direct3d, 6))(direct3d, 0);
         for i in 0..count.min(400) {
-            transmute::<usize, unsafe extern "system" fn(usize, u32, u32, *mut u32) -> u32>(method(direct3d, 7))(direct3d, 0, i, mode.as_mut_ptr());
+            transmute::<usize, unsafe extern "system" fn(usize, u32, u32, *mut u32) -> u32>(method(direct3d, 7))(
+                direct3d,
+                0,
+                i,
+                mode.as_mut_ptr(),
+            );
             let _ = writeln!(text, "mode {} {} {} {}", mode[0], mode[1], mode[2], mode[3]);
         }
         // CheckDeviceFormat(adapter, device type, adapter format, usage, resource type, format).
         let check: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32 = transmute(method(direct3d, 10));
-        let formats: Vec<u32> = (20..=30).chain(40..=41).chain(50..=52).chain(60..=64).chain(70..=80).chain([0x3154_5844, 0x3254_5844, 0x3354_5844, 0x3454_5844, 0x3554_5844]).collect();
+        let formats: Vec<u32> = (20..=30)
+            .chain(40..=41)
+            .chain(50..=52)
+            .chain(60..=64)
+            .chain(70..=80)
+            .chain([0x3154_5844, 0x3254_5844, 0x3354_5844, 0x3454_5844, 0x3554_5844])
+            .collect();
         for (usage, kind) in [(0u32, 3u32), (1, 3), (2, 1), (2, 3), (0, 5), (1, 5), (1, 1), (0, 1)] {
-            let accepted: Vec<String> = formats.iter().filter(|f| check(direct3d, 0, 1, 22, usage, kind, **f) == 0).map(|f| format!("{f:x}")).collect();
+            let accepted: Vec<String> = formats
+                .iter()
+                .filter(|f| check(direct3d, 0, 1, 22, usage, kind, **f) == 0)
+                .map(|f| format!("{f:x}"))
+                .collect();
             let _ = writeln!(text, "formats usage {usage} type {kind}: {}", accepted.join(" "));
         }
         // CheckDepthStencilMatch(adapter, device type, adapter format, target format, depth format).
         let matches: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(method(direct3d, 12));
         for target in [21u32, 22, 23] {
-            let accepted: Vec<String> = (70..=80u32).filter(|f| matches(direct3d, 0, 1, 22, target, *f) == 0).map(|f| f.to_string()).collect();
+            let accepted: Vec<String> = (70..=80u32)
+                .filter(|f| matches(direct3d, 0, 1, 22, target, *f) == 0)
+                .map(|f| f.to_string())
+                .collect();
             let _ = writeln!(text, "depth for target {target}: {}", accepted.join(" "));
         }
         // D3DADAPTER_IDENTIFIER8 has 1068 bytes: the driver and the description first.
         let mut identifier = [0u8; 1068];
-        transmute::<usize, unsafe extern "system" fn(usize, u32, u32, *mut u8) -> u32>(method(direct3d, 5))(direct3d, 0, 2, identifier.as_mut_ptr());
-        let name = |from: usize| String::from_utf8_lossy(&identifier[from..from + 512]).trim_end_matches('\0').to_string();
+        transmute::<usize, unsafe extern "system" fn(usize, u32, u32, *mut u8) -> u32>(method(direct3d, 5))(
+            direct3d,
+            0,
+            2,
+            identifier.as_mut_ptr(),
+        );
+        let name = |from: usize| {
+            String::from_utf8_lossy(&identifier[from..from + 512])
+                .trim_end_matches('\0')
+                .to_string()
+        };
         let _ = writeln!(text, "driver {}", name(0));
         let _ = writeln!(text, "description {}", name(512));
         let rest: Vec<String> = identifier[1024..].iter().map(|b| format!("{b:02x}")).collect();
@@ -427,7 +483,10 @@ unsafe extern "C" fn capture_stop(_l: LuaState) -> i32 {
 /// `nirender.captureFrames(n)` asks a capture file that holds (`nirender.capture(path, 0, 0)`
 /// on a stream) for `n` frames more. Returns true when there is such a file.
 unsafe extern "C" fn capture_frames(l: LuaState) -> i32 {
-    lua_pushboolean(l, crate::capture::tee_frames(&MainThread::claim(), lua_tonumber(l, 1) as u32) as i32);
+    lua_pushboolean(
+        l,
+        crate::capture::tee_frames(&MainThread::claim(), lua_tonumber(l, 1) as u32) as i32,
+    );
     1
 }
 

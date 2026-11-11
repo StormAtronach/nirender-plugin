@@ -9,7 +9,12 @@ impl Player {
         let frames = counts.frames - self.mark_frames;
         let draws = counts.draws - self.mark_draws;
         let runs = counts.pipeline_runs - self.mark_runs;
-        let busy: u64 = counts.times.iter().zip(self.mark_times).map(|(now, before)| *now - before).sum();
+        let busy: u64 = counts
+            .times
+            .iter()
+            .zip(self.mark_times)
+            .map(|(now, before)| *now - before)
+            .sum();
         let per_frame = |time: u64| ticks::duration(time).as_secs_f64() * 1000.0 / frames.max(1) as f64;
         println!(
             "mark {text}: {frames} frames, {:.1} draws in {:.1} pipeline runs for each frame, busy {:.3} ms for each frame:",
@@ -23,7 +28,11 @@ impl Player {
         let timed = counts.gpu_frames - self.mark_gpu.2;
         if timed != 0 {
             let per_frame = |now: f64, before: f64| (now - before) / 1e6 / timed as f64;
-            println!("  gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {timed} timed frames", per_frame(counts.gpu_passes, self.mark_gpu.0), per_frame(counts.gpu_frame, self.mark_gpu.1));
+            println!(
+                "  gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {timed} timed frames",
+                per_frame(counts.gpu_passes, self.mark_gpu.0),
+                per_frame(counts.gpu_frame, self.mark_gpu.1)
+            );
         }
         let work = gpu::work();
         let delta: Vec<u64> = work.iter().zip(self.mark_work).map(|(now, before)| now - before).collect();
@@ -54,7 +63,14 @@ impl Player {
 
     pub(crate) fn print_counts(&self) {
         let c = &self.renderer.counts;
-        println!("draws {} in {} pipeline runs, pipelines {}, textures {}, samplers {}", c.draws, c.pipeline_runs, self.renderer.pipelines.len(), c.textures, self.renderer.samplers.len());
+        println!(
+            "draws {} in {} pipeline runs, pipelines {}, textures {}, samplers {}",
+            c.draws,
+            c.pipeline_runs,
+            self.renderer.pipelines.len(),
+            c.textures,
+            self.renderer.samplers.len()
+        );
         println!(
             "geometry: {} records ({:.1} MB; {} of a known geometry written into its ranges, {} into new ranges because a draw of the frame named the old), {} draws from them, {} records that did not parse, {} draws of more index entries than their geometry has",
             c.geometry_records,
@@ -65,12 +81,18 @@ impl Player {
             c.geometry_bad,
             c.geometry_short
         );
-        println!("material: {} records; {} records of any tag shorter than their tag needs, refused", c.material_records, c.short_records);
+        println!(
+            "material: {} records; {} records of any tag shorter than their tag needs, refused",
+            c.material_records, c.short_records
+        );
         if crate::reads_past_end() != 0 {
             println!("reads past the end of a buffer: {} (of a record or a part of one; a fault of the rule of `tag::needed`, not of the plugin)", crate::reads_past_end());
         }
         if c.unknown_records != 0 {
-            println!("records of a tag this build does not know: {}, skipped; the first tag {}", c.unknown_records, c.unknown_tag);
+            println!(
+                "records of a tag this build does not know: {}, skipped; the first tag {}",
+                c.unknown_records, c.unknown_tag
+            );
         }
         println!("{}", self.renderer.held_line());
         println!("{}", self.renderer.stage_shaders.report());
@@ -164,8 +186,14 @@ impl Player {
             l.indexes as f64 / frames
         );
         println!("draw calls joined into the call before them (the buckets that set nothing new): {:.1} a frame, {:.1}% of the pairs", l.calls as f64 / frames, 100.0 * l.calls as f64 / j.pairs.max(1) as f64);
-        println!("shown list: {} lists of the main view, {} instances in them", r.shown_lists, r.shown_ids);
-        println!("instance census: {} lists of the plugin, {} instances held here that a list lacked", c.instance_censuses, c.instance_orphans);
+        println!(
+            "shown list: {} lists of the main view, {} instances in them",
+            r.shown_lists, r.shown_ids
+        );
+        println!(
+            "instance census: {} lists of the plugin, {} instances held here that a list lacked",
+            c.instance_censuses, c.instance_orphans
+        );
         let (entries, entry_stages) = self.retained.effect_entry_counts();
         let (turning, controlled) = self.retained.effect_chain_counts();
         println!(
@@ -205,10 +233,18 @@ impl Player {
             c.instance_upload_bytes as f64 / 1e6,
             c.instance_gap_bytes as f64 / 1e6
         );
-        println!("rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting", c.shape_flat, c.shape_specular);
-        println!("skinned shapes {}, particle systems {} ({} of them from INSTANCE_PARTICLES records)", c.shape_skinned, c.shape_particles, c.instance_particles);
+        println!(
+            "rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting",
+            c.shape_flat, c.shape_specular
+        );
+        println!(
+            "skinned shapes {}, particle systems {} ({} of them from INSTANCE_PARTICLES records)",
+            c.shape_skinned, c.shape_particles, c.instance_particles
+        );
         match self.renderer.particle_quads_made() {
-            Some((systems, particles)) => println!("particle quads made on the GPU: {systems} systems, {particles} particles"),
+            Some((systems, particles)) => {
+                println!("particle quads made on the GPU: {systems} systems, {particles} particles")
+            }
             None => println!("particle quads made on the GPU: none (no system yet)"),
         }
         println!("shapes held for the extension {}, {} of them lost waiting for a place in the sorted queue, {} that blend drawn at the end of the world scene", c.held, c.held_sorted_lost, c.held_sorted_fallback);
@@ -216,7 +252,10 @@ impl Player {
             "lost waiting for the sorted queue's flush (not drawn): {} blended draws of the engine's path, {} places of the table's blends",
             c.draws_sorted_lost, c.places_sorted_lost
         );
-        println!("classes of the extension: {} calls at a draw of the class, {} calls in frames without a draw of the class", c.class_calls, c.class_calls_without_draw);
+        println!(
+            "classes of the extension: {} calls at a draw of the class, {} calls in frames without a draw of the class",
+            c.class_calls, c.class_calls_without_draw
+        );
         println!(
             "lights: {} records, {} destroyed, {} known now, {} lights of a shape without a record",
             c.light_records,
@@ -232,7 +271,10 @@ impl Player {
             c.cluster_dropped,
             ticks::duration(c.times[TIME_CLUSTERS]).as_secs_f64() * 1000.0 / c.frames.max(1) as f64
         );
-        println!("lights for the extension: {:.1} for each frame", c.extension_lights as f64 / c.frames.max(1) as f64);
+        println!(
+            "lights for the extension: {:.1} for each frame",
+            c.extension_lights as f64 / c.frames.max(1) as f64
+        );
         println!(
             "copies for the extension: {:.2} of the picture and {:.2} of the depth for each frame",
             c.picture_copies as f64 / c.frames.max(1) as f64,
@@ -240,7 +282,12 @@ impl Player {
         );
         // With `MGE_XE_GPU_TIME=1`: the GPU time of all timed frames (a replay has no marks).
         if c.gpu_frames != 0 {
-            println!("gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {} timed frames", c.gpu_passes / 1e6 / c.gpu_frames as f64, c.gpu_frame / 1e6 / c.gpu_frames as f64, c.gpu_frames);
+            println!(
+                "gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {} timed frames",
+                c.gpu_passes / 1e6 / c.gpu_frames as f64,
+                c.gpu_frame / 1e6 / c.gpu_frames as f64,
+                c.gpu_frames
+            );
             // The named spans (`stamps::Stamps`) by kind, the most time first. The parts do not
             // overlap one another; a part's time holds the copies and the details inside it.
             let frames = c.gpu_frames as f64;
@@ -249,19 +296,36 @@ impl Player {
             named.sort_by(|a, b| b.2.total_cmp(&a.2));
             let of = |kind: stamps::StampKind| named.iter().filter(move |(_, k, _, _)| *k == kind);
             let parts: f64 = of(stamps::StampKind::Part).map(|(_, _, time, _)| time).sum();
-            println!("gpu by part: {:.3} ms of the frame's {:.3} ms in named parts, {:.3} ms in none", ms(parts), ms(c.gpu_frame), ms(c.gpu_frame - parts));
+            println!(
+                "gpu by part: {:.3} ms of the frame's {:.3} ms in named parts, {:.3} ms in none",
+                ms(parts),
+                ms(c.gpu_frame),
+                ms(c.gpu_frame - parts)
+            );
             for (name, _, time, count) in of(stamps::StampKind::Part) {
-                println!("  {:7.3} ms  {name} ({:.2} for each frame)", ms(*time), *count as f64 / frames);
+                println!(
+                    "  {:7.3} ms  {name} ({:.2} for each frame)",
+                    ms(*time),
+                    *count as f64 / frames
+                );
             }
             let copies: f64 = of(stamps::StampKind::Outside).map(|(_, _, time, _)| time).sum();
             println!("gpu copies and resolves: {:.3} ms (one made inside a part, for a class of draws or the held draws, is in that part's time too)", ms(copies));
             for (name, _, time, count) in of(stamps::StampKind::Outside) {
-                println!("  {:7.3} ms  {name} ({:.2} for each frame)", ms(*time), *count as f64 / frames);
+                println!(
+                    "  {:7.3} ms  {name} ({:.2} for each frame)",
+                    ms(*time),
+                    *count as f64 / frames
+                );
             }
             if of(stamps::StampKind::Detail).next().is_some() {
                 println!("gpu details (inside a part, or in an encoder of their own before the frame):");
                 for (name, _, time, count) in of(stamps::StampKind::Detail) {
-                    println!("  {:7.3} ms  {name} ({:.2} for each frame)", ms(*time), *count as f64 / frames);
+                    println!(
+                        "  {:7.3} ms  {name} ({:.2} for each frame)",
+                        ms(*time),
+                        *count as f64 / frames
+                    );
                 }
             }
         }
@@ -270,7 +334,10 @@ impl Player {
             "not complete: draws with a texture that is not in the stream {}, more than 6 stages {}; draws with a made or moved texture coordinate {}; the most lights of a draw {}",
             c.missing_textures, c.more_stages, c.coordinate_work, c.most_lights
         );
-        println!("texture levels written again {}, not written {}; textures with a block format made as pixels {}", c.texture_updates, c.texture_updates_lost, c.textures_decoded);
+        println!(
+            "texture levels written again {}, not written {}; textures with a block format made as pixels {}",
+            c.texture_updates, c.texture_updates_lost, c.textures_decoded
+        );
         for (reason, count) in &c.lost_reasons {
             println!("  not written: {reason}: {count}");
         }
@@ -282,16 +349,29 @@ impl Player {
             "flushes split {}: texture runs ahead of the back buffer's items {}, held for their kinds {}, held for their textures {}; flushes that ran every item for their operation {}",
             c.flush_splits, c.flush_runs_ahead, c.flush_runs_held_kind, c.flush_runs_held_textures, c.flush_operation_waits
         );
-        println!("map tiles copied {}, tile reads given to the game {}, tiles not copied {}", c.tile_copies, c.tile_reads, c.tiles_lost);
-        println!("draws in screen coordinates {}, not drawn {}", c.screen_draws, c.screen_draws_lost);
+        println!(
+            "map tiles copied {}, tile reads given to the game {}, tiles not copied {}",
+            c.tile_copies, c.tile_reads, c.tiles_lost
+        );
+        println!(
+            "draws in screen coordinates {}, not drawn {}",
+            c.screen_draws, c.screen_draws_lost
+        );
         println!("copies of a draw without room in the records of the frame {}", c.no_record);
         println!(
             "draw records: room for {} in one binding; draws not drawn past it {}, retained slots past it {}",
             self.renderer.record_limit, c.records_over_limit, c.retained_over_limit
         );
-        println!("indirect calls {}, draws in them {}, draws one by one for want of room {}", c.indirect_calls, c.indirect_draws, c.indirect_over);
+        println!(
+            "indirect calls {}, draws in them {}, draws one by one for want of room {}",
+            c.indirect_calls, c.indirect_draws, c.indirect_over
+        );
         if self.renderer.tier == crate::request::TextureTier::C {
-            println!("texture groups of tier c: made {}, kept now {}", c.array_groups_made, self.renderer.stage_groups.len());
+            println!(
+                "texture groups of tier c: made {}, kept now {}",
+                c.array_groups_made,
+                self.renderer.stage_groups.len()
+            );
         } else {
             println!(
                 "texture arrays: kept from the frame before in {} frames, laid out again in {}, groups made {}; the most textures of a frame {}, stages over the room {} (of them retained textures with no pinned slot {}; room for {}, pinned at most {}), textures that came again for a handle with a slot {}, pinned slots freed {}, dropped from the end {} (pinned now {}, free {}, the most {}), stages drawn from a slot of the frame until their pinned slot came {}, retained textures pinned before their record {}, pinned slots in use that took another texture {} with other facts and {} with the same",

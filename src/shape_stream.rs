@@ -188,7 +188,12 @@ pub unsafe fn fog_values_of(renderer: usize, fog: usize) -> Option<[u32; 4]> {
 ///
 /// As [`fog_values_of`].
 pub unsafe fn scene_fog_values_of(renderer: usize, fog: usize, near: u32, far: u32) -> Option<[u32; 4]> {
-    fog_words(renderer, fog, scene_fog_color_of, Some(crate::ports::renderer_frame::fog_frustum(near, far)))
+    fog_words(
+        renderer,
+        fog,
+        scene_fog_color_of,
+        Some(crate::ports::renderer_frame::fog_frustum(near, far)),
+    )
 }
 
 /// The fog words of `fog`, with its colour from `color_of`, and the range from the render
@@ -197,7 +202,12 @@ pub unsafe fn scene_fog_values_of(renderer: usize, fog: usize, near: u32, far: u
 /// # Safety
 ///
 /// As [`fog_values_of`].
-unsafe fn fog_words(renderer: usize, fog: usize, color_of: unsafe fn(usize) -> u32, frustum: Option<(u32, f32)>) -> Option<[u32; 4]> {
+unsafe fn fog_words(
+    renderer: usize,
+    fog: usize,
+    color_of: unsafe fn(usize) -> u32,
+    frustum: Option<(u32, f32)>,
+) -> Option<[u32; 4]> {
     use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiFogProperty};
     if fog == 0 {
         return None;
@@ -212,7 +222,12 @@ unsafe fn fog_words(renderer: usize, fog: usize, color_of: unsafe fn(usize) -> u
         || (rd(render_state, RS::frustumFar), rd(render_state, RS::frustumDistance)),
         |(far, distance)| (f32::from_bits(far), distance),
     );
-    let (start, end) = crate::x87::fog_range(rd(fog, NiFogProperty::density), distance, far, rd(render_state, RS::inverseMaxFogValue));
+    let (start, end) = crate::x87::fog_range(
+        rd(fog, NiFogProperty::density),
+        distance,
+        far,
+        rd(render_state, RS::inverseMaxFogValue),
+    );
     Some([color_of(fog), start, end, ((flags >> 3) & 3 == 1) as u32])
 }
 
@@ -271,10 +286,26 @@ unsafe fn count_engine_particles(t: &MainThread) {
     if shape != 0 && logged.len() < 40 && !logged.contains(&shape) {
         logged.push(shape);
         let name_at: usize = rd(shape, 8);
-        let name = if name_at != 0 { core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        let name = if name_at != 0 {
+            core::ffi::CStr::from_ptr(name_at as *const core::ffi::c_char)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            String::new()
+        };
         let parent: usize = rd(shape, crate::gen::layouts::NiAVObject::parentNode);
-        let parent_name_at: usize = if parent != 0 { rd(parent, crate::gen::layouts::NiObjectNET::name) } else { 0 };
-        let parent_name = if parent_name_at != 0 { core::ffi::CStr::from_ptr(parent_name_at as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::new() };
+        let parent_name_at: usize = if parent != 0 {
+            rd(parent, crate::gen::layouts::NiObjectNET::name)
+        } else {
+            0
+        };
+        let parent_name = if parent_name_at != 0 {
+            core::ffi::CStr::from_ptr(parent_name_at as *const core::ffi::c_char)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            String::new()
+        };
         crate::log!(
             "particles: the engine's record of '{name}' under '{parent_name}' (shape 0x{shape:x}): scene {scene_kind}, world camera {world_camera}, draw flags {draw_flags:#x}, a pending draw {}; the table: {}",
             *POINTS_PENDING.get(t),
@@ -344,7 +375,12 @@ pub unsafe fn note_geometry(t: &MainThread, geometry: u32) {
 pub unsafe fn light_state_arguments(renderer: usize) -> (usize, usize, usize, usize) {
     use crate::gen::layouts::{NiDX8Renderer as R, NiPropertyState as PS};
     let property_state: usize = rd(renderer, R::currentPropertyState);
-    (rd(renderer, R::lightManager), rd(renderer, R::currentEffectState), rd(property_state, PS::propTexturing), rd(property_state, PS::propVertexColor))
+    (
+        rd(renderer, R::lightManager),
+        rd(renderer, R::currentEffectState),
+        rd(property_state, PS::propTexturing),
+        rd(property_state, PS::propVertexColor),
+    )
 }
 
 /// `D3DRS_AMBIENT` (139) as the render state record of the renderer has it.
@@ -409,7 +445,10 @@ pub unsafe fn software_skinned(t: &MainThread, why: &str) {
     let count = &mut *SOFTWARE_SKINNED.get(t);
     *count += 1;
     if *count <= 8 {
-        crate::log!("shapes: a skinned draw without a record that the game skins in software ({why}), picture of the character {}", code_patch_picture());
+        crate::log!(
+            "shapes: a skinned draw without a record that the game skins in software ({why}), picture of the character {}",
+            code_patch_picture()
+        );
     }
 }
 
@@ -467,7 +506,16 @@ unsafe fn without(t: &MainThread, reason: usize) {
 /// `renderer` points at the live `NiDX8Renderer` of the draw in progress. The conditions of
 /// [`crate::light_stream::note`] hold for it, and its current effect state is 0 or live, with its
 /// environment map and fog map each 0 or a live `NiTextureEffect`.
-pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, palette: &[[f32; 16]]) -> bool {
+pub unsafe fn send(
+    t: &MainThread,
+    renderer: usize,
+    world: [f32; 16],
+    relative: bool,
+    ambient: u32,
+    material_values: [u32; 14],
+    fog: Option<[u32; 4]>,
+    palette: &[[f32; 16]],
+) -> bool {
     let (geometry, _) = *HANDLES.get(t);
     if geometry == 0 {
         without(t, 0);
@@ -477,7 +525,20 @@ pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: 
     // (`capture::words`).
     let bones = core::slice::from_raw_parts(palette.as_ptr() as *const u8, core::mem::size_of_val(palette));
     let flags = if palette.is_empty() { 0 } else { SKINNED };
-    record(t, renderer, geometry, flags, world, relative, ambient, material_values, fog, palette.len() as u32, &[], bones)
+    record(
+        t,
+        renderer,
+        geometry,
+        flags,
+        world,
+        relative,
+        ambient,
+        material_values,
+        fog,
+        palette.len() as u32,
+        &[],
+        bones,
+    )
 }
 
 /// Sends the record of the lines that are about to be drawn (`RenderLines`), with the flag
@@ -487,13 +548,34 @@ pub unsafe fn send(t: &MainThread, renderer: usize, world: [f32; 16], relative: 
 /// # Safety
 ///
 /// As for [`send`].
-pub unsafe fn send_lines(t: &MainThread, renderer: usize, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>) -> bool {
+pub unsafe fn send_lines(
+    t: &MainThread,
+    renderer: usize,
+    world: [f32; 16],
+    relative: bool,
+    ambient: u32,
+    material_values: [u32; 14],
+    fog: Option<[u32; 4]>,
+) -> bool {
     let (geometry, _) = *HANDLES.get(t);
     if geometry == 0 {
         without(t, 0);
         return false;
     }
-    record(t, renderer, geometry, LINES, world, relative, ambient, material_values, fog, 0, &[], &[])
+    record(
+        t,
+        renderer,
+        geometry,
+        LINES,
+        world,
+        relative,
+        ambient,
+        material_values,
+        fog,
+        0,
+        &[],
+        &[],
+    )
 }
 
 /// Sends the record of a particle system that is about to be drawn (`RenderPoints`), with
@@ -504,7 +586,8 @@ pub unsafe fn send_lines(t: &MainThread, renderer: usize, world: [f32; 16], rela
 /// # Safety
 ///
 /// As for [`send`]. `particles` holds whole particles of [`PARTICLE_BYTES`] each.
-pub unsafe fn send_particles(t: &MainThread, 
+pub unsafe fn send_particles(
+    t: &MainThread,
     renderer: usize,
     key: u32,
     world: [f32; 16],
@@ -522,8 +605,30 @@ pub unsafe fn send_particles(t: &MainThread,
         without(t, 0);
         return false;
     }
-    let tail = [count, radius.to_bits(), right[0].to_bits(), right[1].to_bits(), right[2].to_bits(), up[0].to_bits(), up[1].to_bits(), up[2].to_bits()];
-    record(t, renderer, key, PARTICLES, world, relative, ambient, material_values, fog, 0, &tail, particles)
+    let tail = [
+        count,
+        radius.to_bits(),
+        right[0].to_bits(),
+        right[1].to_bits(),
+        right[2].to_bits(),
+        up[0].to_bits(),
+        up[1].to_bits(),
+        up[2].to_bits(),
+    ];
+    record(
+        t,
+        renderer,
+        key,
+        PARTICLES,
+        world,
+        relative,
+        ambient,
+        material_values,
+        fog,
+        0,
+        &tail,
+        particles,
+    )
 }
 
 /// The stages of the texture effects of the draw in progress (the environment map and the
@@ -534,7 +639,7 @@ pub unsafe fn send_particles(t: &MainThread,
 /// change with the camera, so they come with each draw, like the world matrix.
 unsafe fn effect_words(renderer: usize) -> Option<[u32; EFFECT_WORDS]> {
     use crate::gen::layouts::{NiDX8Renderer as R, NiDynamicEffectState as DES};
-    use crate::ports::texture_pass_b::{EFFECT_STAGE_WORDS, effect_stage_words, effect_stages_before};
+    use crate::ports::texture_pass_b::{effect_stage_words, effect_stages_before, EFFECT_STAGE_WORDS};
     let effect_state: usize = rd(renderer, R::currentEffectState);
     if effect_state == 0 {
         return None;
@@ -564,7 +669,20 @@ const TAIL_WORDS: usize = EFFECT_WORDS + 4 + 8;
 /// The record itself: the 36 words of the head, the keys of the lights, the stages of the
 /// texture effects when the draw has any, the fog when the draw has it, then `tail` and
 /// `bytes` (the bones, or the particle words and the particles).
-unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, world: [f32; 16], relative: bool, ambient: u32, material_values: [u32; 14], fog: Option<[u32; 4]>, bone_count: u32, tail: &[u32], bytes: &[u8]) -> bool {
+unsafe fn record(
+    t: &MainThread,
+    renderer: usize,
+    geometry: u32,
+    kind: u32,
+    world: [f32; 16],
+    relative: bool,
+    ambient: u32,
+    material_values: [u32; 14],
+    fog: Option<[u32; 4]>,
+    bone_count: u32,
+    tail: &[u32],
+    bytes: &[u8],
+) -> bool {
     let (_, material) = *HANDLES.get(t);
     if !on() {
         return false;
@@ -603,9 +721,29 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
         } else {
             if points && tail.len() >= 8 {
                 let float = |i: usize| f32::from_bits(tail[i]);
-                crate::capture::instance_particles(geometry, float(1), [float(2), float(3), float(4)], [float(5), float(6), float(7)], bytes);
+                crate::capture::instance_particles(
+                    geometry,
+                    float(1),
+                    [float(2), float(3), float(4)],
+                    [float(5), float(6), float(7)],
+                    bytes,
+                );
             }
-            if crate::instance_stream::draw(t, shape, id, &world, relative, &material_values, effects.as_ref().map(|w| &w[..]), fog, ambient, &lights, if kind & SKINNED != 0 { bytes } else { &[] }, bone_count, flags & QUEUED != 0) {
+            if crate::instance_stream::draw(
+                t,
+                shape,
+                id,
+                &world,
+                relative,
+                &material_values,
+                effects.as_ref().map(|w| &w[..]),
+                fog,
+                ambient,
+                &lights,
+                if kind & SKINNED != 0 { bytes } else { &[] },
+                bone_count,
+                flags & QUEUED != 0,
+            ) {
                 return records_only();
             }
         }
@@ -615,7 +753,11 @@ unsafe fn record(t: &MainThread, renderer: usize, geometry: u32, kind: u32, worl
     }
     // The tail of the record: the effects, the fog, then `tail`. On the stack: a draw does not
     // allocate for it (a longer tail than the stack holds goes to the heap).
-    let parts: [&[u32]; 3] = [effects.as_ref().map_or(&[], |w| &w[..]), fog.as_ref().map_or(&[], |f| &f[..]), tail];
+    let parts: [&[u32]; 3] = [
+        effects.as_ref().map_or(&[], |w| &w[..]),
+        fog.as_ref().map_or(&[], |f| &f[..]),
+        tail,
+    ];
     let length: usize = parts.iter().map(|p| p.len()).sum();
     let mut stack = [0u32; TAIL_WORDS];
     let mut heap = Vec::new();

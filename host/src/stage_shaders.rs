@@ -105,7 +105,14 @@ impl StageKey {
 
     /// The key as a line of numbers for the list.
     fn words(&self) -> Vec<u32> {
-        let mut words = vec![self.count as u32, self.alpha_test as u32, self.shade as u32, self.lit as u32, self.normal as u32, self.scene as u32];
+        let mut words = vec![
+            self.count as u32,
+            self.alpha_test as u32,
+            self.shade as u32,
+            self.lit as u32,
+            self.normal as u32,
+            self.scene as u32,
+        ];
         for stage in 0..STAGES {
             words.extend(self.color[stage].iter().map(|&v| v as u32));
             words.extend(self.alpha[stage].iter().map(|&v| v as u32));
@@ -118,13 +125,23 @@ impl StageKey {
             return None;
         }
         let small = |value: u32| u8::try_from(value).ok();
-        let shade = u16::try_from(words[2]).ok().filter(|&shade| shade as u32 & !SHADE_BITS == 0)?;
+        let shade = u16::try_from(words[2])
+            .ok()
+            .filter(|&shade| shade as u32 & !SHADE_BITS == 0)?;
         let scene = match words[5] {
             0 => false,
             1 => true,
             _ => return None,
         };
-        let mut key = StageKey { count: small(words[0])?, alpha_test: small(words[1])?, shade, lit: small(words[3])?, normal: small(words[4])?, scene, ..Default::default() };
+        let mut key = StageKey {
+            count: small(words[0])?,
+            alpha_test: small(words[1])?,
+            shade,
+            lit: small(words[3])?,
+            normal: small(words[4])?,
+            scene,
+            ..Default::default()
+        };
         if key.count as usize > STAGES {
             return None;
         }
@@ -207,13 +224,20 @@ fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
     if source.matches(scene_test).count() != 1 {
         return None;
     }
-    let source = source.replacen(scene_test, &format!("fn from_scene() -> bool {{\n    return {};\n}}\n", key.scene), 1);
+    let source = source.replacen(
+        scene_test,
+        &format!("fn from_scene() -> bool {{\n    return {};\n}}\n", key.scene),
+        1,
+    );
 
     let counts_w = "draws[record].counts.w";
     if !source.contains(counts_w) {
         return None;
     }
-    let source = source.replace(counts_w, &format!("((draws[record].counts.w & {}u) | {}u)", !SHADE_BITS, key.shade));
+    let source = source.replace(
+        counts_w,
+        &format!("((draws[record].counts.w & {}u) | {}u)", !SHADE_BITS, key.shade),
+    );
 
     let source = replace_field(&source, "draws[record].flags.x", &format!("{}u", key.lit))?;
     replace_field(&source, "draws[record].flags.y", &format!("{}u", key.normal))
@@ -272,7 +296,10 @@ fn stage_loop_range(source: &str) -> Option<(usize, usize)> {
 
 /// The lines of a text that are not comments, each with its line end.
 fn without_comments(text: &str) -> String {
-    text.lines().filter(|line| !line.trim_start().starts_with("//")).flat_map(|line| [line, "\n"]).collect()
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .flat_map(|line| [line, "\n"])
+        .collect()
 }
 
 /// The hash of a text, for the list's check that it was written for this world shader.
@@ -436,7 +463,10 @@ impl StageShaders {
                 if let Some(source) = job.source {
                     modules.insert(job.key.stages, maker.module(&source));
                 }
-                let pipeline = modules.get(&job.key.stages).and_then(|module| module.as_ref()).and_then(|module| maker.make(job.key, module));
+                let pipeline = modules
+                    .get(&job.key.stages)
+                    .and_then(|module| module.as_ref())
+                    .and_then(|module| maker.make(job.key, module));
                 if done_sender.send(Done { key: job.key, pipeline }).is_err() {
                     break;
                 }
@@ -462,20 +492,29 @@ impl StageShaders {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(_) => {
-                println!("stage shaders: no list at {}; each key is made at its first use", path.display());
+                println!(
+                    "stage shaders: no list at {}; each key is made at its first use",
+                    path.display()
+                );
                 return;
             }
         };
         let mut lines = text.lines();
         let header = format!("{LIST_HEADER} {LIST_FORMAT} {:016x}", self.world_hash);
         if lines.next() != Some(header.as_str()) {
-            println!("stage shaders: the list at {} is of another world shader or format; it is not used", path.display());
+            println!(
+                "stage shaders: the list at {} is of another world shader or format; it is not used",
+                path.display()
+            );
             return;
         }
         let mut dropped = 0;
         for line in lines {
             let words: Option<Vec<u32>> = line.split_whitespace().map(|word| word.parse().ok()).collect();
-            let parsed = words.as_deref().filter(|words| words.len() == 21 + KEY_WORDS).and_then(|words| Some((pipeline_from_words(&words[..21])?, StageKey::from_words(&words[21..])?)));
+            let parsed = words
+                .as_deref()
+                .filter(|words| words.len() == 21 + KEY_WORDS)
+                .and_then(|words| Some((pipeline_from_words(&words[..21])?, StageKey::from_words(&words[21..])?)));
             let Some(entry) = parsed else {
                 dropped += 1;
                 continue;
@@ -485,14 +524,20 @@ impl StageShaders {
         if dropped != 0 {
             println!("stage shaders: {dropped} lines of the list at {} not read", path.display());
         }
-        println!("stage shaders: {} pipelines of the list at {} are made behind the keys of first use", self.queued.len(), path.display());
+        println!(
+            "stage shaders: {} pipelines of the list at {} are made behind the keys of first use",
+            self.queued.len(),
+            path.display()
+        );
     }
 
     /// Sends the list's pipelines to the thread while it has fewer than [`LIST_BATCH`] jobs. A
     /// pipeline whose stage key would pass [`LIST_KEYS`] is left out, and the next save drops it.
     fn send_queued(&mut self) {
         while self.pending.len() < LIST_BATCH {
-            let Some((pipeline, stage)) = self.queued.pop_front() else { return };
+            let Some((pipeline, stage)) = self.queued.pop_front() else {
+                return;
+            };
             if self.made.contains(&(pipeline, stage)) {
                 continue;
             }
@@ -524,7 +569,10 @@ impl StageShaders {
                 Some(source) => Some(source),
                 None => {
                     self.failed_sources.insert(key.stages);
-                    println!("stage shaders: the rewrite of stage key {} failed; the uber-shader draws it", key.stages);
+                    println!(
+                        "stage shaders: the rewrite of stage key {} failed; the uber-shader draws it",
+                        key.stages
+                    );
                     return false;
                 }
             }
@@ -556,7 +604,10 @@ impl StageShaders {
                 None => {
                     self.failed.insert(key);
                     self.failed_count += 1;
-                    println!("stage shaders: the pipeline of stage key {} failed; the uber-shader draws it", key.stages);
+                    println!(
+                        "stage shaders: the pipeline of stage key {} failed; the uber-shader draws it",
+                        key.stages
+                    );
                 }
             }
         }
@@ -564,7 +615,12 @@ impl StageShaders {
     }
 
     /// The pipeline of a key with a stage key, or None: then the caller draws with the uber-shader.
-    pub(crate) fn pipeline(&mut self, key: PipelineKey, maker: &crate::renderer::PipelineMaker, pipelines: &mut rustc_hash::FxHashMap<PipelineKey, std::rc::Rc<wgpu::RenderPipeline>>) -> Option<std::rc::Rc<wgpu::RenderPipeline>> {
+    pub(crate) fn pipeline(
+        &mut self,
+        key: PipelineKey,
+        maker: &crate::renderer::PipelineMaker,
+        pipelines: &mut rustc_hash::FxHashMap<PipelineKey, std::rc::Rc<wgpu::RenderPipeline>>,
+    ) -> Option<std::rc::Rc<wgpu::RenderPipeline>> {
         if let Some(pipeline) = pipelines.get(&key) {
             return Some(pipeline.clone());
         }
@@ -577,11 +633,18 @@ impl StageShaders {
                 let module = self.source_of(key.stages).and_then(|source| maker.module(&source));
                 self.modules.insert(key.stages, module);
             }
-            let pipeline = self.modules.get(&key.stages).and_then(|module| module.as_ref()).and_then(|module| maker.make(key, module));
+            let pipeline = self
+                .modules
+                .get(&key.stages)
+                .and_then(|module| module.as_ref())
+                .and_then(|module| maker.make(key, module));
             let Some(pipeline) = pipeline else {
                 self.failed.insert(key);
                 self.failed_count += 1;
-                println!("stage shaders: the pipeline of stage key {} failed; the uber-shader draws it", key.stages);
+                println!(
+                    "stage shaders: the pipeline of stage key {} failed; the uber-shader draws it",
+                    key.stages
+                );
                 return None;
             };
             let pipeline = std::rc::Rc::new(pipeline);
@@ -615,13 +678,24 @@ impl StageShaders {
         let mut text = format!("{LIST_HEADER} {LIST_FORMAT} {:016x}\n", self.world_hash);
         let entries: HashSet<&(PipelineKey, StageKey)> = self.made.iter().chain(self.queued.iter()).collect();
         for (pipeline, stage) in entries {
-            let words: Vec<String> = pipeline_words(pipeline).into_iter().chain([0]).chain(stage.words()).map(|w| w.to_string()).collect();
+            let words: Vec<String> = pipeline_words(pipeline)
+                .into_iter()
+                .chain([0])
+                .chain(stage.words())
+                .map(|w| w.to_string())
+                .collect();
             text.push_str(&words.join(" "));
             text.push('\n');
         }
-        let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(path, text));
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(path, text));
         if let Err(error) = written {
-            println!("stage shaders: the list at {} cannot be written ({error}); the next start makes each key at its first use", path.display());
+            println!(
+                "stage shaders: the list at {} cannot be written ({error}); the next start makes each key at its first use",
+                path.display()
+            );
             self.list = None;
         }
     }
@@ -674,7 +748,14 @@ mod tests {
     }
 
     fn key(count: u8, alpha_test: u8) -> StageKey {
-        let mut key = StageKey { count, alpha_test, shade: 1 | 128, lit: 1, normal: 1, ..Default::default() };
+        let mut key = StageKey {
+            count,
+            alpha_test,
+            shade: 1 | 128,
+            lit: 1,
+            normal: 1,
+            ..Default::default()
+        };
         // Stage 0: MODULATE of the texture and the diffuse; stage 1: ADD of the texture and
         // the current colour (an environment map after the base map).
         key.color[0] = [4, 2, 0, 1];
@@ -698,8 +779,19 @@ mod tests {
     #[test]
     fn each_set_of_facts_gives_valid_wgsl() {
         let world = world();
-        for (shade, lit, normal, scene) in [(0, 0, 0, false), (SHADE_BITS as u16, 1, 1, true), (1 | 32 | 128, 1, 0, false), (2 | 16 | 512, 0, 1, true)] {
-            let key = StageKey { shade, lit, normal, scene, ..key(1, 0) };
+        for (shade, lit, normal, scene) in [
+            (0, 0, 0, false),
+            (SHADE_BITS as u16, 1, 1, true),
+            (1 | 32 | 128, 1, 0, false),
+            (2 | 16 | 512, 0, 1, true),
+        ] {
+            let key = StageKey {
+                shade,
+                lit,
+                normal,
+                scene,
+                ..key(1, 0)
+            };
             let source = fragment_source(&world, &key).expect("the rewrite finds its parts");
             crate::assert_wgsl("stage shader", &source);
         }
@@ -707,20 +799,33 @@ mod tests {
 
     #[test]
     fn the_facts_of_the_key_are_constants() {
-        let key = StageKey { shade: 1 | 32, lit: 1, normal: 0, scene: false, ..key(1, 0) };
+        let key = StageKey {
+            shade: 1 | 32,
+            lit: 1,
+            normal: 0,
+            scene: false,
+            ..key(1, 0)
+        };
         let source = fragment_source(&world(), &key).unwrap();
         assert!(source.contains("fn from_scene() -> bool {\n    return false;\n}\n"));
         assert!(!source.contains("draws[record].flags.x"));
         assert!(!source.contains("draws[record].flags.y"));
         let masked = format!("((draws[record].counts.w & {}u) | 33u)", !SHADE_BITS);
         assert!(source.contains(&masked));
-        assert_eq!(source.matches("draws[record].counts.w").count(), source.matches(&masked).count(), "a read of counts.w without the key's bits");
+        assert_eq!(
+            source.matches("draws[record].counts.w").count(),
+            source.matches(&masked).count(),
+            "a read of counts.w without the key's bits"
+        );
     }
 
     #[test]
     fn a_field_read_is_replaced_and_a_longer_name_is_not() {
         let text = "a = d.flags.x; b = d.flags.xy; c = d.flags.x_2; e = d.flags.x\n";
-        assert_eq!(replace_field(text, "d.flags.x", "1u").as_deref(), Some("a = 1u; b = d.flags.xy; c = d.flags.x_2; e = 1u\n"));
+        assert_eq!(
+            replace_field(text, "d.flags.x", "1u").as_deref(),
+            Some("a = 1u; b = d.flags.xy; c = d.flags.x_2; e = 1u\n")
+        );
         assert_eq!(replace_field("d.flags.xy", "d.flags.x", "1u"), None);
     }
 
@@ -763,12 +868,24 @@ mod tests {
     fn the_stage_loop_is_the_code_that_the_steps_copy() {
         let world = world();
         let (start, end) = stage_loop_range(&world).expect("the loop of fs");
-        assert_eq!(without_comments(&world[start..end]), STAGE_LOOP, "fs changed its stage loop: change the steps of fragment_source and STAGE_LOOP with it");
+        assert_eq!(
+            without_comments(&world[start..end]),
+            STAGE_LOOP,
+            "fs changed its stage loop: change the steps of fragment_source and STAGE_LOOP with it"
+        );
         // A new line in the loop body is refused.
-        let planted = world.replacen("        var alpha = current;\n", "        var alpha = current;\n        current = current * 0.5;\n", 1);
+        let planted = world.replacen(
+            "        var alpha = current;\n",
+            "        var alpha = current;\n        current = current * 0.5;\n",
+            1,
+        );
         assert!(fragment_source(&planted, &key(2, 0)).is_none());
         // A new comment is not a change of the code.
-        let commented = world.replacen("        var alpha = current;\n", "        var alpha = current;\n        // A note.\n", 1);
+        let commented = world.replacen(
+            "        var alpha = current;\n",
+            "        var alpha = current;\n        // A note.\n",
+            1,
+        );
         assert!(fragment_source(&commented, &key(2, 0)).is_some());
     }
 
@@ -781,9 +898,16 @@ mod tests {
         let outside = format!("{}{}", &fs[..start], &fs[end..]);
         let uses: Vec<&str> = outside.lines().filter(|line| line.contains("texels[")).collect();
         let reads: Vec<String> = (0..STAGES).map(|stage| format!("    texels[{stage}] = ")).collect();
-        assert_eq!(uses.len(), STAGES, "fs uses the texels outside the reads and the loop: {uses:?}");
+        assert_eq!(
+            uses.len(),
+            STAGES,
+            "fs uses the texels outside the reads and the loop: {uses:?}"
+        );
         for (line, read) in uses.iter().zip(&reads) {
-            assert!(line.starts_with(read.as_str()), "a use of the texels that is not a read: {line}");
+            assert!(
+                line.starts_with(read.as_str()),
+                "a use of the texels that is not a read: {line}"
+            );
         }
     }
 
@@ -795,13 +919,28 @@ mod tests {
 
     #[test]
     fn a_key_and_a_pipeline_go_through_the_list() {
-        let stage = StageKey { scene: true, ..key(2, 5) };
+        let stage = StageKey {
+            scene: true,
+            ..key(2, 5)
+        };
         assert_eq!(StageKey::from_words(&stage.words()), Some(stage));
         // A bit outside SHADE_BITS is not a key of this build.
         let mut words = stage.words();
         words[2] |= 4;
         assert_eq!(StageKey::from_words(&words), None);
-        let pipeline = PipelineKey { fvf: 0x152, stride: 24, topology: 4, blend: [1, 5, 6], depth: [1, 0, 4], cull: 1, fill: 3, stencil: [0; 7], color_write: 7, samples: 1, stages: 0 };
+        let pipeline = PipelineKey {
+            fvf: 0x152,
+            stride: 24,
+            topology: 4,
+            blend: [1, 5, 6],
+            depth: [1, 0, 4],
+            cull: 1,
+            fill: 3,
+            stencil: [0; 7],
+            color_write: 7,
+            samples: 1,
+            stages: 0,
+        };
         let mut words = pipeline_words(&pipeline);
         words.push(0);
         assert_eq!(pipeline_from_words(&words), Some(pipeline));
@@ -809,7 +948,10 @@ mod tests {
 
     #[test]
     fn the_list_of_another_format_is_another_file() {
-        assert_eq!(list_name(0x1234), format!("numidium-stage-pipelines-{LIST_FORMAT}-0000000000001234.txt"));
+        assert_eq!(
+            list_name(0x1234),
+            format!("numidium-stage-pipelines-{LIST_FORMAT}-0000000000001234.txt")
+        );
         // The name of the list of the builds before the format was in the name.
         assert_ne!(list_name(0x1234), "numidium-stage-pipelines-0000000000001234.txt");
     }

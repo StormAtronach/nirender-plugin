@@ -51,23 +51,44 @@ const COLOR_SHADER: &str = "
 ";
 
 impl Multisample {
-    pub(crate) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, samples: u32) -> Multisample {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> Multisample {
         let depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("depth resolve"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: true },
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: true,
+                },
                 count: None,
             }],
         });
-        let depth_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("depth resolve"), source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{}{DEPTH_SHADER}", depth::wgsl()).into()) });
-        let depth_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("depth resolve"), bind_group_layouts: &[Some(&depth_layout)], immediate_size: 0 });
+        let depth_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("depth resolve"),
+            source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{}{DEPTH_SHADER}", depth::wgsl()).into()),
+        });
+        let depth_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("depth resolve"),
+            bind_group_layouts: &[Some(&depth_layout)],
+            immediate_size: 0,
+        });
         let _long = crate::LongStep::begin();
         let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("depth resolve"),
             layout: Some(&depth_pipeline_layout),
-            vertex: wgpu::VertexState { module: &depth_module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &depth_module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             primitive: Default::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_format,
@@ -77,7 +98,12 @@ impl Multisample {
                 bias: Default::default(),
             }),
             multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState { module: &depth_module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[] }),
+            fragment: Some(wgpu::FragmentState {
+                module: &depth_module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
             multiview_mask: None,
             cache: None,
         });
@@ -86,47 +112,93 @@ impl Multisample {
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             }],
         });
-        let color_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("colour load"), source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{COLOR_SHADER}").into()) });
-        let color_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("colour load"), bind_group_layouts: &[Some(&color_layout)], immediate_size: 0 });
+        let color_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("colour load"),
+            source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{COLOR_SHADER}").into()),
+        });
+        let color_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("colour load"),
+            bind_group_layouts: &[Some(&color_layout)],
+            immediate_size: 0,
+        });
         let color_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("colour load"),
             layout: Some(&color_pipeline_layout),
-            vertex: wgpu::VertexState { module: &color_module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &color_module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             primitive: Default::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &color_module,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: target_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview_mask: None,
             cache: None,
         });
-        Multisample { depth_layout, depth_pipeline, color_layout, color_pipeline }
+        Multisample {
+            depth_layout,
+            depth_pipeline,
+            color_layout,
+            color_pipeline,
+        }
     }
 
     /// Writes the nearest sample of each pixel of `source` (a view of the multisampled depth,
     /// its depth aspect only) into `target` (a depth texture with one sample).
-    pub(crate) fn resolve_depth(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, target: &wgpu::TextureView) {
-        let group = gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-            label: Some("depth resolve"),
-            layout: &self.depth_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }],
-        });
+    pub(crate) fn resolve_depth(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+    ) {
+        let group = gpu::frame_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("depth resolve"),
+                layout: &self.depth_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                }],
+            },
+        );
         crate::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("depth resolve"),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: target,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(depth::clear(1.0)), store: wgpu::StoreOp::Store }),
-                stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Discard }),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(depth::clear(1.0)),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Discard,
+                }),
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -139,12 +211,24 @@ impl Multisample {
 
     /// Writes the picture of `source` (one sample) into every sample of `target` (the
     /// multisampled colour target).
-    pub(crate) fn load_color(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, target: &wgpu::TextureView) {
-        let group = gpu::frame_group(device, &wgpu::BindGroupDescriptor {
-            label: Some("colour load"),
-            layout: &self.color_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }],
-        });
+    pub(crate) fn load_color(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+    ) {
+        let group = gpu::frame_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("colour load"),
+                layout: &self.color_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                }],
+            },
+        );
         crate::gpu::note_other_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("colour load"),
@@ -152,7 +236,10 @@ impl Multisample {
                 view: target,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,

@@ -11,7 +11,12 @@
 
 #[link(name = "user32")]
 extern "system" {
-    fn EnumDisplayMonitors(dc: usize, clip: *const i32, callback: unsafe extern "system" fn(usize, usize, *const i32, isize) -> i32, data: isize) -> i32;
+    fn EnumDisplayMonitors(
+        dc: usize,
+        clip: *const i32,
+        callback: unsafe extern "system" fn(usize, usize, *const i32, isize) -> i32,
+        data: isize,
+    ) -> i32;
     fn GetMonitorInfoA(monitor: usize, info: *mut u8) -> i32;
     fn EnumDisplaySettingsA(device: *const u8, mode: u32, out: *mut u8) -> i32;
 }
@@ -40,7 +45,10 @@ impl Monitor {
     /// The window and the back buffer of a fullscreen game take it; the display modes are
     /// the device's pixels.
     pub fn size(&self) -> [u32; 2] {
-        [(self.rect[2] - self.rect[0]).max(0) as u32, (self.rect[3] - self.rect[1]).max(0) as u32]
+        [
+            (self.rect[2] - self.rect[0]).max(0) as u32,
+            (self.rect[3] - self.rect[1]).max(0) as u32,
+        ]
     }
 
     /// The name of the display device, without the zero.
@@ -187,7 +195,14 @@ unsafe fn read_monitor(handle: usize) -> Option<Monitor> {
         entries.push((word(&mode, 104), [word(&mode, 108), word(&mode, 112), word(&mode, 120)]));
         index += 1;
     }
-    Some(Monitor { handle, device, rect: [int(4), int(8), int(12), int(16)], primary: int(36) & 1 != 0, modes: modes(entries, current), current })
+    Some(Monitor {
+        handle,
+        device,
+        rect: [int(4), int(8), int(12), int(16)],
+        primary: int(36) & 1 != 0,
+        modes: modes(entries, current),
+        current,
+    })
 }
 
 #[cfg(test)]
@@ -197,7 +212,14 @@ mod tests {
     fn monitor(name: &str, primary: bool, current: [u32; 3]) -> Monitor {
         let mut device = [0u8; 32];
         device[..name.len()].copy_from_slice(name.as_bytes());
-        Monitor { handle: 0, device, rect: [0, 0, current[0] as i32, current[1] as i32], primary, modes: vec![current], current }
+        Monitor {
+            handle: 0,
+            device,
+            rect: [0, 0, current[0] as i32, current[1] as i32],
+            primary,
+            modes: vec![current],
+            current,
+        }
     }
 
     #[test]
@@ -212,7 +234,12 @@ mod tests {
 
     #[test]
     fn a_monitor_has_its_modes_of_32_bits_each_once() {
-        let entries = [(32, [1920, 1080, 60]), (16, [800, 600, 60]), (32, [1920, 1080, 60]), (32, [1280, 720, 144])];
+        let entries = [
+            (32, [1920, 1080, 60]),
+            (16, [800, 600, 60]),
+            (32, [1920, 1080, 60]),
+            (32, [1280, 720, 144]),
+        ];
         assert_eq!(modes(entries, [1920, 1080, 60]), vec![[1920, 1080, 60], [1280, 720, 144]]);
         // No mode of 32 bits: the current one.
         assert_eq!(modes([(16, [640, 480, 60])], [1024, 768, 60]), vec![[1024, 768, 60]]);
@@ -243,14 +270,25 @@ mod tests {
         // SAFETY: the Win32 calls of the monitors, on this thread.
         let list = unsafe { read() };
         for monitor in &list {
-            println!("{} primary {} rect {:?} current {:?}, {} modes", monitor.name(), monitor.primary, monitor.rect, monitor.current, monitor.modes.len());
+            println!(
+                "{} primary {} rect {:?} current {:?}, {} modes",
+                monitor.name(),
+                monitor.primary,
+                monitor.rect,
+                monitor.current,
+                monitor.modes.len()
+            );
         }
         assert!(!list.is_empty() && list[0].primary, "{list:?}");
         for monitor in &list {
             assert!(monitor.name().starts_with(r"\\.\DISPLAY"), "{}", monitor.name());
             // The size can be scaled (a process that is not DPI-aware); the mode is the pixels.
             let size = monitor.size();
-            assert!(size[0] > 0 && size[0] <= monitor.current[0] && size[1] > 0 && size[1] <= monitor.current[1], "{size:?} {:?}", monitor.current);
+            assert!(
+                size[0] > 0 && size[0] <= monitor.current[0] && size[1] > 0 && size[1] <= monitor.current[1],
+                "{size:?} {:?}",
+                monitor.current
+            );
             assert!(monitor.modes.contains(&monitor.current), "{:?}", monitor.modes);
         }
     }

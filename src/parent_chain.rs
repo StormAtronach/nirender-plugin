@@ -17,7 +17,12 @@ pub struct ChainTooLong;
 /// Reads the nodes from `first` up to the root and returns what the first node for which
 /// `answer` gives [`Some`] gave. [`Ok`] of [`None`] means every node was read and none answered.
 /// `parent_of` gives the parent of a node, 0 at the root. `limit` is the most nodes to read.
-pub fn first_answer<T>(first: usize, limit: usize, parent_of: impl Fn(usize) -> usize, mut answer: impl FnMut(usize) -> Option<T>) -> Result<Option<T>, ChainTooLong> {
+pub fn first_answer<T>(
+    first: usize,
+    limit: usize,
+    parent_of: impl Fn(usize) -> usize,
+    mut answer: impl FnMut(usize) -> Option<T>,
+) -> Result<Option<T>, ChainTooLong> {
     let mut node = first;
     for _ in 0..limit {
         if node == 0 {
@@ -87,10 +92,15 @@ mod tests {
     #[test]
     fn a_cycle_ends_at_the_guard() {
         let mut seen = 0;
-        let found: Result<Option<()>, _> = first_answer(7, GUARD, |node| node, |_| {
-            seen += 1;
-            None
-        });
+        let found: Result<Option<()>, _> = first_answer(
+            7,
+            GUARD,
+            |node| node,
+            |_| {
+                seen += 1;
+                None
+            },
+        );
         assert_eq!(found, Err(ChainTooLong));
         assert_eq!(seen, GUARD);
     }

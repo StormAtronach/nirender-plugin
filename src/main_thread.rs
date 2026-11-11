@@ -18,7 +18,11 @@ use core::marker::PhantomData;
 
 /// The holder runs on the main thread. Not [`Send`] and not [`Sync`]: it cannot leave the thread
 /// it was made on.
-pub struct MainThread(PhantomData<*mut ()>, #[allow(dead_code)] Option<crate::entry_trace::Mark>, #[allow(dead_code)] TurnOfTest);
+pub struct MainThread(
+    PhantomData<*mut ()>,
+    #[allow(dead_code)] Option<crate::entry_trace::Mark>,
+    #[allow(dead_code)] TurnOfTest,
+);
 
 #[cfg(not(test))]
 type TurnOfTest = NoTurn;

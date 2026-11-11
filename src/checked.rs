@@ -19,7 +19,10 @@ pub struct Checked<T> {
 
 impl<T> Checked<T> {
     pub const fn new(value: T) -> Checked<T> {
-        Checked { value: UnsafeCell::new(value), opened_at: Cell::new(None) }
+        Checked {
+            value: UnsafeCell::new(value),
+            opened_at: Cell::new(None),
+        }
     }
 
     /// Opens the table. A second open while the guard of the first lives panics, and the
@@ -37,7 +40,11 @@ impl<T> Checked<T> {
             second_open(first, here);
         }
         self.opened_at.set(Some(here));
-        Open { value: unsafe { NonNull::new_unchecked(self.value.get()) }, opened_at: &self.opened_at, table: PhantomData }
+        Open {
+            value: unsafe { NonNull::new_unchecked(self.value.get()) },
+            opened_at: &self.opened_at,
+            table: PhantomData,
+        }
     }
 
     /// Opens the table when no other open is live; [`None`] while one is, with no panic: for a
@@ -69,7 +76,11 @@ impl<'a, T: ?Sized> Open<'a, T> {
     pub fn map<U: ?Sized>(self, part: impl FnOnce(&mut T) -> &mut U) -> Open<'a, U> {
         let this = ManuallyDrop::new(self);
         let value = NonNull::from(part(unsafe { &mut *this.value.as_ptr() }));
-        Open { value, opened_at: this.opened_at, table: PhantomData }
+        Open {
+            value,
+            opened_at: this.opened_at,
+            table: PhantomData,
+        }
     }
 
     /// As [`Open::map`] for a part that can be missing: without it the table closes.
@@ -77,7 +88,11 @@ impl<'a, T: ?Sized> Open<'a, T> {
     pub fn filter_map<U: ?Sized>(self, part: impl FnOnce(&mut T) -> Option<&mut U>) -> Option<Open<'a, U>> {
         let value = NonNull::from(part(unsafe { &mut *self.value.as_ptr() })?);
         let this = ManuallyDrop::new(self);
-        Some(Open { value, opened_at: this.opened_at, table: PhantomData })
+        Some(Open {
+            value,
+            opened_at: this.opened_at,
+            table: PhantomData,
+        })
     }
 }
 

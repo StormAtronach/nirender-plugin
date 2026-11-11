@@ -37,14 +37,14 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 pub mod debug_lines;
 pub mod depth;
-pub mod spot;
 mod depth_merge;
 mod gamma;
-mod window_pass;
 mod late_depth;
 mod live;
 mod multisample;
 mod picture;
+pub mod spot;
+mod window_pass;
 use picture::*;
 mod cli;
 use cli::*;
@@ -56,9 +56,9 @@ pub use watchdog::LongStep;
 mod tag;
 // The one home of the stream format number, shared with the plugin crate (see the file).
 // Public: the program that has this crate as a part reads the exit codes.
+mod extension;
 #[path = "../../src/stream_format.rs"]
 pub mod stream_format;
-mod extension;
 pub use extension::*;
 mod view_kind;
 pub use view_kind::{Additions, ViewKey, ViewKind};
@@ -74,20 +74,23 @@ pub use data::*;
 mod renderer;
 use renderer::*;
 mod stream;
-use stream::*;
 pub use cli::{run, run_with};
+use stream::*;
 
 mod d3d;
-use d3d::{address, attributes, blend_factor, color, compare, decode_dxt, expands, filter, gpu_pixels, known, stencil_operation, texture_format, INPUT_FORMATS};
+use d3d::{
+    address, attributes, blend_factor, color, compare, decode_dxt, expands, filter, gpu_pixels, known, stencil_operation,
+    texture_format, INPUT_FORMATS,
+};
 pub use d3d::{d3d_compare, d3d_stencil_operation};
-mod lights;
 mod light_keys;
+mod lights;
 use influences::FVF_INFLUENCES;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
 pub mod switches;
 use switches::switches;
-mod particle_quads;
 mod engine;
+mod particle_quads;
 mod player;
 use engine::{plan, scene};
 mod retained;
@@ -96,16 +99,23 @@ pub use retained::view_planes;
 mod request;
 mod stage_groups;
 mod stage_shaders;
-use stage_groups::{StageGroups, StageKey};
 /// The request of the GPU and what a check of a shader without a GPU takes from it (the
 /// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
-pub use request::{fixed_limits, probe, required_features, required_features_of, tier_c_shader_source, world_shader_source, Refusal, TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES};
-mod uv_animation;
+pub use request::{
+    fixed_limits, probe, required_features, required_features_of, tier_c_shader_source, world_shader_source, Refusal,
+    TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES,
+};
+use stage_groups::{StageGroups, StageKey};
 mod effect_turn;
 mod morph;
 pub mod stamps;
+mod uv_animation;
 mod view_times;
-use retained::{effect_entry_buffer, light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet, SceneData, EFFECT_ENTRIES_AT_FIRST, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST, RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE};
+use retained::{
+    effect_entry_buffer, light_data, light_index_buffer, retained_light_buffer, scene_buffer, PinnedTexture, RetainedSet,
+    SceneData, EFFECT_ENTRIES_AT_FIRST, INSTANCE_BLOCK, LIGHT_INDEXES_AT_FIRST, RETAINED_AT_FIRST, RETAINED_BONES_AT_FIRST,
+    RETAINED_LIGHTS_AT_FIRST, SCENE_SIZE,
+};
 
 /// The wgpu of this crate, for a program that draws with it through [`Extension`].
 pub use wgpu;
@@ -171,7 +181,13 @@ impl WorldFacts {
         [self.frustum[4], self.frustum[5]]
     }
 
-    fn view<'a>(&self, device: &'a wgpu::Device, queue: &'a wgpu::Queue, commands: &'a FrameCommands, target_format: wgpu::TextureFormat) -> SceneView<'a> {
+    fn view<'a>(
+        &self,
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        commands: &'a FrameCommands,
+        target_format: wgpu::TextureFormat,
+    ) -> SceneView<'a> {
         SceneView {
             device,
             queue,
@@ -424,8 +440,23 @@ impl Pass {
     /// record (the texture pass of the game makes them from the effect and the camera of
     /// the frame); without them a stage of an effect gets the generation of its kind and no
     /// transform.
-    fn new(d: &material::Derived, pass: usize, m: &material::Material, textures: &FxHashMap<u32, Rc<wgpu::TextureView>>, effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>) -> Pass {
-        const NONE: PassStage = PassStage { color: [1, 0, 0], alpha: [1, 0, 0], coordinate: 0, transform: 0, bump: [0.0; 6], texture: 0, sampler: [0; 5], texture_transform: [0.0; 16] };
+    fn new(
+        d: &material::Derived,
+        pass: usize,
+        m: &material::Material,
+        textures: &FxHashMap<u32, Rc<wgpu::TextureView>>,
+        effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>,
+    ) -> Pass {
+        const NONE: PassStage = PassStage {
+            color: [1, 0, 0],
+            alpha: [1, 0, 0],
+            coordinate: 0,
+            transform: 0,
+            bump: [0.0; 6],
+            texture: 0,
+            sampler: [0; 5],
+            texture_transform: [0.0; 16],
+        };
         // D3DBLEND_ONE is 2 and D3DBLEND_ZERO is 1: the blend of a pass that does not blend.
         let blend = d.blends.get(pass).copied().unwrap_or([0; 3]);
         let blend = if blend[0] != 0 { [1, blend[1], blend[2]] } else { [0, 2, 1] };
@@ -469,7 +500,11 @@ impl Pass {
                 coordinate,
                 transform,
                 // The stage of the bump map has the values of the material.
-                bump: if st.source == 5 { m.stage_bump() } else { [0.5, 0.0, 0.0, 0.5, 1.0, 0.0] },
+                bump: if st.source == 5 {
+                    m.stage_bump()
+                } else {
+                    [0.5, 0.0, 0.0, 0.5, 1.0, 0.0]
+                },
                 texture: st.texture,
                 sampler,
                 texture_transform,
@@ -477,7 +512,12 @@ impl Pass {
         }
         // A pass after the first has the alpha test of its template, not that of the material.
         let alpha_test = if pass > 0 { d.alpha_tests.get(pass).copied() } else { None };
-        Pass { blend, stages, alpha_test, color_write: 15 }
+        Pass {
+            blend,
+            stages,
+            alpha_test,
+            color_write: 15,
+        }
     }
 
     /// The draws of the Morrowind Code Patch for this pass into the picture of the character
@@ -506,9 +546,9 @@ impl Pass {
 }
 
 pub mod gpu;
+mod influences;
 pub mod material;
 mod overlay;
-mod influences;
 mod pool;
 mod ticks;
 
@@ -545,7 +585,13 @@ mod cores {
         fn GetCurrentProcess() -> isize;
         fn GetCurrentThread() -> isize;
         fn SetProcessInformation(process: isize, class: u32, information: *const core::ffi::c_void, size: u32) -> i32;
-        fn GetSystemCpuSetInformation(information: *mut CpuSetInformation, length: u32, returned: *mut u32, process: isize, flags: u32) -> i32;
+        fn GetSystemCpuSetInformation(
+            information: *mut CpuSetInformation,
+            length: u32,
+            returned: *mut u32,
+            process: isize,
+            flags: u32,
+        ) -> i32;
         fn SetThreadSelectedCpuSets(thread: isize, ids: *const u32, count: u32) -> i32;
     }
     const PROCESS_POWER_THROTTLING: u32 = 4;
@@ -560,8 +606,17 @@ mod cores {
         // first call.
         unsafe {
             let process = GetCurrentProcess();
-            let state = PowerThrottlingState { version: 1, control_mask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED, state_mask: 0 };
-            let throttling = SetProcessInformation(process, PROCESS_POWER_THROTTLING, &state as *const _ as *const core::ffi::c_void, core::mem::size_of::<PowerThrottlingState>() as u32) != 0;
+            let state = PowerThrottlingState {
+                version: 1,
+                control_mask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+                state_mask: 0,
+            };
+            let throttling = SetProcessInformation(
+                process,
+                PROCESS_POWER_THROTTLING,
+                &state as *const _ as *const core::ffi::c_void,
+                core::mem::size_of::<PowerThrottlingState>() as u32,
+            ) != 0;
             let mut needed = 0u32;
             GetSystemCpuSetInformation(core::ptr::null_mut(), 0, &mut needed, process, 0);
             let count = needed as usize / core::mem::size_of::<CpuSetInformation>();
@@ -573,12 +628,20 @@ mod cores {
             let best = sets.iter().map(|s| s.efficiency_class).max().unwrap_or(0);
             let classes = sets.iter().map(|s| s.efficiency_class).min().unwrap_or(0) != best;
             let ids: Vec<u32> = sets.iter().filter(|s| s.efficiency_class == best).map(|s| s.id).collect();
-            let pinned = classes && !ids.is_empty() && SetThreadSelectedCpuSets(GetCurrentThread(), ids.as_ptr(), ids.len() as u32) != 0;
+            let pinned = classes
+                && !ids.is_empty()
+                && SetThreadSelectedCpuSets(GetCurrentThread(), ids.as_ptr(), ids.len() as u32) != 0;
             format!(
                 "cores: {} of {} logical processors in the highest efficiency class{}; power throttling off {}",
                 ids.len(),
                 sets.len(),
-                if pinned { ", the thread of the frames on them" } else if classes { ", not pinned" } else { ", one class, not pinned" },
+                if pinned {
+                    ", the thread of the frames on them"
+                } else if classes {
+                    ", not pinned"
+                } else {
+                    ", one class, not pinned"
+                },
                 if throttling { "set" } else { "not set" }
             )
         }
@@ -1087,7 +1150,8 @@ struct Player {
 #[cfg(test)]
 pub(crate) fn assert_wgsl(label: &str, source: &str) {
     use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-    let module = wgpu::naga::front::wgsl::parse_str(source).unwrap_or_else(|error| panic!("{label}: {}", error.emit_to_string(source)));
+    let module = wgpu::naga::front::wgsl::parse_str(source)
+        .unwrap_or_else(|error| panic!("{label}: {}", error.emit_to_string(source)));
     if let Err(error) = Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&module) {
         panic!("{label}: {}", error.emit_to_string(source));
     }
@@ -1101,10 +1165,28 @@ mod tests {
     fn layout_of_a_format() {
         // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX2: 12 + 12 + 4 + 2 * 8 bytes.
         let layout = VertexLayout::of(0x2 | 0x10 | 0x40 | 0x200, 44).unwrap();
-        assert_eq!(layout, VertexLayout { stride: 44, position: 0, normal: Some(12), color: Some(24), coordinates: vec![28, 36] });
+        assert_eq!(
+            layout,
+            VertexLayout {
+                stride: 44,
+                position: 0,
+                normal: Some(12),
+                color: Some(24),
+                coordinates: vec![28, 36]
+            }
+        );
         // D3DFVF_XYZ | D3DFVF_TEX1, with no normal and no colour.
         let layout = VertexLayout::of(0x2 | 0x100, 20).unwrap();
-        assert_eq!(layout, VertexLayout { stride: 20, position: 0, normal: None, color: None, coordinates: vec![12] });
+        assert_eq!(
+            layout,
+            VertexLayout {
+                stride: 20,
+                position: 0,
+                normal: None,
+                color: None,
+                coordinates: vec![12]
+            }
+        );
         // Transformed vertices (D3DFVF_XYZRHW) and blend weights (D3DFVF_XYZB4 with the
         // indexes) have no layout for a held draw.
         assert!(VertexLayout::of(0x4 | 0x40, 20).is_none());
@@ -1113,8 +1195,12 @@ mod tests {
 
     #[test]
     fn the_reach_of_a_light() {
-        use super::{LIGHT_REACH_MAX, LightData, light_reach};
-        let light = |cut: f32, radius: f32, range: f32| LightData { direction: [0.0, 0.0, 0.0, range], cone: [0.0, 0.0, radius, cut], ..bytemuck::Zeroable::zeroed() };
+        use super::{light_reach, LightData, LIGHT_REACH_MAX};
+        let light = |cut: f32, radius: f32, range: f32| LightData {
+            direction: [0.0, 0.0, 0.0, range],
+            cone: [0.0, 0.0, radius, cut],
+            ..bytemuck::Zeroable::zeroed()
+        };
         // The cut-off of the light for each pixel, else the radius of the game, else the range.
         assert_eq!(light_reach(&light(1.0 / 512.0, 300.0, 1000.0)), 512.0);
         assert_eq!(light_reach(&light(0.0, 300.0, 1000.0)), 300.0);
@@ -1124,9 +1210,18 @@ mod tests {
         assert_eq!(light_reach(&light(0.0, 0.0, f32::NAN)), LIGHT_REACH_MAX);
         // The cosines of a spot light are not a cut-off: the reach is its radius, not 1 over
         // the cosine of its inner angle.
-        let spot = LightData { cone: [0.88, 0.5, 300.0, 0.0], ..light(0.0, 300.0, 1000.0) };
+        let spot = LightData {
+            cone: [0.88, 0.5, 300.0, 0.0],
+            ..light(0.0, 300.0, 1000.0)
+        };
         assert_eq!(light_reach(&spot), 300.0);
-        assert_eq!(light_reach(&LightData { cone: [0.88, 0.5, 300.0, 1.0 / 512.0], ..spot }), 512.0);
+        assert_eq!(
+            light_reach(&LightData {
+                cone: [0.88, 0.5, 300.0, 1.0 / 512.0],
+                ..spot
+            }),
+            512.0
+        );
     }
 
     /// A material with an alpha test and a decal: the base pass tests as the material says,

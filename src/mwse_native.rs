@@ -93,9 +93,22 @@ pub struct ApiV1 {
     pub struct_size: u32,
     pub version: u32,
     pub mwse_version: *const u8,
-    pub subscribe: unsafe extern "C" fn(module: *const u8, event_id: u32, listener: Listener, user: *mut c_void, priority: i32, handle: *mut u32) -> u32,
+    pub subscribe: unsafe extern "C" fn(
+        module: *const u8,
+        event_id: u32,
+        listener: Listener,
+        user: *mut c_void,
+        priority: i32,
+        handle: *mut u32,
+    ) -> u32,
     pub unsubscribe: unsafe extern "C" fn(handle: u32),
-    pub claim: unsafe extern "C" fn(module: *const u8, override_id: u32, function: *const c_void, engine_function: *mut *const c_void, handle: *mut u32) -> u32,
+    pub claim: unsafe extern "C" fn(
+        module: *const u8,
+        override_id: u32,
+        function: *const c_void,
+        engine_function: *mut *const c_void,
+        handle: *mut u32,
+    ) -> u32,
     pub release: unsafe extern "C" fn(handle: u32),
     pub request: unsafe extern "C" fn(module: *const u8, request_id: u32, packet: *const c_void) -> u32,
     pub query: unsafe extern "C" fn(query_id: u32, packet: *mut c_void) -> u32,
@@ -133,7 +146,11 @@ unsafe fn find_table() -> usize {
     }
     let get: unsafe extern "C" fn(u32) -> *const ApiV1 = core::mem::transmute(export);
     let table = get(NATIVE_API_VERSION);
-    if table.is_null() { 1 } else { table as usize }
+    if table.is_null() {
+        1
+    } else {
+        table as usize
+    }
 }
 
 /// The words of MWSE's answer.
@@ -200,9 +217,18 @@ pub unsafe fn claim(override_id: u32, function: usize) -> Result<Claim, String> 
     let api = api().ok_or_else(|| NO_TABLE.to_string())?;
     let mut handle = 0u32;
     let mut engine: *const c_void = core::ptr::null();
-    let status = (api.claim)(MODULE.as_ptr(), override_id, function as *const c_void, &mut engine, &mut handle);
+    let status = (api.claim)(
+        MODULE.as_ptr(),
+        override_id,
+        function as *const c_void,
+        &mut engine,
+        &mut handle,
+    );
     if status == NATIVE_OK && !engine.is_null() {
-        Ok(Claim { engine: engine as usize, handle })
+        Ok(Claim {
+            engine: engine as usize,
+            handle,
+        })
     } else {
         Err(format!("MWSE override {override_id}: {}", status_text(status)))
     }
@@ -249,7 +275,13 @@ pub unsafe fn release(claim: Claim) {
 /// No condition other than that MWSE's table, when [`api`] finds one, is a live `ApiV1`.
 pub unsafe fn ui_scale() -> Option<UIScaleV1> {
     let api = api()?;
-    let mut packet = UIScaleV1 { struct_size: core::mem::size_of::<UIScaleV1>() as u32, scale: 1.0, view_width: 0, view_height: 0, pick_ray_in_view_size: 0 };
+    let mut packet = UIScaleV1 {
+        struct_size: core::mem::size_of::<UIScaleV1>() as u32,
+        scale: 1.0,
+        view_width: 0,
+        view_height: 0,
+        pick_ray_in_view_size: 0,
+    };
     ((api.query)(NATIVE_QUERY_UI_SCALE, &mut packet as *mut UIScaleV1 as *mut c_void) == NATIVE_OK).then_some(packet)
 }
 

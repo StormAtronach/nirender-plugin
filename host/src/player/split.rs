@@ -35,7 +35,10 @@ pub(crate) struct Reads {
 
 impl Reads {
     pub(crate) fn of(handles: impl IntoIterator<Item = u32>) -> Reads {
-        Reads { any: false, handles: handles.into_iter().collect() }
+        Reads {
+            any: false,
+            handles: handles.into_iter().collect(),
+        }
     }
 
     fn add(&mut self, other: &Reads) {
@@ -76,8 +79,16 @@ pub(crate) struct ItemFacts {
 
 /// The textures that the replay of the world's draws can sample: those that the draws `draws`
 /// and the table's slots (`pinned`) bind, of those that `known` keeps.
-pub(crate) fn replay_reads<'a>(draws: impl Iterator<Item = &'a [u32; STAGES]>, pinned: impl Iterator<Item = u32>, known: impl Fn(&u32) -> bool) -> Reads {
-    let mut handles: Vec<u32> = draws.flat_map(|handles| handles.iter().copied()).chain(pinned).filter(|handle| known(handle)).collect();
+pub(crate) fn replay_reads<'a>(
+    draws: impl Iterator<Item = &'a [u32; STAGES]>,
+    pinned: impl Iterator<Item = u32>,
+    known: impl Fn(&u32) -> bool,
+) -> Reads {
+    let mut handles: Vec<u32> = draws
+        .flat_map(|handles| handles.iter().copied())
+        .chain(pinned)
+        .filter(|handle| known(handle))
+        .collect();
     handles.sort_unstable();
     handles.dedup();
     Reads::of(handles)
@@ -197,7 +208,11 @@ pub(crate) fn plan(facts: &[ItemFacts], start: State, touch: &Touch) -> Split {
         }
     }
 
-    let waits = touch.writes.iter().any(|&texture| held_reads.has(texture) || held_writes.contains(&texture)) || touch.reads.iter().any(|texture| held_writes.contains(texture));
+    let waits = touch
+        .writes
+        .iter()
+        .any(|&texture| held_reads.has(texture) || held_writes.contains(&texture))
+        || touch.reads.iter().any(|texture| held_writes.contains(texture));
     if waits {
         split.held_for_operation = true;
         now.fill(true);
@@ -232,10 +247,17 @@ impl Player {
     pub(crate) fn run_items_split(&mut self, touch: &Touch) -> Vec<Item> {
         let items = std::mem::take(&mut self.items);
         let (mut table, mut replay) = (None, None);
-        let facts: Vec<ItemFacts> = items.iter().map(|item| self.item_facts(item, &items, touch, &mut table, &mut replay)).collect();
+        let facts: Vec<ItemFacts> = items
+            .iter()
+            .map(|item| self.item_facts(item, &items, touch, &mut table, &mut replay))
+            .collect();
         let split = plan(&facts, (self.pass_target, self.viewport), touch);
         // A second split past the same held world start finds it prepared already.
-        if let Some(Item::WorldStart(facts)) = split.world_start_passed.filter(|_| !self.world_prepared).map(|index| &items[index]) {
+        if let Some(Item::WorldStart(facts)) = split
+            .world_start_passed
+            .filter(|_| !self.world_prepared)
+            .map(|index| &items[index])
+        {
             self.prepare_world(facts);
             self.world_prepared = true;
         }
@@ -268,25 +290,58 @@ impl Player {
     /// rendered textures and the textures that the operation writes. `table` keeps those of the
     /// table's slots and `replay` those of the replay of the world's draws, each made at the
     /// first item that needs it.
-    fn item_facts(&self, item: &Item, items: &[Item], touch: &Touch, table: &mut Option<Reads>, replay: &mut Option<Reads>) -> ItemFacts {
+    fn item_facts(
+        &self,
+        item: &Item,
+        items: &[Item],
+        touch: &Touch,
+        table: &mut Option<Reads>,
+        replay: &mut Option<Reads>,
+    ) -> ItemFacts {
         let targets = &self.renderer.targets;
         let known = |handle: &u32| *handle != 0 && (targets.contains_key(handle) || touch.writes.contains(handle));
-        let mut table_reads = || table.get_or_insert_with(|| replay_reads(core::iter::empty(), self.retained.pinned_textures(), known)).clone();
+        let mut table_reads = || {
+            table
+                .get_or_insert_with(|| replay_reads(core::iter::empty(), self.retained.pinned_textures(), known))
+                .clone()
+        };
         // The world's draws of the frame so far (those queued are among them) and those queued.
         let mut replayed = || {
             replay
                 .get_or_insert_with(|| {
-                    let queued = items.iter().filter_map(|item| if let Item::Draw(draw) = item { Some(&draw.texture_handles) } else { None });
+                    let queued = items.iter().filter_map(|item| {
+                        if let Item::Draw(draw) = item {
+                            Some(&draw.texture_handles)
+                        } else {
+                            None
+                        }
+                    });
                     let world = self.world_draws.iter().map(|draw| &draw.texture_handles);
                     replay_reads(queued.chain(world), self.retained.pinned_textures(), known)
                 })
                 .clone()
         };
-        let movable = |reads: Reads| ItemFacts { movable: true, reads, ..Default::default() };
-        let fixed = |reads: Reads| ItemFacts { movable: false, reads, ..Default::default() };
+        let movable = |reads: Reads| ItemFacts {
+            movable: true,
+            reads,
+            ..Default::default()
+        };
+        let fixed = |reads: Reads| ItemFacts {
+            movable: false,
+            reads,
+            ..Default::default()
+        };
         match item {
-            Item::Target(target) => ItemFacts { target: Some(*target), movable: true, ..Default::default() },
-            Item::Viewport(viewport) => ItemFacts { viewport: Some(*viewport), movable: true, ..Default::default() },
+            Item::Target(target) => ItemFacts {
+                target: Some(*target),
+                movable: true,
+                ..Default::default()
+            },
+            Item::Viewport(viewport) => ItemFacts {
+                viewport: Some(*viewport),
+                movable: true,
+                ..Default::default()
+            },
             Item::Clear(..) => movable(Reads::default()),
             Item::Draw(draw) => movable(Reads::of(draw.texture_handles.iter().copied().filter(known))),
             Item::Screen(screen) => movable(Reads::of(Some(screen.texture).filter(known))),
@@ -297,11 +352,17 @@ impl Player {
             // a held draw also samples its own maps.
             Item::HeldHere(held, _) => {
                 let mut reads = replayed();
-                let maps = targets.iter().filter(|(_, target)| held.maps.iter().any(|map| Rc::ptr_eq(&map.texture, &target.view))).map(|(handle, _)| *handle);
+                let maps = targets
+                    .iter()
+                    .filter(|(_, target)| held.maps.iter().any(|map| Rc::ptr_eq(&map.texture, &target.view)))
+                    .map(|(handle, _)| *handle);
                 reads.add(&Reads::of(maps));
                 fixed(reads)
             }
-            Item::WorldStart(_) => ItemFacts { world_start: true, ..fixed(replayed()) },
+            Item::WorldStart(_) => ItemFacts {
+                world_start: true,
+                ..fixed(replayed())
+            },
             // The table's main view in a world begun earlier: the extension holds its shapes
             // there (`retained_hold`), as at the world's start.
             Item::WorldEnd(_) | Item::Replace(..) | Item::MainView(_) => fixed(replayed()),
@@ -311,7 +372,9 @@ impl Player {
             // passed to them in a way that reads the frame's targets. The post chain of a picture
             // (`TierPost`) copies the colour and the depth of the picture it draws into and reads
             // no other rendered texture.
-            Item::Post(_) | Item::FirstPersonDepth(_) | Item::TierStart(..) | Item::TierEnd(..) | Item::TierPost(..) => fixed(Reads::default()),
+            Item::Post(_) | Item::FirstPersonDepth(_) | Item::TierStart(..) | Item::TierEnd(..) | Item::TierPost(..) => {
+                fixed(Reads::default())
+            }
         }
     }
 }
@@ -324,40 +387,94 @@ mod tests {
     const SMALL: Viewport = ([0.0, 0.0, 512.0, 512.0], [0.0, 1.0]);
 
     fn target(handle: Option<u32>) -> ItemFacts {
-        ItemFacts { target: Some(handle), movable: true, ..Default::default() }
+        ItemFacts {
+            target: Some(handle),
+            movable: true,
+            ..Default::default()
+        }
     }
 
     fn viewport(viewport: Viewport) -> ItemFacts {
-        ItemFacts { viewport: Some(viewport), movable: true, ..Default::default() }
+        ItemFacts {
+            viewport: Some(viewport),
+            movable: true,
+            ..Default::default()
+        }
     }
 
     fn draw(reads: &[u32]) -> ItemFacts {
-        ItemFacts { movable: true, reads: Reads::of(reads.iter().copied()), ..Default::default() }
+        ItemFacts {
+            movable: true,
+            reads: Reads::of(reads.iter().copied()),
+            ..Default::default()
+        }
     }
 
     fn fixed(reads: &[u32]) -> ItemFacts {
-        ItemFacts { movable: false, ..draw(reads) }
+        ItemFacts {
+            movable: false,
+            ..draw(reads)
+        }
     }
 
     fn items(steps: &[Step]) -> Vec<usize> {
-        steps.iter().filter_map(|step| if let Step::Item(index) = step { Some(*index) } else { None }).collect()
+        steps
+            .iter()
+            .filter_map(|step| if let Step::Item(index) = step { Some(*index) } else { None })
+            .collect()
     }
 
     #[test]
     fn a_texture_run_goes_ahead_of_the_back_buffer_items() {
         // The back buffer, a texture run, the back buffer again, then the flush.
-        let facts = [draw(&[]), draw(&[]), target(Some(5)), viewport(SMALL), draw(&[]), target(None), viewport(FULL), draw(&[])];
+        let facts = [
+            draw(&[]),
+            draw(&[]),
+            target(Some(5)),
+            viewport(SMALL),
+            draw(&[]),
+            target(None),
+            viewport(FULL),
+            draw(&[]),
+        ];
         let split = plan(&facts, (None, Some(FULL)), &Touch::default());
         assert_eq!(split.now, [Step::Item(2), Step::Item(3), Step::Item(4)]);
         // The held items start in the back buffer with its viewport, and the stream goes on in the
         // state it had.
-        assert_eq!(split.later, [Step::Target(None), Step::Viewport(FULL), Step::Item(0), Step::Item(1), Step::Viewport(SMALL), Step::Item(5), Step::Item(6), Step::Item(7)]);
-        assert_eq!((split.runs_ahead, split.held_for_kind, split.held_for_textures, split.held_for_operation), (1, 0, 0, false));
+        assert_eq!(
+            split.later,
+            [
+                Step::Target(None),
+                Step::Viewport(FULL),
+                Step::Item(0),
+                Step::Item(1),
+                Step::Viewport(SMALL),
+                Step::Item(5),
+                Step::Item(6),
+                Step::Item(7)
+            ]
+        );
+        assert_eq!(
+            (
+                split.runs_ahead,
+                split.held_for_kind,
+                split.held_for_textures,
+                split.held_for_operation
+            ),
+            (1, 0, 0, false)
+        );
     }
 
     #[test]
     fn the_items_before_the_first_back_buffer_item_run_in_order() {
-        let facts = [target(Some(3)), draw(&[]), target(None), draw(&[]), target(Some(4)), draw(&[])];
+        let facts = [
+            target(Some(3)),
+            draw(&[]),
+            target(None),
+            draw(&[]),
+            target(Some(4)),
+            draw(&[]),
+        ];
         let split = plan(&facts, (None, None), &Touch::default());
         assert_eq!(items(&split.now), [0, 1, 4, 5]);
         assert_eq!(items(&split.later), [2, 3]);
@@ -395,7 +512,15 @@ mod tests {
     #[test]
     fn a_run_that_samples_a_texture_a_held_run_writes_stays_held() {
         // The run into 7 is held for its kind; the run into 8 samples 7 and stays after it.
-        let facts = [draw(&[]), target(Some(7)), fixed(&[]), target(Some(8)), draw(&[7]), target(Some(9)), draw(&[])];
+        let facts = [
+            draw(&[]),
+            target(Some(7)),
+            fixed(&[]),
+            target(Some(8)),
+            draw(&[7]),
+            target(Some(9)),
+            draw(&[]),
+        ];
         let split = plan(&facts, (None, None), &Touch::default());
         assert_eq!(items(&split.now), [5, 6]);
         assert_eq!(items(&split.later), [0, 1, 2, 3, 4]);
@@ -404,7 +529,13 @@ mod tests {
 
     #[test]
     fn a_held_item_that_may_sample_any_texture_holds_every_run_after_it() {
-        let any = ItemFacts { reads: Reads { any: true, handles: Vec::new() }, ..fixed(&[]) };
+        let any = ItemFacts {
+            reads: Reads {
+                any: true,
+                handles: Vec::new(),
+            },
+            ..fixed(&[])
+        };
         let facts = [any, target(Some(5)), draw(&[])];
         let split = plan(&facts, (None, None), &Touch::default());
         assert!(items(&split.now).is_empty());
@@ -415,12 +546,26 @@ mod tests {
     fn an_operation_that_a_held_item_must_come_before_runs_every_item() {
         let facts = [draw(&[5]), target(Some(6)), draw(&[])];
         // The game writes the pixels of 5, which a held draw samples.
-        let split = plan(&facts, (None, None), &Touch { reads: Vec::new(), writes: vec![5] });
+        let split = plan(
+            &facts,
+            (None, None),
+            &Touch {
+                reads: Vec::new(),
+                writes: vec![5],
+            },
+        );
         assert_eq!(split.now, (0..3).map(Step::Item).collect::<Vec<_>>());
         assert!(split.later.is_empty());
         assert!(split.held_for_operation);
         // A read of 6 can go: no held item writes 6.
-        let split = plan(&facts, (None, None), &Touch { reads: vec![6], writes: Vec::new() });
+        let split = plan(
+            &facts,
+            (None, None),
+            &Touch {
+                reads: vec![6],
+                writes: Vec::new(),
+            },
+        );
         assert_eq!(items(&split.now), [1, 2]);
         assert!(!split.held_for_operation);
     }
@@ -437,14 +582,24 @@ mod tests {
         // A held world end with those reads holds the run into 6, and the run into the map
         // target 8 goes ahead.
         let facts = [fixed(&[5, 6, 7]), target(Some(6)), draw(&[]), target(Some(8)), draw(&[])];
-        let split = plan(&facts, (None, None), &Touch { reads: vec![8], writes: Vec::new() });
+        let split = plan(
+            &facts,
+            (None, None),
+            &Touch {
+                reads: vec![8],
+                writes: Vec::new(),
+            },
+        );
         assert_eq!(items(&split.now), [3, 4]);
         assert_eq!(split.held_for_textures, 1);
     }
 
     #[test]
     fn a_run_that_goes_ahead_of_a_held_world_start_names_it() {
-        let start = ItemFacts { world_start: true, ..fixed(&[]) };
+        let start = ItemFacts {
+            world_start: true,
+            ..fixed(&[])
+        };
         let facts = [draw(&[]), start.clone(), target(Some(5)), draw(&[])];
         assert_eq!(plan(&facts, (None, None), &Touch::default()).world_start_passed, Some(1));
         // A run before the world start goes in order: it passes nothing.
@@ -458,7 +613,14 @@ mod tests {
     #[test]
     fn a_read_of_a_texture_that_a_held_run_writes_runs_every_item() {
         let facts = [draw(&[]), target(Some(5)), fixed(&[])];
-        let split = plan(&facts, (None, None), &Touch { reads: vec![5], writes: Vec::new() });
+        let split = plan(
+            &facts,
+            (None, None),
+            &Touch {
+                reads: vec![5],
+                writes: Vec::new(),
+            },
+        );
         assert!(split.held_for_operation);
         assert!(split.later.is_empty());
     }

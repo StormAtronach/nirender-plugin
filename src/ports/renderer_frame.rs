@@ -264,7 +264,15 @@ unsafe fn camera_viewport(target: usize, port: usize) -> [u32; 6] {
 /// `this` points at the live `NiDX8Renderer` with its device; `location`, `direction`, `up` and
 /// `right` each at three floats; `frustum` and `port` are the camera's frustum and viewport as the
 /// engine passes them.
-pub unsafe fn set_camera_data(this: usize, location: usize, direction: usize, up: usize, right: usize, frustum: usize, port: usize) {
+pub unsafe fn set_camera_data(
+    this: usize,
+    location: usize,
+    direction: usize,
+    up: usize,
+    right: usize,
+    frustum: usize,
+    port: usize,
+) {
     crate::shadow::touch(&set_camera_data_port::STATE);
     write_view_matrix(this, location, direction, up, right);
     d3d::device_set_transform(rd(this, R::d3dDevice), D3DTS_VIEW, this + R::d3dViewMat);
@@ -373,7 +381,11 @@ pub unsafe fn set_model_transform(this: usize, transform: usize) {
 pub unsafe fn set_bone_transform(this: usize, transform: usize, bone_index: u32) {
     crate::shadow::touch(&set_bone_transform_port::STATE);
     write_world_matrix(this, transform);
-    d3d::device_set_transform(rd(this, R::d3dDevice), bone_index.wrapping_add(D3DTS_WORLDMATRIX0), this + R::currentWorldMatrix);
+    d3d::device_set_transform(
+        rd(this, R::d3dDevice),
+        bone_index.wrapping_add(D3DTS_WORLDMATRIX0),
+        this + R::currentWorldMatrix,
+    );
 }
 
 /// This function copies a `NiTransform` as the game code does at 0x6ACC29 and 0x6ACD1E.
@@ -402,8 +414,15 @@ pub unsafe fn set_skinned_model_transforms(this: usize, skin: usize, partition: 
     let bone_world = bone_world.as_mut_ptr() as usize;
     let bone = bone.as_mut_ptr() as usize;
 
-    transform_invert(rd::<usize>(skin, NiSkinInstance::rootParent) + NiAVObject::worldTransform, inverse_root);
-    let result = transform_combine(transform, scratch, rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_ROOT_PARENT_TO_SKIN);
+    transform_invert(
+        rd::<usize>(skin, NiSkinInstance::rootParent) + NiAVObject::worldTransform,
+        inverse_root,
+    );
+    let result = transform_combine(
+        transform,
+        scratch,
+        rd::<usize>(skin, NiSkinInstance::skinData) + SKIN_DATA_ROOT_PARENT_TO_SKIN,
+    );
     copy_transform(skin_to_world, result);
     let result = transform_combine(skin_to_world, scratch, inverse_root);
     transform_copy2(combined, result);
@@ -561,7 +580,11 @@ pub unsafe fn clear_buffer(this: usize, rect: usize, flags: u8) {
     let target: usize = rd(this, R::currentRenderTarget);
     let width: u32 = rd(target, RT::width);
     let height: u32 = rd(target, RT::height);
-    let rects = if rect != 0 { clear_rect(width, height, rect) } else { [0, 0, width, height] };
+    let rects = if rect != 0 {
+        clear_rect(width, height, rect)
+    } else {
+        [0, 0, width, height]
+    };
 
     let flags = flags as u32;
     let has_depth_stencil = rd::<u32>(target, RT::d3dSurfaceDepthStencil) != 0;
@@ -611,7 +634,11 @@ pub unsafe fn set_render_target(this: usize, texture: usize) -> u8 {
     if target == 0 {
         return 0;
     }
-    let result = d3d::device_set_render_target(rd(this, R::d3dDevice), rd(target, RT::d3dSurfaceBackBuffer), rd(target, RT::d3dSurfaceDepthStencil));
+    let result = d3d::device_set_render_target(
+        rd(this, R::d3dDevice),
+        rd(target, RT::d3dSurfaceBackBuffer),
+        rd(target, RT::d3dSurfaceDepthStencil),
+    );
     if result != 0 {
         return 0;
     }
@@ -629,7 +656,11 @@ pub unsafe fn target_of(this: usize, texture: usize) -> usize {
     if texture == 0 {
         return this + R::backbufferRenderTarget;
     }
-    let map = if ni::is_kind_of(texture, RTTI_NI_RENDERED_CUBE_MAP) { this + R::hashmap_maybeRenderedCubemaps } else { this + R::hashmap_maybeRenderedTextures };
+    let map = if ni::is_kind_of(texture, RTTI_NI_RENDERED_CUBE_MAP) {
+        this + R::hashmap_maybeRenderedCubemaps
+    } else {
+        this + R::hashmap_maybeRenderedTextures
+    };
     let data = hash_map::find_value(map, texture as u32);
     if data == 0 {
         return 0;
@@ -853,9 +884,22 @@ pub unsafe fn precache_texture(this: usize, texture: usize, a3: u32, a4: u32) ->
 ///
 /// `this` points at a live renderer whose virtual table has `RenderShape` at 0xBC; the other
 /// arguments go on to it as the engine passes them.
-pub unsafe fn base_batch_render_shape(this: usize, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32 {
+pub unsafe fn base_batch_render_shape(
+    this: usize,
+    geometry_data: usize,
+    skin: usize,
+    transform: usize,
+    bound: usize,
+) -> u32 {
     crate::shadow::touch(&base_batch_render_shape_port::STATE);
-    engine::thiscall4(engine::virtual_at(this, 0xBC), this, geometry_data as u32, skin as u32, transform as u32, bound as u32)
+    engine::thiscall4(
+        engine::virtual_at(this, 0xBC),
+        this,
+        geometry_data as u32,
+        skin as u32,
+        transform as u32,
+        bound as u32,
+    )
 }
 
 /// 0x6F53F0 `NiRenderer::BatchRenderStrips`: the base class gives the call to `RenderTriStrips`.
@@ -864,9 +908,22 @@ pub unsafe fn base_batch_render_shape(this: usize, geometry_data: usize, skin: u
 ///
 /// `this` points at a live renderer whose virtual table has `RenderTriStrips` at 0xC0; the other
 /// arguments go on to it as the engine passes them.
-pub unsafe fn base_batch_render_strips(this: usize, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32 {
+pub unsafe fn base_batch_render_strips(
+    this: usize,
+    geometry_data: usize,
+    skin: usize,
+    transform: usize,
+    bound: usize,
+) -> u32 {
     crate::shadow::touch(&base_batch_render_strips_port::STATE);
-    engine::thiscall4(engine::virtual_at(this, 0xC0), this, geometry_data as u32, skin as u32, transform as u32, bound as u32)
+    engine::thiscall4(
+        engine::virtual_at(this, 0xC0),
+        this,
+        geometry_data as u32,
+        skin as u32,
+        transform as u32,
+        bound as u32,
+    )
 }
 
 /// 0x6ABFD0 `NiDX8Renderer::SetLeftRightSwap`
@@ -998,9 +1055,20 @@ unsafe fn init_from(this: usize, empty_string: usize, x_axis: usize, y_axis: usi
             wr::<u32>(this, element(view, row, column), if row == column { ONE } else { 0 });
         }
     }
-    for (row, column, value) in
-        [(2, 1, 0), (4, 1, 0), (1, 2, 0), (4, 2, 0), (1, 3, 0), (2, 3, 0), (3, 3, ONE), (4, 3, 0), (1, 4, 0), (2, 4, 0), (3, 4, ONE), (4, 4, 0)]
-    {
+    for (row, column, value) in [
+        (2, 1, 0),
+        (4, 1, 0),
+        (1, 2, 0),
+        (4, 2, 0),
+        (1, 3, 0),
+        (2, 3, 0),
+        (3, 3, ONE),
+        (4, 3, 0),
+        (1, 4, 0),
+        (2, 4, 0),
+        (3, 4, ONE),
+        (4, 4, 0),
+    ] {
         wr::<u32>(this, element(proj, row, column), value);
     }
     zero_words(this, R::matrixD3DIdentity, 16);
@@ -1069,188 +1137,308 @@ unsafe fn init_regions(set: &mut Regions, this: usize) {
 // Ports
 // ---------------------------------------------------------------------------------------
 
-port_thiscall!(init_port, 0x6A96C0, "NiDX8Renderer::init",
+port_thiscall!(
+    init_port,
+    0x6A96C0,
+    "NiDX8Renderer::init",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| init_regions(set, this),
-    rust = init);
+    rust = init
+);
 
-port_thiscall!(set_depth_clear_port, 0x6A9C70, "NiDX8Renderer::SetDepthClear",
+port_thiscall!(
+    set_depth_clear_port,
+    0x6A9C70,
+    "NiDX8Renderer::SetDepthClear",
     fn(this, depth: u32) -> (),
     compare_eax = false,
     regions = |set| set.add(this, R::SIZE),
-    rust = set_depth_clear);
+    rust = set_depth_clear
+);
 
-port_thiscall!(set_bg_color_port, 0x6A9C80, "NiDX8Renderer::SetBgColor",
+port_thiscall!(
+    set_bg_color_port,
+    0x6A9C80,
+    "NiDX8Renderer::SetBgColor",
     fn(this, color: usize) -> u8,
     compare_eax = true,
     regions = |set| set.add(this, R::SIZE),
-    rust = set_bg_color);
+    rust = set_bg_color
+);
 
-port_thiscall!(get_bg_color_port, 0x6A9CF0, "NiDX8Renderer::GetBgColor",
+port_thiscall!(
+    get_bg_color_port,
+    0x6A9CF0,
+    "NiDX8Renderer::GetBgColor",
     fn(this, color: usize) -> usize,
     compare_eax = true,
     regions = |set| set.add(color, 12),
-    rust = get_bg_color);
+    rust = get_bg_color
+);
 
-port_thiscall!(set_stencil_clear_port, 0x6A9D60, "NiDX8Renderer::SetStencilClear",
+port_thiscall!(
+    set_stencil_clear_port,
+    0x6A9D60,
+    "NiDX8Renderer::SetStencilClear",
     fn(this, stencil: u32) -> (),
     compare_eax = false,
     regions = |set| set.add(this, R::SIZE),
-    rust = set_stencil_clear);
+    rust = set_stencil_clear
+);
 
-port_thiscall!(get_flags_port, 0x6A9D70, "NiDX8Renderer::GetFlags",
+port_thiscall!(
+    get_flags_port,
+    0x6A9D70,
+    "NiDX8Renderer::GetFlags",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| set.add(this, R::SIZE),
-    rust = get_flags);
+    rust = get_flags
+);
 
-port_thiscall!(set_render_target_port, 0x6ABD20, "NiDX8Renderer::SetRenderTarget",
+port_thiscall!(
+    set_render_target_port,
+    0x6ABD20,
+    "NiDX8Renderer::SetRenderTarget",
     fn(this, texture: usize) -> u8,
     compare_eax = true,
     regions = |set| set_render_target_regions(set, this),
-    rust = set_render_target);
+    rust = set_render_target
+);
 
-port_thiscall!(swap_buffers_port, 0x6ABE40, "NiDX8Renderer::SwapBuffers",
+port_thiscall!(
+    swap_buffers_port,
+    0x6ABE40,
+    "NiDX8Renderer::SwapBuffers",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| swap_buffers_regions(set, this),
-    rust = swap_buffers);
+    rust = swap_buffers
+);
 
-port_thiscall!(clear_buffer_port, 0x6ABE60, "NiDX8Renderer::ClearBuffer",
+port_thiscall!(
+    clear_buffer_port,
+    0x6ABE60,
+    "NiDX8Renderer::ClearBuffer",
     fn(this, rect: usize, flags: u8) -> (),
     compare_eax = false,
     regions = |set| clear_buffer_regions(set, this),
-    rust = clear_buffer);
+    rust = clear_buffer
+);
 
-port_thiscall!(get_left_right_swap_port, 0x6ABFB0, "NiDX8Renderer::GetLeftRightSwap",
+port_thiscall!(
+    get_left_right_swap_port,
+    0x6ABFB0,
+    "NiDX8Renderer::GetLeftRightSwap",
     fn(this) -> u8,
     compare_eax = true,
     regions = |set| set.add(this, R::SIZE),
-    rust = get_left_right_swap);
+    rust = get_left_right_swap
+);
 
-port_thiscall_float!(get_max_fog_value_port, 0x6AC310, "NiDX8Renderer::GetMaxFogValue",
+port_thiscall_float!(
+    get_max_fog_value_port,
+    0x6AC310,
+    "NiDX8Renderer::GetMaxFogValue",
     fn(this) -> f32,
     compare_eax = true,
     regions = |set| set.add(rd(this, R::renderState), RS::SIZE),
-    rust = get_max_fog_value);
+    rust = get_max_fog_value
+);
 
-port_thiscall_float!(base_get_max_fog_value_port, 0x6F5670, "NiRenderer::GetMaxFogValue",
+port_thiscall_float!(
+    base_get_max_fog_value_port,
+    0x6F5670,
+    "NiRenderer::GetMaxFogValue",
     fn(this) -> f32,
     compare_eax = true,
     regions = |set| set.add(this, 4),
-    rust = base_get_max_fog_value);
+    rust = base_get_max_fog_value
+);
 
-port_thiscall!(base_set_left_right_swap_port, 0x6F5650, "NiRenderer::SetLeftRightSwap",
+port_thiscall!(
+    base_set_left_right_swap_port,
+    0x6F5650,
+    "NiRenderer::SetLeftRightSwap",
     fn(this, swap: u8) -> u8,
     compare_eax = false,
     regions = |set| set.add(this, 4),
-    rust = base_set_left_right_swap);
+    rust = base_set_left_right_swap
+);
 
-port_thiscall!(precache_texture_port, 0x6AC370, "NiDX8Renderer::PrecacheTexture",
+port_thiscall!(
+    precache_texture_port,
+    0x6AC370,
+    "NiDX8Renderer::PrecacheTexture",
     fn(this, texture: usize, a3: u32, a4: u32) -> u32,
     compare_eax = false,
     regions = |set| set.add(this, R::SIZE),
-    rust = precache_texture);
+    rust = precache_texture
+);
 
-port_thiscall!(base_batch_render_shape_port, 0x6F53E0, "NiRenderer::BatchRenderShape",
+port_thiscall!(
+    base_batch_render_shape_port,
+    0x6F53E0,
+    "NiRenderer::BatchRenderShape",
     fn(this, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32,
     compare_eax = false,
     regions = |set| set.add(this, 4),
-    rust = base_batch_render_shape);
+    rust = base_batch_render_shape
+);
 
-port_thiscall!(base_batch_render_strips_port, 0x6F53F0, "NiRenderer::BatchRenderStrips",
+port_thiscall!(
+    base_batch_render_strips_port,
+    0x6F53F0,
+    "NiRenderer::BatchRenderStrips",
     fn(this, geometry_data: usize, skin: usize, transform: usize, bound: usize) -> u32,
     compare_eax = false,
     regions = |set| set.add(this, 4),
-    rust = base_batch_render_strips);
+    rust = base_batch_render_strips
+);
 
-port_thiscall!(set_left_right_swap_port, 0x6ABFD0, "NiDX8Renderer::SetLeftRightSwap",
+port_thiscall!(
+    set_left_right_swap_port,
+    0x6ABFD0,
+    "NiDX8Renderer::SetLeftRightSwap",
     fn(this, swap: u8) -> u8,
     compare_eax = true,
     regions = |set| set.add(rd(this, R::renderState), RS::SIZE),
-    rust = set_left_right_swap);
+    rust = set_left_right_swap
+);
 
-port_thiscall!(set_use_w_buffer_port, 0x6ABFF0, "NiDX8Renderer::SetUseWBuffer",
+port_thiscall!(
+    set_use_w_buffer_port,
+    0x6ABFF0,
+    "NiDX8Renderer::SetUseWBuffer",
     fn(this, use_w_buffer: u8) -> u8,
     compare_eax = true,
     regions = |set| {
         set.add(this, R::SIZE);
         set.add(rd(this, R::renderState), RS::SIZE)
     },
-    rust = set_use_w_buffer);
+    rust = set_use_w_buffer
+);
 
-port_thiscall!(get_backbuffer_width_port, 0x6AC030, "NiDX8Renderer::GetBackbufferWidth",
+port_thiscall!(
+    get_backbuffer_width_port,
+    0x6AC030,
+    "NiDX8Renderer::GetBackbufferWidth",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| set.add(this, R::SIZE),
-    rust = get_backbuffer_width);
+    rust = get_backbuffer_width
+);
 
-port_thiscall!(get_backbuffer_height_port, 0x6AC040, "NiDX8Renderer::GetBackbufferHeight",
+port_thiscall!(
+    get_backbuffer_height_port,
+    0x6AC040,
+    "NiDX8Renderer::GetBackbufferHeight",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| set.add(this, R::SIZE),
-    rust = get_backbuffer_height);
+    rust = get_backbuffer_height
+);
 
-port_thiscall!(set_max_fog_value_port, 0x6AC320, "NiDX8Renderer::SetMaxFogValue",
+port_thiscall!(
+    set_max_fog_value_port,
+    0x6AC320,
+    "NiDX8Renderer::SetMaxFogValue",
     fn(this, value: f32) -> (),
     compare_eax = false,
     regions = |set| set.add(rd(this, R::renderState), RS::SIZE),
-    rust = set_max_fog_value);
+    rust = set_max_fog_value
+);
 
-port_thiscall!(begin_paint_port, 0x6AC520, "NiDX8Renderer::BeginPaint",
+port_thiscall!(
+    begin_paint_port,
+    0x6AC520,
+    "NiDX8Renderer::BeginPaint",
     fn(this, camera: usize) -> (),
     compare_eax = false,
     regions = |set| begin_paint_regions(set, this),
-    rust = begin_paint);
+    rust = begin_paint
+);
 
-port_thiscall!(end_paint_port, 0x6AC590, "NiDX8Renderer::EndPaint",
+port_thiscall!(
+    end_paint_port,
+    0x6AC590,
+    "NiDX8Renderer::EndPaint",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| end_paint_regions(set, this),
-    rust = end_paint);
+    rust = end_paint
+);
 
-port_thiscall!(purge_material_port, 0x6AC5C0, "NiDX8Renderer::PurgeMaterial",
+port_thiscall!(
+    purge_material_port,
+    0x6AC5C0,
+    "NiDX8Renderer::PurgeMaterial",
     fn(this, material: usize) -> (),
     compare_eax = false,
     regions = |set| purge_material_regions(set, this, material),
-    rust = purge_material);
+    rust = purge_material
+);
 
-port_thiscall!(purge_effect_port, 0x6AC5D0, "NiDX8Renderer::PurgeEffect",
+port_thiscall!(
+    purge_effect_port,
+    0x6AC5D0,
+    "NiDX8Renderer::PurgeEffect",
     fn(this, effect: usize) -> (),
     compare_eax = false,
     regions = |set| purge_effect_regions(set, this, effect),
-    rust = purge_effect);
+    rust = purge_effect
+);
 
-port_thiscall!(set_camera_data_port, 0x6AC620, "NiDX8Renderer::SetCameraData",
+port_thiscall!(
+    set_camera_data_port,
+    0x6AC620,
+    "NiDX8Renderer::SetCameraData",
     fn(this, location: usize, direction: usize, up: usize, right: usize, frustum: usize, port: usize) -> (),
     compare_eax = false,
     regions = |set| set_camera_data_regions(set, this),
-    rust = set_camera_data);
+    rust = set_camera_data
+);
 
-port_thiscall!(set_model_transform_port, 0x6AC9C0, "NiDX8Renderer::SetModelTransform",
+port_thiscall!(
+    set_model_transform_port,
+    0x6AC9C0,
+    "NiDX8Renderer::SetModelTransform",
     fn(this, transform: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(this, R::SIZE),
-    rust = set_model_transform);
+    rust = set_model_transform
+);
 
-port_thiscall!(set_bone_transform_port, 0x6ACB10, "NiDX8Renderer::SetBoneTransform",
+port_thiscall!(
+    set_bone_transform_port,
+    0x6ACB10,
+    "NiDX8Renderer::SetBoneTransform",
     fn(this, transform: usize, bone_index: u32) -> (),
     compare_eax = false,
     regions = |set| set.add(this, R::SIZE),
-    rust = set_bone_transform);
+    rust = set_bone_transform
+);
 
-port_thiscall!(set_skinned_model_transforms_port, 0x6ACBE0, "NiDX8Renderer::SetSkinnedModelTransforms",
+port_thiscall!(
+    set_skinned_model_transforms_port,
+    0x6ACBE0,
+    "NiDX8Renderer::SetSkinnedModelTransforms",
     fn(this, skin: usize, partition: usize, transform: usize, bound: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(this, R::SIZE),
-    rust = set_skinned_model_transforms);
+    rust = set_skinned_model_transforms
+);
 
-port_thiscall!(begin_batch_port, 0x6AE030, "NiDX8Renderer::BeginBatch",
+port_thiscall!(
+    begin_batch_port,
+    0x6AE030,
+    "NiDX8Renderer::BeginBatch",
     fn(this, property_state: usize, effect_state: usize) -> (),
     compare_eax = false,
     regions = |set| begin_batch_regions(set, this, property_state, effect_state),
-    rust = begin_batch);
+    rust = begin_batch
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &init_port::STATE,
@@ -1329,7 +1517,15 @@ mod tests {
     unsafe extern "system" fn fake_end_scene(_this: usize) -> u32 {
         note(35, &[])
     }
-    unsafe extern "system" fn fake_clear(_this: usize, count: u32, rects: u32, flags: u32, color: u32, z: u32, stencil: u32) -> u32 {
+    unsafe extern "system" fn fake_clear(
+        _this: usize,
+        count: u32,
+        rects: u32,
+        flags: u32,
+        color: u32,
+        z: u32,
+        stencil: u32,
+    ) -> u32 {
         let rect: [u32; 4] = rd(rects as usize, 0);
         note(36, &[count, rect[0], rect[1], rect[2], rect[3], flags, color, z, stencil])
     }
@@ -1381,7 +1577,12 @@ mod tests {
             write_world_matrix(r, t);
             assert_eq!(
                 matrix(r, R::currentWorldMatrix),
-                [[2.0, 8.0, 14.0, 0.0], [4.0, 10.0, 16.0, 0.0], [6.0, 12.0, 18.0, 0.0], [10.0, 20.0, 30.0, 1.0]]
+                [
+                    [2.0, 8.0, 14.0, 0.0],
+                    [4.0, 10.0, 16.0, 0.0],
+                    [6.0, 12.0, 18.0, 0.0],
+                    [10.0, 20.0, 30.0, 1.0]
+                ]
             );
         }
     }
@@ -1410,10 +1611,21 @@ mod tests {
         let direction = floats(&[0.0, 1.0, 0.0]);
         let r = this.as_mut_ptr() as usize;
         unsafe {
-            write_view_matrix(r, location.as_ptr() as usize, direction.as_ptr() as usize, up.as_ptr() as usize, right.as_ptr() as usize);
+            write_view_matrix(
+                r,
+                location.as_ptr() as usize,
+                direction.as_ptr() as usize,
+                up.as_ptr() as usize,
+                right.as_ptr() as usize,
+            );
             assert_eq!(
                 matrix(r, R::d3dViewMat),
-                [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [-1.0, -3.0, -2.0, 1.0]]
+                [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [-1.0, -3.0, -2.0, 1.0]
+                ]
             );
         }
     }
@@ -1429,7 +1641,12 @@ mod tests {
             // 1/width = 0.25, 1/height = 0.25, 1/depth = 0.25
             assert_eq!(
                 matrix(r, R::d3dProjMat),
-                [[0.5, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.0], [-0.5, -0.0, 1.25, 1.0], [0.0, 0.0, -1.25, 0.0]]
+                [
+                    [0.5, 0.0, 0.0, 0.0],
+                    [0.0, 0.5, 0.0, 0.0],
+                    [-0.5, -0.0, 1.25, 1.0],
+                    [0.0, 0.0, -1.25, 0.0]
+                ]
             );
             // Minus zero, from the sign change of 0.25 * (2 + -2).
             assert_eq!(rd::<u32>(r, element(R::d3dProjMat, 3, 2)), 0x8000_0000);
@@ -1559,7 +1776,10 @@ mod tests {
             // 0.5 * 255 = 127.5, and the conversion truncates it to 127.
             assert_eq!(rd::<u32>(r, R::backgroundColour), 0xFFFF_7F00);
             assert_eq!(get_bg_color(r, out.as_mut_ptr() as usize), out.as_ptr() as usize);
-            assert_eq!(out, [255.0 * f32::from_bits(INVERSE_255), 127.0 * f32::from_bits(INVERSE_255), 0.0]);
+            assert_eq!(
+                out,
+                [255.0 * f32::from_bits(INVERSE_255), 127.0 * f32::from_bits(INVERSE_255), 0.0]
+            );
         }
     }
 
@@ -1632,12 +1852,22 @@ mod tests {
         unsafe {
             zero_words(r, R::defaultTexturePixelData, 4);
             init_from(r, empty.as_ptr() as usize, x_axis.as_ptr() as usize, y_axis.as_ptr() as usize);
-            let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0f32]];
+            let identity = [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0f32],
+            ];
             assert_eq!(matrix(r, R::matrixD3DIdentity), identity);
             assert_eq!(matrix(r, R::screenPolyView), identity);
             assert_eq!(
                 matrix(r, R::screenPolyProj),
-                [[2.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0], [-1.0, -1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]]
+                [
+                    [2.0, 0.0, 0.0, 0.0],
+                    [0.0, 2.0, 0.0, 0.0],
+                    [-1.0, -1.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 0.0]
+                ]
             );
             assert_eq!(rd::<[f32; 3]>(r, R::cameraRight), [1.0, 0.0, 0.0]);
             assert_eq!(rd::<[f32; 3]>(r, R::modelCameraUp), [0.0, 1.0, 0.0]);

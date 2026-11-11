@@ -31,7 +31,9 @@ const FILM_JUMP: [u8; 2] = [0xEB, 0x16];
 /// MGE XE (`runtime.skip_intro`), so the game starts in the same way with either file.
 unsafe fn skip_films_wanted() -> bool {
     let path = beside_program(b"mgeXE.toml");
-    let Ok(text) = std::fs::read_to_string(String::from_utf8_lossy(&path).as_ref()) else { return false };
+    let Ok(text) = std::fs::read_to_string(String::from_utf8_lossy(&path).as_ref()) else {
+        return false;
+    };
     text.lines().any(|line| {
         let line = line.split('#').next().unwrap_or("");
         let mut parts = line.splitn(2, '=');
@@ -112,16 +114,27 @@ pub extern "system" fn NirenderD3D8() -> u32 {
 const FAIL: u32 = 0x8000_4005;
 
 #[no_mangle]
-pub unsafe extern "system" fn DirectInput8Create(instance: *mut c_void, version: u32, interface: *const c_void, out: *mut *mut c_void, outer: *mut c_void) -> u32 {
+pub unsafe extern "system" fn DirectInput8Create(
+    instance: *mut c_void,
+    version: u32,
+    interface: *const c_void,
+    out: *mut *mut c_void,
+    outer: *mut c_void,
+) -> u32 {
     let mut path = vec![0u8; 600];
     let length = GetSystemDirectoryA(path.as_mut_ptr(), 512) as usize;
     path.truncate(length);
     path.extend_from_slice(b"\\dinput8.dll\0");
     let module = LoadLibraryA(path.as_ptr());
-    let create = if module.is_null() { core::ptr::null_mut() } else { GetProcAddress(module, b"DirectInput8Create\0".as_ptr()) };
+    let create = if module.is_null() {
+        core::ptr::null_mut()
+    } else {
+        GetProcAddress(module, b"DirectInput8Create\0".as_ptr())
+    };
     if create.is_null() {
         return FAIL;
     }
-    let create: unsafe extern "system" fn(*mut c_void, u32, *const c_void, *mut *mut c_void, *mut c_void) -> u32 = core::mem::transmute(create);
+    let create: unsafe extern "system" fn(*mut c_void, u32, *const c_void, *mut *mut c_void, *mut c_void) -> u32 =
+        core::mem::transmute(create);
     create(instance, version, interface, out, outer)
 }

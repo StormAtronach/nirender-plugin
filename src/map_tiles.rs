@@ -127,7 +127,10 @@ pub unsafe fn install() {
     if !INSTALLED.begin() {
         return;
     }
-    use crate::mwse_native::{claim_all, NATIVE_OVERRIDE_MAP_CELL_PAINT, NATIVE_OVERRIDE_MAP_TILE_READ, NATIVE_OVERRIDE_SAVE_PICTURE, NATIVE_OVERRIDE_TEXTURE_PURGE};
+    use crate::mwse_native::{
+        claim_all, NATIVE_OVERRIDE_MAP_CELL_PAINT, NATIVE_OVERRIDE_MAP_TILE_READ, NATIVE_OVERRIDE_SAVE_PICTURE,
+        NATIVE_OVERRIDE_TEXTURE_PURGE,
+    };
     let claims = match claim_all(&[
         (NATIVE_OVERRIDE_MAP_TILE_READ, render_map_detour as *const () as usize),
         (NATIVE_OVERRIDE_TEXTURE_PURGE, purge_detour as *const () as usize),
@@ -146,12 +149,17 @@ pub unsafe fn install() {
     INSTALLED.finish(true);
     crate::log!("map tiles: the helper copies each tile of the local map on the GPU; the pixels come later");
     if hold() != 0 {
-        crate::log!("map tiles: NIRENDER_MAP_TILES_HOLD={}: a tile stays open {} Presents at least", hold(), hold());
+        crate::log!(
+            "map tiles: NIRENDER_MAP_TILES_HOLD={}: a tile stays open {} Presents at least",
+            hold(),
+            hold()
+        );
     }
 }
 
 unsafe fn engine_render_map(this: usize, flag: u32) {
-    let original: unsafe extern "thiscall" fn(usize, u32) = core::mem::transmute(RENDER_MAP_ORIGINAL.load(Ordering::Relaxed));
+    let original: unsafe extern "thiscall" fn(usize, u32) =
+        core::mem::transmute(RENDER_MAP_ORIGINAL.load(Ordering::Relaxed));
     original(this, flag);
 }
 
@@ -203,7 +211,11 @@ unsafe fn copy(t: &MainThread, this: usize) -> bool {
     let rendered: usize = rd(this, RENDERED_TEXTURE);
     let data: usize = if rendered != 0 { rd(rendered, T::rendererData) } else { 0 };
     let as_rendered = if data != 0 { textures::data_get_as_rendered(data) } else { 0 };
-    let target = if as_rendered != 0 { textures::data_get_d3d_texture(as_rendered) } else { 0 };
+    let target = if as_rendered != 0 {
+        textures::data_get_d3d_texture(as_rendered)
+    } else {
+        0
+    };
     if target == 0 {
         return false;
     }
@@ -225,8 +237,16 @@ unsafe fn copy(t: &MainThread, this: usize) -> bool {
         cdecl2(SOURCE_DATA_CREATE, texture as u32, crate::engine::renderer() as u32);
     }
     let source_data: usize = rd(texture, T::rendererData);
-    let handle = if source_data != 0 { textures::data_get_d3d_texture(source_data) } else { 0 };
-    let ticket = if handle != 0 { crate::capture::copy_tile(target as u32, handle as u32) } else { None };
+    let handle = if source_data != 0 {
+        textures::data_get_d3d_texture(source_data)
+    } else {
+        0
+    };
+    let ticket = if handle != 0 {
+        crate::capture::copy_tile(target as u32, handle as u32)
+    } else {
+        None
+    };
     let Some(ticket) = ticket else {
         // No copy: the pixels come from a read now, as for the engine.
         READ_AT_ONCE.fetch_add(1, Ordering::Relaxed);
@@ -242,7 +262,13 @@ unsafe fn copy(t: &MainThread, this: usize) -> bool {
     };
     LAST_TICKET.store(ticket, Ordering::Relaxed);
     ni::add_reference(pixel_data);
-    OPEN.get(t).push(Open { ticket, pixel_data, width, height, opened: POLLS.load(Ordering::Relaxed) });
+    OPEN.get(t).push(Open {
+        ticket,
+        pixel_data,
+        width,
+        height,
+        opened: POLLS.load(Ordering::Relaxed),
+    });
     MOST_OPEN.fetch_max(OPEN.get(t).len(), Ordering::Relaxed);
     COPIED.fetch_add(1, Ordering::Relaxed);
     true
@@ -275,7 +301,11 @@ unsafe fn fill(pixel_data: usize, width: u32, height: u32, pixels: &[u8]) -> boo
     let size = width as usize * height as usize * 4;
     let widths: usize = rd(pixel_data, PD::mipmapWidths);
     let heights: usize = rd(pixel_data, PD::mipmapHeights);
-    if pixels.len() < size || rd::<u32>(widths, 0) != width || rd::<u32>(heights, 0) != height || rd::<u32>(pixel_data, PD::bytesPerPixel) != 4 {
+    if pixels.len() < size
+        || rd::<u32>(widths, 0) != width
+        || rd::<u32>(heights, 0) != height
+        || rd::<u32>(pixel_data, PD::bytesPerPixel) != 4
+    {
         return false;
     }
     let offsets: usize = rd(pixel_data, PD::mipmapOffsets);
@@ -293,7 +323,9 @@ unsafe fn fill(pixel_data: usize, width: u32, height: u32, pixels: &[u8]) -> boo
 /// The end of an open tile: its pixels, when they came, go into its pixel data.
 unsafe fn complete(open: Open, pixels: Option<(u32, u32, &[u8])>) {
     let filled = match pixels {
-        Some((width, height, pixels)) if (width, height) == (open.width, open.height) => fill(open.pixel_data, width, height, pixels),
+        Some((width, height, pixels)) if (width, height) == (open.width, open.height) => {
+            fill(open.pixel_data, width, height, pixels)
+        }
         _ => false,
     };
     if !filled {
@@ -306,8 +338,16 @@ unsafe fn complete(open: Open, pixels: Option<(u32, u32, &[u8])>) {
 /// The pixel data of the tile of a cell in the cache, or 0.
 unsafe fn cell_pixel_data(cell: usize) -> usize {
     let visuals: usize = rd(cell, CELL_MAPPING_VISUALS);
-    let texture: usize = if visuals != 0 { rd(visuals, VISUALS_TEXTURE_SOURCE) } else { 0 };
-    if texture != 0 { rd(texture, ST::pixelData) } else { 0 }
+    let texture: usize = if visuals != 0 {
+        rd(visuals, VISUALS_TEXTURE_SOURCE)
+    } else {
+        0
+    };
+    if texture != 0 {
+        rd(texture, ST::pixelData)
+    } else {
+        0
+    }
 }
 
 fn is_open(t: &MainThread, pixel_data: usize) -> bool {
@@ -424,7 +464,11 @@ pub unsafe fn poll() {
 unsafe fn complete_all(t: &MainThread, before: &str) {
     static LOGGED: AtomicU32 = AtomicU32::new(0);
     if LOGGED.fetch_add(1, Ordering::Relaxed) < 40 {
-        crate::log!("map tiles: before {before}: {} tiles open, {} paints wait", OPEN.get(t).len(), PAINTS.get(t).len());
+        crate::log!(
+            "map tiles: before {before}: {} tiles open, {} paints wait",
+            OPEN.get(t).len(),
+            PAINTS.get(t).len()
+        );
     }
     if OPEN.get(t).is_empty() && PAINTS.get(t).is_empty() {
         return;
@@ -500,14 +544,24 @@ mod tests {
 
     #[test]
     fn no_paint_runs_while_the_cell_worker_can_run() {
-        let waiting = run_due_paints(PAINTS.to_vec(), true, |_| false, |records, _| panic!("paint {records} ran while the worker can run"));
+        let waiting = run_due_paints(
+            PAINTS.to_vec(),
+            true,
+            |_| false,
+            |records, _| panic!("paint {records} ran while the worker can run"),
+        );
         assert_eq!(waiting, PAINTS.to_vec());
     }
 
     #[test]
     fn with_the_worker_stopped_each_paint_with_a_closed_tile_runs_in_order() {
         let mut drawn = Vec::new();
-        let waiting = run_due_paints(PAINTS.to_vec(), false, |cell| cell == 20, |records, cell| drawn.push((records, cell)));
+        let waiting = run_due_paints(
+            PAINTS.to_vec(),
+            false,
+            |cell| cell == 20,
+            |records, cell| drawn.push((records, cell)),
+        );
         assert_eq!(drawn, vec![(1, 10), (3, 30)]);
         assert_eq!(waiting, vec![(2, 20)]);
     }

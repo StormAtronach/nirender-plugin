@@ -120,7 +120,10 @@ impl Walk {
         let (placed, left_out) = (&self.placed, &mut self.left_out);
         let mut bucket_order = Vec::new();
         order.retain(|entry| {
-            let Some(id) = id_of(entry.3).filter(|id| entry.0 >> 32 == GROUP_IN_PLACE && placed.contains(&(view, *id))) else { return true };
+            let Some(id) = id_of(entry.3).filter(|id| entry.0 >> 32 == GROUP_IN_PLACE && placed.contains(&(view, *id)))
+            else {
+                return true;
+            };
             let entries = left_out.entry((view, id)).or_default();
             if entries.is_empty() {
                 bucket_order.push(id);
@@ -128,7 +131,11 @@ impl Walk {
             entries.push(*entry);
             false
         });
-        let walk_order = self.order.iter().filter(|&&(v, id)| v == view && self.left_out.contains_key(&(v, id))).map(|&(_, id)| id);
+        let walk_order = self
+            .order
+            .iter()
+            .filter(|&&(v, id)| v == view && self.left_out.contains_key(&(v, id)))
+            .map(|&(_, id)| id);
         walk_order.zip(&bucket_order).filter(|(walk, bucket)| walk != *bucket).count() as u32
     }
 
@@ -136,7 +143,9 @@ impl Walk {
     /// that its view did not take (a part of the frame ran before they came: the view drew
     /// those with the other blends).
     pub(crate) fn take_run(&mut self, run: usize) -> (Vec<Entry>, u32) {
-        let Some(Run { view, ids }) = self.runs.get_mut(run).map(core::mem::take) else { return (Vec::new(), 0) };
+        let Some(Run { view, ids }) = self.runs.get_mut(run).map(core::mem::take) else {
+            return (Vec::new(), 0);
+        };
         let mut entries = Vec::new();
         let mut late = 0;
         for id in ids {

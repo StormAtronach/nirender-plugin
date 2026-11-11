@@ -5,7 +5,6 @@
 use core::mem::transmute;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::main_thread::MainThread;
 use crate::d3d::{
     com_release, device_set_transform, D3DFVF_DIFFUSE, D3DFVF_TEX1, D3DFVF_XYZ, D3DPOOL_MANAGED, D3DPT_TRIANGLEFAN,
     D3DPT_TRIANGLELIST, D3DPT_TRIANGLESTRIP, D3DTS_PROJECTION, D3DTS_VIEW,
@@ -15,11 +14,12 @@ use crate::engine::{
 };
 use crate::gen::layouts::{
     NiDX8IndexBufferManager as IBM, NiDX8Renderer as R, NiDX8Renderer_BatchedObject as Batched,
-    NiDX8VBResource as VBResource, NiDX8VertexBufferManager as VBM, NiDX8VertexBufferManager_VBInfo as VBInfo,
-    NiGeometry, NiGeometryBufferData as GB, NiGeometryData, NiRendererSpecificProperty,
+    NiDX8VBResource as VBResource, NiDX8VertexBufferManager as VBM, NiDX8VertexBufferManager_VBInfo as VBInfo, NiGeometry,
+    NiGeometryBufferData as GB, NiGeometryData, NiRendererSpecificProperty,
     NiRendererSpecificProperty_RenderData7 as RenderData7, NiSkinInstance, NiSkinPartition,
     NiSkinPartition_Partition as Partition, NiTransform, NiTriShapeData, NiTriStripsData, THashMap, THashMap_Node,
 };
+use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
 use crate::ports::{hash_map, ni};
 use crate::shadow::Regions;
@@ -151,39 +151,76 @@ pub fn crossings_report() -> String {
 /// 0x6BDE50 `NiDX8VertexBufferManager::PackUntransformedVB`. Returns the vertex buffer.
 #[allow(clippy::too_many_arguments)]
 unsafe fn vbm_pack_untransformed(
-    manager: usize, geom_data: usize, previous: u32, out_size: usize, skin: usize, flag: u32, pool: u32, usage: u32,
-    out_stride: usize, out_fvf: usize,
+    manager: usize,
+    geom_data: usize,
+    previous: u32,
+    out_size: usize,
+    skin: usize,
+    flag: u32,
+    pool: u32,
+    usage: u32,
+    out_stride: usize,
+    out_fvf: usize,
 ) -> u32 {
     let f: unsafe extern "thiscall" fn(usize, usize, u32, usize, usize, u32, u32, u32, usize, usize) -> u32 =
         transmute(0x6BDE50usize);
-    f(manager, geom_data, previous, out_size, skin, flag, pool, usage, out_stride, out_fvf)
+    f(
+        manager, geom_data, previous, out_size, skin, flag, pool, usage, out_stride, out_fvf,
+    )
 }
 
 /// 0x6BE2B0 `NiDX8VertexBufferManager::PackSkinnedVB`. Another mod changes it in memory, so
 /// it stays game code. Returns the vertex buffer.
 #[allow(clippy::too_many_arguments)]
 unsafe fn vbm_pack_skinned(
-    manager: usize, geom_data: usize, skin: usize, partition: usize, previous: u32, out_size: usize, pool: u32, usage: u32,
-    out_stride: usize, out_fvf: usize,
+    manager: usize,
+    geom_data: usize,
+    skin: usize,
+    partition: usize,
+    previous: u32,
+    out_size: usize,
+    pool: u32,
+    usage: u32,
+    out_stride: usize,
+    out_fvf: usize,
 ) -> u32 {
     let f: unsafe extern "thiscall" fn(usize, usize, usize, usize, u32, usize, u32, u32, usize, usize) -> u32 =
         transmute(0x6BE2B0usize);
-    f(manager, geom_data, skin, partition, previous, out_size, pool, usage, out_stride, out_fvf)
+    f(
+        manager, geom_data, skin, partition, previous, out_size, pool, usage, out_stride, out_fvf,
+    )
 }
 
 /// 0x6BE180 `NiDX8VertexBufferManager::PackScreenPolyVB`. Returns the vertex buffer.
 #[allow(clippy::too_many_arguments)]
 unsafe fn vbm_pack_screen_poly(
-    manager: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, near: u32, distance: u32, out_fvf: usize,
+    manager: usize,
+    count: u32,
+    vertices: usize,
+    tex_coords: usize,
+    colour: usize,
+    near: u32,
+    distance: u32,
+    out_fvf: usize,
     out_stride: usize,
 ) -> u32 {
     let f: unsafe extern "thiscall" fn(usize, u32, usize, usize, usize, u32, u32, usize, usize) -> u32 =
         transmute(0x6BE180usize);
-    f(manager, count, vertices, tex_coords, colour, near, distance, out_fvf, out_stride)
+    f(
+        manager, count, vertices, tex_coords, colour, near, distance, out_fvf, out_stride,
+    )
 }
 
 /// 0x6BCE80 `NiDX8IndexBufferManager::createIndexBuffer`. Returns the index buffer.
-unsafe fn ibm_create_index_buffer(manager: usize, indices: u32, count: u32, previous: u32, out_size: usize, pool: u32, usage: u32) -> u32 {
+unsafe fn ibm_create_index_buffer(
+    manager: usize,
+    indices: u32,
+    count: u32,
+    previous: u32,
+    out_size: usize,
+    pool: u32,
+    usage: u32,
+) -> u32 {
     let f: unsafe extern "thiscall" fn(usize, u32, u32, u32, usize, u32, u32) -> u32 = transmute(0x6BCE80usize);
     f(manager, indices, count, previous, out_size, pool, usage)
 }
@@ -191,12 +228,24 @@ unsafe fn ibm_create_index_buffer(manager: usize, indices: u32, count: u32, prev
 /// 0x6BF0B0 `NiD3DShaderInterface::buildVertexBuffer`. Returns the vertex buffer.
 #[allow(clippy::too_many_arguments)]
 unsafe fn shader_build_vertex_buffer(
-    shader: usize, geom_data: usize, skin: usize, partition: usize, data2: u32, previous: u32, out_size: usize, pool: u32,
-    usage: u32, out_stride: usize, out_fvf: usize, last: u32,
+    shader: usize,
+    geom_data: usize,
+    skin: usize,
+    partition: usize,
+    data2: u32,
+    previous: u32,
+    out_size: usize,
+    pool: u32,
+    usage: u32,
+    out_stride: usize,
+    out_fvf: usize,
+    last: u32,
 ) -> u32 {
     let f: unsafe extern "thiscall" fn(usize, usize, usize, usize, u32, u32, usize, u32, u32, usize, usize, u32) -> u32 =
         transmute(0x6BF0B0usize);
-    f(shader, geom_data, skin, partition, data2, previous, out_size, pool, usage, out_stride, out_fvf, last)
+    f(
+        shader, geom_data, skin, partition, data2, previous, out_size, pool, usage, out_stride, out_fvf, last,
+    )
 }
 
 /// 0x6C6AC0 `NiSkinPartition::ctor`. Returns the object.
@@ -206,7 +255,13 @@ unsafe fn skin_partition_ctor(block: usize) -> usize {
 
 /// 0x6C78F0 `NiSkinPartition::MakePartitions`. The function reads the two counts as bytes. The
 /// game code pushes full registers.
-unsafe fn skin_partition_make_partitions(object: usize, geom_data: usize, skin_data: usize, per_partition: u32, per_vertex: u32) -> u8 {
+unsafe fn skin_partition_make_partitions(
+    object: usize,
+    geom_data: usize,
+    skin_data: usize,
+    per_partition: u32,
+    per_vertex: u32,
+) -> u8 {
     let f: unsafe extern "thiscall" fn(usize, usize, usize, u32, u32) -> u32 = transmute(0x6C78F0usize);
     f(object, geom_data, skin_data, per_partition, per_vertex) as u8
 }
@@ -218,7 +273,15 @@ unsafe fn tri_strips_data_strip_length_sum(data: usize) -> u32 {
 
 /// 0x6AEB80 `NiDX8Renderer::DrawPrimitive`. Another mod changes it in memory, so it stays
 /// game code.
-unsafe fn renderer_draw_primitive(this: usize, geom_data: usize, skin: usize, transform: usize, bound: usize, buffer: usize, last: u32) {
+unsafe fn renderer_draw_primitive(
+    this: usize,
+    geom_data: usize,
+    skin: usize,
+    transform: usize,
+    bound: usize,
+    buffer: usize,
+    last: u32,
+) {
     let f: unsafe extern "thiscall" fn(usize, usize, usize, usize, usize, usize, u32) -> u32 = transmute(0x6AEB80usize);
     f(this, geom_data, skin, transform, bound, buffer, last);
 }
@@ -354,8 +417,18 @@ pub unsafe fn state_part(this: usize) -> crate::state_summary::Part {
         for key in keys(map) {
             let node = hash_map::find(map, key);
             let data: usize = if node != 0 { rd(node, THashMap_Node::data) } else { 0 };
-            let (vertices, indices) = if data != 0 { (rd::<u32>(data, GB::d3dVertexBuffer), rd::<u32>(data, GB::indexBuffer)) } else { (0, 0) };
-            part.add(&[index as u32, key, data as u32, crate::own_host::object_serial(vertices), crate::own_host::object_serial(indices)]);
+            let (vertices, indices) = if data != 0 {
+                (rd::<u32>(data, GB::d3dVertexBuffer), rd::<u32>(data, GB::indexBuffer))
+            } else {
+                (0, 0)
+            };
+            part.add(&[
+                index as u32,
+                key,
+                data as u32,
+                crate::own_host::object_serial(vertices),
+                crate::own_host::object_serial(indices),
+            ]);
         }
     }
     part
@@ -433,7 +506,14 @@ unsafe fn purge_regions(set: &mut Regions, this: usize, map: usize, key: u32, bu
 /// The call is a skip when `purge_regions` makes it a skip for the buffer data of the partition.
 unsafe fn purge_skin_partition_regions(set: &mut Regions, this: usize, partition: usize) {
     let map = this + R::hashmap_skinPartitionsToGeomBuffers;
-    purge_regions(set, this, map, partition as u32, rd(partition, Partition::bufferData), partition);
+    purge_regions(
+        set,
+        this,
+        map,
+        partition as u32,
+        rd(partition, Partition::bufferData),
+        partition,
+    );
 }
 
 /// The call is a skip when `purge_regions` makes it a skip for the buffer data that the map has
@@ -496,7 +576,13 @@ unsafe fn create_geometry_buffer_data_regions(set: &mut Regions, this: usize, ou
 ///
 /// `this` points at the live `NiDX8Renderer`; `out` at a word that the function reads and writes;
 /// `geom_data` and `skin` are 0 or live; `partition` points at a live skin partition of the skin.
-pub unsafe fn find_cached_partition_geom_buffer(this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) -> u8 {
+pub unsafe fn find_cached_partition_geom_buffer(
+    this: usize,
+    out: usize,
+    geom_data: usize,
+    skin: usize,
+    partition: usize,
+) -> u8 {
     crate::shadow::touch(&find_cached_partition_geom_buffer_port::STATE);
     let _write = CacheWrite::enter();
     if geom_data == 0 || skin == 0 {
@@ -519,7 +605,14 @@ pub unsafe fn find_cached_partition_geom_buffer(this: usize, out: usize, geom_da
 
 /// The regions are the renderer, `*out`, the partition and the bucket array of the map. A new buffer
 /// data and a new node are new blocks. No call is a skip.
-unsafe fn find_cached_partition_geom_buffer_regions(set: &mut Regions, this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) {
+unsafe fn find_cached_partition_geom_buffer_regions(
+    set: &mut Regions,
+    this: usize,
+    out: usize,
+    geom_data: usize,
+    skin: usize,
+    partition: usize,
+) {
     set.add(this, R::SIZE);
     set.add(out, 4);
     if geom_data == 0 || skin == 0 {
@@ -574,7 +667,14 @@ unsafe fn pack_kept(buffer: usize, geom_data: usize, active_vertices: u32, tri_l
 /// `this` points at the live `NiDX8Renderer` with its buffer managers; `out` at a word that holds 0
 /// or a buffer data of this renderer; `geom_data` and `skin` are 0 or live; `shader` is 0 or a live
 /// `NiD3DShaderInterface`.
-pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, skin: usize, shader: usize, shader_data: u32) -> u8 {
+pub unsafe fn pack_geometry_buffers(
+    this: usize,
+    out: usize,
+    geom_data: usize,
+    skin: usize,
+    shader: usize,
+    shader_data: u32,
+) -> u8 {
     crate::shadow::touch(&pack_geometry_buffers_port::STATE);
     let buffer: usize = rd(out, 0);
     if buffer == 0 || geom_data == 0 {
@@ -593,23 +693,46 @@ pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, s
             let flag = (vertex_buffer == 0) as u32;
             if shader != 0 {
                 vertex_buffer = shader_build_vertex_buffer(
-                    shader, geom_data, 0, 0, shader_data, old_vertex_buffer, buffer + GB::vertexBufferSize, D3DPOOL_MANAGED, 0,
-                    buffer + GB::vertexStride, buffer + GB::fvf, 0,
+                    shader,
+                    geom_data,
+                    0,
+                    0,
+                    shader_data,
+                    old_vertex_buffer,
+                    buffer + GB::vertexBufferSize,
+                    D3DPOOL_MANAGED,
+                    0,
+                    buffer + GB::vertexStride,
+                    buffer + GB::fvf,
+                    0,
                 );
             }
             if vertex_buffer == 0 || skin != 0 {
                 let buffer: usize = rd(out, 0);
                 vertex_buffer = vbm_pack_untransformed(
-                    rd(this, R::vertexBufferManager), geom_data, rd(buffer, GB::d3dVertexBuffer), buffer + GB::vertexBufferSize,
-                    skin, flag, D3DPOOL_MANAGED, 0, buffer + GB::vertexStride, buffer + GB::fvf,
+                    rd(this, R::vertexBufferManager),
+                    geom_data,
+                    rd(buffer, GB::d3dVertexBuffer),
+                    buffer + GB::vertexBufferSize,
+                    skin,
+                    flag,
+                    D3DPOOL_MANAGED,
+                    0,
+                    buffer + GB::vertexStride,
+                    buffer + GB::fvf,
                 );
             }
         }
         if index_buffer == 0 && tri_list != 0 {
             let buffer: usize = rd(out, 0);
             index_buffer = ibm_create_index_buffer(
-                rd(this, R::indexBufferManager), tri_list, entries, rd(buffer, GB::indexBuffer), buffer + GB::indexBufferSize,
-                D3DPOOL_MANAGED, 0,
+                rd(this, R::indexBufferManager),
+                tri_list,
+                entries,
+                rd(buffer, GB::indexBuffer),
+                buffer + GB::indexBufferSize,
+                D3DPOOL_MANAGED,
+                0,
             );
         }
         let current: u32 = rd(rd::<usize>(out, 0), GB::d3dVertexBuffer);
@@ -636,8 +759,18 @@ pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, s
         if shader != 0 {
             let buffer: usize = rd(out, 0);
             let made = shader_build_vertex_buffer(
-                shader, geom_data, 0, 0, shader_data, rd(buffer, GB::d3dVertexBuffer), buffer + GB::vertexBufferSize,
-                D3DPOOL_MANAGED, 0, buffer + GB::vertexStride, buffer + GB::fvf, 0,
+                shader,
+                geom_data,
+                0,
+                0,
+                shader_data,
+                rd(buffer, GB::d3dVertexBuffer),
+                buffer + GB::vertexBufferSize,
+                D3DPOOL_MANAGED,
+                0,
+                buffer + GB::vertexStride,
+                buffer + GB::fvf,
+                0,
             );
             wr(rd::<usize>(out, 0), GB::d3dVertexBuffer, made);
         }
@@ -647,14 +780,28 @@ pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, s
             // `setz cl; push ecx` with the vertex buffer in ECX.
             let flag = (current & !0xFF) | (current == 0) as u32;
             let made = vbm_pack_untransformed(
-                rd(this, R::vertexBufferManager), geom_data, 0, buffer + GB::vertexBufferSize, skin, flag, D3DPOOL_MANAGED, 0,
-                buffer + GB::vertexStride, buffer + GB::fvf,
+                rd(this, R::vertexBufferManager),
+                geom_data,
+                0,
+                buffer + GB::vertexBufferSize,
+                skin,
+                flag,
+                D3DPOOL_MANAGED,
+                0,
+                buffer + GB::vertexStride,
+                buffer + GB::fvf,
             );
             wr(rd::<usize>(out, 0), GB::d3dVertexBuffer, made);
         }
         if tri_list != 0 {
             let made = ibm_create_index_buffer(
-                rd(this, R::indexBufferManager), tri_list, entries, 0, rd::<usize>(out, 0) + GB::indexBufferSize, D3DPOOL_MANAGED, 0,
+                rd(this, R::indexBufferManager),
+                tri_list,
+                entries,
+                0,
+                rd::<usize>(out, 0) + GB::indexBufferSize,
+                D3DPOOL_MANAGED,
+                0,
             );
             wr(rd::<usize>(out, 0), GB::indexBuffer, made);
         }
@@ -663,7 +810,11 @@ pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, s
         wr(rd::<usize>(out, 0), GB::verticesCount, active_vertices);
         wr(rd::<usize>(out, 0), GB::indexBufferEntries, entries);
     }
-    wr(rd::<usize>(out, 0), GB::geomDataRevisionID, rd::<u16>(geom_data, NiGeometryData::revisionID) as u32);
+    wr(
+        rd::<usize>(out, 0),
+        GB::geomDataRevisionID,
+        rd::<u16>(geom_data, NiGeometryData::revisionID) as u32,
+    );
     let triangles = vcall0(geom_data, V_GET_ACTIVE_TRIANGLE_COUNT) & 0xFFFF;
     wr(rd::<usize>(out, 0), GB::trianglesCount, triangles);
     1
@@ -675,7 +826,14 @@ pub unsafe fn pack_geometry_buffers(this: usize, out: usize, geom_data: usize, s
 /// - The function packs the vertex buffer again or makes the index buffer again, and that buffer
 ///   exists. The manager gives the same buffer or a new one. With a new buffer the function
 ///   releases the old buffer, and `Release` is real in the two runs.
-unsafe fn pack_geometry_buffers_regions(set: &mut Regions, this: usize, out: usize, geom_data: usize, skin: usize, shader: usize) {
+unsafe fn pack_geometry_buffers_regions(
+    set: &mut Regions,
+    this: usize,
+    out: usize,
+    geom_data: usize,
+    skin: usize,
+    shader: usize,
+) {
     let buffer: usize = rd(out, 0);
     if buffer == 0 || geom_data == 0 {
         return;
@@ -735,15 +893,28 @@ pub unsafe fn create_partition_geom_buffer(this: usize, out: usize, geom_data: u
         }
         if vertex_buffer == 0 {
             vertex_buffer = vbm_pack_skinned(
-                rd(this, R::vertexBufferManager), geom_data, skin, partition, old_vertex_buffer, buffer + GB::vertexBufferSize,
-                D3DPOOL_MANAGED, 0, 0, 0,
+                rd(this, R::vertexBufferManager),
+                geom_data,
+                skin,
+                partition,
+                old_vertex_buffer,
+                buffer + GB::vertexBufferSize,
+                D3DPOOL_MANAGED,
+                0,
+                0,
+                0,
             );
         }
         if index_buffer == 0 {
             let buffer: usize = rd(out, 0);
             index_buffer = ibm_create_index_buffer(
-                rd(this, R::indexBufferManager), tri_list, entries, rd(buffer, GB::indexBuffer), buffer + GB::indexBufferSize,
-                D3DPOOL_MANAGED, 0,
+                rd(this, R::indexBufferManager),
+                tri_list,
+                entries,
+                rd(buffer, GB::indexBuffer),
+                buffer + GB::indexBufferSize,
+                D3DPOOL_MANAGED,
+                0,
             );
         }
         let current: u32 = rd(rd::<usize>(out, 0), GB::d3dVertexBuffer);
@@ -767,12 +938,26 @@ pub unsafe fn create_partition_geom_buffer(this: usize, out: usize, geom_data: u
         wr::<u32>(rd::<usize>(out, 0), GB::indexBufferSize, 0);
         let buffer: usize = rd(out, 0);
         let made = vbm_pack_skinned(
-            rd(this, R::vertexBufferManager), geom_data, skin, partition, 0, buffer + GB::vertexBufferSize, D3DPOOL_MANAGED, 0,
-            buffer + GB::vertexStride, buffer + GB::fvf,
+            rd(this, R::vertexBufferManager),
+            geom_data,
+            skin,
+            partition,
+            0,
+            buffer + GB::vertexBufferSize,
+            D3DPOOL_MANAGED,
+            0,
+            buffer + GB::vertexStride,
+            buffer + GB::fvf,
         );
         wr(rd::<usize>(out, 0), GB::d3dVertexBuffer, made);
         let made = ibm_create_index_buffer(
-            rd(this, R::indexBufferManager), tri_list, entries, 0, rd::<usize>(out, 0) + GB::indexBufferSize, D3DPOOL_MANAGED, 0,
+            rd(this, R::indexBufferManager),
+            tri_list,
+            entries,
+            0,
+            rd::<usize>(out, 0) + GB::indexBufferSize,
+            D3DPOOL_MANAGED,
+            0,
         );
         wr(rd::<usize>(out, 0), GB::indexBuffer, made);
         wr::<u32>(rd::<usize>(out, 0), GB::flags, 0);
@@ -780,14 +965,25 @@ pub unsafe fn create_partition_geom_buffer(this: usize, out: usize, geom_data: u
         wr(rd::<usize>(out, 0), GB::verticesCount, vertices);
         wr(rd::<usize>(out, 0), GB::indexBufferEntries, entries);
     }
-    wr(rd::<usize>(out, 0), GB::geomDataRevisionID, rd::<u16>(geom_data, NiGeometryData::revisionID) as u32);
+    wr(
+        rd::<usize>(out, 0),
+        GB::geomDataRevisionID,
+        rd::<u16>(geom_data, NiGeometryData::revisionID) as u32,
+    );
     1
 }
 
 /// The call is a skip when the function replaces a buffer that exists. `PackSkinnedVB` always makes
 /// a new vertex buffer, and the function releases the old one. The index buffer manager gives the
 /// same index buffer or a new one. `Release` is real in the two runs.
-unsafe fn create_partition_geom_buffer_regions(set: &mut Regions, this: usize, out: usize, geom_data: usize, skin: usize, partition: usize) {
+unsafe fn create_partition_geom_buffer_regions(
+    set: &mut Regions,
+    this: usize,
+    out: usize,
+    geom_data: usize,
+    skin: usize,
+    partition: usize,
+) {
     let buffer: usize = rd(out, 0);
     if buffer == 0 || geom_data == 0 || skin == 0 {
         return;
@@ -803,9 +999,11 @@ unsafe fn create_partition_geom_buffer_regions(set: &mut Regions, this: usize, o
     }
     add_managers(set, this);
     let same_revision = rd::<u32>(buffer, GB::geomDataRevisionID) == rd::<u16>(geom_data, NiGeometryData::revisionID) as u32;
-    let keeps_vertices = same_revision && rd::<u32>(buffer, GB::verticesCount) >= rd::<u16>(partition, Partition::numVertices) as u32;
+    let keeps_vertices =
+        same_revision && rd::<u32>(buffer, GB::verticesCount) >= rd::<u16>(partition, Partition::numVertices) as u32;
     let index_buffer: u32 = rd(buffer, GB::indexBuffer);
-    let keeps_indices = same_revision && index_buffer != 0 && rd::<u32>(buffer, GB::indexBufferEntries) >= index_entries_of(buffer);
+    let keeps_indices =
+        same_revision && index_buffer != 0 && rd::<u32>(buffer, GB::indexBufferEntries) >= index_entries_of(buffer);
     if !keeps_vertices || (!keeps_indices && index_buffer != 0) {
         set.skip();
     }
@@ -823,13 +1021,28 @@ unsafe fn create_partition_geom_buffer_regions(set: &mut Regions, this: usize, o
 /// `this` points at the live `NiDX8Renderer` with its vertex buffer manager; `vertices`,
 /// `tex_coords` and `colour` are the arrays of `count` entries that the engine passes. Nothing here
 /// checks them.
-pub unsafe fn pack_screen_poly_geom_buffer(this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, near: u32, distance: u32) -> usize {
+pub unsafe fn pack_screen_poly_geom_buffer(
+    this: usize,
+    count: u32,
+    vertices: usize,
+    tex_coords: usize,
+    colour: usize,
+    near: u32,
+    distance: u32,
+) -> usize {
     crate::shadow::touch(&pack_screen_poly_geom_buffer_port::STATE);
     // For the results, the game code gives the stack slots of its two last arguments.
     let mut fvf = distance;
     let mut stride = near;
     let vertex_buffer = vbm_pack_screen_poly(
-        rd(this, R::vertexBufferManager), count, vertices, tex_coords, colour, near, distance, &mut fvf as *mut u32 as usize,
+        rd(this, R::vertexBufferManager),
+        count,
+        vertices,
+        tex_coords,
+        colour,
+        near,
+        distance,
+        &mut fvf as *mut u32 as usize,
         &mut stride as *mut u32 as usize,
     );
     if vertex_buffer == 0 {
@@ -859,7 +1072,13 @@ pub unsafe fn pack_screen_poly_geom_buffer(this: usize, count: u32, vertices: us
 /// regions. The call is a skip when the manager has no ring for the format, because the manager
 /// makes one and puts it into its map. The call is also a skip when the buffer of the entry is too
 /// small, because the manager releases it.
-unsafe fn pack_screen_poly_geom_buffer_regions(set: &mut Regions, this: usize, count: u32, tex_coords: usize, colour: usize) {
+unsafe fn pack_screen_poly_geom_buffer_regions(
+    set: &mut Regions,
+    this: usize,
+    count: u32,
+    tex_coords: usize,
+    colour: usize,
+) {
     set.add(this, R::SIZE);
     let manager: usize = rd(this, R::vertexBufferManager);
     set.add(manager, VBM::SIZE);
@@ -880,7 +1099,10 @@ unsafe fn pack_screen_poly_geom_buffer_regions(set: &mut Regions, this: usize, c
     set.allocates();
     let info: usize = rd(node, THashMap_Node::data);
     set.add(info, VBInfo::SIZE);
-    let resource: usize = rd(info, VBInfo::resources + rd::<u8>(info, VBInfo::nextFreeResourceIndex) as usize * 4);
+    let resource: usize = rd(
+        info,
+        VBInfo::resources + rd::<u8>(info, VBInfo::nextFreeResourceIndex) as usize * 4,
+    );
     if resource != 0 {
         if rd::<u32>(resource, VBResource::length) < stride.wrapping_mul(count) {
             set.skip();
@@ -911,11 +1133,28 @@ unsafe fn identity_transform(transform: &mut [u32; NiTransform::SIZE / 4]) -> us
 /// fixed-function pass never sets. Then the record with the identity world. The view and the
 /// projection of the screen polygons stay as the port sets them on the device: the helper
 /// draws the record under them. Returns true when the pipeline of the device must not run.
-unsafe fn screen_polygon_record(t: &MainThread, this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize, transform: usize, bound: usize) -> bool {
+unsafe fn screen_polygon_record(
+    t: &MainThread,
+    this: usize,
+    count: u32,
+    vertices: usize,
+    tex_coords: usize,
+    colour: usize,
+    transform: usize,
+    bound: usize,
+) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
-    let handle = crate::geometry_stream::note_screen_polygon(t, count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
+    let handle = crate::geometry_stream::note_screen_polygon(
+        t,
+        count,
+        vertices,
+        tex_coords,
+        colour,
+        rd(this, R::frustumNear),
+        rd(this, R::frustumDistance),
+    );
     if handle == 0 {
         return false;
     }
@@ -929,7 +1168,14 @@ unsafe fn screen_polygon_record(t: &MainThread, this: usize, count: u32, vertice
 ///
 /// `this` points at the live `NiDX8Renderer` with its device; `vertices`, `tex_coords` and `colour`
 /// are the arrays of `count` entries that the engine passes. Nothing here checks them.
-pub unsafe fn render_screen_poly(t: &MainThread, this: usize, count: u32, vertices: usize, tex_coords: usize, colour: usize) {
+pub unsafe fn render_screen_poly(
+    t: &MainThread,
+    this: usize,
+    count: u32,
+    vertices: usize,
+    tex_coords: usize,
+    colour: usize,
+) {
     crate::shadow::touch(&render_screen_poly_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 || count == 0 {
         return;
@@ -942,7 +1188,15 @@ pub unsafe fn render_screen_poly(t: &MainThread, this: usize, count: u32, vertic
     let at = identity_transform(&mut transform);
     ni_bound_ctor(bound.as_mut_ptr() as usize);
     if !screen_polygon_record(t, this, count, vertices, tex_coords, colour, at, bound.as_mut_ptr() as usize) {
-        let buffer = pack_screen_poly_geom_buffer(this, count, vertices, tex_coords, colour, rd(this, R::frustumNear), rd(this, R::frustumDistance));
+        let buffer = pack_screen_poly_geom_buffer(
+            this,
+            count,
+            vertices,
+            tex_coords,
+            colour,
+            rd(this, R::frustumNear),
+            rd(this, R::frustumDistance),
+        );
         if buffer != 0 {
             renderer_draw_primitive(this, 0, 0, at, bound.as_mut_ptr() as usize, buffer, 0);
         }
@@ -975,7 +1229,16 @@ unsafe fn render_screen_poly_regions(set: &mut Regions, this: usize, count: u32)
 /// `this` points at the live `NiDX8Renderer`; `geom_data` at live geometry data; `shader` is 0 or a
 /// live `NiD3DShaderInterface`; `indices`, `index_count` and `flags` are as the engine passes them.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32, index_count: u32, flags: u32, _extra: usize, shader: usize, shader_data: u32) -> u8 {
+pub unsafe fn precache_geometry_data(
+    this: usize,
+    geom_data: usize,
+    indices: u32,
+    index_count: u32,
+    flags: u32,
+    _extra: usize,
+    shader: usize,
+    shader_data: u32,
+) -> u8 {
     crate::shadow::touch(&precache_geometry_data_port::STATE);
     let _write = CacheWrite::enter();
     let key: u32 = rd(geom_data, NiGeometryData::uniqueID);
@@ -997,20 +1260,43 @@ pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32
     let mut vertex_buffer = 0u32;
     if shader != 0 {
         vertex_buffer = shader_build_vertex_buffer(
-            shader, geom_data, 0, 0, shader_data, 0, &mut vertex_buffer_size as *mut u32 as usize, D3DPOOL_MANAGED, 8,
-            &mut stride as *mut u32 as usize, &mut fvf as *mut u32 as usize, 0,
+            shader,
+            geom_data,
+            0,
+            0,
+            shader_data,
+            0,
+            &mut vertex_buffer_size as *mut u32 as usize,
+            D3DPOOL_MANAGED,
+            8,
+            &mut stride as *mut u32 as usize,
+            &mut fvf as *mut u32 as usize,
+            0,
         );
     }
     if vertex_buffer == 0 {
         vertex_buffer = vbm_pack_untransformed(
-            rd(this, R::vertexBufferManager), geom_data, 0, &mut vertex_buffer_size as *mut u32 as usize, 0, 1, D3DPOOL_MANAGED,
-            0, &mut stride as *mut u32 as usize, &mut fvf as *mut u32 as usize,
+            rd(this, R::vertexBufferManager),
+            geom_data,
+            0,
+            &mut vertex_buffer_size as *mut u32 as usize,
+            0,
+            1,
+            D3DPOOL_MANAGED,
+            0,
+            &mut stride as *mut u32 as usize,
+            &mut fvf as *mut u32 as usize,
         );
     }
     if indices != 0 {
         index_buffer = ibm_create_index_buffer(
-            rd(this, R::indexBufferManager), indices, index_count, 0, &mut index_buffer_size as *mut u32 as usize,
-            D3DPOOL_MANAGED, 0,
+            rd(this, R::indexBufferManager),
+            indices,
+            index_count,
+            0,
+            &mut index_buffer_size as *mut u32 as usize,
+            D3DPOOL_MANAGED,
+            0,
         );
     }
     if vertex_buffer == 0 || index_buffer == 0 {
@@ -1028,7 +1314,11 @@ pub unsafe fn precache_geometry_data(this: usize, geom_data: usize, indices: u32
     wr(buffer, GB::verticesCount, active_vertices);
     wr(buffer, GB::indexBufferSize, index_buffer_size);
     wr(buffer, GB::indexBufferEntries, index_count);
-    wr(buffer, GB::geomDataRevisionID, rd::<u16>(geom_data, NiGeometryData::revisionID) as u32);
+    wr(
+        buffer,
+        GB::geomDataRevisionID,
+        rd::<u16>(geom_data, NiGeometryData::revisionID) as u32,
+    );
     if ni::is_kind_of(geom_data, RTTI_NI_TRI_SHAPE_DATA) {
         wr(buffer, GB::primitiveType, D3DPT_TRIANGLELIST);
         let triangles = vcall0(geom_data, V_GET_ACTIVE_TRIANGLE_COUNT) & 0xFFFF;
@@ -1080,7 +1370,14 @@ unsafe fn precache_geometry_data_regions(set: &mut Regions, this: usize, geom_da
 /// at the live geometry data of the skin; `shader` is 0 or a live `NiD3DShaderInterface`.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
-    this: usize, geom_data: usize, skin: usize, flags: u32, _property: usize, shader: usize, shader_data: u32, per_partition: u32,
+    this: usize,
+    geom_data: usize,
+    skin: usize,
+    flags: u32,
+    _property: usize,
+    shader: usize,
+    shader_data: u32,
+    per_partition: u32,
     per_vertex: u32,
 ) -> u8 {
     crate::shadow::touch(&maybe_pre_pack_skinned_geometry_buffer_port::STATE);
@@ -1088,10 +1385,22 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
     if skin == 0 {
         return 0;
     }
-    let per_partition = if per_partition != 0 { per_partition } else { rd(this, R::countHWBones) };
-    let per_vertex = if per_vertex != 0 { per_vertex } else { rd(this, R::countHWBones) };
+    let per_partition = if per_partition != 0 {
+        per_partition
+    } else {
+        rd(this, R::countHWBones)
+    };
+    let per_vertex = if per_vertex != 0 {
+        per_vertex
+    } else {
+        rd(this, R::countHWBones)
+    };
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
-    let mut object: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
+    let mut object: usize = if skin_data != 0 {
+        rd(skin_data, SKIN_DATA_SKIN_PARTITION)
+    } else {
+        0
+    };
     if object == 0 {
         object = new_skin_partition();
         if skin_partition_make_partitions(object, geom_data, skin_data, per_partition, per_vertex) == 0 {
@@ -1124,14 +1433,32 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
         let mut vertex_buffer = 0u32;
         if shader != 0 {
             vertex_buffer = shader_build_vertex_buffer(
-                shader, geom_data, skin, partition, shader_data, 0, &mut vertex_buffer_size as *mut u32 as usize, D3DPOOL_MANAGED,
-                8, &mut stride as *mut u32 as usize, &mut fvf as *mut u32 as usize, 0,
+                shader,
+                geom_data,
+                skin,
+                partition,
+                shader_data,
+                0,
+                &mut vertex_buffer_size as *mut u32 as usize,
+                D3DPOOL_MANAGED,
+                8,
+                &mut stride as *mut u32 as usize,
+                &mut fvf as *mut u32 as usize,
+                0,
             );
         }
         if vertex_buffer == 0 {
             vertex_buffer = vbm_pack_skinned(
-                rd(this, R::vertexBufferManager), geom_data, skin, partition, 0, &mut vertex_buffer_size as *mut u32 as usize,
-                D3DPOOL_MANAGED, 0, &mut stride as *mut u32 as usize, &mut fvf as *mut u32 as usize,
+                rd(this, R::vertexBufferManager),
+                geom_data,
+                skin,
+                partition,
+                0,
+                &mut vertex_buffer_size as *mut u32 as usize,
+                D3DPOOL_MANAGED,
+                0,
+                &mut stride as *mut u32 as usize,
+                &mut fvf as *mut u32 as usize,
             );
         }
         let buffer = operator_new(GB::SIZE);
@@ -1152,7 +1479,13 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
             strip_lengths = rd(partition, Partition::stripLengths);
         }
         let index_buffer = ibm_create_index_buffer(
-            rd(this, R::indexBufferManager), tri_list, entries, 0, &mut index_buffer_size as *mut u32 as usize, D3DPOOL_MANAGED, 0,
+            rd(this, R::indexBufferManager),
+            tri_list,
+            entries,
+            0,
+            &mut index_buffer_size as *mut u32 as usize,
+            D3DPOOL_MANAGED,
+            0,
         );
         wr(buffer, GB::primitiveType, primitive_type);
         wr(buffer, GB::stripCount, strips);
@@ -1168,8 +1501,16 @@ pub unsafe fn maybe_pre_pack_skinned_geometry_buffer(
         wr(buffer, GB::verticesCount, vertices);
         wr(buffer, GB::indexBufferSize, index_buffer_size);
         wr(buffer, GB::indexBufferEntries, entries);
-        wr(buffer, GB::geomDataRevisionID, rd::<u16>(geom_data, NiGeometryData::revisionID) as u32);
-        wr(buffer, GB::trianglesCount, rd::<u16>(partition, Partition::numTriangles) as u32);
+        wr(
+            buffer,
+            GB::geomDataRevisionID,
+            rd::<u16>(geom_data, NiGeometryData::revisionID) as u32,
+        );
+        wr(
+            buffer,
+            GB::trianglesCount,
+            rd::<u16>(partition, Partition::numTriangles) as u32,
+        );
         wr(partition, Partition::bufferData, buffer);
         hash_map::set(map, partition as u32, buffer);
         done += 1;
@@ -1192,7 +1533,10 @@ unsafe fn skin_regions(set: &mut Regions, this: usize, skin: usize) {
     set.add(skin_data, SKIN_DATA_SKIN_PARTITION + 4);
     let object: usize = rd(skin_data, SKIN_DATA_SKIN_PARTITION);
     if object != 0 {
-        set.add(rd(object, NiSkinPartition::partitions), rd::<usize>(object, NiSkinPartition::partitionCount) * Partition::SIZE);
+        set.add(
+            rd(object, NiSkinPartition::partitions),
+            rd::<usize>(object, NiSkinPartition::partitionCount) * Partition::SIZE,
+        );
     }
 }
 
@@ -1230,7 +1574,14 @@ unsafe fn shader_of(property: usize) -> (usize, u32) {
 ///
 /// `this` points at the live `NiDX8Renderer`; `geometry` is 0 or a live `NiGeometry` with its model
 /// data; `property` is as the engine passes it (the shader is taken from it).
-pub unsafe fn precache_geometry(this: usize, geometry: usize, flags: u32, property: usize, per_partition: u32, per_vertex: u32) -> u8 {
+pub unsafe fn precache_geometry(
+    this: usize,
+    geometry: usize,
+    flags: u32,
+    property: usize,
+    per_partition: u32,
+    per_vertex: u32,
+) -> u8 {
     crate::shadow::touch(&precache_geometry_port::STATE);
     if geometry == 0 {
         return 0;
@@ -1239,7 +1590,17 @@ pub unsafe fn precache_geometry(this: usize, geometry: usize, flags: u32, proper
     let geom_data: usize = rd(geometry, NiGeometry::spModelData);
     let (shader, shader_data) = shader_of(property);
     let result = if skin != 0 {
-        maybe_pre_pack_skinned_geometry_buffer(this, geom_data, skin, flags, property, shader, shader_data, per_partition, per_vertex)
+        maybe_pre_pack_skinned_geometry_buffer(
+            this,
+            geom_data,
+            skin,
+            flags,
+            property,
+            shader,
+            shader_data,
+            per_partition,
+            per_vertex,
+        )
     } else if ni::get_rtti(geometry) == RTTI_NI_TRI_SHAPE {
         let length: u32 = rd(geom_data, NiTriShapeData::uiTriListLength);
         let tri_list = vcall0(geom_data, V_GET_TRI_LIST);
@@ -1296,7 +1657,11 @@ unsafe fn append_batched(this: usize, values: [(usize, u32); 7]) {
 /// 0x6AE919). The two halves are the same code. It makes one batched object for each skin partition.
 unsafe fn batch_skinned(this: usize, geom_data: usize, skin: usize, transform: usize, bound: usize) {
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
-    let mut object: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
+    let mut object: usize = if skin_data != 0 {
+        rd(skin_data, SKIN_DATA_SKIN_PARTITION)
+    } else {
+        0
+    };
     if object == 0 {
         object = new_skin_partition();
         // `mov al, [countHWBones]; push eax; push eax` with the new object in EAX.
@@ -1322,7 +1687,11 @@ unsafe fn batch_skinned(this: usize, geom_data: usize, skin: usize, transform: u
         }
         if find_cached_partition_geom_buffer(this, out, geom_data, skin, partition) != 0 {
             wr(rd::<usize>(out, 0), GB::primitiveType, primitive_type);
-            wr(rd::<usize>(out, 0), GB::trianglesCount, rd::<u16>(partition, Partition::numTriangles) as u32);
+            wr(
+                rd::<usize>(out, 0),
+                GB::trianglesCount,
+                rd::<u16>(partition, Partition::numTriangles) as u32,
+            );
             wr(rd::<usize>(out, 0), GB::stripCount, strips);
             wr(rd::<usize>(out, 0), GB::stripVertexCounts, strip_lengths);
             wr(rd::<usize>(out, 0), GB::triList, tri_list);
@@ -1418,11 +1787,23 @@ pub unsafe fn batch_render_strips(this: usize, geom_data: usize, skin: usize, tr
     let out = &mut buffer as *mut u32 as usize;
     if create_geometry_buffer_data(this, out, geom_data) != 0 {
         wr(rd::<usize>(out, 0), GB::primitiveType, D3DPT_TRIANGLESTRIP);
-        wr(rd::<usize>(out, 0), GB::stripCount, rd::<u16>(geom_data, NiTriStripsData::numStrips) as u32);
+        wr(
+            rd::<usize>(out, 0),
+            GB::stripCount,
+            rd::<u16>(geom_data, NiTriStripsData::numStrips) as u32,
+        );
         let sum = tri_strips_data_strip_length_sum(geom_data) & 0xFFFF;
         let strips: u32 = rd(rd::<usize>(out, 0), GB::stripCount);
-        wr(rd::<usize>(out, 0), GB::trianglesCount, sum.wrapping_sub(strips.wrapping_add(strips)));
-        wr::<u32>(rd::<usize>(out, 0), GB::stripVertexCounts, rd(geom_data, NiTriStripsData::stripLengths));
+        wr(
+            rd::<usize>(out, 0),
+            GB::trianglesCount,
+            sum.wrapping_sub(strips.wrapping_add(strips)),
+        );
+        wr::<u32>(
+            rd::<usize>(out, 0),
+            GB::stripVertexCounts,
+            rd(geom_data, NiTriStripsData::stripLengths),
+        );
         wr::<u32>(rd::<usize>(out, 0), GB::triList, rd(geom_data, NiTriStripsData::stripLists));
     }
     append_batched(
@@ -1461,83 +1842,154 @@ unsafe fn batch_regions(set: &mut Regions, this: usize, geom_data: usize, skin: 
 // Ports
 // ---------------------------------------------------------------------------------------
 
-port_thiscall!(precache_geometry_port, 0x6AC420, "NiDX8Renderer::PrecacheGeometry",
+port_thiscall!(
+    precache_geometry_port,
+    0x6AC420,
+    "NiDX8Renderer::PrecacheGeometry",
     fn(this, geometry: usize, flags: u32, property: usize, per_partition: u32, per_vertex: u32) -> u8,
     compare_eax = true,
     regions = |set| precache_geometry_regions(set, this, geometry, property),
-    rust = precache_geometry);
+    rust = precache_geometry
+);
 
-port_thiscall!(render_screen_poly_port, 0x6ADD20, "NiDX8Renderer::RenderScreenPoly",
+port_thiscall!(
+    render_screen_poly_port,
+    0x6ADD20,
+    "NiDX8Renderer::RenderScreenPoly",
     fn(this, count: u32, vertices: usize, tex_coords: usize, colour: usize) -> (),
     compare_eax = false,
     regions = |set| render_screen_poly_regions(set, this, count),
-    rust_main = render_screen_poly);
+    rust_main = render_screen_poly
+);
 
-port_thiscall!(batch_render_shape_port, 0x6AE600, "NiDX8Renderer::BatchRenderShape",
+port_thiscall!(
+    batch_render_shape_port,
+    0x6AE600,
+    "NiDX8Renderer::BatchRenderShape",
     fn(this, geom_data: usize, skin: usize, transform: usize, bound: usize) -> (),
     compare_eax = false,
     regions = |set| batch_regions(set, this, geom_data, skin),
-    rust = batch_render_shape);
+    rust = batch_render_shape
+);
 
-port_thiscall!(batch_render_strips_port, 0x6AE8C0, "NiDX8Renderer::BatchRenderStrips",
+port_thiscall!(
+    batch_render_strips_port,
+    0x6AE8C0,
+    "NiDX8Renderer::BatchRenderStrips",
     fn(this, geom_data: usize, skin: usize, transform: usize, bound: usize) -> (),
     compare_eax = false,
     regions = |set| batch_regions(set, this, geom_data, skin),
-    rust = batch_render_strips);
+    rust = batch_render_strips
+);
 
-port_thiscall!(purge_skin_partition_port, 0x6AF2D0, "NiDX8Renderer::PurgeSkinPartition",
+port_thiscall!(
+    purge_skin_partition_port,
+    0x6AF2D0,
+    "NiDX8Renderer::PurgeSkinPartition",
     fn(this, partition: usize) -> (),
     compare_eax = false,
     regions = |set| purge_skin_partition_regions(set, this, partition),
-    rust = purge_skin_partition);
+    rust = purge_skin_partition
+);
 
-port_thiscall!(purge_geometry_data_port, 0x6AF3A0, "NiDX8Renderer::PurgeGeometryData",
+port_thiscall!(
+    purge_geometry_data_port,
+    0x6AF3A0,
+    "NiDX8Renderer::PurgeGeometryData",
     fn(this, geom_data: usize) -> (),
     compare_eax = false,
     regions = |set| purge_geometry_data_regions(set, this, geom_data),
-    rust = purge_geometry_data);
+    rust = purge_geometry_data
+);
 
-port_thiscall!(create_geometry_buffer_data_port, 0x6AF4A0, "NiDX8Renderer::createGeometryBufferData",
+port_thiscall!(
+    create_geometry_buffer_data_port,
+    0x6AF4A0,
+    "NiDX8Renderer::createGeometryBufferData",
     fn(this, out: usize, geom_data: usize) -> u8,
     compare_eax = true,
     regions = |set| create_geometry_buffer_data_regions(set, this, out, geom_data),
-    rust = create_geometry_buffer_data);
+    rust = create_geometry_buffer_data
+);
 
-port_thiscall!(pack_geometry_buffers_port, 0x6AF610, "NiDX8Renderer::packGeometryBuffers",
+port_thiscall!(
+    pack_geometry_buffers_port,
+    0x6AF610,
+    "NiDX8Renderer::packGeometryBuffers",
     fn(this, out: usize, geom_data: usize, skin: usize, shader: usize, shader_data: u32) -> u8,
     compare_eax = true,
     regions = |set| pack_geometry_buffers_regions(set, this, out, geom_data, skin, shader),
-    rust = pack_geometry_buffers);
+    rust = pack_geometry_buffers
+);
 
-port_thiscall!(find_cached_partition_geom_buffer_port, 0x6AF930, "NiDX8Renderer::findCachedPartitionGeomBuffer",
+port_thiscall!(
+    find_cached_partition_geom_buffer_port,
+    0x6AF930,
+    "NiDX8Renderer::findCachedPartitionGeomBuffer",
     fn(this, out: usize, geom_data: usize, skin: usize, partition: usize) -> u8,
     compare_eax = true,
     regions = |set| find_cached_partition_geom_buffer_regions(set, this, out, geom_data, skin, partition),
-    rust = find_cached_partition_geom_buffer);
+    rust = find_cached_partition_geom_buffer
+);
 
-port_thiscall!(create_partition_geom_buffer_port, 0x6AFAB0, "NiDX8Renderer::createPartitionGeomBuffer",
+port_thiscall!(
+    create_partition_geom_buffer_port,
+    0x6AFAB0,
+    "NiDX8Renderer::createPartitionGeomBuffer",
     fn(this, out: usize, geom_data: usize, skin: usize, partition: usize) -> u8,
     compare_eax = true,
     regions = |set| create_partition_geom_buffer_regions(set, this, out, geom_data, skin, partition),
-    rust = create_partition_geom_buffer);
+    rust = create_partition_geom_buffer
+);
 
-port_thiscall!(pack_screen_poly_geom_buffer_port, 0x6AFCC0, "NiDX8Renderer::PackScreenPolyGeomBuffer",
+port_thiscall!(
+    pack_screen_poly_geom_buffer_port,
+    0x6AFCC0,
+    "NiDX8Renderer::PackScreenPolyGeomBuffer",
     fn(this, count: u32, vertices: usize, tex_coords: usize, colour: usize, near: u32, distance: u32) -> usize,
     compare_eax = true,
     regions = |set| pack_screen_poly_geom_buffer_regions(set, this, count, tex_coords, colour),
-    rust = pack_screen_poly_geom_buffer);
+    rust = pack_screen_poly_geom_buffer
+);
 
-port_thiscall!(precache_geometry_data_port, 0x6AFD90, "NiDX8Renderer::precacheGeometryData",
-    fn(this, geom_data: usize, indices: u32, index_count: u32, flags: u32, extra: usize, shader: usize, shader_data: u32) -> u8,
+port_thiscall!(
+    precache_geometry_data_port,
+    0x6AFD90,
+    "NiDX8Renderer::precacheGeometryData",
+    fn(
+        this,
+        geom_data: usize,
+        indices: u32,
+        index_count: u32,
+        flags: u32,
+        extra: usize,
+        shader: usize,
+        shader_data: u32,
+    ) -> u8,
     compare_eax = true,
     regions = |set| precache_geometry_data_regions(set, this, geom_data, shader),
-    rust = precache_geometry_data);
+    rust = precache_geometry_data
+);
 
-port_thiscall!(maybe_pre_pack_skinned_geometry_buffer_port, 0x6B0030, "NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer",
-    fn(this, geom_data: usize, skin: usize, flags: u32, property: usize, shader: usize, shader_data: u32, per_partition: u32, per_vertex: u32) -> u8,
+port_thiscall!(
+    maybe_pre_pack_skinned_geometry_buffer_port,
+    0x6B0030,
+    "NiDX8Renderer::maybe_PrePackSkinnedGeometryBuffer",
+    fn(
+        this,
+        geom_data: usize,
+        skin: usize,
+        flags: u32,
+        property: usize,
+        shader: usize,
+        shader_data: u32,
+        per_partition: u32,
+        per_vertex: u32,
+    ) -> u8,
     compare_eax = true,
     regions = |set| maybe_pre_pack_skinned_geometry_buffer_regions(set, this, skin, shader),
-    rust = maybe_pre_pack_skinned_geometry_buffer);
+    rust = maybe_pre_pack_skinned_geometry_buffer
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &precache_geometry_port::STATE,
@@ -1602,7 +2054,13 @@ mod tests {
     impl Map {
         fn new() -> Map {
             Map {
-                vtable: Box::new([0, fake_hash_key as *const () as usize, fake_cmp_key as *const () as usize, 0, 0]),
+                vtable: Box::new([
+                    0,
+                    fake_hash_key as *const () as usize,
+                    fake_cmp_key as *const () as usize,
+                    0,
+                    0,
+                ]),
                 buckets: Box::new([0; 4]),
                 nodes: Vec::new(),
             }

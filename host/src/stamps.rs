@@ -45,7 +45,14 @@ impl Stamps {
     }
 
     pub(crate) fn new(set: wgpu::QuerySet, first: u32, room: u32, in_encoders: bool, in_passes: bool) -> Stamps {
-        Stamps(RefCell::new(Some(Inner { set, first, room, in_encoders, in_passes, names: Vec::new() })))
+        Stamps(RefCell::new(Some(Inner {
+            set,
+            first,
+            room,
+            in_encoders,
+            in_passes,
+            names: Vec::new(),
+        })))
     }
 
     /// True when the stamps are on.
@@ -120,7 +127,10 @@ impl Stamps {
 
     /// The names of the frame's spans, in the order of their pairs. The list is then empty.
     pub(crate) fn take_names(&self) -> Vec<(&'static str, StampKind)> {
-        self.0.borrow_mut().as_mut().map_or_else(Vec::new, |inner| std::mem::take(&mut inner.names))
+        self.0
+            .borrow_mut()
+            .as_mut()
+            .map_or_else(Vec::new, |inner| std::mem::take(&mut inner.names))
     }
 }
 

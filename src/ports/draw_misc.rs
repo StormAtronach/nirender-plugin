@@ -10,13 +10,15 @@
 use core::arch::asm;
 use core::mem::transmute;
 
-use crate::main_thread::MainThread;
 use crate::d3d::{
-    buffer_lock, buffer_unlock, device_set_indices, device_set_pixel_shader, device_set_stream_source, device_set_vertex_shader,
-    D3DRS_VERTEXBLEND,
+    buffer_lock, buffer_unlock, device_set_indices, device_set_pixel_shader, device_set_stream_source,
+    device_set_vertex_shader, D3DRS_VERTEXBLEND,
 };
 use crate::engine::{self, vcall0, NI_POINTER_CTOR, NI_POINTER_DTOR, VERTEX_BLEND_LOOKUP};
-use crate::gen::layouts::{NiDX8RenderState as RS, NiDX8Renderer as R, NiGeometryData as GD, NiPropertyState as PS, THashMap};
+use crate::gen::layouts::{
+    NiDX8RenderState as RS, NiDX8Renderer as R, NiGeometryData as GD, NiPropertyState as PS, THashMap,
+};
+use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
 use crate::shadow::Regions;
 // The macros of `site` call `target` for the address of the callee.
@@ -98,7 +100,14 @@ unsafe fn site_draw_indexed_primitive(
             core::mem::transmute(rd::<usize>(vtable, crate::d3d::DEVICE_DRAW_INDEXED_PRIMITIVE));
         return f(device, primitive_type, min_index, vertex_count, start_index, primitive_count);
     }
-    let block = [target(site) as u32, primitive_type, min_index, vertex_count, start_index, primitive_count];
+    let block = [
+        target(site) as u32,
+        primitive_type,
+        min_index,
+        vertex_count,
+        start_index,
+        primitive_count,
+    ];
     let result: u32;
     asm!(
         "push dword ptr [ecx + 20]",
@@ -212,7 +221,15 @@ unsafe fn write_point_vertex(to: usize, position: [f32; 3], color: u32, u: u32, 
 /// write four vertices for each particle. `colors` is 0 when there are no colors, and the
 /// color is then white. The port does one `f32` operation for each x87 operation, in the
 /// order of the instructions.
-unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut sizes: usize, mut colors: usize, sum: [f32; 3], difference: [f32; 3]) {
+unsafe fn write_point_quads(
+    mut to: usize,
+    count: u32,
+    mut vertices: usize,
+    mut sizes: usize,
+    mut colors: usize,
+    sum: [f32; 3],
+    difference: [f32; 3],
+) {
     let mut left = count;
     while left != 0 {
         let size = rd::<f32>(sizes, 0);
@@ -261,7 +278,16 @@ unsafe fn write_point_quads(mut to: usize, count: u32, mut vertices: usize, mut 
 /// of the draw as `RenderPoints` sets them, then the record with the position, the size
 /// and the colour of each active particle. The helper makes the quads. Returns true when
 /// the pipeline of the device must not run for the draw.
-unsafe fn particles_record(t: &MainThread, this: usize, geometry_data: usize, count: u32, radius: f32, vertices: usize, sizes: usize, colors: usize) -> bool {
+unsafe fn particles_record(
+    t: &MainThread,
+    this: usize,
+    geometry_data: usize,
+    count: u32,
+    radius: f32,
+    vertices: usize,
+    sizes: usize,
+    colors: usize,
+) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
@@ -274,15 +300,24 @@ unsafe fn particles_record(t: &MainThread, this: usize, geometry_data: usize, co
     for i in 0..count as usize {
         particles.extend_from_slice(&rd::<[u8; 12]>(vertices, i * 12));
         particles.extend_from_slice(&rd::<[u8; 4]>(sizes, i * 4));
-        particles.extend_from_slice(&if colors != 0 { rd::<[u8; 4]>(colors, i * 4) } else { [0xFF; 4] });
+        particles.extend_from_slice(&if colors != 0 {
+            rd::<[u8; 4]>(colors, i * 4)
+        } else {
+            [0xFF; 4]
+        });
     }
     // The key is the serial of the data, as the particle instance names it (`link_client`).
     let key = if geometry_data != 0 {
-        crate::geometry_stream::stream_handle(t, geometry_data as u32, rd(geometry_data, crate::gen::layouts::NiGeometryData::uniqueID))
+        crate::geometry_stream::stream_handle(
+            t,
+            geometry_data as u32,
+            rd(geometry_data, crate::gen::layouts::NiGeometryData::uniqueID),
+        )
     } else {
         0
     };
-    crate::shape_stream::send_particles(t,
+    crate::shape_stream::send_particles(
+        t,
         this,
         key,
         crate::shape_stream::current_world(this),
@@ -334,9 +369,31 @@ pub unsafe fn render_points(t: &MainThread, this: usize, geometry_data: usize, w
     let property_state = || rd::<usize>(this, R::currentPropertyState);
     let effect_state = || rd::<usize>(this, R::currentEffectState);
 
-    site_thiscall!(0x6AD160, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
+    site_thiscall!(
+        0x6AD160,
+        pipeline(),
+        property_state(),
+        effect_state(),
+        1,
+        1,
+        geometry_data,
+        0,
+        world_transform,
+        world_bound
+    );
     site_thiscall!(0x6AD16F, rd::<usize>(this, R::renderState), property_state());
-    let pass_flags = site_thiscall!(0x6AD198, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
+    let pass_flags = site_thiscall!(
+        0x6AD198,
+        pipeline(),
+        property_state(),
+        effect_state(),
+        1,
+        1,
+        geometry_data,
+        0,
+        world_transform,
+        world_bound
+    );
 
     let render_state: usize = rd(this, R::renderState);
     let blend: u32 = rd(VERTEX_BLEND_LOOKUP, 0);
@@ -348,7 +405,13 @@ pub unsafe fn render_points(t: &MainThread, this: usize, geometry_data: usize, w
         let state = property_state();
         let vertex_color: usize = rd(state, PS::propVertexColor);
         let texturing: usize = rd(state, PS::propTexturing);
-        site_thiscall!(0x6AD204, rd::<usize>(this, R::lightManager), effect_state(), texturing, vertex_color);
+        site_thiscall!(
+            0x6AD204,
+            rd::<usize>(this, R::lightManager),
+            effect_state(),
+            texturing,
+            vertex_color
+        );
     }
     site_thiscall!(0x6AD221, pipeline(), geometry_data, 0, world_transform, world_bound);
     let index_buffer = site_thiscall!(0x6AD236, rd::<usize>(this, R::indexBufferManager), vertex_count, 1, 0, 1) as usize;
@@ -358,7 +421,14 @@ pub unsafe fn render_points(t: &MainThread, this: usize, geometry_data: usize, w
 
     let (sum, difference) = point_diagonals(this, radius);
     let size_to_lock = vertex_count.wrapping_mul(9) << 2;
-    let vertex_buffer = site_thiscall!(0x6AD2F0, rd::<usize>(this, R::vertexBufferManager), size_to_lock, 0, FVF_POINTS, 1) as usize;
+    let vertex_buffer = site_thiscall!(
+        0x6AD2F0,
+        rd::<usize>(this, R::vertexBufferManager),
+        size_to_lock,
+        0,
+        FVF_POINTS,
+        1
+    ) as usize;
     if vertex_buffer == 0 {
         return;
     }
@@ -369,14 +439,37 @@ pub unsafe fn render_points(t: &MainThread, this: usize, geometry_data: usize, w
     write_point_quads(memory, count, vertices, sizes, colors, sum, difference);
     buffer_unlock(vertex_buffer);
 
-    site_thiscall!(0x6AD7C6, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, 0, world_transform, world_bound);
+    site_thiscall!(
+        0x6AD7C6,
+        pipeline(),
+        property_state(),
+        effect_state(),
+        1,
+        1,
+        geometry_data,
+        0,
+        0,
+        world_transform,
+        world_bound
+    );
     device_set_stream_source(rd(this, R::d3dDevice), 0, vertex_buffer, POINT_STRIDE);
     device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
     set_fixed_function_shaders(this, FVF_POINTS);
     let device: usize = rd(this, R::d3dDevice);
     crate::link_client::draw_state(t, this, 4, vertex_count, 0, count + count, false, false);
     site_draw_indexed_primitive(0x6AD84B, device, rd(device, 0), 4, 0, vertex_count, 0, count + count);
-    site_thiscall!(0x6AD874, pipeline(), property_state(), effect_state(), 1, 1, geometry_data, 0, world_transform, world_bound);
+    site_thiscall!(
+        0x6AD874,
+        pipeline(),
+        property_state(),
+        effect_state(),
+        1,
+        1,
+        geometry_data,
+        0,
+        world_transform,
+        world_bound
+    );
 }
 
 /// The call is a skip when the scene is open and the data has active vertices and active
@@ -417,7 +510,13 @@ fn lines_format(has_texture_coords: bool, has_colors: bool) -> (u32, u32) {
 /// The four vertex loops of `RenderLines`. They copy integers. The port returns the texture
 /// coordinate pointer as the game code leaves it in EBP. The loop for positions only
 /// (0x6ADCE5) does not move the source pointer: it writes the first vertex `count` times.
-unsafe fn write_line_vertices(mut to: usize, count: u32, mut vertices: usize, mut colors: usize, mut texture_coords: usize) -> usize {
+unsafe fn write_line_vertices(
+    mut to: usize,
+    count: u32,
+    mut vertices: usize,
+    mut colors: usize,
+    mut texture_coords: usize,
+) -> usize {
     let with_colors = colors != 0;
     let with_texture_coords = texture_coords != 0;
     for _ in 0..count {
@@ -454,7 +553,8 @@ unsafe fn lines_record(t: &MainThread, this: usize) -> bool {
     let property_state: usize = rd(this, R::currentPropertyState);
     let (light_manager, effect_state, texturing, vertex_color) = crate::shape_stream::light_state_arguments(this);
     site_thiscall!(0x6ADBE8, light_manager, effect_state, texturing, vertex_color);
-    crate::shape_stream::send_lines(t, 
+    crate::shape_stream::send_lines(
+        t,
         this,
         crate::shape_stream::current_world(this),
         crate::link_client::world_is_relative(t),
@@ -494,7 +594,15 @@ pub unsafe fn render_lines(t: &MainThread, this: usize, lines_data: usize, trans
 
     let mut index_count: u32 = 0;
     let index_count_address = &mut index_count as *mut u32 as usize;
-    let index_buffer = site_thiscall!(0x6AD909, rd::<usize>(this, R::indexBufferManager), count, segment_flags, index_count_address, 0, 1) as usize;
+    let index_buffer = site_thiscall!(
+        0x6AD909,
+        rd::<usize>(this, R::indexBufferManager),
+        count,
+        segment_flags,
+        index_count_address,
+        0,
+        1
+    ) as usize;
     if index_buffer == 0 {
         return;
     }
@@ -517,9 +625,31 @@ pub unsafe fn render_lines(t: &MainThread, this: usize, lines_data: usize, trans
     let property_state = || rd::<usize>(this, R::currentPropertyState);
     let effect_state = || rd::<usize>(this, R::currentEffectState);
 
-    site_thiscall!(0x6ADB2E, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
+    site_thiscall!(
+        0x6ADB2E,
+        pipeline(),
+        property_state(),
+        effect_state(),
+        0,
+        texture_sets,
+        lines_data,
+        0,
+        transform,
+        world_bound
+    );
     site_thiscall!(0x6ADB3D, rd::<usize>(this, R::renderState), property_state());
-    let pass_flags = site_thiscall!(0x6ADB68, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
+    let pass_flags = site_thiscall!(
+        0x6ADB68,
+        pipeline(),
+        property_state(),
+        effect_state(),
+        0,
+        texture_sets,
+        lines_data,
+        0,
+        transform,
+        world_bound
+    );
 
     // The game code has this block twice.
     for _ in 0..2 {
@@ -534,7 +664,13 @@ pub unsafe fn render_lines(t: &MainThread, this: usize, lines_data: usize, trans
         let state = property_state();
         let vertex_color: usize = rd(state, PS::propVertexColor);
         let texturing: usize = rd(state, PS::propTexturing);
-        site_thiscall!(0x6ADBE8, rd::<usize>(this, R::lightManager), effect_state(), texturing, vertex_color);
+        site_thiscall!(
+            0x6ADBE8,
+            rd::<usize>(this, R::lightManager),
+            effect_state(),
+            texturing,
+            vertex_color
+        );
     }
     site_thiscall!(0x6ADBFC, pipeline(), lines_data, 0, transform, world_bound);
     device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
@@ -543,7 +679,18 @@ pub unsafe fn render_lines(t: &MainThread, this: usize, lines_data: usize, trans
     let device: usize = rd(this, R::d3dDevice);
     crate::link_client::draw_state(t, this, 2, count, 0, index_count >> 1, false, false);
     site_draw_indexed_primitive(0x6ADC92, device, rd(device, 0), 2, 0, count, 0, index_count >> 1);
-    site_thiscall!(0x6ADCBB, pipeline(), property_state(), effect_state(), 0, texture_sets, lines_data, 0, transform, world_bound);
+    site_thiscall!(
+        0x6ADCBB,
+        pipeline(),
+        property_state(),
+        effect_state(),
+        0,
+        texture_sets,
+        lines_data,
+        0,
+        transform,
+        world_bound
+    );
 }
 
 /// The call is a skip when the scene is open and the data has active vertices. Such a draw
@@ -616,17 +763,25 @@ pub unsafe fn renderer_ctor(this: usize) -> usize {
 // Ports
 // ---------------------------------------------------------------------------------------
 
-port_thiscall!(render_points_port, 0x6AD0A0, "NiDX8Renderer::RenderPoints",
+port_thiscall!(
+    render_points_port,
+    0x6AD0A0,
+    "NiDX8Renderer::RenderPoints",
     fn(this, geometry_data: usize, world_transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     regions = |set| render_points_regions(set, this, geometry_data),
-    rust_main = render_points);
+    rust_main = render_points
+);
 
-port_thiscall!(render_lines_port, 0x6AD890, "NiDX8Renderer::RenderLines",
+port_thiscall!(
+    render_lines_port,
+    0x6AD890,
+    "NiDX8Renderer::RenderLines",
     fn(this, lines_data: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     regions = |set| render_lines_regions(set, this, lines_data),
-    rust_main = render_lines);
+    rust_main = render_lines
+);
 
 // The game runs the constructor one time. With "early" in the config of the mod, the plugin
 // installs before the game creates its renderer, and the port then runs in the mode of the
@@ -635,11 +790,15 @@ port_thiscall!(render_lines_port, 0x6AD890, "NiDX8Renderer::RenderLines",
 // The call is always a skip. A comparison needs `set.allocates()` for the four bucket arrays
 // of the hash maps. It also needs the blocks that the base constructor `NiRenderer::ctor` and
 // `NiDX8Renderer::init` write, and those blocks are not known.
-port_thiscall!(renderer_ctor_port, 0x6A9A70, "NiDX8Renderer::ctor",
+port_thiscall!(
+    renderer_ctor_port,
+    0x6A9A70,
+    "NiDX8Renderer::ctor",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = renderer_ctor);
+    rust = renderer_ctor
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &render_points_port::STATE,
@@ -783,7 +942,15 @@ mod tests {
         let difference = [0.5, 0.25, 0.125];
         let mut out = vec![0xEEu8; 2 * 4 * 36];
         unsafe {
-            write_point_quads(out.as_mut_ptr() as usize, 2, vertices.as_ptr() as usize, sizes.as_ptr() as usize, colors.as_ptr() as usize, sum, difference);
+            write_point_quads(
+                out.as_mut_ptr() as usize,
+                2,
+                vertices.as_ptr() as usize,
+                sizes.as_ptr() as usize,
+                colors.as_ptr() as usize,
+                sum,
+                difference,
+            );
         }
         let got = words(&out);
         let mut want = Vec::new();
@@ -800,7 +967,15 @@ mod tests {
         // Without colors every vertex is white.
         let mut out = vec![0u8; 4 * 36];
         unsafe {
-            write_point_quads(out.as_mut_ptr() as usize, 1, vertices.as_ptr() as usize, sizes.as_ptr() as usize, 0, sum, difference);
+            write_point_quads(
+                out.as_mut_ptr() as usize,
+                1,
+                vertices.as_ptr() as usize,
+                sizes.as_ptr() as usize,
+                0,
+                sum,
+                difference,
+            );
         }
         let got = words(&out);
         assert_eq!(&got[..9], &vertex([8.0, 16.0, 24.0], 0xFFFF_FFFF, 0.0, 0.0)[..]);
@@ -827,12 +1002,39 @@ mod tests {
             assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, c, t), t + 16);
             assert_eq!(
                 words(&out),
-                vec![f(1.0), f(2.0), f(3.0), 0xAA, f(0.25), f(0.5), f(4.0), f(5.0), f(6.0), 0xBB, f(0.75), f(1.0)]
+                vec![
+                    f(1.0),
+                    f(2.0),
+                    f(3.0),
+                    0xAA,
+                    f(0.25),
+                    f(0.5),
+                    f(4.0),
+                    f(5.0),
+                    f(6.0),
+                    0xBB,
+                    f(0.75),
+                    f(1.0)
+                ]
             );
 
             let mut out = vec![0u8; 40];
             assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, 0, t), t + 16);
-            assert_eq!(words(&out), vec![f(1.0), f(2.0), f(3.0), f(0.25), f(0.5), f(4.0), f(5.0), f(6.0), f(0.75), f(1.0)]);
+            assert_eq!(
+                words(&out),
+                vec![
+                    f(1.0),
+                    f(2.0),
+                    f(3.0),
+                    f(0.25),
+                    f(0.5),
+                    f(4.0),
+                    f(5.0),
+                    f(6.0),
+                    f(0.75),
+                    f(1.0)
+                ]
+            );
 
             let mut out = vec![0u8; 32];
             assert_eq!(write_line_vertices(out.as_mut_ptr() as usize, 2, v, c, 0), 0);

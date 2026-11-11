@@ -87,7 +87,10 @@ pub unsafe fn install() {
         return;
     }
     INSTALLED.finish(true);
-    crate::log!("pacing: the game waits for the helper at the start of each frame (MWSE event 8), lead {} us", lead_us());
+    crate::log!(
+        "pacing: the game waits for the helper at the start of each frame (MWSE event 8), lead {} us",
+        lead_us()
+    );
 }
 
 /// A stream to the helper starts: the pacer maps the head of its ring `name`.
@@ -107,7 +110,19 @@ pub unsafe fn start(mapping: isize, name: &str) {
     let mut event_name = format!("{name}{SHOWN_EVENT}").into_bytes();
     event_name.push(0);
     let shown = CreateEventA(core::ptr::null(), 0, 0, event_name.as_ptr());
-    let pacer = Pacer { head, timer, shown, before: 0, last: 0, end: 0, started: 0, work: 0.0, margin: 0.0, leads: 0.0, frames: 0 };
+    let pacer = Pacer {
+        head,
+        timer,
+        shown,
+        before: 0,
+        last: 0,
+        end: 0,
+        started: 0,
+        work: 0.0,
+        margin: 0.0,
+        leads: 0.0,
+        frames: 0,
+    };
     if let Ok(mut guard) = PACER.lock() {
         *guard = Some(pacer);
     }
@@ -115,7 +130,9 @@ pub unsafe fn start(mapping: isize, name: &str) {
 
 /// The stream ends: the pacer reports and lets the view go.
 pub unsafe fn stop() {
-    let Some(pacer) = PACER.lock().ok().and_then(|mut guard| guard.take()) else { return };
+    let Some(pacer) = PACER.lock().ok().and_then(|mut guard| guard.take()) else {
+        return;
+    };
     let ms = |ticks: f64| ticks * 1000.0 / ticks_per_second() as f64;
     crate::log!(
         "pacing: {} frames paced, the mean lead {:.2} ms, the margin at the end {:.2} ms, the game's work {:.2} ms for a frame, {:.1} ms waited in all",
@@ -168,7 +185,11 @@ impl Pacer {
         let start = ticks();
         if self.started != 0 && self.end > self.started {
             let work = (self.end - self.started) as f64;
-            self.work = if self.work == 0.0 { work } else { self.work + (work - self.work) * 0.1 };
+            self.work = if self.work == 0.0 {
+                work
+            } else {
+                self.work + (work - self.work) * 0.1
+            };
         }
         // No frame before, or a helper before its first frame shown.
         if self.before == 0 || self.word(RING_DONE_AT) == 0 {

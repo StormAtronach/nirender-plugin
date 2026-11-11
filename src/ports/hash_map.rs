@@ -10,7 +10,6 @@
 //! `operator new` (0x727692) or `operator delete` (0x727530) of the game. The `_with` form
 //! takes the allocator as an argument, for a port whose unit tests have their own allocator.
 
-
 use crate::engine::{self, vcall1, vcall2, vcall3};
 use crate::gen::layouts::{THashMap as HM, THashMap_Node as HN};
 use crate::mem::{rd, wr};
@@ -514,7 +513,10 @@ mod tests {
             assert_eq!(rd::<usize>(map.buckets[1], HN::nextNode), 0);
             map.insert(5, 500);
             // The bucket has the node of key 1, thus one compare: the new key, then the key of the node.
-            assert_eq!(calls(), [Call::Hash(5), Call::Cmp(5, 1), Call::New(HN::SIZE), Call::Make(5, 500)]);
+            assert_eq!(
+                calls(),
+                [Call::Hash(5), Call::Cmp(5, 1), Call::New(HN::SIZE), Call::Make(5, 500)]
+            );
             map.insert(2, 200);
             calls();
             assert_eq!(map.keys(1), [5, 1]);
@@ -561,7 +563,16 @@ mod tests {
             let node = find(at, 1);
             calls();
             map.insert(1, 111);
-            assert_eq!(calls(), [Call::Hash(1), Call::Cmp(1, 5), Call::Cmp(1, 1), Call::Dtor(1), Call::Make(1, 111)]);
+            assert_eq!(
+                calls(),
+                [
+                    Call::Hash(1),
+                    Call::Cmp(1, 5),
+                    Call::Cmp(1, 1),
+                    Call::Dtor(1),
+                    Call::Make(1, 111)
+                ]
+            );
             assert_eq!(find(at, 1), node);
             assert_eq!(rd::<usize>(node, HN::data), 111);
             assert_eq!(map.keys(1), [5, 1]);
@@ -636,7 +647,16 @@ mod tests {
             map.insert(5, 500);
             calls();
             assert!(remove_with(at, 1, |node| test_delete(node)));
-            assert_eq!(calls(), [Call::Hash(1), Call::Cmp(1, 5), Call::Cmp(1, 1), Call::Dtor(1), Call::Delete(1)]);
+            assert_eq!(
+                calls(),
+                [
+                    Call::Hash(1),
+                    Call::Cmp(1, 5),
+                    Call::Cmp(1, 1),
+                    Call::Dtor(1),
+                    Call::Delete(1)
+                ]
+            );
             assert_eq!(map.keys(1), [5]);
             assert_eq!(map.count(), 1);
             assert!(!remove_with(at, 1, |node| test_delete(node)));
@@ -657,7 +677,14 @@ mod tests {
             drain_with(at, |node| test_delete(node));
             assert_eq!(
                 calls(),
-                [Call::Dtor(5), Call::Delete(5), Call::Dtor(1), Call::Delete(1), Call::Dtor(3), Call::Delete(3)]
+                [
+                    Call::Dtor(5),
+                    Call::Delete(5),
+                    Call::Dtor(1),
+                    Call::Delete(1),
+                    Call::Dtor(3),
+                    Call::Delete(3)
+                ]
             );
             assert_eq!(*map.buckets, [0; 4]);
             assert_eq!(map.count(), 3);

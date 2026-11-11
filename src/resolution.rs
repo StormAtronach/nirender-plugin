@@ -171,7 +171,15 @@ pub unsafe fn frame_for_sizing(window: usize) {
     AdjustWindowRect(outer.as_mut_ptr(), sized, 0);
     SetWindowLongA(window, GWL_STYLE, sized);
     // SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
-    SetWindowPos(window, 0, 0, 0, outer[2] - outer[0], outer[3] - outer[1], 0x0002 | 0x0004 | 0x0010 | 0x0020);
+    SetWindowPos(
+        window,
+        0,
+        0,
+        0,
+        outer[2] - outer[0],
+        outer[3] - outer[1],
+        0x0002 | 0x0004 | 0x0010 | 0x0020,
+    );
     crate::log!("resolution: the game's window has a sizing frame and a maximise box: it can be resized with graphics.borderless off (with it on, MGE XE takes the frame away)");
 }
 

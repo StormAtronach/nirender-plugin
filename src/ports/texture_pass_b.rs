@@ -7,14 +7,17 @@
 use core::mem::transmute;
 
 use crate::d3d::{
-    device_set_texture, D3DTSS_ADDRESSU, D3DTSS_ADDRESSV, D3DTSS_ALPHAOP, D3DTSS_COLOROP, D3DTSS_MAGFILTER, D3DTSS_MINFILTER,
-    D3DTSS_MIPFILTER, D3DTSS_TEXCOORDINDEX,
+    device_set_texture, D3DTSS_ADDRESSU, D3DTSS_ADDRESSV, D3DTSS_ALPHAOP, D3DTSS_COLOROP, D3DTSS_MAGFILTER,
+    D3DTSS_MINFILTER, D3DTSS_MIPFILTER, D3DTSS_TEXCOORDINDEX,
 };
-use crate::engine::{self, EMPTY_STRING, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES, NI_REF_OBJECT_COUNT, VTBL_NI_REF_OBJECT};
+use crate::engine::{
+    self, EMPTY_STRING, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES, NI_REF_OBJECT_COUNT, VTBL_NI_REF_OBJECT,
+};
 use crate::gen::layouts::{
-    NiDX8ConfigurableTexturePipeline as CTP, NiDX8ConfigurableTexturePipeline_BlendOps as BO, NiDX8RenderState as RS, NiDX8Renderer as REN, NiDX8TexturePass as TP,
-    NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as LIST,
-    InterfaceNiDX8TextureData, NiRenderStateSetting, NiSourceTexture, NiTexture, NiTextureEffect, vec3,
+    vec3, InterfaceNiDX8TextureData, NiDX8ConfigurableTexturePipeline as CTP,
+    NiDX8ConfigurableTexturePipeline_BlendOps as BO, NiDX8RenderState as RS, NiDX8Renderer as REN, NiDX8TexturePass as TP,
+    NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES,
+    NiDynamicEffectState_InternalList as LIST, NiRenderStateSetting, NiSourceTexture, NiTexture, NiTextureEffect,
 };
 use crate::mem::{rd, wr};
 use crate::ports::ni::{add_reference, release, REF_COUNT};
@@ -223,7 +226,8 @@ pub unsafe fn set_blending_state(this: usize, a2: u32, _a3: u32, a4: u32, a5: u3
         }
         let index: u32 = rd(this, TP::field_8);
         let subpass: usize = rd(this, TP::substruct_14);
-        let apply: unsafe extern "thiscall" fn(usize, usize, u32, u32, u32, u32) -> u32 = transmute(engine::virtual_at(subpass, 4));
+        let apply: unsafe extern "thiscall" fn(usize, usize, u32, u32, u32, u32) -> u32 =
+            transmute(engine::virtual_at(subpass, 4));
         result = apply(subpass, rd(this, TP::renderer), a2, a4, a5, index);
         let index: u32 = rd(this, TP::field_8);
         let remaining = rd::<u32>(this, TP::field_C).wrapping_sub(index);
@@ -280,11 +284,31 @@ pub unsafe fn apply_stage_blend_ops(this: usize, stage: usize, flag: u8) {
         let first = (slot_offset as u32).wrapping_add(CTP::laterStageBlendOps as u32) as usize;
         let table = CTP::laterStageBlendOps;
         wr::<u32>(stage, ST::colorOp, rd(pipeline().wrapping_add(first), BO::colorOp));
-        wr::<u32>(stage, ST::colorArg1, rd(pipeline().wrapping_add(slot_offset), table + BO::colorArg1));
-        wr::<u32>(stage, ST::colorArg2, rd(pipeline().wrapping_add(slot_offset), table + BO::colorArg2));
-        wr::<u32>(stage, ST::alphaOp, rd(pipeline().wrapping_add(slot_offset), table + BO::alphaOp));
-        wr::<u32>(stage, ST::alphaArg1, rd(pipeline().wrapping_add(slot_offset), table + BO::alphaArg1));
-        wr::<u32>(stage, ST::alphaArg2, rd(pipeline().wrapping_add(slot_offset), table + BO::alphaArg2));
+        wr::<u32>(
+            stage,
+            ST::colorArg1,
+            rd(pipeline().wrapping_add(slot_offset), table + BO::colorArg1),
+        );
+        wr::<u32>(
+            stage,
+            ST::colorArg2,
+            rd(pipeline().wrapping_add(slot_offset), table + BO::colorArg2),
+        );
+        wr::<u32>(
+            stage,
+            ST::alphaOp,
+            rd(pipeline().wrapping_add(slot_offset), table + BO::alphaOp),
+        );
+        wr::<u32>(
+            stage,
+            ST::alphaArg1,
+            rd(pipeline().wrapping_add(slot_offset), table + BO::alphaArg1),
+        );
+        wr::<u32>(
+            stage,
+            ST::alphaArg2,
+            rd(pipeline().wrapping_add(slot_offset), table + BO::alphaArg2),
+        );
     }
 }
 
@@ -444,9 +468,16 @@ pub unsafe fn configure_stage_from_texture_prop(this: usize, effect: usize, stag
     }
     wr::<u8>(stage, ST::bumpEnvMapEnabled, 0);
     let mode: u32 = rd(effect, EFFECT_COORDINATE_MODE);
-    let generate: unsafe extern "thiscall" fn(usize, usize, usize, usize) -> u32 =
-        transmute(rd::<usize>(this.wrapping_add((mode as usize).wrapping_mul(4)), TP::callbacks_6E4));
-    generate(this, effect + EFFECT_PROJECTION_MATRIX, effect + EFFECT_PROJECTION_TRANSLATION, stage);
+    let generate: unsafe extern "thiscall" fn(usize, usize, usize, usize) -> u32 = transmute(rd::<usize>(
+        this.wrapping_add((mode as usize).wrapping_mul(4)),
+        TP::callbacks_6E4,
+    ));
+    generate(
+        this,
+        effect + EFFECT_PROJECTION_MATRIX,
+        effect + EFFECT_PROJECTION_TRANSLATION,
+        stage,
+    );
     wr(this, TP::field_6E0, rd::<u32>(this, TP::field_6E0).wrapping_add(1));
     wr(stage, ST::texturePropMap, effect);
     wr::<u8>(stage, ST::field_90, 0);
@@ -478,11 +509,37 @@ unsafe fn projected_texture_matrix(this: usize, effect: usize, stage: usize, neg
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     let p = |offset: usize| rd::<f32>(pipeline, offset);
 
-    wr(stage, ST::textureMatrix__11, dot3(p(CTP::worldRightZ), z, p(CTP::worldRightY), y, p(CTP::worldRightX), x));
-    wr(stage, ST::textureMatrix__21, dot3(p(CTP::worldUpZ), z, p(CTP::worldUpY), y, p(CTP::worldUpX), x));
-    wr(stage, ST::textureMatrix__31, dot3(p(CTP::worldDirectionZ), z, p(CTP::worldDirectionY), y, p(CTP::worldDirectionX), x));
+    wr(
+        stage,
+        ST::textureMatrix__11,
+        dot3(p(CTP::worldRightZ), z, p(CTP::worldRightY), y, p(CTP::worldRightX), x),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__21,
+        dot3(p(CTP::worldUpZ), z, p(CTP::worldUpY), y, p(CTP::worldUpX), x),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__31,
+        dot3(
+            p(CTP::worldDirectionZ),
+            z,
+            p(CTP::worldDirectionY),
+            y,
+            p(CTP::worldDirectionX),
+            x,
+        ),
+    );
 
-    let sum = dot3(z, p(CTP::worldLocation_z), y, p(CTP::worldLocation_y), x, p(CTP::worldLocation_x));
+    let sum = dot3(
+        z,
+        p(CTP::worldLocation_z),
+        y,
+        p(CTP::worldLocation_y),
+        x,
+        p(CTP::worldLocation_x),
+    );
     // `fadd ds:f_half_0`: a single-precision 0.5 at 0x74B714.
     let sum = sum + 0.5f32;
     let last = if negate { sum - (-constant) } else { sum - constant };
@@ -551,18 +608,66 @@ unsafe fn world_parallel(pipeline: usize, matrix: usize, translation: usize, sta
     let m = |offset: usize| rd::<f32>(matrix, offset);
     let t = |offset: usize| rd::<f32>(translation, offset);
 
-    wr(stage, ST::textureMatrix__11, dot3(w(0x00), m(0x00), w(0x18), m(0x08), w(0x0C), m(0x04)));
-    wr(stage, ST::textureMatrix__21, dot3(w(0x1C), m(0x08), w(0x10), m(0x04), m(0x00), w(0x04)));
-    wr(stage, ST::textureMatrix__31, dot3(m(0x04), w(0x14), m(0x00), w(0x08), m(0x08), w(0x20)));
-    wr(stage, ST::textureMatrix__12, dot3(w(0x18), m(0x14), w(0x0C), m(0x10), m(0x0C), w(0x00)));
-    wr(stage, ST::textureMatrix__22, dot3(w(0x1C), m(0x14), w(0x10), m(0x10), m(0x0C), w(0x04)));
-    wr(stage, ST::textureMatrix__32, dot3(m(0x0C), w(0x08), w(0x20), m(0x14), w(0x14), m(0x10)));
-    wr(stage, ST::textureMatrix__13, dot3(w(0x0C), m(0x1C), w(0x00), m(0x18), w(0x18), m(0x20)));
-    wr(stage, ST::textureMatrix__23, dot3(w(0x10), m(0x1C), w(0x04), m(0x18), w(0x1C), m(0x20)));
-    wr(stage, ST::textureMatrix__33, dot3(w(0x20), m(0x20), w(0x14), m(0x1C), w(0x08), m(0x18)));
-    wr(stage, ST::textureMatrix__41, dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0));
-    wr(stage, ST::textureMatrix__42, dot3(m(0x0C), w(0x24), m(0x10), w(0x28), m(0x14), w(0x2C)) + t(0x4));
-    wr(stage, ST::textureMatrix__43, dot3(m(0x18), w(0x24), m(0x1C), w(0x28), m(0x20), w(0x2C)) + t(0x8));
+    wr(
+        stage,
+        ST::textureMatrix__11,
+        dot3(w(0x00), m(0x00), w(0x18), m(0x08), w(0x0C), m(0x04)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__21,
+        dot3(w(0x1C), m(0x08), w(0x10), m(0x04), m(0x00), w(0x04)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__31,
+        dot3(m(0x04), w(0x14), m(0x00), w(0x08), m(0x08), w(0x20)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__12,
+        dot3(w(0x18), m(0x14), w(0x0C), m(0x10), m(0x0C), w(0x00)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__22,
+        dot3(w(0x1C), m(0x14), w(0x10), m(0x10), m(0x0C), w(0x04)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__32,
+        dot3(m(0x0C), w(0x08), w(0x20), m(0x14), w(0x14), m(0x10)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__13,
+        dot3(w(0x0C), m(0x1C), w(0x00), m(0x18), w(0x18), m(0x20)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__23,
+        dot3(w(0x10), m(0x1C), w(0x04), m(0x18), w(0x1C), m(0x20)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__33,
+        dot3(w(0x20), m(0x20), w(0x14), m(0x1C), w(0x08), m(0x18)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__41,
+        dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__42,
+        dot3(m(0x0C), w(0x24), m(0x10), w(0x28), m(0x14), w(0x2C)) + t(0x4),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__43,
+        dot3(m(0x18), w(0x24), m(0x1C), w(0x28), m(0x20), w(0x2C)) + t(0x8),
+    );
 }
 
 /// 0x6B5EB0 `NiDX8TexturePass::texGen_WorldPerspective_Claude_`. Leaves the pipeline in EAX.
@@ -592,18 +697,66 @@ unsafe fn world_perspective(pipeline: usize, flags: u32, matrix: usize, translat
     let m = |offset: usize| rd::<f32>(matrix, offset);
     let t = |offset: usize| rd::<f32>(translation, offset);
 
-    wr(stage, ST::textureMatrix__11, dot3(w(0x00), m(0x00), w(0x18), m(0x08), w(0x0C), m(0x04)));
-    wr(stage, ST::textureMatrix__21, dot3(w(0x04), m(0x00), w(0x1C), m(0x08), w(0x10), m(0x04)));
-    wr(stage, ST::textureMatrix__31, dot3(m(0x08), w(0x20), w(0x14), m(0x04), m(0x00), w(0x08)));
-    wr(stage, ST::textureMatrix__12, dot3(w(0x00), m(0x0C), m(0x10), w(0x0C), w(0x18), m(0x14)));
-    wr(stage, ST::textureMatrix__22, dot3(m(0x10), w(0x10), w(0x04), m(0x0C), w(0x1C), m(0x14)));
-    wr(stage, ST::textureMatrix__32, dot3(w(0x14), m(0x10), w(0x08), m(0x0C), w(0x20), m(0x14)));
-    wr(stage, ST::textureMatrix__13, dot3(w(0x18), m(0x20), m(0x1C), w(0x0C), w(0x00), m(0x18)));
-    wr(stage, ST::textureMatrix__23, dot3(w(0x1C), m(0x20), m(0x1C), w(0x10), w(0x04), m(0x18)));
-    wr(stage, ST::textureMatrix__33, dot3(w(0x08), m(0x18), w(0x20), m(0x20), w(0x14), m(0x1C)));
-    wr(stage, ST::textureMatrix__41, dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0));
-    wr(stage, ST::textureMatrix__42, dot3(m(0x14), w(0x2C), m(0x0C), w(0x24), m(0x10), w(0x28)) + t(0x4));
-    wr(stage, ST::textureMatrix__43, dot3(m(0x1C), w(0x28), m(0x20), w(0x2C), m(0x18), w(0x24)) + t(0x8));
+    wr(
+        stage,
+        ST::textureMatrix__11,
+        dot3(w(0x00), m(0x00), w(0x18), m(0x08), w(0x0C), m(0x04)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__21,
+        dot3(w(0x04), m(0x00), w(0x1C), m(0x08), w(0x10), m(0x04)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__31,
+        dot3(m(0x08), w(0x20), w(0x14), m(0x04), m(0x00), w(0x08)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__12,
+        dot3(w(0x00), m(0x0C), m(0x10), w(0x0C), w(0x18), m(0x14)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__22,
+        dot3(m(0x10), w(0x10), w(0x04), m(0x0C), w(0x1C), m(0x14)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__32,
+        dot3(w(0x14), m(0x10), w(0x08), m(0x0C), w(0x20), m(0x14)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__13,
+        dot3(w(0x18), m(0x20), m(0x1C), w(0x0C), w(0x00), m(0x18)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__23,
+        dot3(w(0x1C), m(0x20), m(0x1C), w(0x10), w(0x04), m(0x18)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__33,
+        dot3(w(0x08), m(0x18), w(0x20), m(0x20), w(0x14), m(0x1C)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__41,
+        dot3(m(0x04), w(0x28), m(0x08), w(0x2C), m(0x00), w(0x24)) + t(0x0),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__42,
+        dot3(m(0x14), w(0x2C), m(0x0C), w(0x24), m(0x10), w(0x28)) + t(0x4),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__43,
+        dot3(m(0x1C), w(0x28), m(0x20), w(0x2C), m(0x18), w(0x24)) + t(0x8),
+    );
 }
 
 /// The body of the three callbacks that work on a direction. It applies the rotation only and
@@ -623,15 +776,51 @@ unsafe fn direction(pipeline: usize, matrix: usize, translation: usize, stage: u
     let w = |offset: usize| camera(pipeline, offset);
     let m = |offset: usize| rd::<f32>(matrix, offset);
 
-    wr(stage, ST::textureMatrix__11, dot3(w(0x18), m(0x08), w(0x00), m(0x00), w(0x0C), m(0x04)));
-    wr(stage, ST::textureMatrix__21, dot3(w(0x1C), m(0x08), w(0x10), m(0x04), m(0x00), w(0x04)));
-    wr(stage, ST::textureMatrix__31, dot3(w(0x08), m(0x00), m(0x08), w(0x20), m(0x04), w(0x14)));
-    wr(stage, ST::textureMatrix__12, dot3(w(0x00), m(0x0C), w(0x0C), m(0x10), m(0x14), w(0x18)));
-    wr(stage, ST::textureMatrix__22, dot3(w(0x10), m(0x10), m(0x0C), w(0x04), m(0x14), w(0x1C)));
-    wr(stage, ST::textureMatrix__32, dot3(m(0x14), w(0x20), w(0x08), m(0x0C), w(0x14), m(0x10)));
-    wr(stage, ST::textureMatrix__13, dot3(w(0x18), m(0x20), m(0x18), w(0x00), w(0x0C), m(0x1C)));
-    wr(stage, ST::textureMatrix__23, dot3(m(0x18), w(0x04), w(0x1C), m(0x20), w(0x10), m(0x1C)));
-    wr(stage, ST::textureMatrix__33, dot3(w(0x14), m(0x1C), w(0x08), m(0x18), w(0x20), m(0x20)));
+    wr(
+        stage,
+        ST::textureMatrix__11,
+        dot3(w(0x18), m(0x08), w(0x00), m(0x00), w(0x0C), m(0x04)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__21,
+        dot3(w(0x1C), m(0x08), w(0x10), m(0x04), m(0x00), w(0x04)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__31,
+        dot3(w(0x08), m(0x00), m(0x08), w(0x20), m(0x04), w(0x14)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__12,
+        dot3(w(0x00), m(0x0C), w(0x0C), m(0x10), m(0x14), w(0x18)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__22,
+        dot3(w(0x10), m(0x10), m(0x0C), w(0x04), m(0x14), w(0x1C)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__32,
+        dot3(m(0x14), w(0x20), w(0x08), m(0x0C), w(0x14), m(0x10)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__13,
+        dot3(w(0x18), m(0x20), m(0x18), w(0x00), w(0x0C), m(0x1C)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__23,
+        dot3(m(0x18), w(0x04), w(0x1C), m(0x20), w(0x10), m(0x1C)),
+    );
+    wr(
+        stage,
+        ST::textureMatrix__33,
+        dot3(w(0x14), m(0x1C), w(0x08), m(0x18), w(0x20), m(0x20)),
+    );
     wr::<u32>(stage, ST::textureMatrix__41, rd(translation, vec3::x));
     wr::<u32>(stage, ST::textureMatrix__42, rd(translation, vec3::y));
     let last: u32 = rd(translation, vec3::z);
@@ -999,7 +1188,13 @@ pub unsafe fn subpass_apply(this: usize, renderer: usize, _a2: u32, _a3: u32, _a
 
 /// `getAvailableSlotCounts` with the two limits of the device as arguments.
 #[inline(always)]
-unsafe fn available_slot_counts(this: usize, out_stages: usize, out_textures: usize, max_stages: impl Fn() -> u32, max_textures: impl Fn() -> u32) {
+unsafe fn available_slot_counts(
+    this: usize,
+    out_stages: usize,
+    out_textures: usize,
+    max_stages: impl Fn() -> u32,
+    max_textures: impl Fn() -> u32,
+) {
     let count: u32 = rd(this, SUB::field_C);
     if count != u32::MAX {
         wr(out_stages, 0, max_stages().wrapping_sub(count));
@@ -1019,7 +1214,13 @@ unsafe fn available_slot_counts(this: usize, out_stages: usize, out_textures: us
 /// `MAX_SIMULTANEOUS_TEXTURES`) are in memory.
 pub unsafe fn subpass_get_available_slot_counts(this: usize, out_stages: usize, out_textures: usize) {
     crate::shadow::touch(&subpass_get_available_slot_counts_port::STATE);
-    available_slot_counts(this, out_stages, out_textures, || rd(MAX_TEXTURE_BLEND_STAGES, 0), || rd(MAX_SIMULTANEOUS_TEXTURES, 0));
+    available_slot_counts(
+        this,
+        out_stages,
+        out_textures,
+        || rd(MAX_TEXTURE_BLEND_STAGES, 0),
+        || rd(MAX_SIMULTANEOUS_TEXTURES, 0),
+    );
 }
 
 /// The end of every branch of the two append functions. The stage count becomes the next
@@ -1108,7 +1309,11 @@ unsafe fn append_stage_pair(this: usize, stage: usize, other_stage: usize, flag:
     }
     wr(other_stage, ST::stage, next);
     let index: u32 = rd(this, SUB::field_8);
-    wr(this.wrapping_add((index as usize).wrapping_mul(4)), SUB::field_14, other_stage);
+    wr(
+        this.wrapping_add((index as usize).wrapping_mul(4)),
+        SUB::field_14,
+        other_stage,
+    );
     let next = rd::<u32>(this, SUB::field_8).wrapping_add(1);
     wr(this, SUB::field_8, next);
     let count: u32 = rd(this, SUB::field_C);
@@ -1346,7 +1551,11 @@ unsafe fn bind_stage_texture_regions(set: &mut Regions, this: usize, stage: usiz
     }
     let mut free_stages = 0u32;
     let mut free_textures = 0u32;
-    subpass_get_available_slot_counts(subpass, &mut free_stages as *mut u32 as usize, &mut free_textures as *mut u32 as usize);
+    subpass_get_available_slot_counts(
+        subpass,
+        &mut free_stages as *mut u32 as usize,
+        &mut free_textures as *mut u32 as usize,
+    );
     if free_stages < stages || free_textures < textures {
         pass_index = pass_index.wrapping_add(1);
         if pass_index >= rd::<u32>(this, TP::count_10) {
@@ -1365,7 +1574,11 @@ unsafe fn bind_stage_texture_regions(set: &mut Regions, this: usize, stage: usiz
     if pass_index == 0 {
         return;
     }
-    let first_stage: usize = if rd::<u32>(subpass, SUB::field_8) == 0 { stage } else { rd(subpass, SUB::field_14) };
+    let first_stage: usize = if rd::<u32>(subpass, SUB::field_8) == 0 {
+        stage
+    } else {
+        rd(subpass, SUB::field_14)
+    };
     let pipeline: usize = rd(this, TP::configurableTexturePipeline);
     let slot: u32 = rd(first_stage, ST::field_94);
     let object: usize = rd(pipeline.wrapping_add((slot as usize).wrapping_mul(4)), CTP::alphaTemplates);
@@ -1458,7 +1671,12 @@ unsafe fn set_texture_pipeline_regions(set: &mut Regions, this: usize, effect_st
     if effect_state == 0 {
         return;
     }
-    let mut walk = EffectWalk { used: 0, counts: Vec::new(), stages: Vec::new(), skip: false };
+    let mut walk = EffectWalk {
+        used: 0,
+        counts: Vec::new(),
+        stages: Vec::new(),
+        skip: false,
+    };
     // The four counters are 0 after `resetPassFlags`.
     let (mut lights, mut clipped_lights, mut shadows, mut clipped_shadows) = (0u32, 0u32, 0u32, 0u32);
 
@@ -1546,159 +1764,255 @@ unsafe fn subpass_append_regions(set: &mut Regions, this: usize, stage: usize, o
 // Ports
 // ---------------------------------------------------------------------------------------
 
-port_thiscall!(set_blending_state_port, 0x6B5640, "NiDX8TexturePass::setBlendingState",
+port_thiscall!(
+    set_blending_state_port,
+    0x6B5640,
+    "NiDX8TexturePass::setBlendingState",
     fn(this, a2: u32, a3: u32, a4: u32, a5: u32) -> u32,
     compare_eax = true,
     regions = |set| set_blending_state_regions(set, this),
-    rust = set_blending_state);
+    rust = set_blending_state
+);
 
-port_thiscall!(apply_stage_blend_ops_port, 0x6B56B0, "NiDX8TexturePass::applyStageBlendOps",
+port_thiscall!(
+    apply_stage_blend_ops_port,
+    0x6B56B0,
+    "NiDX8TexturePass::applyStageBlendOps",
     fn(this, stage: usize, flag: u8) -> (),
     compare_eax = false,
     regions = |set| set.add(stage, ST::SIZE),
-    rust = apply_stage_blend_ops);
+    rust = apply_stage_blend_ops
+);
 
-port_thiscall!(bind_stage_texture_port, 0x6B57B0, "NiDX8TexturePass::bindStageTexture",
+port_thiscall!(
+    bind_stage_texture_port,
+    0x6B57B0,
+    "NiDX8TexturePass::bindStageTexture",
     fn(this, stage: usize, textures: u32, stages: u32) -> u8,
     compare_eax = true,
     regions = |set| bind_stage_texture_regions(set, this, stage, textures, stages),
-    rust = bind_stage_texture);
+    rust = bind_stage_texture
+);
 
-port_thiscall!(set_texture_pipeline_port, 0x6B5870, "NiDX8TexturePass::setTexturePipeline",
+port_thiscall!(
+    set_texture_pipeline_port,
+    0x6B5870,
+    "NiDX8TexturePass::setTexturePipeline",
     fn(this, effect_state: usize) -> (),
     compare_eax = false,
     regions = |set| set_texture_pipeline_regions(set, this, effect_state),
-    rust = set_texture_pipeline);
+    rust = set_texture_pipeline
+);
 
-port_thiscall!(reset_pass_flags_port, 0x6B59E0, "NiDX8TexturePass::resetPassFlags",
+port_thiscall!(
+    reset_pass_flags_port,
+    0x6B59E0,
+    "NiDX8TexturePass::resetPassFlags",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.add(this, TP::SIZE),
-    rust = reset_pass_flags);
+    rust = reset_pass_flags
+);
 
-port_thiscall!(configure_stage_from_texture_prop_port, 0x6B5A20, "NiDX8TexturePass::configureStageFromTextureProp",
+port_thiscall!(
+    configure_stage_from_texture_prop_port,
+    0x6B5A20,
+    "NiDX8TexturePass::configureStageFromTextureProp",
     fn(this, effect: usize, stage: usize) -> u8,
     compare_eax = true,
     regions = |set| configure_stage_regions(set, this, effect, stage),
-    rust = configure_stage_from_texture_prop);
+    rust = configure_stage_from_texture_prop
+);
 
-port_thiscall!(setup_projected_texture_matrix_port, 0x6B5B20, "NiDX8TexturePass::setupProjectedTextureMatrix",
+port_thiscall!(
+    setup_projected_texture_matrix_port,
+    0x6B5B20,
+    "NiDX8TexturePass::setupProjectedTextureMatrix",
     fn(this, effect: usize) -> u8,
     compare_eax = true,
     regions = |set| set.add(this, TP::SIZE),
-    rust = setup_projected_texture_matrix);
+    rust = setup_projected_texture_matrix
+);
 
-port_thiscall!(setup_projected_texture_matrix_neg_port, 0x6B5C00, "NiDX8TexturePass::setupProjectedTextureMatrixNeg",
+port_thiscall!(
+    setup_projected_texture_matrix_neg_port,
+    0x6B5C00,
+    "NiDX8TexturePass::setupProjectedTextureMatrixNeg",
     fn(this, effect: usize) -> u8,
     compare_eax = true,
     regions = |set| set.add(this, TP::SIZE),
-    rust = setup_projected_texture_matrix_neg);
+    rust = setup_projected_texture_matrix_neg
+);
 
-port_thiscall!(tex_gen_world_parallel_port, 0x6B5CE0, "NiDX8TexturePass::texGen_WorldParallel_Claude_",
+port_thiscall!(
+    tex_gen_world_parallel_port,
+    0x6B5CE0,
+    "NiDX8TexturePass::texGen_WorldParallel_Claude_",
     fn(this, matrix: usize, translation: usize, stage: usize) -> usize,
     compare_eax = true,
     regions = |set| set.add(stage, ST::SIZE),
-    rust = tex_gen_world_parallel);
+    rust = tex_gen_world_parallel
+);
 
-port_thiscall!(tex_gen_world_perspective_port, 0x6B5EB0, "NiDX8TexturePass::texGen_WorldPerspective_Claude_",
+port_thiscall!(
+    tex_gen_world_perspective_port,
+    0x6B5EB0,
+    "NiDX8TexturePass::texGen_WorldPerspective_Claude_",
     fn(this, matrix: usize, translation: usize, stage: usize) -> usize,
     compare_eax = true,
     regions = |set| set.add(stage, ST::SIZE),
-    rust = tex_gen_world_perspective);
+    rust = tex_gen_world_perspective
+);
 
-port_thiscall!(tex_gen_sphere_map_port, 0x6B6090, "NiDX8TexturePass::texGen_SphereMap_Claude_",
+port_thiscall!(
+    tex_gen_sphere_map_port,
+    0x6B6090,
+    "NiDX8TexturePass::texGen_SphereMap_Claude_",
     fn(this, matrix: usize, translation: usize, stage: usize) -> u32,
     compare_eax = true,
     regions = |set| set.add(stage, ST::SIZE),
-    rust = tex_gen_sphere_map);
+    rust = tex_gen_sphere_map
+);
 
-port_thiscall!(tex_gen_specular_cube_map_port, 0x6B61B0, "NiDX8TexturePass::texGen_SpecularCubeMap_Claude_",
+port_thiscall!(
+    tex_gen_specular_cube_map_port,
+    0x6B61B0,
+    "NiDX8TexturePass::texGen_SpecularCubeMap_Claude_",
     fn(this, matrix: usize, translation: usize, stage: usize) -> u32,
     compare_eax = true,
     regions = |set| set.add(stage, ST::SIZE),
-    rust = tex_gen_specular_cube_map);
+    rust = tex_gen_specular_cube_map
+);
 
-port_thiscall!(tex_gen_diffuse_cube_map_port, 0x6B6300, "NiDX8TexturePass::texGen_DiffuseCubeMap_Claude_",
+port_thiscall!(
+    tex_gen_diffuse_cube_map_port,
+    0x6B6300,
+    "NiDX8TexturePass::texGen_DiffuseCubeMap_Claude_",
     fn(this, matrix: usize, translation: usize, stage: usize) -> u32,
     compare_eax = true,
     regions = |set| set.add(stage, ST::SIZE),
-    rust = tex_gen_diffuse_cube_map);
+    rust = tex_gen_diffuse_cube_map
+);
 
-port_thiscall!(subpass_set_ni_object_field_48_port, 0x6B6540, "NiDX8TexturePass::_1::setNiObjectField48",
+port_thiscall!(
+    subpass_set_ni_object_field_48_port,
+    0x6B6540,
+    "NiDX8TexturePass::_1::setNiObjectField48",
     fn(this, object: usize) -> (),
     compare_eax = false,
     regions = |set| {
         set.add(this, SUB::SIZE);
         field_48_regions(set, this, object)
     },
-    rust = subpass_set_ni_object_field_48);
+    rust = subpass_set_ni_object_field_48
+);
 
-port_thiscall!(subpass_ctor_port, 0x6B76E0, "NiDX8TexturePass::$1::ctor",
+port_thiscall!(
+    subpass_ctor_port,
+    0x6B76E0,
+    "NiDX8TexturePass::$1::ctor",
     fn(this) -> usize,
     compare_eax = true,
     // The call is a skip always: the object is new memory, and the count of all objects is
     // outside the object.
     regions = |set| set.skip(),
-    rust = subpass_ctor);
+    rust = subpass_ctor
+);
 
-port_thiscall!(subpass_dtor_port, 0x6B77E0, "NiDX8TexturePass::$1::dtor",
+port_thiscall!(
+    subpass_dtor_port,
+    0x6B77E0,
+    "NiDX8TexturePass::$1::dtor",
     fn(this) -> (),
     compare_eax = false,
     // The call is a skip always: the function can delete the three objects that the sub-pass
     // holds.
     regions = |set| set.skip(),
-    rust = subpass_dtor);
+    rust = subpass_dtor
+);
 
-port_thiscall!(subpass_set_stage_at_index_port, 0x6B78D0, "NiDX8TexturePass::_1::setStageAtIndex",
+port_thiscall!(
+    subpass_set_stage_at_index_port,
+    0x6B78D0,
+    "NiDX8TexturePass::_1::setStageAtIndex",
     fn(this, index: u32, stage: usize) -> u32,
     compare_eax = true,
     regions = |set| set.add(this, SUB::SIZE),
-    rust = subpass_set_stage_at_index);
+    rust = subpass_set_stage_at_index
+);
 
-port_thiscall!(subpass_apply_port, 0x6B7900, "NiDX8TexturePass::method_4",
+port_thiscall!(
+    subpass_apply_port,
+    0x6B7900,
+    "NiDX8TexturePass::method_4",
     fn(this, renderer: usize, a2: u32, a3: u32, a4: u32, a5: u32) -> u32,
     compare_eax = true,
     regions = |set| subpass_apply_regions(set, this, renderer, (0, 0)),
-    rust = subpass_apply);
+    rust = subpass_apply
+);
 
-port_thiscall!(subpass_get_available_slot_counts_port, 0x6B7990, "NiDX8TexturePass::_1::getAvailableSlotCounts",
+port_thiscall!(
+    subpass_get_available_slot_counts_port,
+    0x6B7990,
+    "NiDX8TexturePass::_1::getAvailableSlotCounts",
     fn(this, out_stages: usize, out_textures: usize) -> (),
     compare_eax = false,
     regions = |set| {
         set.add(out_stages, 4);
         set.add(out_textures, 4)
     },
-    rust = subpass_get_available_slot_counts);
+    rust = subpass_get_available_slot_counts
+);
 
-port_thiscall!(subpass_append_stage_port, 0x6B79E0, "NiDX8TexturePass::_1::appendStage",
+port_thiscall!(
+    subpass_append_stage_port,
+    0x6B79E0,
+    "NiDX8TexturePass::_1::appendStage",
     fn(this, stage: usize) -> u8,
     compare_eax = true,
     regions = |set| subpass_append_regions(set, this, stage, 0),
-    rust = subpass_append_stage);
+    rust = subpass_append_stage
+);
 
-port_thiscall!(subpass_append_stage_pair_port, 0x6B7A50, "NiDX8TexturePass::_1::appendStagePair",
+port_thiscall!(
+    subpass_append_stage_pair_port,
+    0x6B7A50,
+    "NiDX8TexturePass::_1::appendStagePair",
     fn(this, stage: usize, other_stage: usize, flag: u8) -> u32,
     compare_eax = true,
     regions = |set| subpass_append_regions(set, this, stage, other_stage),
-    rust = subpass_append_stage_pair);
+    rust = subpass_append_stage_pair
+);
 
-port_cdecl!(reset_stage_port, 0x6C1E50, "NiDX8TexturePass_static::resetStage",
+port_cdecl!(
+    reset_stage_port,
+    0x6C1E50,
+    "NiDX8TexturePass_static::resetStage",
     fn(stage_index: u32, renderer: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(rd(renderer, REN::renderState), RS::SIZE),
-    rust = reset_stage);
+    rust = reset_stage
+);
 
-port_thiscall!(set_texture_wrapping_port, 0x6C1EE0, "NiDX8TexturePass::setTextureWrapping",
+port_thiscall!(
+    set_texture_wrapping_port,
+    0x6C1EE0,
+    "NiDX8TexturePass::setTextureWrapping",
     fn(this, renderer: usize) -> (),
     compare_eax = false,
     regions = |set| set.add(rd(renderer, REN::renderState), RS::SIZE),
-    rust = set_texture_wrapping);
+    rust = set_texture_wrapping
+);
 
-port_thiscall!(set_texture_filtering_port, 0x6C1FA0, "NiDX8TexturePass::setTextureFiltering",
+port_thiscall!(
+    set_texture_filtering_port,
+    0x6C1FA0,
+    "NiDX8TexturePass::setTextureFiltering",
     fn(this, renderer: usize, mipmapped: u8, flag: u8) -> (),
     compare_eax = false,
     regions = |set| set.add(rd(renderer, REN::renderState), RS::SIZE),
-    rust = set_texture_filtering);
+    rust = set_texture_filtering
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &set_blending_state_port::STATE,
@@ -1755,7 +2069,10 @@ mod tests {
     fn a_target_gets_the_render_state_and_the_property_in_edx_and_on_the_stack_and_an_unknown_one_is_logged() {
         UNKNOWN_ALPHA_TARGET_LOGGED.store(false, core::sync::atomic::Ordering::Relaxed);
         unsafe { set_alpha_state_through(fake_alpha_target as *const () as usize, 0x11, 0x22) };
-        assert_eq!(ALPHA_CALLS.with(|calls| core::mem::take(&mut *calls.borrow_mut())), [[0x11, 0x22, 0x22]]);
+        assert_eq!(
+            ALPHA_CALLS.with(|calls| core::mem::take(&mut *calls.borrow_mut())),
+            [[0x11, 0x22, 0x22]]
+        );
         assert!(UNKNOWN_ALPHA_TARGET_LOGGED.load(core::sync::atomic::Ordering::Relaxed));
     }
 
@@ -1801,7 +2118,13 @@ mod tests {
             vtable[0xF4 / 4] = fake_set_texture as *const () as usize;
             vtable[0xFC / 4] = fake_set_texture_stage_state as *const () as usize;
             let device = Box::new(vtable.as_ptr() as usize);
-            let mut world = World { vtable, device, render_state: vec![0; RS::SIZE], pipeline: vec![0; CTP::SIZE], renderer: vec![0; REN::SIZE] };
+            let mut world = World {
+                vtable,
+                device,
+                render_state: vec![0; RS::SIZE],
+                pipeline: vec![0; CTP::SIZE],
+                renderer: vec![0; REN::SIZE],
+            };
             unsafe {
                 wr(world.rs(), RS::device, &*world.device as *const usize as usize);
                 let (renderer, rs, pipeline) = (world.renderer(), world.rs(), world.pipeline());
@@ -1836,7 +2159,11 @@ mod tests {
             for (index, value) in camera.into_iter().enumerate() {
                 wr(pipeline.as_mut_ptr() as usize, CTP::worldRightX + index * 4, value);
             }
-            wr(pass.as_mut_ptr() as usize, TP::configurableTexturePipeline, pipeline.as_mut_ptr() as usize);
+            wr(
+                pass.as_mut_ptr() as usize,
+                TP::configurableTexturePipeline,
+                pipeline.as_mut_ptr() as usize,
+            );
         }
         (pass, pipeline)
     }
@@ -1866,8 +2193,11 @@ mod tests {
         let (mut pass, _pipeline) = pass_with_camera(CAMERA);
         let this = pass.as_mut_ptr() as usize;
         let translation = [0x1111_1111u32, 0x7F80_0001, 0x3333_3333];
-        let cases: [(unsafe fn(usize, usize, usize, usize) -> u32, u32, u32); 3] =
-            [(tex_gen_sphere_map, 0x30000, 2), (tex_gen_specular_cube_map, 0x30000, 3), (tex_gen_diffuse_cube_map, 0x10000, 3)];
+        let cases: [(unsafe fn(usize, usize, usize, usize) -> u32, u32, u32); 3] = [
+            (tex_gen_sphere_map, 0x30000, 2),
+            (tex_gen_specular_cube_map, 0x30000, 3),
+            (tex_gen_diffuse_cube_map, 0x10000, 3),
+        ];
         for (function, source, flags) in cases {
             let mut stage = stage_block();
             let s = stage.as_mut_ptr() as usize;
@@ -1893,10 +2223,15 @@ mod tests {
         let mut renderer = vec![0u8; REN::SIZE];
         unsafe {
             wr(this, TP::renderer, renderer.as_mut_ptr() as usize);
-            wr(renderer.as_mut_ptr() as usize, REN::configurableTexturePipeline, pipeline.as_mut_ptr() as usize);
+            wr(
+                renderer.as_mut_ptr() as usize,
+                REN::configurableTexturePipeline,
+                pipeline.as_mut_ptr() as usize,
+            );
             wr::<u32>(pipeline.as_mut_ptr() as usize, CTP::field_310, 0x103);
         }
-        let cases: [(unsafe fn(usize, usize, usize, usize) -> usize, u32); 2] = [(tex_gen_world_parallel, 2), (tex_gen_world_perspective, 0x103)];
+        let cases: [(unsafe fn(usize, usize, usize, usize) -> usize, u32); 2] =
+            [(tex_gen_world_parallel, 2), (tex_gen_world_perspective, 0x103)];
         for (function, flags) in cases {
             let mut stage = stage_block();
             let s = stage.as_mut_ptr() as usize;
@@ -1907,7 +2242,8 @@ mod tests {
                 assert_eq!(rd::<u32>(s, ST::textureTransformFlags), flags);
                 check_rotation(s);
                 for column in 0..3 {
-                    let expected: f32 = (0..3).map(|j| MATRIX[column * 3 + j] * CAMERA[9 + j]).sum::<f32>() + TRANSLATION[column];
+                    let expected: f32 =
+                        (0..3).map(|j| MATRIX[column * 3 + j] * CAMERA[9 + j]).sum::<f32>() + TRANSLATION[column];
                     assert_eq!(rd::<f32>(s, ST::textureMatrix__41 + column * 4), expected, "column {column}");
                 }
                 assert_eq!(rd::<u32>(s, ST::textureMatrix__44), 0);
@@ -1997,7 +2333,14 @@ mod tests {
         let this = pass.as_mut_ptr() as usize;
         unsafe {
             reset_pass_flags(this);
-            for field in [TP::field_CD8, TP::field_18A0, TP::field_2A48, TP::field_2464, TP::field_2BD0, TP::field_6E0] {
+            for field in [
+                TP::field_CD8,
+                TP::field_18A0,
+                TP::field_2A48,
+                TP::field_2464,
+                TP::field_2BD0,
+                TP::field_6E0,
+            ] {
                 assert_eq!(rd::<u32>(this, field), 0);
             }
             // Each of the three flags is 1 byte.
@@ -2107,7 +2450,11 @@ mod tests {
         let mut subpass = vec![0u8; SUB::SIZE];
         let this = subpass.as_mut_ptr() as usize;
         let (mut first, mut second, mut third) = (stage_block(), stage_block(), stage_block());
-        let (a, b, c) = (first.as_mut_ptr() as usize, second.as_mut_ptr() as usize, third.as_mut_ptr() as usize);
+        let (a, b, c) = (
+            first.as_mut_ptr() as usize,
+            second.as_mut_ptr() as usize,
+            third.as_mut_ptr() as usize,
+        );
         unsafe {
             wr::<u32>(this, SUB::field_C, u32::MAX);
             assert_eq!(subpass_append_stage(this, 0), 0);
@@ -2115,17 +2462,38 @@ mod tests {
             wr::<u32>(a, ST::colorArg1, 77);
             assert_eq!(subpass_append_stage(this, a), 1);
             // The first stage keeps its arguments.
-            assert_eq!((rd::<u32>(a, ST::stage), rd::<u32>(a, ST::colorArg1), rd::<u32>(a, ST::colorArg2)), (0, 77, 0));
+            assert_eq!(
+                (
+                    rd::<u32>(a, ST::stage),
+                    rd::<u32>(a, ST::colorArg1),
+                    rd::<u32>(a, ST::colorArg2)
+                ),
+                (0, 77, 0)
+            );
             assert_eq!(rd::<[u32; 3]>(this, SUB::field_8), [1, 1, 1]);
             // A later stage blends with the stage before it. Argument 1 is the texture or the
             // diffuse colour. Argument 2 is the current colour.
             wr::<u32>(b, ST::colorArg1, 77);
             assert_eq!(subpass_append_stage(this, b), 1);
-            assert_eq!((rd::<u32>(b, ST::stage), rd::<u32>(b, ST::colorArg1), rd::<u32>(b, ST::colorArg2)), (1, 0, 1));
+            assert_eq!(
+                (
+                    rd::<u32>(b, ST::stage),
+                    rd::<u32>(b, ST::colorArg1),
+                    rd::<u32>(b, ST::colorArg2)
+                ),
+                (1, 0, 1)
+            );
             assert_eq!(rd::<[u32; 3]>(this, SUB::field_8), [2, 2, 1]);
             wr::<usize>(c, ST::ptrTexture, 0x3000);
             assert_eq!(subpass_append_stage(this, c), 1);
-            assert_eq!((rd::<u32>(c, ST::stage), rd::<u32>(c, ST::colorArg1), rd::<u32>(c, ST::colorArg2)), (2, 2, 1));
+            assert_eq!(
+                (
+                    rd::<u32>(c, ST::stage),
+                    rd::<u32>(c, ST::colorArg1),
+                    rd::<u32>(c, ST::colorArg2)
+                ),
+                (2, 2, 1)
+            );
             assert_eq!(rd::<[u32; 3]>(this, SUB::field_8), [3, 3, 2]);
             assert_eq!(rd::<[usize; 3]>(this, SUB::field_14), [a, b, c]);
             // A count that is more than the index stays.
@@ -2200,7 +2568,10 @@ mod tests {
         unsafe {
             wr::<usize>(rs, RS::texturePerStage + 2 * 4, 0xABCD);
             reset_stage(2, renderer);
-            assert_eq!(take_calls(), vec![[0xF4, 2, 0, 0], [0xFC, 2, D3DTSS_COLOROP, 1], [0xFC, 2, D3DTSS_ALPHAOP, 1]]);
+            assert_eq!(
+                take_calls(),
+                vec![[0xF4, 2, 0, 0], [0xFC, 2, D3DTSS_COLOROP, 1], [0xFC, 2, D3DTSS_ALPHAOP, 1]]
+            );
             assert_eq!(rd::<usize>(rs, RS::texturePerStage + 2 * 4), 0);
             assert_eq!(rd::<u32>(stage_setting(rs, 2, D3DTSS_COLOROP), 0), 1);
             assert_eq!(rd::<u32>(stage_setting(rs, 2, D3DTSS_ALPHAOP), 0), 1);
@@ -2222,7 +2593,10 @@ mod tests {
             wr::<u32>(s, ST::addressModeU, 3);
             wr::<u32>(s, ST::addressModeV, 1);
             set_texture_wrapping(s, renderer);
-            assert_eq!(take_calls(), vec![[0xFC, 1, D3DTSS_ADDRESSU, 3], [0xFC, 1, D3DTSS_ADDRESSV, 3]]);
+            assert_eq!(
+                take_calls(),
+                vec![[0xFC, 1, D3DTSS_ADDRESSU, 3], [0xFC, 1, D3DTSS_ADDRESSV, 3]]
+            );
             wr::<u8>(pipeline, CTP::field_FC, 1);
             set_texture_wrapping(s, renderer);
             assert_eq!(take_calls(), vec![[0xFC, 1, D3DTSS_ADDRESSV, 1]]);
@@ -2255,7 +2629,10 @@ mod tests {
             texture_filtering(s, renderer, mipmapped, flag, t);
             let calls = take_calls();
             assert_eq!(calls.len(), 3);
-            assert_eq!([calls[0][2], calls[1][2], calls[2][2]], [D3DTSS_MAGFILTER, D3DTSS_MINFILTER, D3DTSS_MIPFILTER]);
+            assert_eq!(
+                [calls[0][2], calls[1][2], calls[2][2]],
+                [D3DTSS_MAGFILTER, D3DTSS_MINFILTER, D3DTSS_MIPFILTER]
+            );
             assert!(calls.iter().all(|call| call[0] == 0xFC && call[1] == 3));
             // The mode that the three values came from.
             assert_eq!(calls[0][3] - 0x20, calls[1][3] - 0x10);
@@ -2293,7 +2670,11 @@ mod tests {
 
     /// `GetFormatFromTexture` of the fake texture manager (slot 0x10).
     unsafe extern "thiscall" fn fake_format(_manager: usize, texture: u32) -> u32 {
-        if texture == NO_DEVICE_TEXTURE { 14 } else { 3 }
+        if texture == NO_DEVICE_TEXTURE {
+            14
+        } else {
+            3
+        }
     }
 
     /// A renderer whose texture manager is the fake, and the blocks that hold it.
@@ -2308,7 +2689,11 @@ mod tests {
         let manager = vec![table.as_ptr() as usize];
         let mut renderer = vec![0u8; REN::SIZE];
         unsafe { wr(renderer.as_mut_ptr() as usize, REN::textureManager, manager.as_ptr() as usize) };
-        FakeRenderer { renderer, _manager: manager, _table: table }
+        FakeRenderer {
+            renderer,
+            _manager: manager,
+            _table: table,
+        }
     }
 
     /// An enabled texture effect with `texture`, with or without a plane.

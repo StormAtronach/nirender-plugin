@@ -382,7 +382,10 @@ pub struct Writer {
 /// Compares the format of a HEADER record with this build's. `reader` names the reader
 /// (its program and its build id) for the message of a refusal, which names both builds.
 pub fn accept_header(header: &[u8], reader: &str) -> Result<Writer, String> {
-    let writer = Writer { format: header_format(header), build_id: header_build_id(header) };
+    let writer = Writer {
+        format: header_format(header),
+        build_id: header_build_id(header),
+    };
     if writer.format == STREAM_FORMAT {
         return Ok(writer);
     }
@@ -422,14 +425,35 @@ mod tests {
     #[test]
     fn a_header_of_this_format_passes_with_its_build_id() {
         let accepted = accept_header(&header(STREAM_FORMAT, "nirender v0.3.2 81ab9a6"), "numidium.exe (x)").unwrap();
-        assert_eq!(accepted, Writer { format: STREAM_FORMAT, build_id: "nirender v0.3.2 81ab9a6".into() });
+        assert_eq!(
+            accepted,
+            Writer {
+                format: STREAM_FORMAT,
+                build_id: "nirender v0.3.2 81ab9a6".into()
+            }
+        );
     }
 
     #[test]
     fn a_header_of_another_format_is_refused_with_both_builds_named() {
-        let message = accept_header(&header(STREAM_FORMAT + 1, "nirender v9.9.9 abcdef0"), "numidium.exe (numidium v0.21.0 846ed77)").unwrap_err();
-        assert!(message.contains(&format!("akulakhan.dll (nirender v9.9.9 abcdef0) writes the stream format {}", STREAM_FORMAT + 1)), "{message}");
-        assert!(message.contains(&format!("numidium.exe (numidium v0.21.0 846ed77) reads the stream format {STREAM_FORMAT}")), "{message}");
+        let message = accept_header(
+            &header(STREAM_FORMAT + 1, "nirender v9.9.9 abcdef0"),
+            "numidium.exe (numidium v0.21.0 846ed77)",
+        )
+        .unwrap_err();
+        assert!(
+            message.contains(&format!(
+                "akulakhan.dll (nirender v9.9.9 abcdef0) writes the stream format {}",
+                STREAM_FORMAT + 1
+            )),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "numidium.exe (numidium v0.21.0 846ed77) reads the stream format {STREAM_FORMAT}"
+            )),
+            "{message}"
+        );
         assert!(message.contains("one archive"), "{message}");
     }
 
@@ -439,7 +463,10 @@ mod tests {
         assert_eq!(header_format(&old), 0);
         assert_eq!(header_build_id(&old), "a build from before the handshake");
         let message = accept_header(&old, "numidium.exe (x)").unwrap_err();
-        assert!(message.contains("akulakhan.dll (a build from before the handshake) writes a stream with no format number"), "{message}");
+        assert!(
+            message.contains("akulakhan.dll (a build from before the handshake) writes a stream with no format number"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -504,11 +531,23 @@ mod tests {
         ];
         // The free area of the head (the doc of this file) starts after the last word.
         assert_eq!(words_fit(&ring, RING_HEAD), 84);
-        words_fit(&[(REPLY_REQUEST, 4), (REPLY_WIDTH, 4), (REPLY_HEIGHT, 4), (REPLY_CAPACITY, 4)], REPLY_HEAD);
+        words_fit(
+            &[(REPLY_REQUEST, 4), (REPLY_WIDTH, 4), (REPLY_HEIGHT, 4), (REPLY_CAPACITY, 4)],
+            REPLY_HEAD,
+        );
         words_fit(&[(TILE_TICKET, 4), (TILE_WIDTH, 4), (TILE_HEIGHT, 4)], TILE_HEAD);
-        words_fit(&[magic, (MESSAGES_CAPACITY, 4), (MESSAGES_WRITTEN, 8), (MESSAGES_READ, 8)], MESSAGES_HEAD);
+        words_fit(
+            &[magic, (MESSAGES_CAPACITY, 4), (MESSAGES_WRITTEN, 8), (MESSAGES_READ, 8)],
+            MESSAGES_HEAD,
+        );
         // The HEADER record: its words one after the other, then the build id.
-        let header = [(HEADER_WIDTH_AT, 4), (HEADER_HEIGHT_AT, 4), (HEADER_WINDOW_AT, 4), (HEADER_ABILITIES_AT, 4), (HEADER_FORMAT_AT, 4)];
+        let header = [
+            (HEADER_WIDTH_AT, 4),
+            (HEADER_HEIGHT_AT, 4),
+            (HEADER_WINDOW_AT, 4),
+            (HEADER_ABILITIES_AT, 4),
+            (HEADER_FORMAT_AT, 4),
+        ];
         assert_eq!(words_fit(&header, HEADER_BYTES), HEADER_BUILD_ID_AT);
     }
 

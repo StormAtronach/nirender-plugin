@@ -40,7 +40,11 @@ fn write_padded(queue: &wgpu::Queue, buffer: &wgpu::Buffer, at: u64, bytes: &[u8
 }
 
 fn gcd(a: u64, b: u64) -> u64 {
-    if b == 0 { a } else { gcd(b, a % b) }
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 /// The alignment of a range: a multiple of the stride of its vertices (so that the base
@@ -53,7 +57,9 @@ fn alignment(align: u64) -> u64 {
 /// Takes `size` bytes at a multiple of `align` out of the free ranges (first fit): the offset,
 /// or [`None`] when no range has room.
 pub(crate) fn carve(free: &mut Vec<(u64, u64)>, size: u64, align: u64) -> Option<u64> {
-    let slot = free.iter().position(|&(offset, room)| offset.next_multiple_of(align) + size <= offset + room)?;
+    let slot = free
+        .iter()
+        .position(|&(offset, room)| offset.next_multiple_of(align) + size <= offset + room)?;
     let (offset, room) = free.remove(slot);
     let at = offset.next_multiple_of(align);
     // What is left before and after the range stays free.
@@ -86,7 +92,13 @@ pub(crate) fn merge(free: &mut Vec<(u64, u64)>, offset: u64, size: u64) {
 
 impl Pool {
     pub fn new(label: &'static str, usage: wgpu::BufferUsages, chunk_size: u64) -> Pool {
-        Pool { label, usage: usage | wgpu::BufferUsages::COPY_DST, chunk_size, chunks: Vec::new(), used: 0 }
+        Pool {
+            label,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            chunk_size,
+            chunks: Vec::new(),
+            used: 0,
+        }
     }
 
     pub fn chunks(&self) -> usize {
@@ -102,22 +114,38 @@ impl Pool {
     pub fn take(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8], align: u64) -> Range {
         let align = alignment(align);
         let size = (bytes.len() as u64).next_multiple_of(4).max(4);
-        let found = self.chunks.iter_mut().enumerate().find_map(|(index, chunk)| carve(&mut chunk.free, size, align).map(|at| (index, at)));
+        let found = self
+            .chunks
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, chunk)| carve(&mut chunk.free, size, align).map(|at| (index, at)));
         let (index, at) = match found {
             Some(found) => found,
             None => {
                 let chunk_size = self.chunk_size.max(size + align);
-                let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some(self.label), size: chunk_size, usage: self.usage, mapped_at_creation: false });
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(self.label),
+                    size: chunk_size,
+                    usage: self.usage,
+                    mapped_at_creation: false,
+                });
                 let mut free = vec![(0, chunk_size)];
                 let at = carve(&mut free, size, align).expect("a new chunk has room for its first range");
-                self.chunks.push(Chunk { buffer: Rc::new(buffer), free });
+                self.chunks.push(Chunk {
+                    buffer: Rc::new(buffer),
+                    free,
+                });
                 (self.chunks.len() - 1, at)
             }
         };
         let buffer = &self.chunks[index].buffer;
         write_padded(queue, buffer, at, bytes, size);
         self.used += size;
-        Range { buffer: buffer.clone(), offset: at, size }
+        Range {
+            buffer: buffer.clone(),
+            offset: at,
+            size,
+        }
     }
 
     /// Writes `bytes` into a range it took before, when they take the same room. False, and
@@ -132,7 +160,9 @@ impl Pool {
 
     /// Gives a range back. A range of a buffer that is not a chunk of this pool is ignored.
     pub fn give(&mut self, range: &Range) {
-        let Some(chunk) = self.chunks.iter_mut().find(|chunk| Rc::ptr_eq(&chunk.buffer, &range.buffer)) else { return };
+        let Some(chunk) = self.chunks.iter_mut().find(|chunk| Rc::ptr_eq(&chunk.buffer, &range.buffer)) else {
+            return;
+        };
         merge(&mut chunk.free, range.offset, range.size);
         self.used -= range.size;
     }

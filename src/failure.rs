@@ -134,8 +134,16 @@ pub fn found(cause: Cause) {
     if failure.is_some() {
         return;
     }
-    crate::log!("failure: the host program {}; the game is saved, then the message box", cause.word());
-    *failure = Some(Failure { cause, found_at: ticks(), asked_at: 0, box_shown: false });
+    crate::log!(
+        "failure: the host program {}; the game is saved, then the message box",
+        cause.word()
+    );
+    *failure = Some(Failure {
+        cause,
+        found_at: ticks(),
+        asked_at: 0,
+        box_shown: false,
+    });
 }
 
 /// For `nirender.hostState()`: the exit code and the word of the cause that was found and
@@ -165,7 +173,10 @@ pub fn after_present() {
     let second = ticks_per_second();
     let late = {
         let failure = FAILURE.lock().unwrap();
-        failure.as_ref().filter(|failure| !failure.box_shown).and_then(|failure| lua_late(failure.found_at, failure.asked_at, now, second))
+        failure
+            .as_ref()
+            .filter(|failure| !failure.box_shown)
+            .and_then(|failure| lua_late(failure.found_at, failure.asked_at, now, second))
     };
     let Some(why) = late else { return };
     crate::log!("failure: {why}: the box without a save");
@@ -210,7 +221,10 @@ fn show(text: &str) {
     }
     // 0 to an hour, as the other boxes take the switch (`own_device::message_box`).
     // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
-    let seconds = crate::switches::parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |value| value.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600));
+    let seconds = crate::switches::parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |value| {
+        value.trim().parse::<u32>().ok()
+    })
+    .map_or(0, |n| n.min(3600));
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (text, caption) = (wide(text), wide(CAPTION));
     std::thread::spawn(move || {
@@ -248,7 +262,10 @@ fn close_the_game() {
     }
     // SAFETY: a post of a message to a window of this process; a window that is gone takes none.
     let posted = unsafe { PostMessageW(window as isize, WM_CLOSE, 0, 0) } != 0;
-    crate::log!("box: the game is closed ({})", if posted { "WM_CLOSE to its window" } else { "the post failed" });
+    crate::log!(
+        "box: the game is closed ({})",
+        if posted { "WM_CLOSE to its window" } else { "the post failed" }
+    );
 }
 
 /// The log line after the box: a box with a time limit that stayed up for the limit was
@@ -275,7 +292,9 @@ unsafe fn message_box_timeout() -> Option<MessageBoxTimeout> {
 /// closes the game when it closes.
 fn now_line(save: Option<&str>, why: Option<&str>) -> String {
     match (save, why) {
-        (Some(save), _) => format!("The game was saved as \"{save}\". Close this box: the game closes. Start it again and load the save."),
+        (Some(save), _) => {
+            format!("The game was saved as \"{save}\". Close this box: the game closes. Start it again and load the save.")
+        }
         (None, Some(why)) => format!("No save was possible {why}. Close this box: the game closes. Start it again."),
         (None, None) => "No save was possible. Close this box: the game closes. Start it again.".to_string(),
     }
@@ -321,19 +340,38 @@ mod tests {
     #[test]
     fn the_box_has_the_four_parts() {
         let text = box_text(Cause::Stalled(5), &now_line(Some("MGE XE autosave 2026-10-27 12:00"), None));
-        assert!(text.starts_with("The wgpu renderer of MGE XE (numidium.exe) has stopped.\nIt stalled for 5 s (exit code 30).\n\n"));
+        assert!(text
+            .starts_with("The wgpu renderer of MGE XE (numidium.exe) has stopped.\nIt stalled for 5 s (exit code 30).\n\n"));
         assert!(text.contains("The game was saved as \"MGE XE autosave 2026-10-27 12:00\". Close this box: the game closes. Start it again and load the save."));
         assert!(text.ends_with("the minidump numidium.dmp after a crash of the renderer."));
-        assert_eq!(now_line(None, Some("in this state")), "No save was possible in this state. Close this box: the game closes. Start it again.");
-        assert_eq!(now_line(None, None), "No save was possible. Close this box: the game closes. Start it again.");
+        assert_eq!(
+            now_line(None, Some("in this state")),
+            "No save was possible in this state. Close this box: the game closes. Start it again."
+        );
+        assert_eq!(
+            now_line(None, None),
+            "No save was possible. Close this box: the game closes. Start it again."
+        );
     }
 
     #[test]
     fn the_time_limit_closes_the_box_whatever_its_answer() {
-        assert_eq!(closed_line(Duration::from_millis(15_200), 15), "box: closed after 15 s, no click (the time limit)");
-        assert_eq!(closed_line(Duration::from_millis(14_600), 15), "box: closed after 15 s, no click (the time limit)");
-        assert_eq!(closed_line(Duration::from_millis(3_200), 15), "box: closed by a click after 3.2 s");
-        assert_eq!(closed_line(Duration::from_millis(20_000), 0), "box: closed by a click after 20.0 s");
+        assert_eq!(
+            closed_line(Duration::from_millis(15_200), 15),
+            "box: closed after 15 s, no click (the time limit)"
+        );
+        assert_eq!(
+            closed_line(Duration::from_millis(14_600), 15),
+            "box: closed after 15 s, no click (the time limit)"
+        );
+        assert_eq!(
+            closed_line(Duration::from_millis(3_200), 15),
+            "box: closed by a click after 3.2 s"
+        );
+        assert_eq!(
+            closed_line(Duration::from_millis(20_000), 0),
+            "box: closed by a click after 20.0 s"
+        );
     }
 
     #[test]
@@ -346,7 +384,11 @@ mod tests {
         assert_eq!((code, word.as_str()), (0xc000_0409, "crashed (exit code 0xc0000409)"));
         // The Lua side is there: the plugin waits for its call and shows no box of its own.
         after_present();
-        assert!(FAILURE.lock().unwrap().as_ref().is_some_and(|failure| failure.asked_at != 0 && !failure.box_shown));
+        assert!(FAILURE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|failure| failure.asked_at != 0 && !failure.box_shown));
     }
 
     #[test]
@@ -357,6 +399,9 @@ mod tests {
         assert_eq!(lua_late(0, 0, 3_000, second), Some("without the mod of the plugin"));
         // An ask at 1 s: late 15 s after it, whatever the time of the cause.
         assert_eq!(lua_late(0, 1_000, 15_900, second), None);
-        assert_eq!(lua_late(0, 1_000, 16_000, second), Some("because the mod of the plugin did not answer"));
+        assert_eq!(
+            lua_late(0, 1_000, 16_000, second),
+            Some("because the mod of the plugin did not answer")
+        );
     }
 }

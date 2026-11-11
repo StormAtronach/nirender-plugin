@@ -119,7 +119,11 @@ impl Switches {
             world_lights: read.choice("MGE_XE_LIGHTS", &["world", "engine"]) == Some("world"),
             blind_light_key: read.on("NIRENDER_BLIND_LIGHT_KEY") != Some(false),
             zero_light_key: read.on("NIRENDER_ZERO_LIGHT_KEY") != Some(false),
-            draw_dump: read.parsed("MGE_XE_DRAW_DUMP", "a geometry handle in hex", |v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0),
+            draw_dump: read
+                .parsed("MGE_XE_DRAW_DUMP", "a geometry handle in hex", |v| {
+                    u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()
+                })
+                .unwrap_or(0),
             gpu_time: read.on("MGE_XE_GPU_TIME") == Some(true),
             stage_shaders: read.on("MGE_XE_STAGE_SHADERS") != Some(false),
             runs_dump: read.on("MGE_XE_RUNS_DUMP") == Some(true),
@@ -131,21 +135,37 @@ impl Switches {
             one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
             wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),
-            present: read.choice("MGE_XE_PRESENT", &["immediate", "mailbox", "fifo", "auto"]).map(|mode| match mode {
-                "immediate" => Immediate,
-                "mailbox" => Mailbox,
-                "fifo" => Fifo,
-                _ => AutoNoVsync,
-            }),
+            present: read
+                .choice("MGE_XE_PRESENT", &["immediate", "mailbox", "fifo", "auto"])
+                .map(|mode| match mode {
+                    "immediate" => Immediate,
+                    "mailbox" => Mailbox,
+                    "fifo" => Fifo,
+                    _ => AutoNoVsync,
+                }),
             game_window: read.choice("MGE_XE_WINDOW", &["game", "child"]) == Some("game"),
             watchdog: read.on("MGE_XE_WATCHDOG") != Some(false),
             force_growth: read.number("NIRENDER_FORCE_GROWTH").unwrap_or(0),
             growth_shots: read.text("NIRENDER_GROWTH_SHOTS"),
             force_segment_growth: read.number("NIRENDER_FORCE_SEGMENT_GROWTH").unwrap_or(0),
             // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
-            box_seconds: read.parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.min(3600)),
-            texture_tier: read.choice("MGE_XE_TEXTURE_TIER", &["a", "c"]).map(|tier| if tier == "a" { crate::request::TextureTier::A } else { crate::request::TextureTier::C }),
-            old_gpu: read.choice("MGE_XE_OLD_GPU", &["least", "downlevel"]).map(|old| if old == "least" { crate::request::OldGpu::Least } else { crate::request::OldGpu::Downlevel }),
+            box_seconds: read
+                .parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |v| v.trim().parse::<u32>().ok())
+                .map_or(0, |n| n.min(3600)),
+            texture_tier: read.choice("MGE_XE_TEXTURE_TIER", &["a", "c"]).map(|tier| {
+                if tier == "a" {
+                    crate::request::TextureTier::A
+                } else {
+                    crate::request::TextureTier::C
+                }
+            }),
+            old_gpu: read.choice("MGE_XE_OLD_GPU", &["least", "downlevel"]).map(|old| {
+                if old == "least" {
+                    crate::request::OldGpu::Least
+                } else {
+                    crate::request::OldGpu::Downlevel
+                }
+            }),
             memory_minutes: read.number("MGE_XE_MEMORY_MINUTES").unwrap_or(0),
         };
         read.report();
@@ -180,7 +200,9 @@ impl Read {
     /// One of the values in `allowed`: `None` when the switch is not set, or has another value.
     fn choice<'a>(&mut self, name: &str, allowed: &[&'a str]) -> Option<&'a str> {
         let expected = allowed.join(", ");
-        self.parsed(name, &expected, |value| allowed.iter().copied().find(|allowed| *allowed == value))
+        self.parsed(name, &expected, |value| {
+            allowed.iter().copied().find(|allowed| *allowed == value)
+        })
     }
 
     /// The value of a switch through `parse`; a value that `parse` refuses gives a line that
@@ -277,14 +299,18 @@ pub(crate) fn switches() -> &'static Switches {
 /// about the values that the reads cannot take. A name or a value that is not Unicode is
 /// shown lossily (`vars` would panic on it).
 pub(crate) fn log_set() {
-    let variables = std::env::vars_os().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()));
+    let variables =
+        std::env::vars_os().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()));
     println!("{}", set_line(variables));
     let _ = switches();
 }
 
 /// The switches among `variables`, in the order of their names.
 fn set_line(variables: impl Iterator<Item = (String, String)>) -> String {
-    let mut set: Vec<String> = variables.filter(|(name, _)| PREFIXES.iter().any(|prefix| name.starts_with(prefix))).map(|(name, value)| format!("{name}={value}")).collect();
+    let mut set: Vec<String> = variables
+        .filter(|(name, _)| PREFIXES.iter().any(|prefix| name.starts_with(prefix)))
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
     set.sort();
     if set.is_empty() {
         "switches: none set".to_string()
@@ -312,7 +338,12 @@ mod tests {
 
     #[test]
     fn a_read_takes_good_values_and_names_bad_ones() {
-        let (on_name, number_name, choice_name, bad) = (test_switch("ON"), test_switch("NUMBER"), test_switch("CHOICE"), test_switch("BAD"));
+        let (on_name, number_name, choice_name, bad) = (
+            test_switch("ON"),
+            test_switch("NUMBER"),
+            test_switch("CHOICE"),
+            test_switch("BAD"),
+        );
         std::env::set_var(&on_name, "1");
         std::env::set_var(&number_name, "12");
         std::env::set_var(&choice_name, "fifo");
@@ -349,7 +380,10 @@ mod tests {
         assert_eq!(choice(&words, &["cpu", "gpu"]), None);
         assert_eq!(text(&words).as_deref(), Some("many"));
         assert_eq!(path(&words).as_deref(), Some(std::path::Path::new("many")));
-        assert_eq!(bad_value_line(&words, "many", "a number", "0"), format!("switch {words}=many: not a number; 0"));
+        assert_eq!(
+            bad_value_line(&words, "many", "a number", "0"),
+            format!("switch {words}=many: not a number; 0")
+        );
     }
 
     #[test]

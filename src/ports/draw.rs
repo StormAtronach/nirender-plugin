@@ -8,7 +8,6 @@
 use core::arch::asm;
 use core::mem::transmute;
 
-use crate::main_thread::MainThread;
 use crate::d3d::{
     device_draw_indexed_primitive, device_draw_primitive, device_set_indices, device_set_stream_source, D3DFVF_NORMAL,
     D3DPT_TRIANGLELIST, D3DPT_TRIANGLESTRIP, D3DRS_VERTEXBLEND, DEVICE_DRAW_INDEXED_PRIMITIVE, DEVICE_DRAW_PRIMITIVE,
@@ -19,6 +18,7 @@ use crate::gen::layouts::{
     NiGeometryBufferData as GB, NiGeometryData as GD, NiPropertyState as PS, NiRefObject, NiRendererSpecificProperty,
     NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P, NiTriStripsData,
 };
+use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
 use crate::ports::ni;
 use crate::shadow::Regions;
@@ -199,7 +199,8 @@ unsafe fn site_draw_indexed_primitive(
     if !crate::site::is_call(site) {
         // The Code Patch option "Show transparent clothes in the inventory" is off: the game
         // calls `DrawIndexedPrimitive` of the device here, with the same arguments.
-        let f: unsafe extern "system" fn(u32, u32, u32, u32, u32, u32) -> u32 = transmute(rd::<usize>(vtable, DEVICE_DRAW_INDEXED_PRIMITIVE));
+        let f: unsafe extern "system" fn(u32, u32, u32, u32, u32, u32) -> u32 =
+            transmute(rd::<usize>(vtable, DEVICE_DRAW_INDEXED_PRIMITIVE));
         return f(args[0], args[1], args[2], args[3], args[4], args[5]);
     }
     let result: u32;
@@ -272,7 +273,9 @@ fn vertex_blend_lookup() -> usize {
 }
 
 /// `NiDX8RenderState::renderStateSettings[D3DRS_VERTEXBLEND].currentValue`
-const RS_VERTEX_BLEND_CURRENT: usize = RS::renderStateSettings + D3DRS_VERTEXBLEND as usize * crate::gen::layouts::NiRenderStateSetting::SIZE + crate::gen::layouts::NiRenderStateSetting::currentValue;
+const RS_VERTEX_BLEND_CURRENT: usize = RS::renderStateSettings
+    + D3DRS_VERTEXBLEND as usize * crate::gen::layouts::NiRenderStateSetting::SIZE
+    + crate::gen::layouts::NiRenderStateSetting::currentValue;
 const _: () = assert!(NiSkinPartition::refCount == ni::REF_COUNT && NiRefObject::refCount == ni::REF_COUNT);
 
 const SKIN_DATA_SKIN_PARTITION: usize = crate::gen::layouts::NiSkinData::skinPartition;
@@ -393,10 +396,35 @@ unsafe fn build_partition_pass(
     let pipeline: usize = rd(this, R::configurableTexturePipeline);
     if callback != 0 {
         let pass: usize = rd(pipeline, CTP::currentPass);
-        let f: unsafe extern "system" fn(usize, usize, u32, u32, usize, usize, usize, usize, usize, usize, usize) -> u32 = transmute(callback);
-        f(property_state, effect_state, has_normals, 1, geom_data, skin, partition, transform, world_bound, prop2, pass);
+        let f: unsafe extern "system" fn(usize, usize, u32, u32, usize, usize, usize, usize, usize, usize, usize) -> u32 =
+            transmute(callback);
+        f(
+            property_state,
+            effect_state,
+            has_normals,
+            1,
+            geom_data,
+            skin,
+            partition,
+            transform,
+            world_bound,
+            prop2,
+            pass,
+        );
     } else {
-        site_thiscall!(site, pipeline, property_state, effect_state, has_normals, 1, geom_data, skin, partition, transform, world_bound);
+        site_thiscall!(
+            site,
+            pipeline,
+            property_state,
+            effect_state,
+            has_normals,
+            1,
+            geom_data,
+            skin,
+            partition,
+            transform,
+            world_bound
+        );
     }
 }
 
@@ -459,7 +487,9 @@ unsafe fn skinning_check_bytes() -> [u8; 8] {
 unsafe fn software_skinning(check: SkinningCheck, this: usize, geom_data: usize) -> bool {
     match check {
         SkinningCheck::HardwareBones => rd::<u32>(this, R::countHWBones) < 4,
-        SkinningCheck::GeometryFlag => rd::<u16>(geom_data, GEOM_DATA_PATCH_RENDER_FLAGS) & PATCH_RENDER_FLAG_SOFTWARE_SKINNING != 0,
+        SkinningCheck::GeometryFlag => {
+            rd::<u16>(geom_data, GEOM_DATA_PATCH_RENDER_FLAGS) & PATCH_RENDER_FLAG_SOFTWARE_SKINNING != 0
+        }
     }
 }
 
@@ -475,7 +505,11 @@ pub(crate) unsafe fn skinned_in_software(strips: bool, geom_data: usize) -> bool
     if renderer == 0 {
         return false;
     }
-    let check = if strips { SkinningCheck::HardwareBones } else { skinning_check(&skinning_check_bytes()) };
+    let check = if strips {
+        SkinningCheck::HardwareBones
+    } else {
+        skinning_check(&skinning_check_bytes())
+    };
     software_skinning(check, renderer, geom_data)
 }
 
@@ -487,7 +521,14 @@ pub(crate) unsafe fn skinned_in_software(strips: bool, geom_data: usize) -> bool
 /// them. It gets the palette of the skin in place of the transform. Returns true when the
 /// pipeline of the device must not run for the draw. `RenderScreenPoly` uses it too, with
 /// the identity transform that it gives `DrawPrimitive`.
-pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, software: bool, transform: usize, world_bound: usize) -> bool {
+pub(crate) unsafe fn shape_record(
+    t: &MainThread,
+    this: usize,
+    skin: usize,
+    software: bool,
+    transform: usize,
+    world_bound: usize,
+) -> bool {
     if !crate::shape_stream::on() {
         return false;
     }
@@ -522,10 +563,22 @@ pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, soft
         }
         site_thiscall!(DP_BOUND_COPY, this + R::worldBound, world_bound);
         site_thiscall!(DP_LIGHT_SET_STATE, light_manager, effect_state, texturing, vertex_color);
-        (crate::shape_stream::current_world(this), crate::link_client::world_is_relative(t))
+        (
+            crate::shape_stream::current_world(this),
+            crate::link_client::world_is_relative(t),
+        )
     };
     let fog = crate::shape_stream::fog_values(this, property_state);
-    let sent = crate::shape_stream::send(t, this, world, relative, crate::shape_stream::ambient(this), crate::shape_stream::material_values(property_state), fog, &palette);
+    let sent = crate::shape_stream::send(
+        t,
+        this,
+        world,
+        relative,
+        crate::shape_stream::ambient(this),
+        crate::shape_stream::material_values(property_state),
+        fog,
+        &palette,
+    );
     PALETTE.with(|kept| *kept.borrow_mut() = palette);
     sent
 }
@@ -539,7 +592,14 @@ pub(crate) unsafe fn shape_record(t: &MainThread, this: usize, skin: usize, soft
 /// `this` points at the live `NiDX8Renderer`; `geom_data` at live geometry data (its virtual
 /// functions are called); `skin` is 0 or a live `NiSkinInstance`; `transform` and `world_bound`
 /// point at the shape's transform and bound.
-pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
+pub unsafe fn render_shape(
+    t: &MainThread,
+    this: usize,
+    geom_data: usize,
+    skin: usize,
+    transform: usize,
+    world_bound: usize,
+) {
     crate::shadow::touch(&render_shape_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
@@ -559,10 +619,13 @@ pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: 
             site_thiscall!(RS_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
             return;
         }
-        crate::shape_stream::software_skinned(t, match check {
-            SkinningCheck::HardwareBones => "less than 4 bones of the device",
-            SkinningCheck::GeometryFlag => "the flag of MWSE on the geometry",
-        });
+        crate::shape_stream::software_skinned(
+            t,
+            match check {
+                SkinningCheck::HardwareBones => "less than 4 bones of the device",
+                SkinningCheck::GeometryFlag => "the flag of MWSE on the geometry",
+            },
+        );
     }
     if skin == 0 && shape_record(t, this, 0, false, transform, world_bound) {
         return;
@@ -578,7 +641,16 @@ pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: 
         let list = vcall0(geom_data, VT_GET_TRI_LIST);
         wr(geom_buffer, GB::triList, list);
     }
-    site_thiscall!(RS_DRAW_PRIMITIVE, this, geom_data, skin, transform, world_bound, geom_buffer, 0);
+    site_thiscall!(
+        RS_DRAW_PRIMITIVE,
+        this,
+        geom_data,
+        skin,
+        transform,
+        world_bound,
+        geom_buffer,
+        0
+    );
 }
 
 /// 0x6ACFC0 `NiDX8Renderer::RenderTriStrips`. Unlike the engine, the port sends the shape
@@ -589,7 +661,14 @@ pub unsafe fn render_shape(t: &MainThread, this: usize, geom_data: usize, skin: 
 /// `this` points at the live `NiDX8Renderer`; `geom_data` at live strip data (its virtual functions
 /// are called); `skin` is 0 or a live `NiSkinInstance`; `transform` and `world_bound` point at the
 /// shape's transform and bound.
-pub unsafe fn render_tri_strips(t: &MainThread, this: usize, geom_data: usize, skin: usize, transform: usize, world_bound: usize) {
+pub unsafe fn render_tri_strips(
+    t: &MainThread,
+    this: usize,
+    geom_data: usize,
+    skin: usize,
+    transform: usize,
+    world_bound: usize,
+) {
     crate::shadow::touch(&render_tri_strips_port::STATE);
     if rd::<u8>(this, R::bSceneOpen) == 0 {
         return;
@@ -616,14 +695,31 @@ pub unsafe fn render_tri_strips(t: &MainThread, this: usize, geom_data: usize, s
     let out = core::ptr::addr_of_mut!(geom_buffer) as usize;
     if site_thiscall!(RT_CREATE_GEOMETRY_BUFFER_DATA, this, out, geom_data) as u8 != 0 {
         wr(geom_buffer, GB::primitiveType, D3DPT_TRIANGLESTRIP);
-        wr(geom_buffer, GB::stripCount, rd::<u16>(geom_data, NiTriStripsData::numStrips) as u32);
+        wr(
+            geom_buffer,
+            GB::stripCount,
+            rd::<u16>(geom_data, NiTriStripsData::numStrips) as u32,
+        );
         let sum = site_thiscall!(RT_GET_STRIP_LENGTH_SUM, geom_data) & 0xFFFF;
         let strips: u32 = rd(geom_buffer, GB::stripCount);
         wr(geom_buffer, GB::trianglesCount, sum.wrapping_sub(strips.wrapping_add(strips)));
-        wr::<u32>(geom_buffer, GB::stripVertexCounts, rd(geom_data, NiTriStripsData::stripLengths));
+        wr::<u32>(
+            geom_buffer,
+            GB::stripVertexCounts,
+            rd(geom_data, NiTriStripsData::stripLengths),
+        );
         wr::<u32>(geom_buffer, GB::triList, rd(geom_data, NiTriStripsData::stripLists));
     }
-    site_thiscall!(RT_DRAW_PRIMITIVE, this, geom_data, skin, transform, world_bound, geom_buffer, 0);
+    site_thiscall!(
+        RT_DRAW_PRIMITIVE,
+        this,
+        geom_data,
+        skin,
+        transform,
+        world_bound,
+        geom_buffer,
+        0
+    );
 }
 
 /// The call is a skip when the scene is open and the geometry data has active vertices.
@@ -677,7 +773,11 @@ pub unsafe fn draw_primitive(
         transform,
         world_bound,
     );
-    site_thiscall!(DP_UPDATE_D3D_STATE, rd::<usize>(this, R::renderState), rd::<usize>(this, R::currentPropertyState));
+    site_thiscall!(
+        DP_UPDATE_D3D_STATE,
+        rd::<usize>(this, R::renderState),
+        rd::<usize>(this, R::currentPropertyState)
+    );
     let flags = site_thiscall!(
         DP_BUILD_PASS,
         rd::<usize>(this, R::configurableTexturePipeline),
@@ -723,13 +823,26 @@ pub unsafe fn draw_primitive(
         let vertex_color: usize = rd(property_state, PS::propVertexColor);
         let texturing: usize = rd(property_state, PS::propTexturing);
         let effect_state: usize = rd(this, R::currentEffectState);
-        site_thiscall!(DP_LIGHT_SET_STATE, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
+        site_thiscall!(
+            DP_LIGHT_SET_STATE,
+            rd::<usize>(this, R::lightManager),
+            effect_state,
+            texturing,
+            vertex_color
+        );
     }
 
     let mut passes: u32 = 0;
     if flags & BUILD_NO_DRAW == 0 {
         loop {
-            let binary = site_thiscall!(DP_LOAD_BINARY, rd::<usize>(this, R::configurableTexturePipeline), geom_data, skin, transform, world_bound);
+            let binary = site_thiscall!(
+                DP_LOAD_BINARY,
+                rd::<usize>(this, R::configurableTexturePipeline),
+                geom_data,
+                skin,
+                transform,
+                world_bound
+            );
             let more = binary & 0xFFFF != 0;
             if binary & PASS_NO_DRAW == 0 {
                 let first = passes == 0;
@@ -747,7 +860,12 @@ pub unsafe fn draw_primitive(
                 }
                 if binary & PASS_KEEP_STREAMS == 0 {
                     let device: usize = rd(this, R::d3dDevice);
-                    device_set_stream_source(device, 0, rd(geom_buffer, GB::d3dVertexBuffer), rd(geom_buffer, GB::vertexStride));
+                    device_set_stream_source(
+                        device,
+                        0,
+                        rd(geom_buffer, GB::d3dVertexBuffer),
+                        rd(geom_buffer, GB::vertexStride),
+                    );
                     let index_buffer: usize = rd(geom_buffer, GB::indexBuffer);
                     if index_buffer != 0 {
                         device_set_indices(rd(this, R::d3dDevice), index_buffer, 0);
@@ -783,7 +901,16 @@ pub unsafe fn draw_primitive(
                             let primitive_type: u32 = rd(geom_buffer, GB::primitiveType);
                             let device: usize = rd(this, R::d3dDevice);
                             let vtable: usize = rd(device, 0);
-                            crate::link_client::draw_state(t, this, primitive_type, vertices, start_index, primitives, false, passes > 1);
+                            crate::link_client::draw_state(
+                                t,
+                                this,
+                                primitive_type,
+                                vertices,
+                                start_index,
+                                primitives,
+                                false,
+                                passes > 1,
+                            );
                             // ECX has the primitive type at this call.
                             site_draw_indexed_primitive(
                                 DP_DRAW_INDEXED_PRIMITIVE,
@@ -805,7 +932,16 @@ pub unsafe fn draw_primitive(
                 } else {
                     let primitives: u32 = rd(geom_buffer, GB::trianglesCount);
                     let device: usize = rd(this, R::d3dDevice);
-                    crate::link_client::draw_state(t, this, rd(geom_buffer, GB::primitiveType), 0, 0, primitives, false, passes > 1);
+                    crate::link_client::draw_state(
+                        t,
+                        this,
+                        rd(geom_buffer, GB::primitiveType),
+                        0,
+                        0,
+                        primitives,
+                        false,
+                        passes > 1,
+                    );
                     device_draw_primitive(device, rd(geom_buffer, GB::primitiveType), 0, primitives);
                 }
             }
@@ -861,7 +997,11 @@ unsafe fn draw_primitive_regions(set: &mut Regions, this: usize, geom_data: usiz
 /// of a skin, and the inventory draws a new copy of the character for each picture.
 pub(crate) unsafe fn ensure_skin_partitions(this: usize, geom_data: usize, skin: usize) -> usize {
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
-    let skin_partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
+    let skin_partition: usize = if skin_data != 0 {
+        rd(skin_data, SKIN_DATA_SKIN_PARTITION)
+    } else {
+        0
+    };
     if skin_partition != 0 {
         return skin_partition;
     }
@@ -941,7 +1081,9 @@ pub(crate) unsafe fn object_name(object: usize) -> String {
     if at == 0 {
         return String::from("-");
     }
-    core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned()
+    core::ffi::CStr::from_ptr(at as *const core::ffi::c_char)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// 0x6ADE70 `NiDX8Renderer::DrawSkinnedPrimitive`. The port makes the skin partitions when
@@ -996,7 +1138,17 @@ pub unsafe fn draw_skinned_primitive(this: usize, geom_data: usize, skin: usize,
             }
         }
     }
-    site_thiscall!(SP_DRAW_SKINNED_PRIMITIVE_2, this, primitive_type, geom_data, skin, transform, world_bound, 0, 0);
+    site_thiscall!(
+        SP_DRAW_SKINNED_PRIMITIVE_2,
+        this,
+        primitive_type,
+        geom_data,
+        skin,
+        transform,
+        world_bound,
+        0,
+        0
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1028,7 +1180,11 @@ pub unsafe fn draw_skinned_primitive_2(
         return;
     }
     let skin_data: usize = rd(skin, NiSkinInstance::skinData);
-    let skin_partition: usize = if skin_data != 0 { rd(skin_data, SKIN_DATA_SKIN_PARTITION) } else { 0 };
+    let skin_partition: usize = if skin_data != 0 {
+        rd(skin_data, SKIN_DATA_SKIN_PARTITION)
+    } else {
+        0
+    };
     // A skin with no partitions (`ensure_skin_partitions` made none) draws nothing.
     if skin_partition == 0 {
         return;
@@ -1068,7 +1224,11 @@ pub unsafe fn draw_skinned_primitive_2(
         transform,
         world_bound,
     );
-    site_thiscall!(S2_UPDATE_D3D_STATE, rd::<usize>(this, R::renderState), rd::<usize>(this, R::currentPropertyState));
+    site_thiscall!(
+        S2_UPDATE_D3D_STATE,
+        rd::<usize>(this, R::renderState),
+        rd::<usize>(this, R::currentPropertyState)
+    );
     let flags = site_thiscall!(
         S2_BUILD_PASS,
         rd::<usize>(this, R::configurableTexturePipeline),
@@ -1086,13 +1246,26 @@ pub unsafe fn draw_skinned_primitive_2(
         let vertex_color: usize = rd(property_state, PS::propVertexColor);
         let texturing: usize = rd(property_state, PS::propTexturing);
         let effect_state: usize = rd(this, R::currentEffectState);
-        site_thiscall!(S2_LIGHT_SET_STATE, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
+        site_thiscall!(
+            S2_LIGHT_SET_STATE,
+            rd::<usize>(this, R::lightManager),
+            effect_state,
+            texturing,
+            vertex_color
+        );
     }
     let count: u32 = rd(skin_partition, NiSkinPartition::partitionCount);
     let mut link_pass = 0u32;
     if flags & BUILD_NO_DRAW == 0 {
         loop {
-            let binary = site_thiscall!(S2_LOAD_BINARY, rd::<usize>(this, R::configurableTexturePipeline), geom_data, skin, transform, world_bound);
+            let binary = site_thiscall!(
+                S2_LOAD_BINARY,
+                rd::<usize>(this, R::configurableTexturePipeline),
+                geom_data,
+                skin,
+                transform,
+                world_bound
+            );
             let more = binary & 0xFFFF != 0;
             // For the state packet only.
             let later_pass = link_pass != 0;
@@ -1153,7 +1326,16 @@ pub unsafe fn draw_skinned_primitive_2(
                         let vertices = rd::<u16>(partition, P::numVertices) as u32;
                         crate::link_client::draw_state(t, this, primitive_type, vertices, 0, primitives, true, later_pass);
                         // ECX has the vtable at this call, as EDX does.
-                        site_draw_indexed_primitive(S2_DRAW_INDEXED_PRIMITIVE, device, vtable, vtable as u32, primitive_type, vertices, 0, primitives);
+                        site_draw_indexed_primitive(
+                            S2_DRAW_INDEXED_PRIMITIVE,
+                            device,
+                            vtable,
+                            vtable as u32,
+                            primitive_type,
+                            vertices,
+                            0,
+                            primitives,
+                        );
                     } else {
                         crate::link_client::draw_state(t, this, primitive_type, 0, 0, primitives, true, later_pass);
                         site_draw_primitive(S2_DRAW_PRIMITIVE, device, vtable, primitive_type, primitives);
@@ -1272,7 +1454,11 @@ pub unsafe fn end_batch(t: &MainThread, this: usize) {
         transform,
         world_bound,
     );
-    site_thiscall!(EB_UPDATE_D3D_STATE, rd::<usize>(this, R::renderState), rd::<usize>(this, R::propertyStatePtr));
+    site_thiscall!(
+        EB_UPDATE_D3D_STATE,
+        rd::<usize>(this, R::renderState),
+        rd::<usize>(this, R::propertyStatePtr)
+    );
     let flags = site_thiscall!(
         EB_BUILD_PASS,
         rd::<usize>(this, R::configurableTexturePipeline),
@@ -1290,7 +1476,13 @@ pub unsafe fn end_batch(t: &MainThread, this: usize) {
         let vertex_color: usize = rd(property_state, PS::propVertexColor);
         let texturing: usize = rd(property_state, PS::propTexturing);
         let effect_state: usize = rd(this, R::effectStatePtr);
-        site_thiscall!(EB_LIGHT_SET_STATE, rd::<usize>(this, R::lightManager), effect_state, texturing, vertex_color);
+        site_thiscall!(
+            EB_LIGHT_SET_STATE,
+            rd::<usize>(this, R::lightManager),
+            effect_state,
+            texturing,
+            vertex_color
+        );
     }
 
     let mut passes: u32 = 0;
@@ -1301,7 +1493,14 @@ pub unsafe fn end_batch(t: &MainThread, this: usize) {
             world_bound = rd(batch, B::worldBound);
             transform = rd(batch, B::transform);
             skin = rd(batch, B::skinInstance);
-            let binary = site_thiscall!(EB_LOAD_BINARY, rd::<usize>(this, R::configurableTexturePipeline), geom_data, skin, transform, world_bound);
+            let binary = site_thiscall!(
+                EB_LOAD_BINARY,
+                rd::<usize>(this, R::configurableTexturePipeline),
+                geom_data,
+                skin,
+                transform,
+                world_bound
+            );
             let more = binary & 0xFFFF != 0;
             if binary & PASS_NO_DRAW == 0 {
                 if binary & PASS_KEEP_PIXEL_SHADER == 0 {
@@ -1334,7 +1533,14 @@ pub unsafe fn end_batch(t: &MainThread, this: usize) {
                         if flags & BUILD_KEEP_TRANSFORM == 0 {
                             let partition: usize = rd(batch, B::partition);
                             if !crate::camera_space::take_skinned_transforms(t, this, skin, partition, transform, false) {
-                                site_thiscall!(EB_SET_SKINNED_MODEL_TRANSFORMS, this, skin, partition, transform, world_bound);
+                                site_thiscall!(
+                                    EB_SET_SKINNED_MODEL_TRANSFORMS,
+                                    this,
+                                    skin,
+                                    partition,
+                                    transform,
+                                    world_bound
+                                );
                                 crate::camera_space::check_skinned_transforms(t, skin, partition, transform, false);
                             }
                             site_thiscall!(EB_BOUND_COPY, this + R::worldBound, world_bound);
@@ -1429,43 +1635,84 @@ unsafe fn end_batch_regions(set: &mut Regions, this: usize) {
 // Ports
 // ---------------------------------------------------------------------------------------
 
-port_thiscall!(render_shape_port, 0x6ACEF0, "NiDX8Renderer::RenderShape",
+port_thiscall!(
+    render_shape_port,
+    0x6ACEF0,
+    "NiDX8Renderer::RenderShape",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     regions = |set| render_regions(set, this, geom_data),
-    rust_main = render_shape);
+    rust_main = render_shape
+);
 
-port_thiscall!(render_tri_strips_port, 0x6ACFC0, "NiDX8Renderer::RenderTriStrips",
+port_thiscall!(
+    render_tri_strips_port,
+    0x6ACFC0,
+    "NiDX8Renderer::RenderTriStrips",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     regions = |set| render_regions(set, this, geom_data),
-    rust_main = render_tri_strips);
+    rust_main = render_tri_strips
+);
 
-port_thiscall!(draw_skinned_primitive_port, 0x6ADE70, "NiDX8Renderer::DrawSkinnedPrimitive",
+port_thiscall!(
+    draw_skinned_primitive_port,
+    0x6ADE70,
+    "NiDX8Renderer::DrawSkinnedPrimitive",
     fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize) -> (),
     compare_eax = false,
     // The call is always a skip. The function always gets to `DrawSkinnedPrimitive2`, which
     // draws. It can also make skin partitions (`MakePartitions`).
     regions = |set| draw_regions(set),
-    rust = draw_skinned_primitive);
+    rust = draw_skinned_primitive
+);
 
-port_thiscall!(end_batch_port, 0x6AE090, "NiDX8Renderer::EndBatch",
+port_thiscall!(
+    end_batch_port,
+    0x6AE090,
+    "NiDX8Renderer::EndBatch",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| end_batch_regions(set, this),
-    rust_main = end_batch);
+    rust_main = end_batch
+);
 
-port_thiscall!(draw_primitive_port, 0x6AEB80, "NiDX8Renderer::DrawPrimitive",
-    fn(this, geom_data: usize, skin: usize, transform: usize, world_bound: usize, geom_buffer: usize, partition: usize) -> (),
+port_thiscall!(
+    draw_primitive_port,
+    0x6AEB80,
+    "NiDX8Renderer::DrawPrimitive",
+    fn(
+        this,
+        geom_data: usize,
+        skin: usize,
+        transform: usize,
+        world_bound: usize,
+        geom_buffer: usize,
+        partition: usize,
+    ) -> (),
     compare_eax = false,
     regions = |set| draw_primitive_regions(set, this, geom_data, geom_buffer),
-    rust_main = draw_primitive);
+    rust_main = draw_primitive
+);
 
-port_thiscall!(draw_skinned_primitive_2_port, 0x6AEF90, "NiDX8Renderer::DrawSkinnedPrimitive2",
-    fn(this, primitive_type: u32, geom_data: usize, skin: usize, transform: usize, world_bound: usize, unused_1: u32, unused_2: u32) -> (),
+port_thiscall!(
+    draw_skinned_primitive_2_port,
+    0x6AEF90,
+    "NiDX8Renderer::DrawSkinnedPrimitive2",
+    fn(
+        this,
+        primitive_type: u32,
+        geom_data: usize,
+        skin: usize,
+        transform: usize,
+        world_bound: usize,
+        unused_1: u32,
+        unused_2: u32,
+    ) -> (),
     compare_eax = false,
     regions = |set| draw_skinned_primitive_2_regions(set, this, skin),
-    rust_main = draw_skinned_primitive_2);
+    rust_main = draw_skinned_primitive_2
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &render_shape_port::STATE,
@@ -1618,7 +1865,11 @@ mod tests {
             for &offset in instructions {
                 if bytes[offset as usize] == 0xE8 {
                     calls += 1;
-                    assert!(SITES.contains(&(ea + offset as usize)), "the call at {:#x} is not in SITES", ea + offset as usize);
+                    assert!(
+                        SITES.contains(&(ea + offset as usize)),
+                        "the call at {:#x} is not in SITES",
+                        ea + offset as usize
+                    );
                 }
             }
         }
@@ -1702,7 +1953,9 @@ mod tests {
         if let Some((index, value)) = POKES.with(|pokes| pokes.borrow().get(&id).copied()) {
             unsafe { wr(args[index] as usize, 0, value) };
         }
-        RETURNS.with(|returns| returns.borrow_mut().get_mut(&id).and_then(|queue| queue.pop_front())).unwrap_or(0)
+        RETURNS
+            .with(|returns| returns.borrow_mut().get_mut(&id).and_then(|queue| queue.pop_front()))
+            .unwrap_or(0)
     }
 
     fn reset() {
@@ -1744,14 +1997,44 @@ mod tests {
     unsafe extern "thiscall" fn t6<const S: usize>(this: usize, a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) -> u32 {
         note(S, &[this as u32, a, b, c, d, e, f])
     }
-    unsafe extern "thiscall" fn t7<const S: usize>(this: usize, a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32) -> u32 {
+    unsafe extern "thiscall" fn t7<const S: usize>(
+        this: usize,
+        a: u32,
+        b: u32,
+        c: u32,
+        d: u32,
+        e: u32,
+        f: u32,
+        g: u32,
+    ) -> u32 {
         note(S, &[this as u32, a, b, c, d, e, f, g])
     }
-    unsafe extern "thiscall" fn t8<const S: usize>(this: usize, a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32) -> u32 {
+    unsafe extern "thiscall" fn t8<const S: usize>(
+        this: usize,
+        a: u32,
+        b: u32,
+        c: u32,
+        d: u32,
+        e: u32,
+        f: u32,
+        g: u32,
+        h: u32,
+    ) -> u32 {
         note(S, &[this as u32, a, b, c, d, e, f, g, h])
     }
     #[allow(clippy::too_many_arguments)]
-    unsafe extern "thiscall" fn t9<const S: usize>(this: usize, a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32, i: u32) -> u32 {
+    unsafe extern "thiscall" fn t9<const S: usize>(
+        this: usize,
+        a: u32,
+        b: u32,
+        c: u32,
+        d: u32,
+        e: u32,
+        f: u32,
+        g: u32,
+        h: u32,
+        i: u32,
+    ) -> u32 {
         note(S, &[this as u32, a, b, c, d, e, f, g, h, i])
     }
     unsafe extern "C" fn c1<const S: usize>(a: u32) -> u32 {
@@ -1767,7 +2050,19 @@ mod tests {
         note(S, &[a, b, c, d, e, f])
     }
     #[allow(clippy::too_many_arguments)]
-    unsafe extern "stdcall" fn s11<const S: usize>(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32, i: u32, j: u32, k: u32) -> u32 {
+    unsafe extern "stdcall" fn s11<const S: usize>(
+        a: u32,
+        b: u32,
+        c: u32,
+        d: u32,
+        e: u32,
+        f: u32,
+        g: u32,
+        h: u32,
+        i: u32,
+        j: u32,
+        k: u32,
+    ) -> u32 {
         note(S, &[a, b, c, d, e, f, g, h, i, j, k])
     }
 
@@ -1894,7 +2189,13 @@ mod tests {
             wr(r, R::currentEffectState, EFFECT_STATE);
             wr::<u8>(r, R::bSceneOpen, 1);
         }
-        World { renderer, _render_state: render_state, _pipeline: pipeline, property_state, device }
+        World {
+            renderer,
+            _render_state: render_state,
+            _pipeline: pipeline,
+            property_state,
+            device,
+        }
     }
 
     impl World {
@@ -2045,7 +2346,10 @@ mod tests {
             assert_eq!((log[1].1[0], log[1].1[2]), (r as u32, g as u32));
             assert_eq!(log[2].0, GEOM_TRIANGLE_COUNT);
             assert_eq!(log[3].0, GEOM_TRI_LIST);
-            assert_eq!(log[4], (RS_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20, gb as u32, 0]));
+            assert_eq!(
+                log[4],
+                (RS_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20, gb as u32, 0])
+            );
             assert_eq!(log.len(), 5);
             assert_eq!(rd::<u32>(gb, GB::primitiveType), 4);
             assert_eq!(rd::<u32>(gb, GB::trianglesCount), 7);
@@ -2060,13 +2364,19 @@ mod tests {
             render_shape(&MainThread::for_test(), r, g, 0, 0x10, 0x20);
             let log = calls();
             assert_eq!(log.len(), 3);
-            assert_eq!(log[2], (RS_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0, 0x10, 0x20, 0x8888, 0]));
+            assert_eq!(
+                log[2],
+                (RS_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0, 0x10, 0x20, 0x8888, 0])
+            );
 
             // A skin and hardware bones.
             wr::<u32>(r, R::countHWBones, 4);
             returns(GEOM_VERTEX_COUNT, &[9]);
             render_shape(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
-            assert_eq!(calls()[1], (RS_DRAW_SKINNED_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20]));
+            assert_eq!(
+                calls()[1],
+                (RS_DRAW_SKINNED_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20])
+            );
 
             // With the check of MWSE in memory, the port reads the flag of the geometry data
             // and not the device. Without the flag, the port uses hardware skinning, also with
@@ -2154,7 +2464,10 @@ mod tests {
             render_tri_strips(&MainThread::for_test(), r, g, 0, 0x10, 0x20);
             let log = calls();
             assert_eq!(log[2], (RT_GET_STRIP_LENGTH_SUM, vec![g as u32]));
-            assert_eq!(log[3], (RT_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0, 0x10, 0x20, gb as u32, 0]));
+            assert_eq!(
+                log[3],
+                (RT_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0, 0x10, 0x20, gb as u32, 0])
+            );
             assert_eq!(rd::<u32>(gb, GB::primitiveType), 5);
             assert_eq!(rd::<u32>(gb, GB::stripCount), 3);
             // 20 indices in 3 strips make 14 triangles.
@@ -2165,7 +2478,10 @@ mod tests {
             wr::<u32>(r, R::countHWBones, 8);
             returns(GEOM_VERTEX_COUNT, &[9]);
             render_tri_strips(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
-            assert_eq!(calls()[1], (RT_DRAW_SKINNED_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20]));
+            assert_eq!(
+                calls()[1],
+                (RT_DRAW_SKINNED_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20])
+            );
         }
     }
 
@@ -2228,7 +2544,10 @@ mod tests {
                     (DEV_SET_STREAM_SOURCE, vec![dev, 0, 0x800, 32]),
                     (DEV_SET_INDICES, vec![dev, 0x900, 0]),
                     (DP_APPLY_VERTEX_SHADER, vec![pl, 0x112]),
-                    (DP_BUILD_SKIN_PARTITION_PASS, vec![pl, state[0], state[1], 1, 1, gu, 0, 0, t, wb]),
+                    (
+                        DP_BUILD_SKIN_PARTITION_PASS,
+                        vec![pl, state[0], state[1], 1, 1, gu, 0, 0, t, wb],
+                    ),
                     (DP_DRAW_INDEXED_PRIMITIVE, vec![dev, 5, 0, 24, 0, 2]),
                     (DP_DRAW_INDEXED_PRIMITIVE, vec![dev, 5, 0, 24, 4, 4]),
                 ]);
@@ -2242,7 +2561,10 @@ mod tests {
                 (DEV_SET_RENDER_STATE, vec![dev, 151, 0]),
                 (DP_SET_MODEL_TRANSFORM, vec![r as u32, t]),
                 (DP_BOUND_COPY, vec![(r + R::worldBound) as u32, wb]),
-                (DP_LIGHT_SET_STATE, vec![LIGHT_MANAGER as u32, EFFECT_STATE as u32, TEXTURING, VERTEX_COLOR]),
+                (
+                    DP_LIGHT_SET_STATE,
+                    vec![LIGHT_MANAGER as u32, EFFECT_STATE as u32, TEXTURING, VERTEX_COLOR],
+                ),
             ];
             expected.extend(one_pass(true));
             expected.extend(one_pass(false));
@@ -2323,7 +2645,6 @@ mod tests {
                     DP_ENSURE_AND_REGISTER_STREAMABLES,
                 ]
             );
-
         }
     }
 
@@ -2353,7 +2674,10 @@ mod tests {
             let pack = log.iter().find(|call| call.0 == DP_PACK_GEOMETRY_BUFFERS).unwrap();
             assert_eq!(&pack.1[4..], &[prop1.as_ptr() as u32, 0x777]);
             let callback = log.iter().find(|call| call.0 == PROP_CALLBACK).unwrap();
-            assert_eq!(callback.1, vec![ps, EFFECT_STATE as u32, 0, 1, 0x40, 0, 0, 0x10, 0x20, 0x777, PASS]);
+            assert_eq!(
+                callback.1,
+                vec![ps, EFFECT_STATE as u32, 0, 1, 0x40, 0, 0, 0x10, 0x20, 0x777, PASS]
+            );
             assert!(log.iter().all(|call| call.0 != DP_BUILD_SKIN_PARTITION_PASS));
 
             // The port does not use render data of another renderer.
@@ -2389,7 +2713,12 @@ mod tests {
         data[SKIN_DATA_SKIN_PARTITION / 4] = skin_partition.as_mut_ptr() as u32;
         let mut instance = vec![0u32; NiSkinInstance::SIZE / 4];
         instance[NiSkinInstance::skinData / 4] = data.as_mut_ptr() as u32;
-        Skin { instance, _data: data, skin_partition, partitions }
+        Skin {
+            instance,
+            _data: data,
+            skin_partition,
+            partitions,
+        }
     }
 
     /// A skin data with two bone records: the first has 3 weights in an array, the second the
@@ -2512,12 +2841,18 @@ mod tests {
             assert_eq!(log[0], (SP_OPERATOR_NEW, vec![0x10]));
             assert_eq!(log[1], (SP_SKIN_PARTITION_CTOR, vec![block]));
             let bones = (made as u32 & 0xFFFF_FF00) | 4;
-            assert_eq!(log[2], (SP_MAKE_PARTITIONS, vec![made as u32, 0x40, data as u32, bones, bones]));
+            assert_eq!(
+                log[2],
+                (SP_MAKE_PARTITIONS, vec![made as u32, 0x40, data as u32, bones, bones])
+            );
             // MakePartitions returned false (AL is 0): the skin data does not get the object,
             // the object goes, and nothing draws.
             assert_eq!(log.len(), 3);
             assert_eq!(rd::<u32>(data, SKIN_DATA_SKIN_PARTITION), 0);
-            assert_eq!(DELETED.with(|deleted| core::mem::take(&mut *deleted.borrow_mut())), vec![made]);
+            assert_eq!(
+                DELETED.with(|deleted| core::mem::take(&mut *deleted.borrow_mut())),
+                vec![made]
+            );
 
             // MakePartitions returns true: the skin data gets the object, and the object gets
             // a reference.
@@ -2594,7 +2929,10 @@ mod tests {
                 (S2_SELECT_AND_LINK_PASS, pass(1)),
                 (S2_UPDATE_D3D_STATE, vec![rs, ps]),
                 (S2_BUILD_PASS, pass(11)),
-                (S2_LIGHT_SET_STATE, vec![LIGHT_MANAGER as u32, EFFECT_STATE as u32, TEXTURING, VERTEX_COLOR]),
+                (
+                    S2_LIGHT_SET_STATE,
+                    vec![LIGHT_MANAGER as u32, EFFECT_STATE as u32, TEXTURING, VERTEX_COLOR],
+                ),
                 (S2_LOAD_BINARY, vec![pl, gu, su, 0x10, 0x20]),
                 (S2_APPLY_PIXEL_SHADER, vec![pl]),
                 (S2_BOUND_COPY, vec![(r + R::worldBound) as u32, 0x20]),
@@ -2602,7 +2940,10 @@ mod tests {
                 (DEV_SET_RENDER_STATE, vec![dev, 151, 1]),
                 (S2_SET_SKINNED_MODEL_TRANSFORMS, vec![r as u32, su, p0 as u32, 0x10, 0x20]),
                 (S2_APPLY_VERTEX_SHADER, vec![pl, 0x1116]),
-                (S2_BUILD_SKIN_PARTITION_PASS, vec![pl, state[0], state[1], 0, 1, gu, su, p0 as u32, 0x10, 0x20]),
+                (
+                    S2_BUILD_SKIN_PARTITION_PASS,
+                    vec![pl, state[0], state[1], 0, 1, gu, su, p0 as u32, 0x10, 0x20],
+                ),
                 (DEV_SET_STREAM_SOURCE, vec![dev, 0, 0x800, 40]),
                 (DEV_SET_INDICES, vec![dev, 0x900, 0]),
                 (S2_DRAW_INDEXED_PRIMITIVE, vec![dev, 5, 0, 100, 0, 30]),
@@ -2610,7 +2951,10 @@ mod tests {
                 // for this partition.
                 (S2_SET_SKINNED_MODEL_TRANSFORMS, vec![r as u32, su, p1 as u32, 0x10, 0x20]),
                 (S2_APPLY_VERTEX_SHADER, vec![pl, 0x1116]),
-                (S2_BUILD_SKIN_PARTITION_PASS, vec![pl, state[0], state[1], 0, 1, gu, su, p1 as u32, 0x10, 0x20]),
+                (
+                    S2_BUILD_SKIN_PARTITION_PASS,
+                    vec![pl, state[0], state[1], 0, 1, gu, su, p1 as u32, 0x10, 0x20],
+                ),
                 (DEV_SET_STREAM_SOURCE, vec![dev, 0, 0x810, 40]),
                 (DEV_SET_INDICES, vec![dev, 0, 0]),
                 (S2_DRAW_PRIMITIVE, vec![dev, 5, 0, 20]),
@@ -2620,13 +2964,23 @@ mod tests {
 
             // A partition without a buffer makes the function return immediately.
             wr::<usize>(p1, P::bufferData, 0);
-            returns(S2_BUILD_PASS, &[BUILD_KEEP_VERTEX_BLEND | BUILD_KEEP_TRANSFORM | BUILD_KEEP_LIGHTS]);
+            returns(
+                S2_BUILD_PASS,
+                &[BUILD_KEEP_VERTEX_BLEND | BUILD_KEEP_TRANSFORM | BUILD_KEEP_LIGHTS],
+            );
             returns(S2_LOAD_BINARY, &[keep_everything()]);
             draw_skinned_primitive_2(&MainThread::for_test(), r, 4, g, si, 0x10, 0x20, 0, 0);
             let ids: Vec<usize> = calls().iter().map(|call| call.0).collect();
             assert_eq!(
                 ids,
-                vec![S2_SELECT_AND_LINK_PASS, S2_UPDATE_D3D_STATE, S2_BUILD_PASS, S2_LOAD_BINARY, S2_BOUND_COPY, S2_DRAW_INDEXED_PRIMITIVE]
+                vec![
+                    S2_SELECT_AND_LINK_PASS,
+                    S2_UPDATE_D3D_STATE,
+                    S2_BUILD_PASS,
+                    S2_LOAD_BINARY,
+                    S2_BOUND_COPY,
+                    S2_DRAW_INDEXED_PRIMITIVE
+                ]
             );
 
             let mut set = Regions::new();
@@ -2702,7 +3056,10 @@ mod tests {
             let pass = |textures: u32, tail: [u32; 4]| vec![pl, bp, es, 0, textures, tail[0], tail[1], tail[2], tail[3]];
             let head = [g as u32, 0, 0x10, 0x20];
             let one_pass = |first_pass: bool| {
-                let mut log = vec![(EB_LOAD_BINARY, vec![pl, g as u32, 0, 0x10, 0x20]), (EB_APPLY_PIXEL_SHADER, vec![pl])];
+                let mut log = vec![
+                    (EB_LOAD_BINARY, vec![pl, g as u32, 0, 0x10, 0x20]),
+                    (EB_APPLY_PIXEL_SHADER, vec![pl]),
+                ];
                 if first_pass {
                     log.push((EB_PACK_GEOMETRY_BUFFERS, vec![r as u32, 0, g as u32, 0, 0, 0]));
                 }
@@ -2715,7 +3072,10 @@ mod tests {
                     (EB_SET_MODEL_TRANSFORM, vec![r as u32, 0x10]),
                     (EB_BOUND_COPY, vec![(r + R::worldBound) as u32, 0x20]),
                     (DEV_SET_STREAM_SOURCE, vec![dev, 0, 0x800, 40]),
-                    (EB_BUILD_SKIN_PARTITION_PASS, vec![pl, bp, es, 0, 1, g as u32, 0, 0, 0x10, 0x20]),
+                    (
+                        EB_BUILD_SKIN_PARTITION_PASS,
+                        vec![pl, bp, es, 0, 1, g as u32, 0, 0, 0x10, 0x20],
+                    ),
                     (DEV_DRAW_PRIMITIVE, vec![dev, 4, 0, 30]),
                 ]);
                 if first_pass {
@@ -2727,7 +3087,10 @@ mod tests {
                     (EB_SET_SKINNED_MODEL_TRANSFORMS, vec![r as u32, 0x31, p as u32, 0x11, 0x21]),
                     (EB_BOUND_COPY, vec![(r + R::worldBound) as u32, 0x21]),
                     (DEV_SET_STREAM_SOURCE, vec![dev, 0, 0x810, 40]),
-                    (EB_BUILD_SKIN_PARTITION_PASS, vec![pl, bp, es, 0, 1, 0x41, 0x31, p as u32, 0x11, 0x21]),
+                    (
+                        EB_BUILD_SKIN_PARTITION_PASS,
+                        vec![pl, bp, es, 0, 1, 0x41, 0x31, p as u32, 0x11, 0x21],
+                    ),
                     (DEV_DRAW_PRIMITIVE, vec![dev, 4, 0, 20]),
                 ]);
                 log

@@ -34,7 +34,16 @@ impl Player {
                 object_class: 0,
                 sky: None,
                 // D3DFILL_SOLID is 3.
-                shape: ShapeFacts { geometry: 0, fvf: 0, stride: 0, world: [0.0; 16], relative: false, material: [0.0; 17], ambient: 0, lights: Vec::new() },
+                shape: ShapeFacts {
+                    geometry: 0,
+                    fvf: 0,
+                    stride: 0,
+                    world: [0.0; 16],
+                    relative: false,
+                    material: [0.0; 17],
+                    ambient: 0,
+                    lights: Vec::new(),
+                },
                 shape_fog: None,
                 fog: [0; 4],
                 shape_bones: None,
@@ -154,7 +163,13 @@ impl Player {
     /// first. The pass begins at its first draw ([`Player::begin_pass`]). A pass asked for
     /// before on the same targets that has not begun gives its clears to this one.
     /// `reason`: why, for the census of the passes (`gpu::passes`).
-    pub(crate) fn open_pass(&mut self, reason: crate::gpu::PassReason, clear_color: Option<wgpu::Color>, clear_depth: Option<f32>, clear_stencil: Option<u32>) {
+    pub(crate) fn open_pass(
+        &mut self,
+        reason: crate::gpu::PassReason,
+        clear_color: Option<wgpu::Color>,
+        clear_depth: Option<f32>,
+        clear_stencil: Option<u32>,
+    ) {
         crate::gpu::note_pass(reason);
         let rendered = self.pass_target.and_then(|handle| self.renderer.targets.get(&handle));
         // A texture that the game draws into has one sample; the targets of the frame have
@@ -162,14 +177,24 @@ impl Player {
         let scale = rendered.map_or((1.0, 1.0), RenderTexture::scale);
         let views = match rendered {
             Some(texture) => Some((texture.view.clone(), texture.depth.clone(), texture.size, None, 1)),
-            None => self.color.clone().zip(self.depth.clone()).map(|(color, depth)| (color, depth, self.frame_size, self.back_view.clone(), self.renderer.samples)),
+            None => self
+                .color
+                .clone()
+                .zip(self.depth.clone())
+                .map(|(color, depth)| (color, depth, self.frame_size, self.back_view.clone(), self.renderer.samples)),
         };
         let carried = match (&views, self.pending.as_ref()) {
-            (Some((color, depth, ..)), Some(pending)) if Rc::ptr_eq(color, &pending.color) && Rc::ptr_eq(depth, &pending.depth) => self.pending.take(),
+            (Some((color, depth, ..)), Some(pending))
+                if Rc::ptr_eq(color, &pending.color) && Rc::ptr_eq(depth, &pending.depth) =>
+            {
+                self.pending.take()
+            }
             _ => None,
         };
         self.close_pass();
-        let (Some((color, depth, size, resolve, samples)), true) = (views, self.encoder.is_some()) else { return };
+        let (Some((color, depth, size, resolve, samples)), true) = (views, self.encoder.is_some()) else {
+            return;
+        };
         self.target_size = size;
         self.target_scale = scale;
         self.pass_samples = samples;
@@ -188,7 +213,9 @@ impl Player {
     /// Begins the pass that was asked for ([`Player::open_pass`]), if it has not begun. Call
     /// it before a draw into `pass`.
     pub(crate) fn begin_pass(&mut self) {
-        let Some(pending) = self.pending.take().filter(|_| self.encoder.is_some()) else { return };
+        let Some(pending) = self.pending.take().filter(|_| self.encoder.is_some()) else {
+            return;
+        };
         crate::gpu::note_pass_begun(pending.reason);
         self.pass_draws_at_open = Some((self.pass_draw_count(), self.retained.counts.calls, pending.reason));
         let stamps = self.renderer.timing.as_mut().and_then(Timing::next_pass);
@@ -202,12 +229,21 @@ impl Player {
                     view: &pending.color,
                     depth_slice: None,
                     resolve_target: pending.resolve.as_deref(),
-                    ops: wgpu::Operations { load: pending.clear_color.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: pending.clear_color.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &pending.depth,
-                    depth_ops: Some(wgpu::Operations { load: pending.clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
-                    stencil_ops: Some(wgpu::Operations { load: pending.clear_stencil.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: pending.clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: pending.clear_stencil.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                        store: wgpu::StoreOp::Store,
+                    }),
                 }),
                 timestamp_writes: stamps.map(|index| wgpu::RenderPassTimestampWrites {
                     query_set: &self.renderer.timing.as_ref().unwrap().set,
@@ -265,7 +301,14 @@ impl Player {
             return;
         }
         self.close_pass();
-        let (Some(multisample), Some(source), Some(target), Some(encoder)) = (self.renderer.multisample.as_ref(), self.back_view.as_ref(), self.color.as_ref(), self.encoder.as_mut()) else { return };
+        let (Some(multisample), Some(source), Some(target), Some(encoder)) = (
+            self.renderer.multisample.as_ref(),
+            self.back_view.as_ref(),
+            self.color.as_ref(),
+            self.encoder.as_mut(),
+        ) else {
+            return;
+        };
         multisample.load_color(&self.renderer.device, encoder, source, target);
         self.renderer.counts.picture_copies += 1;
     }
@@ -292,11 +335,16 @@ impl Player {
     /// stream's viewport is in the size that the game asked for; a texture made smaller takes it
     /// scaled.
     pub(crate) fn apply_viewport(&mut self) {
-        let (Some(pass), Some((rectangle, range))) = (self.pass.as_mut(), self.viewport) else { return };
+        let (Some(pass), Some((rectangle, range))) = (self.pass.as_mut(), self.viewport) else {
+            return;
+        };
         let (sx, sy) = self.target_scale;
         let rectangle = [rectangle[0] * sx, rectangle[1] * sy, rectangle[2] * sx, rectangle[3] * sy];
         let (width, height) = (self.target_size.0 as f32, self.target_size.1 as f32);
-        let (x, y) = (rectangle[0].min(width - 1.0).max(0.0), rectangle[1].min(height - 1.0).max(0.0));
+        let (x, y) = (
+            rectangle[0].min(width - 1.0).max(0.0),
+            rectangle[1].min(height - 1.0).max(0.0),
+        );
         let (w, h) = (rectangle[2].min(width - x), rectangle[3].min(height - y));
         if w >= 1.0 && h >= 1.0 {
             pass.set_viewport(x, y, w, h, range[0], range[1]);
@@ -315,7 +363,10 @@ impl Player {
         self.renderer.extension_lights.clear();
         self.frame_bones.clear();
         self.frame_instances.clear();
-        self.frame_instances.push(Instance { world: IDENTITY, record: [0; 4] });
+        self.frame_instances.push(Instance {
+            world: IDENTITY,
+            record: [0; 4],
+        });
         let laid_out = self.renderer.begin_frame_arrays();
         self.renderer.begin_frame_particles();
         if laid_out {
@@ -380,9 +431,27 @@ impl Player {
             // buffer at the end of each pass. The multisampled colour keeps the last frame
             // between the frames, so a frame that keeps the picture starts from it.
             let (width, height) = (color.width(), color.height());
-            if self.ms_color.as_ref().is_none_or(|ms| (ms.width(), ms.height(), ms.format()) != (width, height, color.format())) {
-                self.ms_color = Some(multisampled_texture(&self.renderer.device, width, height, color.format(), wgpu::TextureUsages::RENDER_ATTACHMENT, self.renderer.samples));
-                self.ms_depth = Some(multisampled_texture(&self.renderer.device, width, height, self.renderer.depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, self.renderer.samples));
+            if self
+                .ms_color
+                .as_ref()
+                .is_none_or(|ms| (ms.width(), ms.height(), ms.format()) != (width, height, color.format()))
+            {
+                self.ms_color = Some(multisampled_texture(
+                    &self.renderer.device,
+                    width,
+                    height,
+                    color.format(),
+                    wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    self.renderer.samples,
+                ));
+                self.ms_depth = Some(multisampled_texture(
+                    &self.renderer.device,
+                    width,
+                    height,
+                    self.renderer.depth_format,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    self.renderer.samples,
+                ));
             }
             self.color = Some(Rc::new(self.ms_color.as_ref().unwrap().create_view(&Default::default())));
             self.depth = Some(Rc::new(self.ms_depth.as_ref().unwrap().create_view(&Default::default())));
@@ -395,7 +464,12 @@ impl Player {
         if keep {
             self.open_pass(crate::gpu::PassReason::FrameStart, None, None, None);
         } else {
-            self.open_pass(crate::gpu::PassReason::FrameStart, Some(wgpu::Color::BLACK), Some(depth::clear(1.0)), Some(0));
+            self.open_pass(
+                crate::gpu::PassReason::FrameStart,
+                Some(wgpu::Color::BLACK),
+                Some(depth::clear(1.0)),
+                Some(0),
+            );
         }
     }
 
@@ -409,7 +483,10 @@ impl Player {
         self.held_draws.clear();
         self.taken.clear();
         // No flush of the picture came to its place: nothing drew it.
-        let lost = sorted_lost(self.held_sorted_wait.len(), self.frame_sorted.iter().map(|entry| entry.0.kind()));
+        let lost = sorted_lost(
+            self.held_sorted_wait.len(),
+            self.frame_sorted.iter().map(|entry| entry.0.kind()),
+        );
         self.renderer.counts.held_sorted_lost += lost.held;
         self.renderer.counts.draws_sorted_lost += lost.draws;
         self.renderer.counts.places_sorted_lost += lost.tables;
@@ -434,7 +511,11 @@ impl Player {
     /// With `touch` in a drawn frame, the items of the back buffer stay queued, and the runs into
     /// textures go ahead where they may ([`super::split`]). `touch` names the rendered textures
     /// that `between` reads and writes; without it every item runs.
-    pub(crate) fn flush_split<T>(&mut self, touch: Option<super::split::Touch>, between: impl FnOnce(&mut Player) -> T) -> T {
+    pub(crate) fn flush_split<T>(
+        &mut self,
+        touch: Option<super::split::Touch>,
+        between: impl FnOnce(&mut Player) -> T,
+    ) -> T {
         let held = match split_touch(touch, self.drawing()) {
             Some(touch) => self.run_items_split(&touch),
             None => {
@@ -448,9 +529,19 @@ impl Player {
             // The first part of a frame: the back buffer has the last complete picture
             // until these commands run. A copy of it stays for the window (see
             // `shown_picture`).
-            let copy = (in_frame && !std::mem::replace(&mut self.sent_in_part, true)).then(|| self.keep_picture()).flatten();
+            let copy = (in_frame && !std::mem::replace(&mut self.sent_in_part, true))
+                .then(|| self.keep_picture())
+                .flatten();
             self.renderer.upload_indirect(&self.frame_args);
-            crate::gpu::submit(&self.renderer.queue, self.renderer.commands.take().into_iter().chain(copy).chain([encoder.finish()]));
+            crate::gpu::submit(
+                &self.renderer.queue,
+                self.renderer
+                    .commands
+                    .take()
+                    .into_iter()
+                    .chain(copy)
+                    .chain([encoder.finish()]),
+            );
         }
         let result = between(self);
         if in_frame {
@@ -468,20 +559,36 @@ impl Player {
     pub(crate) fn keep_picture(&mut self) -> Option<wgpu::CommandBuffer> {
         let source = self.back_buffer.as_ref()?;
         let (width, height) = (source.width(), source.height());
-        if self.last_picture.as_ref().is_none_or(|kept| (kept.width(), kept.height()) != (width, height)) {
+        if self
+            .last_picture
+            .as_ref()
+            .is_none_or(|kept| (kept.width(), kept.height()) != (width, height))
+        {
             // The gamma pass of the window reads it as a texture (`gamma::Gamma::draw`).
             let usage = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
             self.last_picture = Some(target_texture(&self.renderer.device, width, height, source.format(), usage));
         }
         let mut encoder = self.renderer.device.create_command_encoder(&Default::default());
-        encoder.copy_texture_to_texture(source.as_image_copy(), self.last_picture.as_ref()?.as_image_copy(), wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
+        encoder.copy_texture_to_texture(
+            source.as_image_copy(),
+            self.last_picture.as_ref()?.as_image_copy(),
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
         Some(encoder.finish())
     }
 
     /// The last complete picture of the game: the back buffer, or the copy from before the
     /// frame in progress when a part of that frame is in the back buffer.
     pub(crate) fn shown_picture(&self) -> Option<&wgpu::Texture> {
-        if self.sent_in_part { self.last_picture.as_ref() } else { self.back_buffer.as_ref() }
+        if self.sent_in_part {
+            self.last_picture.as_ref()
+        } else {
+            self.back_buffer.as_ref()
+        }
     }
 
     /// The pixels of a rendered texture, or of the back buffer with the handle 0: the width,
@@ -492,36 +599,52 @@ impl Player {
             0 => (self.back_buffer.clone()?, None),
             _ => {
                 let target = self.renderer.targets.get(&handle)?;
-                (target.texture.clone(), Some(target.asked).filter(|&asked| asked != target.size))
+                (
+                    target.texture.clone(),
+                    Some(target.asked).filter(|&asked| asked != target.size),
+                )
             }
         };
         if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
             return None;
         }
         let (width, height) = (texture.width(), texture.height());
-        let blue_first = matches!(texture.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let blue_first = matches!(
+            texture.format(),
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
         // A read of the back buffer runs every item, and ends the picture: the game can draw
         // another one before its Present (`plan::Step::NewPicture`). A read of a rendered
         // texture can leave the back buffer's items queued.
         if handle == 0 {
             self.plan.back_buffer_read();
         }
-        let touch = (handle != 0).then(|| super::split::Touch { reads: vec![handle], writes: Vec::new() });
+        let touch = (handle != 0).then(|| super::split::Touch {
+            reads: vec![handle],
+            writes: Vec::new(),
+        });
         self.flush_split(touch, |player| {
             let device = player.renderer.device.clone();
             let mut encoder = device.create_command_encoder(&Default::default());
             let (buffer, row) = copy_picture(&device, &mut encoder, &texture, width, height);
             player.renderer.upload_indirect(&player.frame_args);
-            crate::gpu::submit(&player.renderer.queue, player.renderer.commands.take().into_iter().chain([encoder.finish()]));
+            crate::gpu::submit(
+                &player.renderer.queue,
+                player.renderer.commands.take().into_iter().chain([encoder.finish()]),
+            );
             // A device lost during the read: no pixels, and the game gets a width of 0.
             let mapped_ok = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let flag = mapped_ok.clone();
-            buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| flag.store(result.is_ok(), std::sync::atomic::Ordering::Release));
+            buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                flag.store(result.is_ok(), std::sync::atomic::Ordering::Release)
+            });
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
             if !mapped_ok.load(std::sync::atomic::Ordering::Acquire) || crate::gpu::lost() {
                 return None;
             }
-            let Ok(mapped) = buffer.slice(..).get_mapped_range() else { return None };
+            let Ok(mapped) = buffer.slice(..).get_mapped_range() else {
+                return None;
+            };
             let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
             for y in 0..height as usize {
                 pixels.extend_from_slice(&mapped[y * row..y * row + width as usize * 4]);
@@ -551,7 +674,8 @@ impl Player {
         self.run_items();
         // The pictures that an extension wants and did not get after its post-processing.
         if let Some(extension) = self.extension.as_mut() {
-            self.shots.extend(extension.pictures().into_iter().map(|request| request.path));
+            self.shots
+                .extend(extension.pictures().into_iter().map(|request| request.path));
         }
         let clock = ticks::Clock::now();
         self.close_pass();
@@ -561,7 +685,10 @@ impl Player {
         if let Some(mut encoder) = self.encoder.take() {
             before_submit(&mut encoder);
             let renderer = &mut self.renderer;
-            let slot = renderer.timing.as_mut().and_then(|timing| timing.end(&renderer.device, &mut encoder, &mut renderer.counts));
+            let slot = renderer
+                .timing
+                .as_mut()
+                .and_then(|timing| timing.end(&renderer.device, &mut encoder, &mut renderer.counts));
             renderer.upload_indirect(&self.frame_args);
             // The passes are encoded at `finish`, not when they end.
             crate::watchdog::phase(crate::watchdog::Phase::Finish);
@@ -572,13 +699,15 @@ impl Player {
                 timing.map(slot);
             }
         }
-        let blue_first = matches!(self.renderer.target_format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let blue_first = matches!(
+            self.renderer.target_format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
         for (buffer, row, width, height, path) in std::mem::take(&mut self.early_pictures) {
             save_picture(&self.renderer.device, &buffer, row, width, height, blue_first, &path);
         }
         self.renderer.counts.times[TIME_END] += clock.elapsed();
     }
-
 }
 
 /// The entries that waited for a flush of the sorted queue and found none in their picture: the
@@ -594,7 +723,10 @@ struct SortedLost {
 /// Counts what a picture's start drops from the sorted queue: `held_waiting` entries of
 /// `held_sorted_wait` and the entries of `queue` by kind.
 fn sorted_lost(held_waiting: usize, queue: impl Iterator<Item = WaitingKind>) -> SortedLost {
-    let mut lost = SortedLost { held: held_waiting as u64, ..SortedLost::default() };
+    let mut lost = SortedLost {
+        held: held_waiting as u64,
+        ..SortedLost::default()
+    };
     for kind in queue {
         match kind {
             WaitingKind::Held => lost.held += 1,
@@ -623,7 +755,14 @@ mod tests {
     fn a_waiting_draw_left_at_the_next_pictures_start_is_counted() {
         let queue = [WaitingKind::Draw, WaitingKind::Held, WaitingKind::Draw, WaitingKind::Draw];
         // Two held shapes of the stream wait beside the queue: they count as held, not as draws.
-        assert_eq!(sorted_lost(2, queue.into_iter()), SortedLost { held: 3, draws: 3, tables: 0 });
+        assert_eq!(
+            sorted_lost(2, queue.into_iter()),
+            SortedLost {
+                held: 3,
+                draws: 3,
+                tables: 0
+            }
+        );
         assert_eq!(sorted_lost(0, std::iter::empty()), SortedLost::default());
     }
 
@@ -631,12 +770,24 @@ mod tests {
     fn a_waiting_table_place_left_at_the_next_pictures_start_is_counted() {
         let queue = [WaitingKind::Table, WaitingKind::Draw, WaitingKind::Table, WaitingKind::Held];
         // The places of the table's blends count apart from the draws of the engine's path.
-        assert_eq!(sorted_lost(0, queue.into_iter()), SortedLost { held: 1, draws: 1, tables: 2 });
+        assert_eq!(
+            sorted_lost(0, queue.into_iter()),
+            SortedLost {
+                held: 1,
+                draws: 1,
+                tables: 2
+            }
+        );
     }
 
     #[test]
     fn the_flush_split_holds_the_back_buffer_items_with_the_list() {
-        let read_of_a_texture = || Some(Touch { reads: vec![5], writes: Vec::new() });
+        let read_of_a_texture = || {
+            Some(Touch {
+                reads: vec![5],
+                writes: Vec::new(),
+            })
+        };
         assert!(split_touch(read_of_a_texture(), true).is_some());
         // A read of the back buffer runs every item, and so does a frame that is not drawn.
         assert!(split_touch(None, true).is_none());

@@ -85,7 +85,9 @@ const FLOAT_KEY_INTERP: usize = 0x70CFE0;
 #[track_caller]
 pub unsafe fn float_key_interp(time: f32, keys: usize, kind: i32, count: i32, index: &mut u32) -> f32 {
     let _call = crate::entry_trace::call_out();
-    transmute::<usize, unsafe extern "C" fn(f32, usize, i32, i32, *mut u32) -> f32>(FLOAT_KEY_INTERP)(time, keys, kind, count, index)
+    transmute::<usize, unsafe extern "C" fn(f32, usize, i32, i32, *mut u32) -> f32>(FLOAT_KEY_INTERP)(
+        time, keys, kind, count, index,
+    )
 }
 
 // ---- call primitives
@@ -320,7 +322,11 @@ pub unsafe fn game_fog_property() -> usize {
 #[track_caller]
 pub unsafe fn renderer() -> usize {
     let world_controller: usize = rd(WORLD_CONTROLLER, 0);
-    let known: usize = if world_controller == 0 { 0 } else { rd(world_controller, WORLD_CONTROLLER_RENDERER) };
+    let known: usize = if world_controller == 0 {
+        0
+    } else {
+        rd(world_controller, WORLD_CONTROLLER_RENDERER)
+    };
     if known != 0 {
         return known;
     }
@@ -378,7 +384,6 @@ pub unsafe fn property_state_global_specular_property(property_state: usize) -> 
 pub unsafe fn property_state_update_current_material_revision(property_state: usize) -> usize {
     thiscall0(0x6FE4C0, property_state) as usize
 }
-
 
 /// A deliberate fault in the Rust code. It shows that the tests find a fault.
 /// 0 is no fault. 1 is a wrong value in a device call, the Z compare function.
@@ -896,7 +901,11 @@ pub unsafe fn renderer_get_flags(renderer: usize) -> u32 {
 /// `renderer` points at a live renderer; `target` is 0 or a live `NiRenderedTexture`.
 #[track_caller]
 pub unsafe fn renderer_set_render_target(renderer: usize, target: usize) {
-    vcall1(renderer, crate::gen::layouts::InterfaceNiRenderer::SetRenderTarget, target as u32);
+    vcall1(
+        renderer,
+        crate::gen::layouts::InterfaceNiRenderer::SetRenderTarget,
+        target as u32,
+    );
 }
 
 #[cfg(test)]
@@ -905,7 +914,9 @@ mod tests {
 
     /// The values as decimal digits, first value first. It shows the order of the arguments.
     fn mix(values: &[u32]) -> u32 {
-        values.iter().fold(0u32, |sum, &value| sum.wrapping_mul(10).wrapping_add(value))
+        values
+            .iter()
+            .fold(0u32, |sum, &value| sum.wrapping_mul(10).wrapping_add(value))
     }
 
     unsafe extern "thiscall" fn this0(this: usize) -> u32 {
@@ -951,15 +962,45 @@ mod tests {
     fn thiscall_gives_this_and_the_arguments_in_order() {
         unsafe {
             assert_eq!(thiscall0(addr(this0 as unsafe extern "thiscall" fn(usize) -> u32), 5), 0x1005);
-            assert_eq!(thiscall1(addr(this1 as unsafe extern "thiscall" fn(usize, u32) -> u32), 1, 2), 12);
-            assert_eq!(thiscall2(addr(this2 as unsafe extern "thiscall" fn(usize, u32, u32) -> u32), 1, 2, 3), 123);
-            assert_eq!(thiscall3(addr(this3 as unsafe extern "thiscall" fn(usize, u32, u32, u32) -> u32), 1, 2, 3, 4), 1234);
             assert_eq!(
-                thiscall4(addr(this4 as unsafe extern "thiscall" fn(usize, u32, u32, u32, u32) -> u32), 1, 2, 3, 4, 5),
+                thiscall1(addr(this1 as unsafe extern "thiscall" fn(usize, u32) -> u32), 1, 2),
+                12
+            );
+            assert_eq!(
+                thiscall2(addr(this2 as unsafe extern "thiscall" fn(usize, u32, u32) -> u32), 1, 2, 3),
+                123
+            );
+            assert_eq!(
+                thiscall3(
+                    addr(this3 as unsafe extern "thiscall" fn(usize, u32, u32, u32) -> u32),
+                    1,
+                    2,
+                    3,
+                    4
+                ),
+                1234
+            );
+            assert_eq!(
+                thiscall4(
+                    addr(this4 as unsafe extern "thiscall" fn(usize, u32, u32, u32, u32) -> u32),
+                    1,
+                    2,
+                    3,
+                    4,
+                    5
+                ),
                 12345
             );
             assert_eq!(
-                thiscall5(addr(this5 as unsafe extern "thiscall" fn(usize, u32, u32, u32, u32, u32) -> u32), 1, 2, 3, 4, 5, 6),
+                thiscall5(
+                    addr(this5 as unsafe extern "thiscall" fn(usize, u32, u32, u32, u32, u32) -> u32),
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6
+                ),
                 123456
             );
         }

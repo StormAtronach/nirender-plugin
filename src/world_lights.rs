@@ -76,7 +76,10 @@ static MOST: AtomicU64 = AtomicU64::new(0);
 
 fn with_set<R>(f: impl FnOnce(&mut WorldSet) -> R) -> Option<R> {
     let mut guard = SET.lock().ok()?;
-    Some(f(guard.get_or_insert_with(|| WorldSet { lights: HashMap::new(), changed: true })))
+    Some(f(guard.get_or_insert_with(|| WorldSet {
+        lights: HashMap::new(),
+        changed: true,
+    })))
 }
 
 /// Listens to MWSE's two events. The removal first: without it a light of an unloaded cell
@@ -126,7 +129,10 @@ unsafe extern "C" fn placed(_user: *mut c_void, packet: *const c_void) {
     // The fade takes the radius from the attenuation: a light whose placement says another.
     let radius = crate::link_client::point_light_radius(packet.light as usize);
     if (radius - packet.radius as f32).abs() > 1.0 && RADIUS_OTHER.fetch_add(1, Ordering::Relaxed) < 10 {
-        crate::log!("world lights: a light placed with the radius {}, its attenuation gives {radius}", packet.radius);
+        crate::log!(
+            "world lights: a light placed with the radius {}, its attenuation gives {radius}",
+            packet.radius
+        );
     }
     with_set(|set| {
         // A new light is off until a send finds it on: that send gives the keys again.
@@ -189,7 +195,11 @@ pub unsafe fn send(t: &MainThread) {
     // The lights are read under the lock; the records go after it.
     let mut values: Vec<(u32, [u32; 26], f32)> = Vec::new();
     let data_handler: usize = rd(DATA_HANDLER, 0);
-    let interior: usize = if data_handler != 0 { rd(data_handler, CURRENT_INTERIOR_CELL) } else { 0 };
+    let interior: usize = if data_handler != 0 {
+        rd(data_handler, CURRENT_INTERIOR_CELL)
+    } else {
+        0
+    };
     let keys = with_set(|set| {
         let mut changed = core::mem::replace(&mut set.changed, false);
         for (&light, sent) in set.lights.iter_mut() {
@@ -201,10 +211,20 @@ pub unsafe fn send(t: &MainThread) {
             let revision: u32 = rd(light, L::revisionID);
             if on && revision != sent.revision {
                 sent.revision = revision;
-                values.push((rd(light, L::index), crate::ports::light_manager::d3d_light_of(light), crate::link_client::point_light_radius(light)));
+                values.push((
+                    rd(light, L::index),
+                    crate::ports::light_manager::d3d_light_of(light),
+                    crate::link_client::point_light_radius(light),
+                ));
             }
         }
-        changed.then(|| set.lights.iter().filter(|(_, sent)| sent.on).map(|(&light, _)| rd::<u32>(light, L::index)).collect::<Vec<u32>>())
+        changed.then(|| {
+            set.lights
+                .iter()
+                .filter(|(_, sent)| sent.on)
+                .map(|(&light, _)| rd::<u32>(light, L::index))
+                .collect::<Vec<u32>>()
+        })
     })
     .flatten();
     for (key, values, radius) in &values {
@@ -234,14 +254,24 @@ pub unsafe fn describe() -> Vec<String> {
         if at == 0 {
             return format!("0x{cell:x}");
         }
-        core::ffi::CStr::from_ptr(at as *const core::ffi::c_char).to_string_lossy().into_owned()
+        core::ffi::CStr::from_ptr(at as *const core::ffi::c_char)
+            .to_string_lossy()
+            .into_owned()
     };
     with_set(|set| {
         set.lights
             .iter()
             .map(|(&light, sent)| {
                 let p: [f32; 3] = rd(light, L::worldTransform_translation);
-                format!("{} {:.0} {:.0} {:.0} [{}] {}", rd::<u32>(light, L::index), p[0], p[1], p[2], name_of(sent.cell), if sent.on { "on" } else { "off" })
+                format!(
+                    "{} {:.0} {:.0} {:.0} [{}] {}",
+                    rd::<u32>(light, L::index),
+                    p[0],
+                    p[1],
+                    p[2],
+                    name_of(sent.cell),
+                    if sent.on { "on" } else { "off" }
+                )
             })
             .collect()
     })

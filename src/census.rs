@@ -114,7 +114,13 @@ pub unsafe fn changes(hooked: bool) -> Vec<Change> {
         let jump_len = own.as_ref().map_or(0, |own| own.jump.len());
         for (offset, len) in runs(&bytes, expected(func)) {
             let own_jump_changed = head == Head::JumpChanged && offset < jump_len;
-            out.push(Change { func, offset, len, under_jump: under_jump.clone(), own_jump_changed });
+            out.push(Change {
+                func,
+                offset,
+                len,
+                under_jump: under_jump.clone(),
+                own_jump_changed,
+            });
         }
     }
     out
@@ -172,7 +178,10 @@ pub unsafe fn describe(change: &Change) -> String {
     let shown = change.len.min(12);
     let live = &bytes[change.offset..change.offset + shown];
     let old = &expected(change.func)[change.offset..change.offset + shown];
-    let mut text = format!("{:#x} {}+{:#x} [{}]: {:02x?} was {:02x?}", at, change.func.name, change.offset, change.len, live, old);
+    let mut text = format!(
+        "{:#x} {}+{:#x} [{}]: {:02x?} was {:02x?}",
+        at, change.func.name, change.offset, change.len, live, old
+    );
     // This finds a call or a jump with a changed 4-byte target. The opcode is at the run or
     // one byte before it.
     for back in 0..2 {
@@ -182,9 +191,19 @@ pub unsafe fn describe(change: &Change) -> String {
         let opcode_offset = change.offset - back;
         let opcode = bytes[opcode_offset];
         if (opcode == 0xE8 || opcode == 0xE9) && opcode_offset + 5 <= change.func.size {
-            let rel = i32::from_le_bytes([bytes[opcode_offset + 1], bytes[opcode_offset + 2], bytes[opcode_offset + 3], bytes[opcode_offset + 4]]);
+            let rel = i32::from_le_bytes([
+                bytes[opcode_offset + 1],
+                bytes[opcode_offset + 2],
+                bytes[opcode_offset + 3],
+                bytes[opcode_offset + 4],
+            ]);
             let target = (change.func.ea + opcode_offset + 5).wrapping_add(rel as usize);
-            text.push_str(&format!(" -> {} {:#x} in {}", if opcode == 0xE8 { "call" } else { "jmp" }, target, module_of(target)));
+            text.push_str(&format!(
+                " -> {} {:#x} in {}",
+                if opcode == 0xE8 { "call" } else { "jmp" },
+                target,
+                module_of(target)
+            ));
             break;
         }
     }
@@ -207,7 +226,10 @@ mod tests {
     }
 
     fn func_named(name: &str) -> &'static Func {
-        FUNCS.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("{name} is in the table"))
+        FUNCS
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name} is in the table"))
     }
 
     /// The plugin's write at the entry of `func`, a jump with its fill of NOPs up to the stolen
@@ -215,7 +237,10 @@ mod tests {
     fn own_write(func: &Func, displaced: &[u8]) -> OwnWrite {
         let mut jump = vec![0xE9, 0x10, 0x20, 0x30, 0x40];
         jump.resize(func.steal.max(5), 0x90);
-        OwnWrite { displaced: displaced[..jump.len()].to_vec(), jump }
+        OwnWrite {
+            displaced: displaced[..jump.len()].to_vec(),
+            jump,
+        }
     }
 
     /// The function in memory: the database bytes with `own`'s jump at the entry.
@@ -247,7 +272,11 @@ mod tests {
         let mut live = hooked(func, &own);
         live[3] = 0xCC;
         assert_eq!(compared(&live, Some(&own)).1, Head::JumpChanged);
-        assert_eq!(runs_masked(&live, expected(func), Some(&own))[0].0, 0, "the run starts at the entry");
+        assert_eq!(
+            runs_masked(&live, expected(func), Some(&own))[0].0,
+            0,
+            "the run starts at the entry"
+        );
     }
 
     #[test]
@@ -281,7 +310,12 @@ mod tests {
         let last = FUNCS.iter().map(|f| f.code + f.size).max().unwrap();
         assert_eq!(last, CODE.len());
         for func in FUNCS.iter() {
-            assert_eq!(&expected(func)[..func.size.min(16)], &func.head[..func.size.min(16)], "{}", func.name);
+            assert_eq!(
+                &expected(func)[..func.size.min(16)],
+                &func.head[..func.size.min(16)],
+                "{}",
+                func.name
+            );
         }
     }
 }

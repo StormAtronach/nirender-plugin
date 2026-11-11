@@ -11,24 +11,24 @@ use core::ffi::c_void;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use crate::engine::{vcall0, WORLD_CONTROLLER};
+use crate::checked::Open;
 use crate::d3d::{
     D3DRS_ALPHABLENDENABLE, D3DRS_ALPHAFUNC, D3DRS_ALPHAREF, D3DRS_ALPHATESTENABLE, D3DRS_AMBIENT, D3DRS_CULLMODE,
     D3DRS_DESTBLEND, D3DRS_DIFFUSEMATERIALSOURCE, D3DRS_EMISSIVEMATERIALSOURCE, D3DRS_FOGENABLE, D3DRS_LIGHTING,
     D3DRS_SRCBLEND, D3DRS_VERTEXBLEND, D3DRS_ZWRITEENABLE,
 };
+use crate::d3d::{D3DTS_TEXTURE0, D3DTS_WORLDMATRIX0};
+use crate::engine::{vcall0, WORLD_CONTROLLER};
 use crate::gen::layouts::{
-    NiDX8LightManager as LM, NiDX8LightManager_LightEntry as LE, NiDX8MaterialManager_Entry as ME, NiDX8RenderState as RS,
-    NiAVObject as AV, NiCamera as CAM, NiDX8Renderer as R, NiDynamicEffectState as DES,
+    Cell, DataHandler, InterfaceNiLight, Moon, NVSkyRenderToTexture, ShadowManager, TES3Game, TES3WaterNVLake,
+    WaterController, WeatherController, WorldController,
+};
+use crate::gen::layouts::{
+    NiAVObject as AV, NiCamera as CAM, NiDX8LightManager as LM, NiDX8LightManager_LightEntry as LE,
+    NiDX8MaterialManager_Entry as ME, NiDX8RenderState as RS, NiDX8Renderer as R, NiDynamicEffectState as DES,
     NiDynamicEffectState_InternalList as DL, NiLight as L, NiMaterialProperty as MP, NiPropertyState as PS,
 };
-use crate::gen::layouts::{
-    Cell, DataHandler, InterfaceNiLight, Moon, NVSkyRenderToTexture, ShadowManager, TES3Game, TES3WaterNVLake, WaterController,
-    WeatherController, WorldController,
-};
-use crate::d3d::{D3DTS_TEXTURE0, D3DTS_WORLDMATRIX0};
 use crate::link::*;
-use crate::checked::Open;
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::shadow::BeforeFn;
@@ -205,8 +205,16 @@ struct LinkState {
 
 static STATE: MainCell<LinkState> = MainCell::new(LinkState {
     roots: NO_ROOTS,
-    state_lights: [StateLightV1 { device_index: 0, d3d_light: [0; 26] }; MAX_STATE_LIGHTS],
-    lights: [LightV1 { light: 0, device_index: 0, light_type: 0, radius: 0.0 }; MAX_LIGHTS],
+    state_lights: [StateLightV1 {
+        device_index: 0,
+        d3d_light: [0; 26],
+    }; MAX_STATE_LIGHTS],
+    lights: [LightV1 {
+        light: 0,
+        device_index: 0,
+        light_type: 0,
+        radius: 0.0,
+    }; MAX_LIGHTS],
     worlds: [[0.0; 16]; 4],
     transforms_known: 0,
     textures: [crate::own_host::Kept::NONE; STATE_STAGES as usize],
@@ -245,7 +253,8 @@ impl Count {
     }
     #[inline(always)]
     fn add(&self) {
-        self.0.store(self.0.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
+        self.0
+            .store(self.0.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
     }
     fn get(&self) -> u32 {
         self.0.load(Ordering::Relaxed)
@@ -276,7 +285,11 @@ pub unsafe fn note_transform(state: u32, matrix: usize) {
         let bit = 1 << (state - D3DTS_WORLDMATRIX0);
         let relative = crate::camera_space::pending(&t)
             || host().is_some_and(|host| host.capabilities & CAP_WORLD_SPACE != 0 && (host.world_space)() != 0);
-        s.world_relative = if relative { s.world_relative | bit } else { s.world_relative & !bit };
+        s.world_relative = if relative {
+            s.world_relative | bit
+        } else {
+            s.world_relative & !bit
+        };
         &mut s.worlds[(state - D3DTS_WORLDMATRIX0) as usize]
     } else if (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state) {
         s.transforms_known |= 0x100 << (state - D3DTS_TEXTURE0);
@@ -324,14 +337,19 @@ static WATER_PLANE_SKIPPED: core::sync::atomic::AtomicU32 = core::sync::atomic::
 /// The device kinds that the host takes from the packets: bits of `FACT_DEVICE_*`. The Rust
 /// code makes no D3D8 call for them.
 static SUPPRESS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-const DEVICE_FACTS: u32 =
-    1 << FACT_DEVICE_RENDER_STATES | 1 << FACT_DEVICE_STAGE_STATES | 1 << FACT_DEVICE_TEXTURES | 1 << FACT_DEVICE_BUFFERS
-        | 1 << FACT_DEVICE_TRANSFORMS | 1 << FACT_DEVICE_LIGHTS;
+const DEVICE_FACTS: u32 = 1 << FACT_DEVICE_RENDER_STATES
+    | 1 << FACT_DEVICE_STAGE_STATES
+    | 1 << FACT_DEVICE_TEXTURES
+    | 1 << FACT_DEVICE_BUFFERS
+    | 1 << FACT_DEVICE_TRANSFORMS
+    | 1 << FACT_DEVICE_LIGHTS;
 /// The render states that a state packet has, as `D3DRS_*`: ZENABLE, ZWRITEENABLE,
 /// ALPHATESTENABLE, SRCBLEND, DESTBLEND, CULLMODE, ZFUNC, ALPHAREF, ALPHAFUNC,
 /// ALPHABLENDENABLE, FOGENABLE, the eight stencil states, LIGHTING, AMBIENT,
 /// DIFFUSEMATERIALSOURCE, EMISSIVEMATERIALSOURCE, VERTEXBLEND.
-const PACKET_RENDER_STATES: [u32; 24] = [7, 14, 15, 19, 20, 22, 23, 24, 25, 27, 28, 52, 53, 54, 55, 56, 57, 58, 59, 137, 139, 145, 148, 151];
+const PACKET_RENDER_STATES: [u32; 24] = [
+    7, 14, 15, 19, 20, 22, 23, 24, 25, 27, 28, 52, 53, 54, 55, 56, 57, 58, 59, 137, 139, 145, 148, 151,
+];
 /// The sampler states of a state packet, in the order of the contract: `D3DTSS_*`.
 const SAMPLER_STATES: [u32; STATE_SAMPLER_STATES as usize] = [13, 14, 16, 17, 18];
 
@@ -361,7 +379,11 @@ const CELL_LIKE_EXTERIOR: u8 = 0x80;
 /// yet), or that cell has the flag [`CELL_LIKE_EXTERIOR`].
 unsafe fn cell_of_scene() -> u32 {
     let data_handler: usize = rd(DATA_HANDLER, 0);
-    let cell: usize = if data_handler != 0 { rd(data_handler, CURRENT_INTERIOR_CELL) } else { 0 };
+    let cell: usize = if data_handler != 0 {
+        rd(data_handler, CURRENT_INTERIOR_CELL)
+    } else {
+        0
+    };
     if cell == 0 {
         return SCENE_LIKE_EXTERIOR;
     }
@@ -483,7 +505,11 @@ unsafe fn stream_present() {
 pub unsafe fn stream_message(id: u32, bytes: &[u8]) {
     let function = STREAM_MESSAGE.load(Ordering::Relaxed);
     if function != 0 && crate::shadow::on_main_thread() {
-        core::mem::transmute::<usize, unsafe extern "C" fn(u32, *const u8, u32)>(function)(id, bytes.as_ptr(), bytes.len() as u32);
+        core::mem::transmute::<usize, unsafe extern "C" fn(u32, *const u8, u32)>(function)(
+            id,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+        );
     }
 }
 
@@ -498,7 +524,11 @@ unsafe fn command(command: u32, a: u32, b: u32, c: u32) -> bool {
             let changed = (function != 0 && command == COMMAND_TRANSFORM && (a == 2 || a == 3) && b != 0).then(|| {
                 let mut matrix = *(b as usize as *const [f32; 16]);
                 let back_buffer = crate::own_host::target_is_back_buffer() as u32;
-                core::mem::transmute::<usize, unsafe extern "C" fn(u32, *mut f32, u32)>(function)(a, matrix.as_mut_ptr(), back_buffer);
+                core::mem::transmute::<usize, unsafe extern "C" fn(u32, *mut f32, u32)>(function)(
+                    a,
+                    matrix.as_mut_ptr(),
+                    back_buffer,
+                );
                 matrix
             });
             let b = changed.as_ref().map_or(b, |matrix| matrix.as_ptr() as u32);
@@ -593,7 +623,10 @@ pub unsafe fn surface_pixels(surface: u32) -> Option<(u32, u32, u32, Vec<u8>)> {
     let row = width as usize * 4;
     let mut pixels = Vec::with_capacity(row * height as usize);
     for y in 0..height as usize {
-        pixels.extend_from_slice(core::slice::from_raw_parts((locked[1] as usize + y * locked[0] as usize) as *const u8, row));
+        pixels.extend_from_slice(core::slice::from_raw_parts(
+            (locked[1] as usize + y * locked[0] as usize) as *const u8,
+            row,
+        ));
     }
     (host.call)(CALL_SURFACE_UNLOCK, [surface].as_ptr());
     Some((width, height, format, pixels))
@@ -670,7 +703,14 @@ pub unsafe fn draw(primitive_type: u32, start_vertex: u32, primitives: u32) -> b
 // plugin gives them when the host draws. Each one sends a command, and makes the D3D8 call
 // only when the host does not take that command.
 
-unsafe extern "system" fn vtable_draw_indexed(device: usize, primitive_type: u32, min_index: u32, vertices: u32, start_index: u32, primitives: u32) -> u32 {
+unsafe extern "system" fn vtable_draw_indexed(
+    device: usize,
+    primitive_type: u32,
+    min_index: u32,
+    vertices: u32,
+    start_index: u32,
+    primitives: u32,
+) -> u32 {
     if draw_indexed(primitive_type, min_index, vertices, start_index, primitives) {
         return 0;
     }
@@ -755,11 +795,21 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
         DEVICE_GET_RENDER_TARGET => target_call(CALL_GET_RENDER_TARGET, args),
         DEVICE_GET_DEPTH_STENCIL_SURFACE => target_call(CALL_GET_DEPTH_BUFFER, args),
         DEVICE_RESOURCE_MANAGER_DISCARD_BYTES => target_call(CALL_DISCARD_BYTES, args),
-        DEVICE_SET_RENDER_STATE if commands_for(FACT_DEVICE_RENDER_STATES) => sent(command(COMMAND_RENDER_STATE, args[0], args[1], 0)),
-        DEVICE_SET_TEXTURE_STAGE_STATE if commands_for(FACT_DEVICE_STAGE_STATES) => sent(command(COMMAND_STAGE_STATE, args[0], args[1], args[2])),
-        DEVICE_SET_TRANSFORM if commands_for(FACT_DEVICE_TRANSFORMS) => sent(command(COMMAND_TRANSFORM, args[0], args[1], 0)),
-        DEVICE_DRAW_INDEXED_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW_INDEXED, args.as_ptr() as u32, 0, 0)),
-        DEVICE_DRAW_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => sent(command(COMMAND_DRAW, args.as_ptr() as u32, 0, 0)),
+        DEVICE_SET_RENDER_STATE if commands_for(FACT_DEVICE_RENDER_STATES) => {
+            sent(command(COMMAND_RENDER_STATE, args[0], args[1], 0))
+        }
+        DEVICE_SET_TEXTURE_STAGE_STATE if commands_for(FACT_DEVICE_STAGE_STATES) => {
+            sent(command(COMMAND_STAGE_STATE, args[0], args[1], args[2]))
+        }
+        DEVICE_SET_TRANSFORM if commands_for(FACT_DEVICE_TRANSFORMS) => {
+            sent(command(COMMAND_TRANSFORM, args[0], args[1], 0))
+        }
+        DEVICE_DRAW_INDEXED_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => {
+            sent(command(COMMAND_DRAW_INDEXED, args.as_ptr() as u32, 0, 0))
+        }
+        DEVICE_DRAW_PRIMITIVE if commands_for(FACT_DEVICE_BUFFERS) => {
+            sent(command(COMMAND_DRAW, args.as_ptr() as u32, 0, 0))
+        }
         _ => None,
     };
     // `GetBackBuffer(index, type, address)`: with the own host, the back buffer is the
@@ -787,7 +837,10 @@ pub unsafe fn intercept(slot: usize, args: &[u32]) -> Option<u32> {
             let renderer = crate::engine::renderer();
             if renderer != 0 {
                 let render_state: usize = rd(renderer, R::renderState);
-                let value: u32 = rd(render_state, RS::maybe_textureStageStateSettings + (args[1] + args[0] * 32) as usize * 8);
+                let value: u32 = rd(
+                    render_state,
+                    RS::maybe_textureStageStateSettings + (args[1] + args[0] * 32) as usize * 8,
+                );
                 *(args[2] as usize as *mut u32) = if value == STATE_UNKNOWN { 0 } else { value };
                 return Some(0);
             }
@@ -826,8 +879,10 @@ pub fn skip_material() -> bool {
 /// sets it from the packets, or the host got it as a command here.
 #[inline]
 pub unsafe fn skip_stage_state(stage: u32, state: u32, value: u32) -> bool {
-    skip(FACT_DEVICE_STAGE_STATES, STAGE_STATES.contains(&state) || SAMPLER_STATES.contains(&state))
-        || (skip(FACT_DEVICE_STAGE_STATES, true) && command(COMMAND_STAGE_STATE, stage, state, value))
+    skip(
+        FACT_DEVICE_STAGE_STATES,
+        STAGE_STATES.contains(&state) || SAMPLER_STATES.contains(&state),
+    ) || (skip(FACT_DEVICE_STAGE_STATES, true) && command(COMMAND_STAGE_STATE, stage, state, value))
 }
 
 /// True when the host sets the texture of this stage from the packets.
@@ -845,7 +900,8 @@ pub unsafe fn skip_transform(state: u32, matrix: usize) -> bool {
     const D3DTS_PROJECTION: u32 = 3;
     skip(
         FACT_DEVICE_TRANSFORMS,
-        (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state) || (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state),
+        (D3DTS_WORLDMATRIX0..D3DTS_WORLDMATRIX0 + 4).contains(&state)
+            || (D3DTS_TEXTURE0..D3DTS_TEXTURE0 + STATE_STAGES).contains(&state),
     ) || ((state == D3DTS_VIEW || state == D3DTS_PROJECTION)
         && skip(FACT_DEVICE_TRANSFORMS, true)
         && command(COMMAND_TRANSFORM, state, matrix as u32, 0))
@@ -912,7 +968,14 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
     // state may be live across them.
     let (textures_known, textures, transforms_known, texture_transforms, buffers, kept_buffers) = {
         let s = state(t);
-        (s.textures_known, s.textures, s.transforms_known, s.texture_transforms, s.buffers, s.kept_buffers)
+        (
+            s.textures_known,
+            s.textures,
+            s.transforms_known,
+            s.texture_transforms,
+            s.buffers,
+            s.kept_buffers,
+        )
     };
     let mut textures_gone = 0u32;
     let (mut vertex_buffer_gone, mut index_buffer_gone) = (false, false);
@@ -929,7 +992,10 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
     if kinds >> FACT_DEVICE_STAGE_STATES & 1 != 0 {
         for stage in 0..STATE_STAGES {
             for state in STAGE_STATES.into_iter().chain(SAMPLER_STATES) {
-                let value: u32 = rd(render_state, RS::maybe_textureStageStateSettings + (state + stage * 32) as usize * 8);
+                let value: u32 = rd(
+                    render_state,
+                    RS::maybe_textureStageStateSettings + (state + stage * 32) as usize * 8,
+                );
                 if value != STATE_UNKNOWN {
                     crate::d3d::device_set_texture_stage_state(device, stage, state, value);
                 }
@@ -958,7 +1024,11 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
         // Not the world matrices: the game sends them again for each draw.
         for stage in 0..STATE_STAGES {
             if transforms_known >> (8 + stage) & 1 != 0 {
-                crate::d3d::device_set_transform(device, D3DTS_TEXTURE0 + stage, texture_transforms[stage as usize].as_ptr() as usize);
+                crate::d3d::device_set_transform(
+                    device,
+                    D3DTS_TEXTURE0 + stage,
+                    texture_transforms[stage as usize].as_ptr() as usize,
+                );
             }
         }
     }
@@ -973,7 +1043,11 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
         while item != 0 && count < MAX_STATE_LIGHTS {
             let light: usize = rd(item, ITEM_DATA);
             item = rd(item, ITEM_NEXT);
-            let entry = if light != 0 { crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index)) } else { 0 };
+            let entry = if light != 0 {
+                crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index))
+            } else {
+                0
+            };
             if entry != 0 {
                 entries[count] = entry;
                 count += 1;
@@ -1277,7 +1351,11 @@ unsafe fn end_paint() {
         // An `after` function of a port: the main thread (`shadow::dispatch`).
         let t = &MainThread::claim();
         crate::instance_stream::scene_end(t);
-        let flags = if crate::ports::base::main_queue_open(t) { SCENE_END_QUEUE_OPEN } else { 0 };
+        let flags = if crate::ports::base::main_queue_open(t) {
+            SCENE_END_QUEUE_OPEN
+        } else {
+            0
+        };
         crate::capture::scene_end(flags);
     }
 }
@@ -1309,7 +1387,11 @@ unsafe fn set_render_target_after() {
     let t = &MainThread::claim();
     let texture = TARGET_ASKED.swap(0, Ordering::Relaxed);
     let renderer = crate::engine::renderer();
-    let target = if renderer != 0 { crate::ports::renderer_frame::target_of(renderer, texture) } else { 0 };
+    let target = if renderer != 0 {
+        crate::ports::renderer_frame::target_of(renderer, texture)
+    } else {
+        0
+    };
     if target == 0 || rd::<usize>(renderer, R::currentRenderTarget) != target {
         TARGET_REFUSALS.fetch_add(1, Ordering::Relaxed);
         return;
@@ -1355,13 +1437,14 @@ pub unsafe fn water_plane_display_skipped(t: &MainThread, shape: usize) -> bool 
         return false;
     }
     WATER_PLANE_SEEN.fetch_add(1, Ordering::Relaxed);
-    if WATER_PLANE_DISPLAYS.fetch_add(1, Ordering::Relaxed) == 0 || crate::capture::helper_takes() & (1 << CLASS_WATER_PLANE) == 0 {
+    if WATER_PLANE_DISPLAYS.fetch_add(1, Ordering::Relaxed) == 0
+        || crate::capture::helper_takes() & (1 << CLASS_WATER_PLANE) == 0
+    {
         return false;
     }
     WATER_PLANE_SKIPPED.fetch_add(1, Ordering::Relaxed);
     true
 }
-
 
 /// The class of a geometry: a compare of the geometry and of each parent with the known
 /// objects. The scene kind gives the class when the walk finds none.
@@ -1374,7 +1457,12 @@ unsafe fn object_class(geometry: usize, roots: &Roots) -> u32 {
         return CLASS_SKY_MOON_SHADOW;
     }
     // A chain cut at the guard leaves the class unknown, as a chain with no known node does.
-    let found = crate::parent_chain::first_answer(geometry, crate::parent_chain::GUARD, |node| rd(node, AV::parentNode), |node| node_class(node, roots));
+    let found = crate::parent_chain::first_answer(
+        geometry,
+        crate::parent_chain::GUARD,
+        |node| rd(node, AV::parentNode),
+        |node| node_class(node, roots),
+    );
     match found {
         // Another shape under the plane's node is not the plane: a mod can attach one there.
         Ok(Some(CLASS_WATER_PLANE)) if !is_water_tile(geometry, roots.water_controller) => {}
@@ -1467,7 +1555,11 @@ pub unsafe fn point_light_radius(light: usize) -> f32 {
     if recovery != 0 {
         use crate::gen::layouts::NiPointLight as PL;
         let recovery: unsafe extern "C" fn(f32, f32, f32) -> f32 = core::mem::transmute(recovery);
-        return recovery(rd(light, PL::constantAttenuation), rd(light, PL::linearAttenuation), rd(light, PL::quadraticAttenuation));
+        return recovery(
+            rd(light, PL::constantAttenuation),
+            rd(light, PL::linearAttenuation),
+            rd(light, PL::quadraticAttenuation),
+        );
     }
     if let Some(t) = MainThread::here() {
         if let Some(radius) = crate::light_stream::radius_of(&t, rd(light, L::index)) {
@@ -1482,7 +1574,11 @@ pub unsafe fn point_light_radius(light: usize) -> f32 {
 unsafe fn collect_lights(t: &MainThread, effect_state: usize) -> usize {
     let lights = &mut state(t).lights;
     let data_handler: usize = rd(DATA_HANDLER, 0);
-    let sun_light: usize = if data_handler != 0 { rd(data_handler, DATA_HANDLER_SUN_LIGHT) } else { 0 };
+    let sun_light: usize = if data_handler != 0 {
+        rd(data_handler, DATA_HANDLER_SUN_LIGHT)
+    } else {
+        0
+    };
     let mut count = 0;
     let mut iter = ptr_at(effect_state, DES::lights);
     while iter != 0 && count < MAX_LIGHTS {
@@ -1499,7 +1595,11 @@ unsafe fn collect_lights(t: &MainThread, effect_state: usize) -> usize {
             light: light as u32,
             device_index: rd(light, L::index),
             light_type,
-            radius: if light_type == LIGHT_POINT { point_light_radius(light) } else { 0.0 },
+            radius: if light_type == LIGHT_POINT {
+                point_light_radius(light)
+            } else {
+                0.0
+            },
         };
         count += 1;
     }
@@ -1540,7 +1640,9 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     // blends, and the first draw of a blended shape is the queue's. A particle system goes the
     // same way.
     let points = kind == DRAW_POINTS;
-    let plain_world_shape = (matches!(kind, DRAW_SHAPE | DRAW_STRIPS) || points) && (roots.scene_kind == SCENE_WORLD || (world_camera && flags & DRAW_FROM_SORTED_QUEUE != 0)) && crate::capture::recording();
+    let plain_world_shape = (matches!(kind, DRAW_SHAPE | DRAW_STRIPS) || points)
+        && (roots.scene_kind == SCENE_WORLD || (world_camera && flags & DRAW_FROM_SORTED_QUEUE != 0))
+        && crate::capture::recording();
     if plain_world_shape {
         let mut class = CLASS_UNKNOWN;
         if let Some((geometry_handle, material_handle)) = crate::instance_stream::seen(t, geometry, kind, &mut class) {
@@ -1553,7 +1655,11 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     let draw = DrawV1 {
         struct_size: size_of::<DrawV1>() as u32,
         kind,
-        object_class: if geometry != 0 { object_class(geometry, roots) } else { CLASS_UNKNOWN },
+        object_class: if geometry != 0 {
+            object_class(geometry, roots)
+        } else {
+            CLASS_UNKNOWN
+        },
         flags,
         geometry: geometry as u32,
         geometry_data: geometry_data as u32,
@@ -1571,8 +1677,16 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     // The record of a skinned shape has the bone influences from the skin data. When it takes
     // them from the skin partitions (see `geometry_stream::needs_partitions`), which the game
     // makes at the first draw of a skin, after this point, they are made here first.
-    let skin_data: usize = if skin != 0 { rd(skin, crate::gen::layouts::NiSkinInstance::skinData) } else { 0 };
-    if skin_data != 0 && geometry_data != 0 && crate::capture::recording() && crate::geometry_stream::needs_partitions(skin_data) {
+    let skin_data: usize = if skin != 0 {
+        rd(skin, crate::gen::layouts::NiSkinInstance::skinData)
+    } else {
+        0
+    };
+    if skin_data != 0
+        && geometry_data != 0
+        && crate::capture::recording()
+        && crate::geometry_stream::needs_partitions(skin_data)
+    {
         crate::ports::draw::ensure_skin_partitions(this, geometry_data, skin);
     }
     // A particle instance's geometry is the key of its particles (the serial of the data,
@@ -1581,19 +1695,51 @@ unsafe fn send_draw(kind: u32, this: usize, geometry: usize, geometry_data: usiz
     let geometry_handle = if !points {
         crate::geometry_stream::note(t, kind, geometry_data, skin, geometry)
     } else if geometry_data != 0 {
-        crate::geometry_stream::stream_handle(t, geometry_data as u32, rd(geometry_data, crate::gen::layouts::NiGeometryData::uniqueID))
+        crate::geometry_stream::stream_handle(
+            t,
+            geometry_data as u32,
+            rd(geometry_data, crate::gen::layouts::NiGeometryData::uniqueID),
+        )
     } else {
         0
     };
     let material_handle = crate::material_stream::note(t, this, property_state, effect_state);
     crate::shape_stream::note_handles(t, geometry_handle, material_handle, kind, draw.object_class, geometry_data);
     crate::capture::object(&draw, geometry_handle, material_handle);
-    crate::instance_stream::consider(t, geometry, plain_world_shape && (points || crate::instance_stream::class_retained(draw.object_class)), skin != 0, points, draw.object_class, geometry_handle, material_handle, property_state);
+    crate::instance_stream::consider(
+        t,
+        geometry,
+        plain_world_shape && (points || crate::instance_stream::class_retained(draw.object_class)),
+        skin != 0,
+        points,
+        draw.object_class,
+        geometry_handle,
+        material_handle,
+        property_state,
+    );
     if (CLASS_SKY_DOME..=CLASS_SUN_GLARE).contains(&draw.object_class) && crate::instance_stream::sky_census_on() {
-        crate::instance_stream::sky_census(t, "sky", geometry, draw.object_class, plain_world_shape, geometry_handle, material_handle, property_state);
+        crate::instance_stream::sky_census(
+            t,
+            "sky",
+            geometry,
+            draw.object_class,
+            plain_world_shape,
+            geometry_handle,
+            material_handle,
+            property_state,
+        );
     }
     if draw.object_class == CLASS_WEATHER_PARTICLES && crate::instance_stream::weather_census_on() {
-        crate::instance_stream::sky_census(t, "weather", geometry, draw.object_class, plain_world_shape, geometry_handle, material_handle, property_state);
+        crate::instance_stream::sky_census(
+            t,
+            "weather",
+            geometry,
+            draw.object_class,
+            plain_world_shape,
+            geometry_handle,
+            material_handle,
+            property_state,
+        );
     }
 }
 
@@ -1626,7 +1772,10 @@ pub unsafe fn draw_state(
     let mut samplers = [[0u32; STATE_SAMPLER_STATES as usize]; STATE_STAGES as usize];
     for (stage, values) in samplers.iter_mut().enumerate() {
         for (value, state) in values.iter_mut().zip(SAMPLER_STATES) {
-            *value = rd(render_state, RS::maybe_textureStageStateSettings + (state as usize + stage * 32) * 8);
+            *value = rd(
+                render_state,
+                RS::maybe_textureStageStateSettings + (state as usize + stage * 32) * 8,
+            );
         }
     }
     let mut material = [0.0f32; 17];
@@ -1638,7 +1787,10 @@ pub unsafe fn draw_state(
     let mut stages = [[0u32; STATE_STAGE_STATES as usize]; STATE_STAGES as usize];
     for (stage, values) in stages.iter_mut().enumerate() {
         for (value, state) in values.iter_mut().zip(STAGE_STATES) {
-            *value = rd(render_state, RS::maybe_textureStageStateSettings + (state as usize + stage * 32) * 8);
+            *value = rd(
+                render_state,
+                RS::maybe_textureStageStateSettings + (state as usize + stage * 32) * 8,
+            );
         }
     }
     // The light manager has a list of the lights that are on, and an entry with the
@@ -1651,12 +1803,20 @@ pub unsafe fn draw_state(
     while item != 0 && light_count < MAX_STATE_LIGHTS {
         let light: usize = rd(item, ITEM_DATA);
         item = rd(item, ITEM_NEXT);
-        let entry = if light != 0 { crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index)) } else { 0 };
+        let entry = if light != 0 {
+            crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index))
+        } else {
+            0
+        };
         if entry == 0 {
             continue;
         }
         lights[light_count].device_index = rd(entry, LE::lightIndex);
-        core::ptr::copy_nonoverlapping((entry + LE::d3dLight) as *const u32, lights[light_count].d3d_light.as_mut_ptr(), 26);
+        core::ptr::copy_nonoverlapping(
+            (entry + LE::d3dLight) as *const u32,
+            lights[light_count].d3d_light.as_mut_ptr(),
+            26,
+        );
         light_count += 1;
     }
     let mut state = DrawStateV1 {
@@ -1721,12 +1881,20 @@ pub unsafe fn state_lights<'a>(t: &'a MainThread, renderer: usize) -> &'a [u8] {
     while item != 0 && light_count < MAX_STATE_LIGHTS {
         let light: usize = rd(item, ITEM_DATA);
         item = rd(item, ITEM_NEXT);
-        let entry = if light != 0 { crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index)) } else { 0 };
+        let entry = if light != 0 {
+            crate::ports::hash_map::find_value(manager + LM::lightEntries, rd(light, L::index))
+        } else {
+            0
+        };
         if entry == 0 {
             continue;
         }
         lights[light_count].device_index = rd(entry, LE::lightIndex);
-        core::ptr::copy_nonoverlapping((entry + LE::d3dLight) as *const u32, lights[light_count].d3d_light.as_mut_ptr(), 26);
+        core::ptr::copy_nonoverlapping(
+            (entry + LE::d3dLight) as *const u32,
+            lights[light_count].d3d_light.as_mut_ptr(),
+            26,
+        );
         light_count += 1;
     }
     core::slice::from_raw_parts(state(t).state_lights.as_ptr() as *const u8, light_count * STATE_LIGHT_SIZE)
@@ -1786,7 +1954,9 @@ unsafe fn render_screen_poly(args: &[usize]) {
 pub(crate) unsafe fn host_module() -> usize {
     let mut path = [0u16; 600];
     let len = win::GetModuleFileNameW(core::ptr::null_mut(), path.as_mut_ptr(), 512) as usize;
-    let Some(slash) = path[..len].iter().rposition(|&c| c == b'\\' as u16) else { return 0 };
+    let Some(slash) = path[..len].iter().rposition(|&c| c == b'\\' as u16) else {
+        return 0;
+    };
     let name: Vec<u16> = "d3d8.dll\0".encode_utf16().collect();
     path[slash + 1..slash + 1 + name.len()].copy_from_slice(&name);
     win::GetModuleHandleW(path.as_ptr()) as usize
@@ -1857,7 +2027,8 @@ pub unsafe fn connect() -> Result<String, String> {
         None => missing.push(format!("{END_PAINT:#x}")),
     }
     if let Some(port) = ports::all().find(|p| p.addr == SET_RENDER_TARGET && p.installed()) {
-        port.after.store(set_render_target_after as *const () as usize, Ordering::Relaxed);
+        port.after
+            .store(set_render_target_after as *const () as usize, Ordering::Relaxed);
     }
     HOST.store(table as usize, Ordering::Relaxed);
     if own_d3d8() {
@@ -1867,7 +2038,11 @@ pub unsafe fn connect() -> Result<String, String> {
         "host version {}, capabilities {:#x}; functions without a detour: {}",
         host.version,
         host.capabilities,
-        if missing.is_empty() { "none".to_string() } else { missing.join(" ") }
+        if missing.is_empty() {
+            "none".to_string()
+        } else {
+            missing.join(" ")
+        }
     ))
 }
 
@@ -1898,7 +2073,8 @@ static LINK_TEXTURES: core::sync::atomic::AtomicBool = core::sync::atomic::Atomi
 /// Sets the use of the link for new source textures. Returns false when the host cannot
 /// make textures.
 pub unsafe fn set_link_textures(on: bool) -> bool {
-    let able = host().is_some_and(|host| host.capabilities & CAP_TEXTURES != 0 && host.struct_size as usize >= size_of::<HostV1>());
+    let able =
+        host().is_some_and(|host| host.capabilities & CAP_TEXTURES != 0 && host.struct_size as usize >= size_of::<HostV1>());
     LINK_TEXTURES.store(on && able, Ordering::Relaxed);
     able
 }
@@ -1924,7 +2100,10 @@ pub unsafe fn texture_create(texture: &TextureV1) -> usize {
 /// The counters of the host, or [`None`] without a host.
 pub unsafe fn counters(reset: bool) -> Option<CountersV1> {
     let host = host()?;
-    let mut out = CountersV1 { struct_size: size_of::<CountersV1>() as u32, ..Default::default() };
+    let mut out = CountersV1 {
+        struct_size: size_of::<CountersV1>() as u32,
+        ..Default::default()
+    };
     (host.read_counters)(&mut out, reset as u32);
     Some(out)
 }
@@ -1934,7 +2113,10 @@ pub unsafe fn counters_text(t: &MainThread, reset: bool) -> String {
     let Some(c) = counters(reset) else {
         return "no host".to_string();
     };
-    let mut text = format!("scenes {} draws {} draws_without_packet {}\n", c.scenes, c.draws, c.draws_without_packet);
+    let mut text = format!(
+        "scenes {} draws {} draws_without_packet {}\n",
+        c.scenes, c.draws, c.draws_without_packet
+    );
     for (index, name) in FACT_NAMES.iter().enumerate() {
         let fact = c.facts[index];
         text.push_str(&format!(
@@ -1955,16 +2137,28 @@ pub unsafe fn counters_text(t: &MainThread, reset: bool) -> String {
         }
     }
     text.push('\n');
-    text.push_str(&format!("water plane displays: {} seen, {} skipped\n", WATER_PLANE_SEEN.load(Ordering::Relaxed), WATER_PLANE_SKIPPED.load(Ordering::Relaxed)));
+    text.push_str(&format!(
+        "water plane displays: {} seen, {} skipped\n",
+        WATER_PLANE_SEEN.load(Ordering::Relaxed),
+        WATER_PLANE_SKIPPED.load(Ordering::Relaxed)
+    ));
     text.push_str("object_calls:");
     for (name, count) in OBJECT_CALL_NAMES.iter().zip(OBJECT_CALLS.iter()) {
-        let value = if reset { count.swap(0, Ordering::Relaxed) } else { count.load(Ordering::Relaxed) };
+        let value = if reset {
+            count.swap(0, Ordering::Relaxed)
+        } else {
+            count.load(Ordering::Relaxed)
+        };
         if value != 0 {
             text.push_str(&format!(" {name}={value}"));
         }
     }
     text.push(0xA as char);
-    let frame_calls = if reset { FRAME_CALLS.swap(0, Ordering::Relaxed) } else { FRAME_CALLS.load(Ordering::Relaxed) };
+    let frame_calls = if reset {
+        FRAME_CALLS.swap(0, Ordering::Relaxed)
+    } else {
+        FRAME_CALLS.load(Ordering::Relaxed)
+    };
     text.push_str(&format!("frame_calls_to_host: {frame_calls}"));
     text.push(0xA as char);
     let skipped: Vec<u32> = SKIPPED.iter().map(Count::get).collect();
@@ -2025,7 +2219,19 @@ mod scene_kind_tests {
     /// and another scene with another root (a mod's subject).
     #[test]
     fn the_camera_names_the_kind_before_the_root() {
-        let largest = [WC_WORLD_ROOT, WC_WORLD_CAMERA, WC_ARM_CAMERA, WC_MENU_CAMERA, WC_PREVIEW_CAMERA, WC_MAP_CAMERA, WC_SHADOW_CAMERA, WC_SPLASH_CAMERA].into_iter().max().unwrap();
+        let largest = [
+            WC_WORLD_ROOT,
+            WC_WORLD_CAMERA,
+            WC_ARM_CAMERA,
+            WC_MENU_CAMERA,
+            WC_PREVIEW_CAMERA,
+            WC_MAP_CAMERA,
+            WC_SHADOW_CAMERA,
+            WC_SPLASH_CAMERA,
+        ]
+        .into_iter()
+        .max()
+        .unwrap();
         let controller = vec![0u8; largest + 4];
         let camera = vec![0u8; CAM::spScene + 4];
         let world_camera = vec![0u8; CAM::spScene + 4];
@@ -2076,7 +2282,12 @@ mod water_plane_tests {
             wr::<usize>(controller.as_mut_ptr() as usize, WATER_TILES, tiles.as_ptr() as usize);
             wr::<u32>(controller.as_mut_ptr() as usize, WATER_TILES_PER_SIDE, 2);
         }
-        let roots = Roots { water_plane: plane.as_ptr() as usize, water_ripples: ripples.as_ptr() as usize, water_controller: controller.as_ptr() as usize, ..NO_ROOTS };
+        let roots = Roots {
+            water_plane: plane.as_ptr() as usize,
+            water_ripples: ripples.as_ptr() as usize,
+            water_controller: controller.as_ptr() as usize,
+            ..NO_ROOTS
+        };
         unsafe {
             assert_eq!(object_class(tile.as_ptr() as usize, &roots), CLASS_WATER_PLANE);
             assert_eq!(object_class(of_a_mod.as_ptr() as usize, &roots), CLASS_UNKNOWN);
@@ -2184,7 +2395,10 @@ mod resync_tests {
             let main_thread_before = crate::shadow::main_thread_for_test();
             HOST.store(&HOST_OF_TEST as *const HostV1 as usize, Ordering::Relaxed);
             RENDERER.store(renderer, Ordering::Relaxed);
-            Fakes { main_thread_before, _turn: turn }
+            Fakes {
+                main_thread_before,
+                _turn: turn,
+            }
         }
     }
 
@@ -2229,7 +2443,8 @@ mod resync_tests {
         // The fake device: its first word is its vtable, whose slot `DEVICE_SET_TRANSFORM` is
         // the fake's function. The other slots are 0: the test reaches no other call.
         let mut vtable = vec![0usize; crate::d3d::DEVICE_SET_TRANSFORM / size_of::<usize>() + 1];
-        vtable[crate::d3d::DEVICE_SET_TRANSFORM / size_of::<usize>()] = set_transform as unsafe extern "system" fn(usize, u32, usize) -> u32 as usize;
+        vtable[crate::d3d::DEVICE_SET_TRANSFORM / size_of::<usize>()] =
+            set_transform as unsafe extern "system" fn(usize, u32, usize) -> u32 as usize;
         let device = Box::new(vtable.as_ptr() as usize);
         let device = &*device as *const usize as usize;
         // The fake renderer: zeros, with the device at its field. The render state is 0: the
@@ -2254,7 +2469,11 @@ mod resync_tests {
             assert_eq!(use_facts(&t, 0), Some(0));
         }
 
-        assert_eq!(SET_TRANSFORMS.load(Ordering::Relaxed), 1, "resync made one SetTransform for the kept texture transform");
+        assert_eq!(
+            SET_TRANSFORMS.load(Ordering::Relaxed),
+            1,
+            "resync made one SetTransform for the kept texture transform"
+        );
         assert_eq!(LAST_TRANSFORM.load(Ordering::Relaxed), D3DTS_TEXTURE0);
         // The state is closed again: a later open does not panic.
         assert_eq!(state(&t).transforms_known & 0x100, 0x100);

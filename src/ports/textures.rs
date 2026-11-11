@@ -4,13 +4,15 @@
 
 use super::{hash_map, ni};
 use crate::d3d::{
-    com_add_ref, com_release, device_create_image_surface, surface_get_desc, surface_lock_rect, surface_unlock_rect, texture_get_surface_level,
+    com_add_ref, com_release, device_create_image_surface, surface_get_desc, surface_lock_rect, surface_unlock_rect,
+    texture_get_surface_level,
 };
 use crate::engine::{thiscall4, vcall0, vcall1, vcall2, virtual_at, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts;
 use crate::gen::layouts::{
-    NiDX8PixelFormat as PF, NiDX8Renderer as R, NiDX8SourceTextureData as SD, NiDX8TextureData as TD, NiDX8TextureManager as TM,
-    NiPixelData as PD, NiSourceTexture as ST, NiTexture as T, THashMap as HM, THashMap_Node as HN,
+    NiDX8PixelFormat as PF, NiDX8Renderer as R, NiDX8SourceTextureData as SD, NiDX8TextureData as TD,
+    NiDX8TextureManager as TM, NiPixelData as PD, NiSourceTexture as ST, NiTexture as T, THashMap as HM,
+    THashMap_Node as HN,
 };
 use crate::main_thread::MainThread;
 use crate::mem::{rd, wr};
@@ -94,8 +96,8 @@ mod eng {
     use crate::mem::rd;
 
     pub use crate::engine::{
-        debug_print1, debug_print2, directx_error_name, dx8_resource_release, dx8_resource_release_thunk, get_image_converter, ni_object_release,
-        operator_delete, operator_new, texture_renderer_data_dtor,
+        debug_print1, debug_print2, directx_error_name, dx8_resource_release, dx8_resource_release_thunk,
+        get_image_converter, ni_object_release, operator_delete, operator_new, texture_renderer_data_dtor,
     };
     pub use crate::ports::ni::ref_object_count_add;
 
@@ -120,7 +122,12 @@ mod eng {
     /// `dword_7DE8FC`, `dword_7C55B0`, `dword_7C55B8`, `dword_7C55B4`. The game makes the compare
     /// bits of a new pixel format from them (0x6B6D2F).
     pub unsafe fn format_bit_globals() -> [u32; 4] {
-        [rd(PIXEL_FORMAT_SHIFT_A, 0), rd(PIXEL_FORMAT_MASK_A, 0), rd(PIXEL_FORMAT_SHIFT_B, 0), rd(PIXEL_FORMAT_MASK_B, 0)]
+        [
+            rd(PIXEL_FORMAT_SHIFT_A, 0),
+            rd(PIXEL_FORMAT_MASK_A, 0),
+            rd(PIXEL_FORMAT_SHIFT_B, 0),
+            rd(PIXEL_FORMAT_MASK_B, 0),
+        ]
     }
     /// The Morrowind Code Patch (MCP-039) changes four 8-bit displacements in
     /// `FindMatchingPixelFormat`. They are at 0x6B70A8, 0x6B70DF, 0x6B7357 and 0x6B737A. Each is
@@ -128,7 +135,12 @@ mod eng {
     /// port follows the patch state of the game it runs in. The database has 8, 4, 0x14, 8.
     /// `FOLLOWED` in `src/ports/mod.rs` declares these four addresses.
     pub unsafe fn mcp039_offsets() -> [usize; 4] {
-        [rd::<u8>(0x6B70A8, 0) as usize, rd::<u8>(0x6B70DF, 0) as usize, rd::<u8>(0x6B7357, 0) as usize, rd::<u8>(0x6B737A, 0) as usize]
+        [
+            rd::<u8>(0x6B70A8, 0) as usize,
+            rd::<u8>(0x6B70DF, 0) as usize,
+            rd::<u8>(0x6B7357, 0) as usize,
+            rd::<u8>(0x6B737A, 0) as usize,
+        ]
     }
 }
 
@@ -227,7 +239,14 @@ unsafe fn converter_can_convert(converter: usize, source: usize, dest: usize) ->
 /// source fits.
 #[inline(always)]
 pub(crate) unsafe fn converter_convert(converter: usize, source: usize, format: usize, scratch: usize, mipmap: u8) -> usize {
-    thiscall4(virtual_at(converter, VT_CONVERTER_CONVERT), converter, source as u32, format as u32, scratch as u32, mipmap as u32) as usize
+    thiscall4(
+        virtual_at(converter, VT_CONVERTER_CONVERT),
+        converter,
+        source as u32,
+        format as u32,
+        scratch as u32,
+        mipmap as u32,
+    ) as usize
 }
 
 // ---- shared pieces the game code has inline
@@ -421,7 +440,12 @@ pub unsafe fn manager_get_texture(_this: usize, _a1: u32, _a2: u32, _a3: u32, _a
 ///
 /// `this` points at a live `NiDX8TextureManager` with its renderer; `texture` is 0 or a live
 /// `NiTexture`; `out_created` and `out_mipmapped` point at bytes that the function writes.
-pub unsafe fn manager_prepare_texture_for_rendering(this: usize, texture: usize, out_created: usize, out_mipmapped: usize) -> usize {
+pub unsafe fn manager_prepare_texture_for_rendering(
+    this: usize,
+    texture: usize,
+    out_created: usize,
+    out_mipmapped: usize,
+) -> usize {
     crate::shadow::touch(&manager_prepare_texture_for_rendering_port::STATE);
     wr::<u8>(out_created, 0, 0);
     wr::<u8>(out_mipmapped, 0, 0);
@@ -944,12 +968,19 @@ pub unsafe fn state_part() -> (crate::state_summary::Part, crate::state_summary:
     let mut texture = eng::texture_list_head();
     while texture != 0 {
         let data: u32 = rd(texture, T::rendererData);
-        let device = if data != 0 { crate::own_host::serial_of(data_get_d3d_texture(data as usize) as u32) } else { 0 };
+        let device = if data != 0 {
+            crate::own_host::serial_of(data_get_d3d_texture(data as usize) as u32)
+        } else {
+            0
+        };
         let is_source = data == 0 || rd::<u32>(data as usize, TD::vtbl_vtbl) == VTBL_SOURCE_TEXTURE_DATA;
         (if is_source { &mut source } else { &mut rendered }).add(&[texture as u32, data, device]);
         if data == 0 {
             without_data += 1;
-            if ni::is_kind_of(texture, RTTI_SOURCE_TEXTURE) && rd::<usize>(texture, ST::filenameOnPC) != 0 && rd::<usize>(texture, ST::pixelData) == 0 {
+            if ni::is_kind_of(texture, RTTI_SOURCE_TEXTURE)
+                && rd::<usize>(texture, ST::filenameOnPC) != 0
+                && rd::<usize>(texture, ST::pixelData) == 0
+            {
                 no_size += 1;
             }
         }
@@ -1068,7 +1099,8 @@ pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, su
         return;
     }
     let level = level as usize;
-    let row_bytes = rd::<u32>(rd::<usize>(pixel_data, PD::mipmapWidths), level * 4).wrapping_mul(rd(pixel_data, PD::bytesPerPixel));
+    let row_bytes =
+        rd::<u32>(rd::<usize>(pixel_data, PD::mipmapWidths), level * 4).wrapping_mul(rd(pixel_data, PD::bytesPerPixel));
     let format: i32 = rd(pixel_data, PD::format_format);
     let offsets: usize = rd(pixel_data, PD::mipmapOffsets);
     let pixels: usize = rd(pixel_data, PD::pixelsAllMips);
@@ -1077,10 +1109,20 @@ pub unsafe fn source_data_copy_data_to_surface(pixel_data: usize, level: u32, su
         // block.
         let start: u32 = rd(offsets, level * 4);
         let size = rd::<u32>(offsets, level * 4 + 4).wrapping_sub(start);
-        core::ptr::copy_nonoverlapping(pixels.wrapping_add(start as usize) as *const u8, locked[LOCK_BITS] as *mut u8, size as usize);
+        core::ptr::copy_nonoverlapping(
+            pixels.wrapping_add(start as usize) as *const u8,
+            locked[LOCK_BITS] as *mut u8,
+            size as usize,
+        );
     } else {
         let source = (rd::<u32>(offsets, level * 4) as usize).wrapping_add(pixels);
-        copy_rows(source, locked[LOCK_BITS] as usize, locked[LOCK_PITCH], row_bytes, desc[DESC_HEIGHT]);
+        copy_rows(
+            source,
+            locked[LOCK_BITS] as usize,
+            locked[LOCK_PITCH],
+            row_bytes,
+            desc[DESC_HEIGHT],
+        );
     }
     surface_unlock_rect(surface);
 }
@@ -1225,8 +1267,15 @@ pub unsafe fn blt_data_create_surface(this: usize, pixel_data: usize, pixel_form
         return 0;
     }
     let row_bytes = rd::<u32>(pixel_data, PD::bytesPerPixel).wrapping_mul(rd(rd::<usize>(pixel_data, PD::mipmapWidths), 0));
-    let source = (rd::<u32>(rd::<usize>(pixel_data, PD::mipmapOffsets), 0) as usize).wrapping_add(rd(pixel_data, PD::pixelsAllMips));
-    copy_rows(source, locked[LOCK_BITS] as usize, locked[LOCK_PITCH], row_bytes, desc[DESC_HEIGHT]);
+    let source =
+        (rd::<u32>(rd::<usize>(pixel_data, PD::mipmapOffsets), 0) as usize).wrapping_add(rd(pixel_data, PD::pixelsAllMips));
+    copy_rows(
+        source,
+        locked[LOCK_BITS] as usize,
+        locked[LOCK_PITCH],
+        row_bytes,
+        desc[DESC_HEIGHT],
+    );
     surface_unlock_rect(rd(slot, 0));
     1
 }
@@ -1484,7 +1533,10 @@ unsafe fn update_uploads(data: usize) -> bool {
         return false;
     }
     let palette: usize = rd(pixel_data, PD::palette);
-    if palette != 0 && (rd::<u32>(data, SD::palRevisionID) != rd::<u32>(palette, PALETTE_REVISION) || rd::<usize>(data, SD::palette) != palette) {
+    if palette != 0
+        && (rd::<u32>(data, SD::palRevisionID) != rd::<u32>(palette, PALETTE_REVISION)
+            || rd::<usize>(data, SD::palette) != palette)
+    {
         return true;
     }
     rd::<u32>(pixel_data, PD::revisionID) != rd::<u32>(data, SD::sourceRevisionID)
@@ -1629,245 +1681,405 @@ unsafe fn blt_data_dtor_regions(set: &mut Regions, this: usize, freed: bool) {
 // ---- the ports
 
 // The call is always a skip: it makes three bucket arrays and the device gets a reference.
-port_thiscall!(manager_ctor_port, 0x6BC100, "NiDX8TextureManager::ctor",
+port_thiscall!(
+    manager_ctor_port,
+    0x6BC100,
+    "NiDX8TextureManager::ctor",
     fn(this, renderer: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = manager_ctor);
+    rust = manager_ctor
+);
 
 // The call is always a skip: it releases the device and destroys the object.
-port_thiscall!(manager_deleting_dtor_port, 0x6BC310, "NiDX8TextureManager::deleting_dtor",
+port_thiscall!(
+    manager_deleting_dtor_port,
+    0x6BC310,
+    "NiDX8TextureManager::deleting_dtor",
     fn(this, flags: u32) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = manager_deleting_dtor);
+    rust = manager_deleting_dtor
+);
 
 // The call is always a skip: it releases the device and frees the bucket arrays.
-port_thiscall!(manager_dtor_port, 0x6BC330, "NiDX8TextureManager::dtor",
+port_thiscall!(
+    manager_dtor_port,
+    0x6BC330,
+    "NiDX8TextureManager::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = manager_dtor);
+    rust = manager_dtor
+);
 
-port_thiscall!(manager_get_texture_port, 0x6BC590, "NiDX8TextureManager::GetTexture",
+port_thiscall!(
+    manager_get_texture_port,
+    0x6BC590,
+    "NiDX8TextureManager::GetTexture",
     fn(this, a1: u32, a2: u32, a3: u32, a4: u32, a5: u32, a6: u32) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = manager_get_texture);
+    rust = manager_get_texture
+);
 
-port_thiscall!(manager_prepare_texture_for_rendering_port, 0x6BC5A0, "NiDX8TextureManager::PrepareTextureForRendering",
+port_thiscall!(
+    manager_prepare_texture_for_rendering_port,
+    0x6BC5A0,
+    "NiDX8TextureManager::PrepareTextureForRendering",
     fn(this, texture: usize, out_created: usize, out_mipmapped: usize) -> usize,
     compare_eax = true,
     regions = |set| manager_prepare_regions(set, texture, out_created, out_mipmapped),
-    rust = manager_prepare_texture_for_rendering);
+    rust = manager_prepare_texture_for_rendering
+);
 
-port_thiscall!(manager_precache_texture_port, 0x6BC670, "NiDX8TextureManager::PrecacheTexture",
+port_thiscall!(
+    manager_precache_texture_port,
+    0x6BC670,
+    "NiDX8TextureManager::PrecacheTexture",
     fn(this, texture: usize, a3: u32, a4: u32) -> u8,
     compare_eax = true,
     regions = |set| skip_without_renderer_data(set, texture),
-    rust = manager_precache_texture);
+    rust = manager_precache_texture
+);
 
-port_thiscall!(manager_get_format_from_texture_port, 0x6BC6F0, "NiDX8TextureManager::GetFormatFromTexture",
+port_thiscall!(
+    manager_get_format_from_texture_port,
+    0x6BC6F0,
+    "NiDX8TextureManager::GetFormatFromTexture",
     fn(this, texture: usize) -> u32,
     compare_eax = true,
     regions = |set| skip_without_renderer_data(set, texture),
-    rust = manager_get_format_from_texture);
+    rust = manager_get_format_from_texture
+);
 
-port_thiscall!(manager_recreate_port, 0x6BC770, "NiDX8TextureManager::Recreate",
+port_thiscall!(
+    manager_recreate_port,
+    0x6BC770,
+    "NiDX8TextureManager::Recreate",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| manager_recreate_regions(set, this),
-    rust_main = manager_recreate);
+    rust_main = manager_recreate
+);
 
-port_thiscall!(hash_map_dtor_port, 0x6BC840, "NiDX8TextureManager::HashMap::dtor",
+port_thiscall!(
+    hash_map_dtor_port,
+    0x6BC840,
+    "NiDX8TextureManager::HashMap::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| hash_map_dtor_regions(set, this, false),
-    rust = hash_map_dtor);
+    rust = hash_map_dtor
+);
 
-port_thiscall!(clear_hash_map_port, 0x6BC8A0, "NiDX8TextureManager::clearHashMap",
+port_thiscall!(
+    clear_hash_map_port,
+    0x6BC8A0,
+    "NiDX8TextureManager::clearHashMap",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| clear_hash_map_regions(set, this),
-    rust = clear_hash_map);
+    rust = clear_hash_map
+);
 
-port_thiscall!(hash_map_deleting_dtor_port, 0x6BC8F0, "NiDX8TextureManager::deleting_dtor_6BC8F0",
+port_thiscall!(
+    hash_map_deleting_dtor_port,
+    0x6BC8F0,
+    "NiDX8TextureManager::deleting_dtor_6BC8F0",
     fn(this, flags: u32) -> usize,
     compare_eax = true,
     regions = |set| hash_map_dtor_regions(set, this, flags & 1 != 0),
-    rust = hash_map_deleting_dtor);
+    rust = hash_map_deleting_dtor
+);
 
-port_thiscall!(texture_data_ctor_port, 0x6B6D00, "NiDX8TextureData::ctor_args",
+port_thiscall!(
+    texture_data_ctor_port,
+    0x6B6D00,
+    "NiDX8TextureData::ctor_args",
     fn(this, texture: usize, renderer: usize) -> usize,
     compare_eax = true,
     regions = |set| set.add(this, TD::SIZE),
-    rust = texture_data_ctor);
+    rust = texture_data_ctor
+);
 
-port_thiscall!(texture_data_deleting_dtor_port, 0x6B6DC0, "NiDX8TextureData::deleting_dtor",
+port_thiscall!(
+    texture_data_deleting_dtor_port,
+    0x6B6DC0,
+    "NiDX8TextureData::deleting_dtor",
     fn(this, flags: u32) -> usize,
     compare_eax = true,
     regions = |set| texture_data_deleting_dtor_regions(set, this, flags),
-    rust = texture_data_deleting_dtor);
+    rust = texture_data_deleting_dtor
+);
 
-port_thiscall!(texture_data_get_height_port, 0x6B6E10, "NiDX8TextureData::GetHeight",
+port_thiscall!(
+    texture_data_get_height_port,
+    0x6B6E10,
+    "NiDX8TextureData::GetHeight",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = texture_data_get_height);
+    rust = texture_data_get_height
+);
 
-port_thiscall!(texture_data_get_pixel_format_port, 0x6B6E30, "NiDX8TextureData::GetPixelFormat",
+port_thiscall!(
+    texture_data_get_pixel_format_port,
+    0x6B6E30,
+    "NiDX8TextureData::GetPixelFormat",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = texture_data_get_pixel_format);
+    rust = texture_data_get_pixel_format
+);
 
-port_thiscall!(texture_data_get_d3d_palette_port, 0x6B6E40, "NiDX8TextureData::GetD3DPalette",
+port_thiscall!(
+    texture_data_get_d3d_palette_port,
+    0x6B6E40,
+    "NiDX8TextureData::GetD3DPalette",
     fn(this) -> u32,
     compare_eax = true,
     regions = |set| (),
-    rust = texture_data_get_d3d_palette);
+    rust = texture_data_get_d3d_palette
+);
 
-port_cdecl!(find_closest_pixel_format_port, 0x6B6E50, "NiDX8TextureData_static::FindClosestPixelFormat",
+port_cdecl!(
+    find_closest_pixel_format_port,
+    0x6B6E50,
+    "NiDX8TextureData_static::FindClosestPixelFormat",
     fn(renderer: usize, prefs: usize, formats: usize) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = find_closest_pixel_format);
+    rust = find_closest_pixel_format
+);
 
-port_thiscall!(find_matching_pixel_format_port, 0x6B6F70, "NiDX8TextureData::FindMatchingPixelFormat",
+port_thiscall!(
+    find_matching_pixel_format_port,
+    0x6B6F70,
+    "NiDX8TextureData::FindMatchingPixelFormat",
     fn(this, source: usize, prefs: usize, formats: usize) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = find_matching_pixel_format);
+    rust = find_matching_pixel_format
+);
 
-port_cdecl!(clear_texture_data_port, 0x6B74F0, "NiDX8TextureData_static::ClearTextureData",
+port_cdecl!(
+    clear_texture_data_port,
+    0x6B74F0,
+    "NiDX8TextureData_static::ClearTextureData",
     fn(renderer: usize) -> (),
     compare_eax = false,
     regions = |set| clear_texture_data_regions(set),
-    rust = clear_texture_data);
+    rust = clear_texture_data
+);
 
-port_thiscall!(source_data_ctor_port, 0x6BFDE0, "NiDX8SourceTextureData::ctor",
+port_thiscall!(
+    source_data_ctor_port,
+    0x6BFDE0,
+    "NiDX8SourceTextureData::ctor",
     fn(this, texture: usize, renderer: usize) -> usize,
     compare_eax = true,
     regions = |set| set.add(this, SD::SIZE),
-    rust = source_data_ctor);
+    rust = source_data_ctor
+);
 
-port_thiscall!(source_data_deleting_dtor_port, 0x6BFE70, "NiDX8SourceTextureData::deleting_dtor",
+port_thiscall!(
+    source_data_deleting_dtor_port,
+    0x6BFE70,
+    "NiDX8SourceTextureData::deleting_dtor",
     fn(this, flags: u32) -> usize,
     compare_eax = true,
     regions = |set| source_data_dtor_regions(set, this, flags & 1 != 0),
-    rust_main = source_data_deleting_dtor);
+    rust_main = source_data_deleting_dtor
+);
 
-port_thiscall!(source_data_dtor_port, 0x6BFE90, "NiDX8SourceTextureData::dtor",
+port_thiscall!(
+    source_data_dtor_port,
+    0x6BFE90,
+    "NiDX8SourceTextureData::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| source_data_dtor_regions(set, this, false),
-    rust_main = source_data_dtor);
+    rust_main = source_data_dtor
+);
 
-port_thiscall!(source_data_get_d3d_texture_port, 0x6BFF20, "NiDX8SourceTextureData::GetD3DTexture",
+port_thiscall!(
+    source_data_get_d3d_texture_port,
+    0x6BFF20,
+    "NiDX8SourceTextureData::GetD3DTexture",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = source_data_get_d3d_texture);
+    rust = source_data_get_d3d_texture
+);
 
-port_thiscall!(source_data_is_loaded_port, 0x6BFF30, "NiDX8SourceTextureData::IsLoaded",
+port_thiscall!(
+    source_data_is_loaded_port,
+    0x6BFF30,
+    "NiDX8SourceTextureData::IsLoaded",
     fn(this) -> u8,
     compare_eax = true,
     regions = |set| (),
-    rust = source_data_is_loaded);
+    rust = source_data_is_loaded
+);
 
 // The call is always a skip: it locks the surface.
-port_cdecl!(source_data_copy_data_to_surface_port, 0x6BFF40, "NiDX8SourceTextureData::CopyDataToSurface",
+port_cdecl!(
+    source_data_copy_data_to_surface_port,
+    0x6BFF40,
+    "NiDX8SourceTextureData::CopyDataToSurface",
     fn(pixel_data: usize, level: u32, surface: usize) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = source_data_copy_data_to_surface);
+    rust = source_data_copy_data_to_surface
+);
 
-port_thiscall!(source_data_update_port, 0x6C0050, "NiDX8SourceTextureData::Update",
+port_thiscall!(
+    source_data_update_port,
+    0x6C0050,
+    "NiDX8SourceTextureData::Update",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| source_data_update_regions(set, this),
-    rust = source_data_update);
+    rust = source_data_update
+);
 
-port_thiscall!(source_data_set_palette_port, 0x6C0160, "NiDX8SourceTextureData::setPalette",
+port_thiscall!(
+    source_data_set_palette_port,
+    0x6C0160,
+    "NiDX8SourceTextureData::setPalette",
     fn(this, palette: usize) -> u8,
     compare_eax = true,
     regions = |set| source_data_set_palette_regions(set, this, palette),
-    rust = source_data_set_palette);
+    rust = source_data_set_palette
+);
 
-port_cdecl!(blt_data_create_port, 0x6B6690, "NiDX8BltSourceData::Create",
+port_cdecl!(
+    blt_data_create_port,
+    0x6B6690,
+    "NiDX8BltSourceData::Create",
     fn(blt_source: usize, renderer: usize) -> usize,
     compare_eax = true,
     regions = |set| blt_data_create_regions(set, blt_source),
-    rust = blt_data_create);
+    rust = blt_data_create
+);
 
-port_thiscall!(blt_data_deleting_dtor_port, 0x6B67F0, "NiDX8BltSourceData::deleting_dtor",
+port_thiscall!(
+    blt_data_deleting_dtor_port,
+    0x6B67F0,
+    "NiDX8BltSourceData::deleting_dtor",
     fn(this, flags: u32) -> usize,
     compare_eax = true,
     regions = |set| blt_data_dtor_regions(set, this, flags & 1 != 0),
-    rust = blt_data_deleting_dtor);
+    rust = blt_data_deleting_dtor
+);
 
-port_thiscall!(blt_data_dtor_port, 0x6B6810, "NiDX8BltSourceData::dtor",
+port_thiscall!(
+    blt_data_dtor_port,
+    0x6B6810,
+    "NiDX8BltSourceData::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| blt_data_dtor_regions(set, this, false),
-    rust = blt_data_dtor);
+    rust = blt_data_dtor
+);
 
 // The call is always a skip: it makes an image surface and locks it.
-port_thiscall!(blt_data_create_surface_port, 0x6B68F0, "NiDX8BltSourceData::CreateSurface",
+port_thiscall!(
+    blt_data_create_surface_port,
+    0x6B68F0,
+    "NiDX8BltSourceData::CreateSurface",
     fn(this, pixel_data: usize, pixel_format: usize) -> u8,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = blt_data_create_surface);
+    rust = blt_data_create_surface
+);
 
-port_thiscall!(renderer_create_source_texture_renderer_data_port, 0x6B0380, "NiDX8Renderer::CreateSourceTextureRendererData",
+port_thiscall!(
+    renderer_create_source_texture_renderer_data_port,
+    0x6B0380,
+    "NiDX8Renderer::CreateSourceTextureRendererData",
     fn(this, texture: usize) -> u8,
     compare_eax = true,
     regions = |set| skip_without_renderer_data(set, texture),
-    rust = renderer_create_source_texture_renderer_data);
+    rust = renderer_create_source_texture_renderer_data
+);
 
-port_thiscall!(renderer_create_source_cube_map_renderer_data_port, 0x6B0580, "NiDX8Renderer::CreateSourceCubeMapRendererData",
+port_thiscall!(
+    renderer_create_source_cube_map_renderer_data_port,
+    0x6B0580,
+    "NiDX8Renderer::CreateSourceCubeMapRendererData",
     fn(this, texture: usize) -> u8,
     compare_eax = true,
     regions = |set| skip_without_renderer_data(set, texture),
-    rust = renderer_create_source_cube_map_renderer_data);
+    rust = renderer_create_source_cube_map_renderer_data
+);
 
-port_thiscall!(renderer_create_blt_source_renderer_data_port, 0x6B05B0, "NiDX8Renderer::CreateBltSourceRendererData",
+port_thiscall!(
+    renderer_create_blt_source_renderer_data_port,
+    0x6B05B0,
+    "NiDX8Renderer::CreateBltSourceRendererData",
     fn(this, blt_source: usize) -> u8,
     compare_eax = true,
-    regions = |set| if rd::<usize>(blt_source, BLT_RENDERER_DATA) == 0 { blt_data_create_regions(set, blt_source) },
-    rust = renderer_create_blt_source_renderer_data);
+    regions = |set| if rd::<usize>(blt_source, BLT_RENDERER_DATA) == 0 {
+        blt_data_create_regions(set, blt_source)
+    },
+    rust = renderer_create_blt_source_renderer_data
+);
 
-port_thiscall!(renderer_purge_all_textures_port, 0x6AC390, "NiDX8Renderer::PurgeAllTextures",
+port_thiscall!(
+    renderer_purge_all_textures_port,
+    0x6AC390,
+    "NiDX8Renderer::PurgeAllTextures",
     fn(this, a2: u32) -> u8,
     compare_eax = true,
     regions = |set| clear_texture_data_regions(set),
-    rust = renderer_purge_all_textures);
+    rust = renderer_purge_all_textures
+);
 
 // The call is a skip when the texture has renderer data: the virtual deleting destructor of
 // the renderer data runs.
-port_thiscall!(renderer_purge_texture_port, 0x6AC3A0, "NiDX8Renderer::PurgeTexture",
+port_thiscall!(
+    renderer_purge_texture_port,
+    0x6AC3A0,
+    "NiDX8Renderer::PurgeTexture",
     fn(this, texture: usize) -> u8,
     compare_eax = true,
-    regions = |set| if rd::<usize>(texture, T::rendererData) != 0 { set.skip() },
-    rust = renderer_purge_texture);
+    regions = |set| if rd::<usize>(texture, T::rendererData) != 0 {
+        set.skip()
+    },
+    rust = renderer_purge_texture
+);
 
-port_thiscall!(renderer_get_texture_memory_stats_port, 0x6AC400, "NiDX8Renderer::GetTextureMemoryStats",
+port_thiscall!(
+    renderer_get_texture_memory_stats_port,
+    0x6AC400,
+    "NiDX8Renderer::GetTextureMemoryStats",
     fn(this, a1: u32, a2: u32) -> u8,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_get_texture_memory_stats);
+    rust = renderer_get_texture_memory_stats
+);
 
-port_thiscall!(renderer_get_texture_stats_port, 0x6AC410, "NiDX8Renderer::GetTextureStats_maybe",
+port_thiscall!(
+    renderer_get_texture_stats_port,
+    0x6AC410,
+    "NiDX8Renderer::GetTextureStats_maybe",
     fn(this, a1: u32, a2: u32, a3: u32, a4: u32, a5: u32) -> u8,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_get_texture_stats);
+    rust = renderer_get_texture_stats
+);
 
-port_thiscall!(renderer_find_closest_pixel_format_port, 0x6ABD00, "NiDX8Renderer::FindClosestPixelFormat",
+port_thiscall!(
+    renderer_find_closest_pixel_format_port,
+    0x6ABD00,
+    "NiDX8Renderer::FindClosestPixelFormat",
     fn(this, prefs: usize) -> usize,
     compare_eax = true,
     regions = |set| (),
-    rust = renderer_find_closest_pixel_format);
+    rust = renderer_find_closest_pixel_format
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &manager_ctor_port::STATE,
@@ -1970,14 +2182,26 @@ pub(crate) mod tests {
     }
 
     /// The fake conversion gives the source pixel data back.
-    extern "thiscall" fn convert_to_itself(_this: usize, source: usize, _format: usize, _scratch: usize, _mipmap: u32) -> usize {
+    extern "thiscall" fn convert_to_itself(
+        _this: usize,
+        source: usize,
+        _format: usize,
+        _scratch: usize,
+        _mipmap: u32,
+    ) -> usize {
         source
     }
 
     pub fn converter() -> usize {
         static CONVERTER: OnceLock<usize> = OnceLock::new();
         *CONVERTER.get_or_init(|| {
-            object(1, &[(VT_CONVERTER_CAN_CONVERT, can_convert as *const () as usize), (VT_CONVERTER_CONVERT, convert_to_itself as *const () as usize)])
+            object(
+                1,
+                &[
+                    (VT_CONVERTER_CAN_CONVERT, can_convert as *const () as usize),
+                    (VT_CONVERTER_CONVERT, convert_to_itself as *const () as usize),
+                ],
+            )
         })
     }
 
@@ -2044,15 +2268,19 @@ pub(crate) mod tests {
 
     #[test]
     fn find_matching_asks_the_converter_in_the_order_of_the_game() {
-        let matching = |format: u32, layout: u32, alpha: u32, present: &[usize], usable: &[usize]| -> (Option<usize>, Vec<usize>) {
-            let (list, formats) = format_list(present, usable);
-            let p = prefs(layout, alpha);
-            let source = [format, 0, 0, 0, 0, 0, 0, 0];
-            notes();
-            let found = unsafe { find_matching_pixel_format(0, source.as_ptr() as usize, p.as_ptr() as usize, list) };
-            let asked = notes().iter().map(|&(_, dest)| formats.iter().position(|&f| f == dest as usize).unwrap()).collect();
-            (formats.iter().position(|&f| f != 0 && f == found), asked)
-        };
+        let matching =
+            |format: u32, layout: u32, alpha: u32, present: &[usize], usable: &[usize]| -> (Option<usize>, Vec<usize>) {
+                let (list, formats) = format_list(present, usable);
+                let p = prefs(layout, alpha);
+                let source = [format, 0, 0, 0, 0, 0, 0, 0];
+                notes();
+                let found = unsafe { find_matching_pixel_format(0, source.as_ptr() as usize, p.as_ptr() as usize, list) };
+                let asked = notes()
+                    .iter()
+                    .map(|&(_, dest)| formats.iter().position(|&f| f == dest as usize).unwrap())
+                    .collect();
+                (formats.iter().position(|&f| f != 0 && f == found), asked)
+            };
         let all: Vec<usize> = (0..14).collect();
         // Layout 4: the bump formats.
         assert_eq!(matching(11, 4, 0, &all, &[11]), (Some(11), vec![13, 12, 11]));
@@ -2176,7 +2404,11 @@ pub(crate) mod tests {
         let device_object = object(1, &[(crate::d3d::COM_RELEASE, released as *const () as usize)]);
         unsafe {
             wr(map_vtable, hash_map::SLOT_HASH_KEY, map_hash as *const () as usize);
-            wr(map_vtable, hash_map::SLOT_DTOR_KEY_VALUE_PAIR, map_dtor_pair as *const () as usize);
+            wr(
+                map_vtable,
+                hash_map::SLOT_DTOR_KEY_VALUE_PAIR,
+                map_dtor_pair as *const () as usize,
+            );
             wr(map, HM::vtbl, map_vtable);
             wr::<u32>(map, HM::bucketCount, 5);
             wr(map, HM::arrayBuckets, buckets);
@@ -2275,7 +2507,11 @@ pub(crate) mod tests {
         let pixels: Vec<u8> = (1..=21).collect();
         let surface = object(
             1,
-            &[(crate::d3d::SURFACE_GET_DESC, surf_get_desc as *const () as usize), (crate::d3d::SURFACE_LOCK_RECT, surf_lock_rect as *const () as usize), (crate::d3d::SURFACE_UNLOCK_RECT, surf_unlock_rect as *const () as usize)],
+            &[
+                (crate::d3d::SURFACE_GET_DESC, surf_get_desc as *const () as usize),
+                (crate::d3d::SURFACE_LOCK_RECT, surf_lock_rect as *const () as usize),
+                (crate::d3d::SURFACE_UNLOCK_RECT, surf_unlock_rect as *const () as usize),
+            ],
         );
         let run = |format: u32, level: u32, pitch: u32, height: u32| -> Vec<u8> {
             let mut target = vec![0u8; 40];
@@ -2321,10 +2557,20 @@ pub(crate) mod tests {
         let pixels: Vec<u8> = (1..=21).collect();
         let surface = object(
             1,
-            &[(crate::d3d::SURFACE_GET_DESC, surf_get_desc as *const () as usize), (crate::d3d::SURFACE_LOCK_RECT, surf_lock_rect as *const () as usize), (crate::d3d::SURFACE_UNLOCK_RECT, surf_unlock_rect as *const () as usize)],
+            &[
+                (crate::d3d::SURFACE_GET_DESC, surf_get_desc as *const () as usize),
+                (crate::d3d::SURFACE_LOCK_RECT, surf_lock_rect as *const () as usize),
+                (crate::d3d::SURFACE_UNLOCK_RECT, surf_unlock_rect as *const () as usize),
+            ],
         );
         TEST_SURFACE.with(|s| *s.borrow_mut() = surface);
-        let device = object(1, &[(crate::d3d::DEVICE_CREATE_IMAGE_SURFACE, dev_create_image_surface as *const () as usize)]);
+        let device = object(
+            1,
+            &[(
+                crate::d3d::DEVICE_CREATE_IMAGE_SURFACE,
+                dev_create_image_surface as *const () as usize,
+            )],
+        );
         let renderer = block(R::d3dDevice / 4 + 1);
         let data = block(BD_SIZE / 4);
         let mut format = [0u32; PF::SIZE / 4];
@@ -2335,7 +2581,10 @@ pub(crate) mod tests {
             wr(renderer, R::d3dDevice, device);
             wr(data, BD_RENDERER, renderer);
             notes();
-            assert_eq!(blt_data_create_surface(data, pixel_data(0, &pixels), format.as_ptr() as usize), 1);
+            assert_eq!(
+                blt_data_create_surface(data, pixel_data(0, &pixels), format.as_ptr() as usize),
+                1
+            );
             assert_eq!(notes(), vec![(0x6C, 3 << 16 | 2 << 8 | 22), (0x10C, 0), (0x0101, 0)]);
             assert_eq!(rd::<usize>(data, BD_SURFACE), surface);
         }
@@ -2387,13 +2636,19 @@ pub(crate) mod tests {
             wr::<u32>(data, SD::levels, 4);
             wr::<u32>(data, SD::format_extraData, 21);
             notes();
-            assert_eq!(manager_prepare_texture_for_rendering(manager, texture, created, mipmapped), 0x5555);
+            assert_eq!(
+                manager_prepare_texture_for_rendering(manager, texture, created, mipmapped),
+                0x5555
+            );
             assert_eq!(flags, [0, 1]);
             assert_eq!(notes(), vec![(0x0D, data as u32)]);
 
             wr::<u8>(texture, ST::isStatic, 1);
             wr::<u32>(data, SD::levels, 1);
-            assert_eq!(manager_prepare_texture_for_rendering(manager, texture, created, mipmapped), 0x5555);
+            assert_eq!(
+                manager_prepare_texture_for_rendering(manager, texture, created, mipmapped),
+                0x5555
+            );
             assert_eq!(flags, [0, 0]);
             assert!(notes().is_empty());
 
@@ -2474,7 +2729,13 @@ pub(crate) mod tests {
         let new = pixel_data(0, &pixels); // 3 x 2, 2 levels
         let device_texture = object(
             1,
-            &[(crate::d3d::TEXTURE_GET_SURFACE_LEVEL, texture_surface_level as *const () as usize), (crate::d3d::COM_RELEASE, texture_release as *const () as usize)],
+            &[
+                (
+                    crate::d3d::TEXTURE_GET_SURFACE_LEVEL,
+                    texture_surface_level as *const () as usize,
+                ),
+                (crate::d3d::COM_RELEASE, texture_release as *const () as usize),
+            ],
         );
         unsafe {
             // The texture holds its pixel data: the fake conversion gives it back, and the end

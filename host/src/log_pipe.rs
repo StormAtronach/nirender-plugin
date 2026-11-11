@@ -63,8 +63,25 @@ struct Overlapped {
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn CreateNamedPipeW(name: *const u16, open_mode: u32, pipe_mode: u32, instances: u32, out_size: u32, in_size: u32, timeout: u32, attributes: *const core::ffi::c_void) -> isize;
-    fn CreateFileW(name: *const u16, access: u32, share: u32, attributes: *const core::ffi::c_void, disposition: u32, flags: u32, template: isize) -> isize;
+    fn CreateNamedPipeW(
+        name: *const u16,
+        open_mode: u32,
+        pipe_mode: u32,
+        instances: u32,
+        out_size: u32,
+        in_size: u32,
+        timeout: u32,
+        attributes: *const core::ffi::c_void,
+    ) -> isize;
+    fn CreateFileW(
+        name: *const u16,
+        access: u32,
+        share: u32,
+        attributes: *const core::ffi::c_void,
+        disposition: u32,
+        flags: u32,
+        template: isize,
+    ) -> isize;
     fn CreateEventW(attributes: *const core::ffi::c_void, manual_reset: i32, initial: i32, name: *const u16) -> isize;
     fn ReadFile(file: isize, buffer: *mut u8, length: u32, read: *mut u32, overlapped: *mut Overlapped) -> i32;
     fn GetOverlappedResult(file: isize, overlapped: *mut Overlapped, transferred: *mut u32, wait: i32) -> i32;
@@ -122,11 +139,26 @@ impl LogPipe {
     /// A pipe with room for `room` bytes in front of the file handle `file`. The writer thread
     /// does not run yet ([`LogPipe::spawn_writer`]). None when the pipe cannot be made.
     pub(crate) fn new(file: isize, room: u32) -> Option<LogPipe> {
-        let name = format!(r"\\.\pipe\nirender-log-{}-{}", std::process::id(), NEXT_PIPE.fetch_add(1, Ordering::Relaxed));
+        let name = format!(
+            r"\\.\pipe\nirender-log-{}-{}",
+            std::process::id(),
+            NEXT_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
         let name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
         let read_mode = PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE;
         // SAFETY: the name ends with a zero; one instance, no security attributes.
-        let read = unsafe { CreateNamedPipeW(name.as_ptr(), read_mode, PIPE_REJECT_REMOTE_CLIENTS, 1, 0, room, 0, core::ptr::null()) };
+        let read = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                read_mode,
+                PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                0,
+                room,
+                0,
+                core::ptr::null(),
+            )
+        };
         if read == INVALID_HANDLE {
             return None;
         }
@@ -145,22 +177,48 @@ impl LogPipe {
             return None;
         }
 
-        let overlapped = Overlapped { internal: 0, internal_high: 0, offset: 0, offset_high: 0, event };
-        let reading = Arc::new(PendingRead { overlapped: UnsafeCell::new(overlapped) });
-        Some(LogPipe { read, write, file, room, reading })
+        let overlapped = Overlapped {
+            internal: 0,
+            internal_high: 0,
+            offset: 0,
+            offset_high: 0,
+            event,
+        };
+        let reading = Arc::new(PendingRead {
+            overlapped: UnsafeCell::new(overlapped),
+        });
+        Some(LogPipe {
+            read,
+            write,
+            file,
+            room,
+            reading,
+        })
     }
 
     /// Starts the thread that copies the pipe into the file. False when the thread cannot start.
     pub(crate) fn spawn_writer(&self) -> bool {
         let (read, file, reading) = (self.read, self.file, self.reading.clone());
-        std::thread::Builder::new().name("log-writer".into()).spawn(move || copy_out(read, file, &reading)).is_ok()
+        std::thread::Builder::new()
+            .name("log-writer".into())
+            .spawn(move || copy_out(read, file, &reading))
+            .is_ok()
     }
 
     /// The bytes in the pipe now.
     fn waiting(&self) -> u64 {
         let mut available = 0u32;
         // SAFETY: a look into the read end of the own pipe that reads no bytes.
-        let looked = unsafe { PeekNamedPipe(self.read, core::ptr::null_mut(), 0, core::ptr::null_mut(), &mut available, core::ptr::null_mut()) };
+        let looked = unsafe {
+            PeekNamedPipe(
+                self.read,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                &mut available,
+                core::ptr::null_mut(),
+            )
+        };
         if looked == 0 {
             0
         } else {
@@ -224,7 +282,15 @@ fn copy_out(read: isize, file: isize, reading: &PendingRead) {
     loop {
         // SAFETY: the buffer and the OVERLAPPED live until the read ends: the wait below
         // returns only then.
-        let started = unsafe { ReadFile(read, buffer.as_mut_ptr(), buffer.len() as u32, core::ptr::null_mut(), overlapped) } != 0;
+        let started = unsafe {
+            ReadFile(
+                read,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                core::ptr::null_mut(),
+                overlapped,
+            )
+        } != 0;
         // SAFETY: a plain read of the thread's last error.
         if !started && unsafe { GetLastError() } != ERROR_IO_PENDING {
             return;
@@ -331,7 +397,10 @@ pub(crate) struct ExitLines {
 
 impl ExitLines {
     pub(crate) fn new() -> ExitLines {
-        ExitLines { deadline: Instant::now() + EXIT_LINES_WAIT, dropped: 0 }
+        ExitLines {
+            deadline: Instant::now() + EXIT_LINES_WAIT,
+            dropped: 0,
+        }
     }
 
     /// Writes `text` and a newline as one write, so that the line stays whole between the
@@ -384,7 +453,11 @@ mod tests {
         fn new(room: u32) -> HeldSink {
             let (mut read, mut write) = (0isize, 0isize);
             // SAFETY: the two handles are written by the call.
-            assert_ne!(unsafe { CreatePipe(&mut read, &mut write, core::ptr::null(), room) }, 0, "the sink");
+            assert_ne!(
+                unsafe { CreatePipe(&mut read, &mut write, core::ptr::null(), room) },
+                0,
+                "the sink"
+            );
             HeldSink { read, write }
         }
 
@@ -396,14 +469,31 @@ mod tests {
             while all.len() < total && Instant::now() < deadline {
                 let mut available = 0u32;
                 // SAFETY: a look into the sink's read end.
-                unsafe { PeekNamedPipe(self.read, core::ptr::null_mut(), 0, core::ptr::null_mut(), &mut available, core::ptr::null_mut()) };
+                unsafe {
+                    PeekNamedPipe(
+                        self.read,
+                        core::ptr::null_mut(),
+                        0,
+                        core::ptr::null_mut(),
+                        &mut available,
+                        core::ptr::null_mut(),
+                    )
+                };
                 if available == 0 {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
                 let mut got = 0u32;
                 // SAFETY: the buffer has room for its length; the bytes are there, so the read does not wait.
-                unsafe { ReadFile(self.read, buffer.as_mut_ptr(), buffer.len() as u32, &mut got, core::ptr::null_mut()) };
+                unsafe {
+                    ReadFile(
+                        self.read,
+                        buffer.as_mut_ptr(),
+                        buffer.len() as u32,
+                        &mut got,
+                        core::ptr::null_mut(),
+                    )
+                };
                 all.extend_from_slice(&buffer[..got as usize]);
             }
             all
@@ -422,7 +512,9 @@ mod tests {
     }
 
     fn lines(count: usize) -> Vec<u8> {
-        (0..count).flat_map(|n| format!("line {n:06} of the frame thread\n").into_bytes()).collect()
+        (0..count)
+            .flat_map(|n| format!("line {n:06} of the frame thread\n").into_bytes())
+            .collect()
     }
 
     /// The fault of 2026-11-09: the disk holds the writes, and a print of the frame thread must
@@ -447,9 +539,16 @@ mod tests {
         if !returned {
             sink.read_all(text.len(), Duration::from_secs(10));
         }
-        assert!(returned, "{} bytes of prints did not return in 500 ms with the disk held", text.len());
+        assert!(
+            returned,
+            "{} bytes of prints did not return in 500 ms with the disk held",
+            text.len()
+        );
         let began = Instant::now();
-        assert!(!pipe.drain(Duration::from_millis(50)), "the drain must not report an empty pipe while the disk holds it");
+        assert!(
+            !pipe.drain(Duration::from_millis(50)),
+            "the drain must not report an empty pipe while the disk holds it"
+        );
         assert!(began.elapsed() < Duration::from_millis(500), "the drain kept to its limit");
 
         // The disk lets go: every byte arrives, in order, and the drain ends.
@@ -468,7 +567,10 @@ mod tests {
         let sink = HeldSink::new(4096);
         let pipe = LogPipe::new(sink.write, PIPE_BYTES).expect("the pipe");
         let text = lines(1700);
-        assert!(text.len() < 64 * 1024 && text.len() > 32 * 1024, "the lines fit one read of the writer");
+        assert!(
+            text.len() < 64 * 1024 && text.len() > 32 * 1024,
+            "the lines fit one read of the writer"
+        );
         write_all(pipe.write, &text);
         assert!(pipe.spawn_writer());
 
@@ -529,7 +631,10 @@ mod tests {
         assert!(!pipe.write_direct(b"stalled for 5 s\n"), "a line without room is dropped");
         assert!(began.elapsed() < Duration::from_millis(100));
         assert_eq!(pipe.waiting(), before);
-        assert!(sink.read_all(1, Duration::from_millis(100)).is_empty(), "nothing goes into the file");
+        assert!(
+            sink.read_all(1, Duration::from_millis(100)).is_empty(),
+            "nothing goes into the file"
+        );
     }
 
     /// The longest time of an end of the program in the tests below: the lines wait at most

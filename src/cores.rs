@@ -22,7 +22,13 @@ struct CpuSetInformation {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetCurrentThread() -> *mut core::ffi::c_void;
-    fn GetSystemCpuSetInformation(information: *mut CpuSetInformation, length: u32, returned: *mut u32, process: *mut core::ffi::c_void, flags: u32) -> i32;
+    fn GetSystemCpuSetInformation(
+        information: *mut CpuSetInformation,
+        length: u32,
+        returned: *mut u32,
+        process: *mut core::ffi::c_void,
+        flags: u32,
+    ) -> i32;
     fn SetThreadSelectedCpuSets(thread: *mut core::ffi::c_void, ids: *const u32, count: u32) -> i32;
 }
 
@@ -45,12 +51,19 @@ pub fn prefer_performance_cores() -> String {
         let best = sets.iter().map(|s| s.efficiency_class).max().unwrap_or(0);
         let classes = sets.iter().map(|s| s.efficiency_class).min().unwrap_or(0) != best;
         let ids: Vec<u32> = sets.iter().filter(|s| s.efficiency_class == best).map(|s| s.id).collect();
-        let pinned = classes && !ids.is_empty() && SetThreadSelectedCpuSets(GetCurrentThread(), ids.as_ptr(), ids.len() as u32) != 0;
+        let pinned =
+            classes && !ids.is_empty() && SetThreadSelectedCpuSets(GetCurrentThread(), ids.as_ptr(), ids.len() as u32) != 0;
         format!(
             "cores: {} of {} logical processors in the highest efficiency class{}",
             ids.len(),
             sets.len(),
-            if pinned { ", the main thread on them" } else if classes { ", not pinned" } else { ", one class, not pinned" }
+            if pinned {
+                ", the main thread on them"
+            } else if classes {
+                ", not pinned"
+            } else {
+                ", one class, not pinned"
+            }
         )
     }
 }

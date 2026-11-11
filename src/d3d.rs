@@ -7,7 +7,6 @@
 //!
 //! An argument that is an address is `usize`. Each other argument is `u32`.
 
-
 use core::mem::transmute;
 
 use crate::engine::{fault, virtual_at};
@@ -230,8 +229,16 @@ pub unsafe fn d3d_get_adapter_display_mode(d3d: usize, adapter: u32, out: usize)
 /// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
 /// `IDirect3D8::CheckDeviceType`.
 #[inline(always)]
-pub unsafe fn d3d_check_device_type(d3d: usize, adapter: u32, device_type: u32, display_format: u32, back_buffer_format: u32, windowed: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, D3D_CHECK_DEVICE_TYPE));
+pub unsafe fn d3d_check_device_type(
+    d3d: usize,
+    adapter: u32,
+    device_type: u32,
+    display_format: u32,
+    back_buffer_format: u32,
+    windowed: u32,
+) -> u32 {
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 =
+        transmute(virtual_at(d3d, D3D_CHECK_DEVICE_TYPE));
     f(d3d, adapter, device_type, display_format, back_buffer_format, windowed)
 }
 
@@ -242,8 +249,17 @@ pub unsafe fn d3d_check_device_type(d3d: usize, adapter: u32, device_type: u32, 
 /// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
 /// `IDirect3D8::CheckDeviceFormat`.
 #[inline(always)]
-pub unsafe fn d3d_check_device_format(d3d: usize, adapter: u32, device_type: u32, adapter_format: u32, usage: u32, resource_type: u32, format: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, D3D_CHECK_DEVICE_FORMAT));
+pub unsafe fn d3d_check_device_format(
+    d3d: usize,
+    adapter: u32,
+    device_type: u32,
+    adapter_format: u32,
+    usage: u32,
+    resource_type: u32,
+    format: u32,
+) -> u32 {
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32) -> u32 =
+        transmute(virtual_at(d3d, D3D_CHECK_DEVICE_FORMAT));
     f(d3d, adapter, device_type, adapter_format, usage, resource_type, format)
 }
 
@@ -254,8 +270,16 @@ pub unsafe fn d3d_check_device_format(d3d: usize, adapter: u32, device_type: u32
 /// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
 /// `IDirect3D8::CheckDeviceMultiSampleType`.
 #[inline(always)]
-pub unsafe fn d3d_check_device_multi_sample_type(d3d: usize, adapter: u32, device_type: u32, format: u32, windowed: u32, samples: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, D3D_CHECK_DEVICE_MULTI_SAMPLE_TYPE));
+pub unsafe fn d3d_check_device_multi_sample_type(
+    d3d: usize,
+    adapter: u32,
+    device_type: u32,
+    format: u32,
+    windowed: u32,
+    samples: u32,
+) -> u32 {
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 =
+        transmute(virtual_at(d3d, D3D_CHECK_DEVICE_MULTI_SAMPLE_TYPE));
     f(d3d, adapter, device_type, format, windowed, samples)
 }
 
@@ -266,8 +290,16 @@ pub unsafe fn d3d_check_device_multi_sample_type(d3d: usize, adapter: u32, devic
 /// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
 /// `IDirect3D8::CheckDepthStencilMatch`.
 #[inline(always)]
-pub unsafe fn d3d_check_depth_stencil_match(d3d: usize, adapter: u32, device_type: u32, adapter_format: u32, target_format: u32, depth_format: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(d3d, D3D_CHECK_DEPTH_STENCIL_MATCH));
+pub unsafe fn d3d_check_depth_stencil_match(
+    d3d: usize,
+    adapter: u32,
+    device_type: u32,
+    adapter_format: u32,
+    target_format: u32,
+    depth_format: u32,
+) -> u32 {
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 =
+        transmute(virtual_at(d3d, D3D_CHECK_DEPTH_STENCIL_MATCH));
     f(d3d, adapter, device_type, adapter_format, target_format, depth_format)
 }
 
@@ -290,8 +322,17 @@ pub unsafe fn d3d_get_device_caps(d3d: usize, adapter: u32, device_type: u32, ca
 /// `d3d` points at a live `IDirect3D8`, and the other arguments are valid for
 /// `IDirect3D8::CreateDevice`: an address is 0 only where the method permits it.
 #[inline(always)]
-pub unsafe fn d3d_create_device(d3d: usize, adapter: u32, device_type: u32, focus_window: u32, behavior_flags: u32, parameters: usize, device: usize) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize, usize) -> u32 = transmute(virtual_at(d3d, D3D_CREATE_DEVICE));
+pub unsafe fn d3d_create_device(
+    d3d: usize,
+    adapter: u32,
+    device_type: u32,
+    focus_window: u32,
+    behavior_flags: u32,
+    parameters: usize,
+    device: usize,
+) -> u32 {
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize, usize) -> u32 =
+        transmute(virtual_at(d3d, D3D_CREATE_DEVICE));
     f(d3d, adapter, device_type, focus_window, behavior_flags, parameters, device)
 }
 
@@ -342,7 +383,8 @@ pub unsafe fn device_resource_manager_discard_bytes(device: usize, bytes: u32) -
     if let Some(result) = crate::link_client::target_call(crate::link::CALL_DISCARD_BYTES, &[bytes]) {
         return result;
     }
-    let f: unsafe extern "system" fn(usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_RESOURCE_MANAGER_DISCARD_BYTES));
+    let f: unsafe extern "system" fn(usize, u32) -> u32 =
+        transmute(virtual_at(device, DEVICE_RESOURCE_MANAGER_DISCARD_BYTES));
     f(device, bytes)
 }
 
@@ -381,12 +423,22 @@ pub unsafe fn device_present(device: usize, source_rect: usize, dest_rect: usize
 /// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
 /// `IDirect3DDevice8::CreateTexture`: an address is 0 only where the method permits it.
 #[inline(always)]
-pub unsafe fn device_create_texture(device: usize, width: u32, height: u32, levels: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
+pub unsafe fn device_create_texture(
+    device: usize,
+    width: u32,
+    height: u32,
+    levels: u32,
+    usage: u32,
+    format: u32,
+    pool: u32,
+    out: usize,
+) -> u32 {
     let args = [width, height, levels, usage, format, pool, out as u32];
     if let Some(result) = crate::link_client::target_call(crate::link::CALL_CREATE_TEXTURE, &args) {
         return result;
     }
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_TEXTURE));
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, u32, usize) -> u32 =
+        transmute(virtual_at(device, DEVICE_CREATE_TEXTURE));
     f(device, width, height, levels, usage, format, pool, out)
 }
 
@@ -397,8 +449,17 @@ pub unsafe fn device_create_texture(device: usize, width: u32, height: u32, leve
 /// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
 /// `IDirect3DDevice8::CreateCubeTexture`: an address is 0 only where the method permits it.
 #[inline(always)]
-pub unsafe fn device_create_cube_texture(device: usize, edge: u32, levels: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_CUBE_TEXTURE));
+pub unsafe fn device_create_cube_texture(
+    device: usize,
+    edge: u32,
+    levels: u32,
+    usage: u32,
+    format: u32,
+    pool: u32,
+    out: usize,
+) -> u32 {
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32, usize) -> u32 =
+        transmute(virtual_at(device, DEVICE_CREATE_CUBE_TEXTURE));
     f(device, edge, levels, usage, format, pool, out)
 }
 
@@ -410,10 +471,14 @@ pub unsafe fn device_create_cube_texture(device: usize, edge: u32, levels: u32, 
 /// `IDirect3DDevice8::CreateVertexBuffer`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_create_vertex_buffer(device: usize, length: u32, usage: u32, fvf: u32, pool: u32, out: usize) -> u32 {
-    if let Some(result) = crate::link_client::buffer_call(crate::link::CALL_CREATE_VERTEX_BUFFER, &[length, usage, fvf, pool, out as u32]) {
+    if let Some(result) = crate::link_client::buffer_call(
+        crate::link::CALL_CREATE_VERTEX_BUFFER,
+        &[length, usage, fvf, pool, out as u32],
+    ) {
         return result;
     }
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_VERTEX_BUFFER));
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 =
+        transmute(virtual_at(device, DEVICE_CREATE_VERTEX_BUFFER));
     f(device, length, usage, fvf, pool, out)
 }
 
@@ -425,10 +490,14 @@ pub unsafe fn device_create_vertex_buffer(device: usize, length: u32, usage: u32
 /// `IDirect3DDevice8::CreateIndexBuffer`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_create_index_buffer(device: usize, length: u32, usage: u32, format: u32, pool: u32, out: usize) -> u32 {
-    if let Some(result) = crate::link_client::buffer_call(crate::link::CALL_CREATE_INDEX_BUFFER, &[length, usage, format, pool, out as u32]) {
+    if let Some(result) = crate::link_client::buffer_call(
+        crate::link::CALL_CREATE_INDEX_BUFFER,
+        &[length, usage, format, pool, out as u32],
+    ) {
         return result;
     }
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_INDEX_BUFFER));
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, usize) -> u32 =
+        transmute(virtual_at(device, DEVICE_CREATE_INDEX_BUFFER));
     f(device, length, usage, format, pool, out)
 }
 
@@ -440,10 +509,13 @@ pub unsafe fn device_create_index_buffer(device: usize, length: u32, usage: u32,
 /// `IDirect3DDevice8::CreateImageSurface`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_create_image_surface(device: usize, width: u32, height: u32, format: u32, out: usize) -> u32 {
-    if let Some(result) = crate::link_client::target_call(crate::link::CALL_CREATE_IMAGE_SURFACE, &[width, height, format, out as u32]) {
+    if let Some(result) =
+        crate::link_client::target_call(crate::link::CALL_CREATE_IMAGE_SURFACE, &[width, height, format, out as u32])
+    {
         return result;
     }
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, usize) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_IMAGE_SURFACE));
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, usize) -> u32 =
+        transmute(virtual_at(device, DEVICE_CREATE_IMAGE_SURFACE));
     f(device, width, height, format, out)
 }
 
@@ -459,7 +531,8 @@ pub unsafe fn device_copy_rects(device: usize, source: usize, rects: usize, coun
     if let Some(result) = crate::link_client::target_call(crate::link::CALL_COPY_PIXELS, &args) {
         return result;
     }
-    let f: unsafe extern "system" fn(usize, usize, usize, u32, usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_COPY_RECTS));
+    let f: unsafe extern "system" fn(usize, usize, usize, u32, usize, usize) -> u32 =
+        transmute(virtual_at(device, DEVICE_COPY_RECTS));
     f(device, source, rects, count, dest, points)
 }
 
@@ -471,7 +544,9 @@ pub unsafe fn device_copy_rects(device: usize, source: usize, rects: usize, coun
 /// `IDirect3DDevice8::SetRenderTarget`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_set_render_target(device: usize, target: usize, depth_stencil: usize) -> u32 {
-    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_RENDER_TARGET, &[target as u32, depth_stencil as u32]) {
+    if let Some(result) =
+        crate::link_client::frame_call(crate::link::CALL_RENDER_TARGET, &[target as u32, depth_stencil as u32])
+    {
         return result;
     }
     let f: unsafe extern "system" fn(usize, usize, usize) -> u32 = transmute(virtual_at(device, DEVICE_SET_RENDER_TARGET));
@@ -545,10 +620,13 @@ pub unsafe fn device_end_scene(device: usize) -> u32 {
 /// `IDirect3DDevice8::Clear`: an address is 0 only where the method permits it.
 #[inline(always)]
 pub unsafe fn device_clear(device: usize, count: u32, rects: usize, flags: u32, color: u32, z: u32, stencil: u32) -> u32 {
-    if let Some(result) = crate::link_client::frame_call(crate::link::CALL_CLEAR, &[count, rects as u32, flags, color, z, stencil]) {
+    if let Some(result) =
+        crate::link_client::frame_call(crate::link::CALL_CLEAR, &[count, rects as u32, flags, color, z, stencil])
+    {
         return result;
     }
-    let f: unsafe extern "system" fn(usize, u32, usize, u32, u32, u32, u32) -> u32 = transmute(virtual_at(device, DEVICE_CLEAR));
+    let f: unsafe extern "system" fn(usize, u32, usize, u32, u32, u32, u32) -> u32 =
+        transmute(virtual_at(device, DEVICE_CLEAR));
     f(device, count, rects, flags, color, z, stencil)
 }
 
@@ -677,7 +755,8 @@ pub unsafe fn device_set_texture_stage_state(device: usize, stage: u32, state: u
         return 0;
     }
     let vtable: usize = rd(device, 0);
-    let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 = transmute(rd::<usize>(vtable, DEVICE_SET_TEXTURE_STAGE_STATE));
+    let f: unsafe extern "system" fn(usize, u32, u32, u32) -> u32 =
+        transmute(rd::<usize>(vtable, DEVICE_SET_TEXTURE_STAGE_STATE));
     f(device, stage, state, value)
 }
 
@@ -703,11 +782,19 @@ pub unsafe fn device_draw_primitive(device: usize, primitive_type: u32, start_ve
 /// `device` points at a live `IDirect3DDevice8`, and the other arguments are valid for
 /// `IDirect3DDevice8::DrawIndexedPrimitive`.
 #[inline(always)]
-pub unsafe fn device_draw_indexed_primitive(device: usize, primitive_type: u32, min_index: u32, vertices: u32, start_index: u32, primitives: u32) -> u32 {
+pub unsafe fn device_draw_indexed_primitive(
+    device: usize,
+    primitive_type: u32,
+    min_index: u32,
+    vertices: u32,
+    start_index: u32,
+    primitives: u32,
+) -> u32 {
     if crate::link_client::draw_indexed(primitive_type, min_index, vertices, start_index, primitives) {
         return 0;
     }
-    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 = transmute(virtual_at(device, DEVICE_DRAW_INDEXED_PRIMITIVE));
+    let f: unsafe extern "system" fn(usize, u32, u32, u32, u32, u32) -> u32 =
+        transmute(virtual_at(device, DEVICE_DRAW_INDEXED_PRIMITIVE));
     f(device, primitive_type, min_index, vertices, start_index, primitives)
 }
 
@@ -741,7 +828,8 @@ pub unsafe fn device_set_stream_source(device: usize, stream: u32, buffer: usize
             return 0;
         }
     }
-    let f: unsafe extern "system" fn(usize, u32, usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_SET_STREAM_SOURCE));
+    let f: unsafe extern "system" fn(usize, u32, usize, u32) -> u32 =
+        transmute(virtual_at(device, DEVICE_SET_STREAM_SOURCE));
     f(device, stream, buffer, stride)
 }
 
@@ -849,7 +937,8 @@ pub unsafe fn cube_texture_get_cube_map_surface(texture: usize, face: u32, level
     if let Some(result) = crate::link_client::object_call(6, &[texture as u32, face, level, out as u32]) {
         return result;
     }
-    let f: unsafe extern "system" fn(usize, u32, u32, usize) -> u32 = transmute(virtual_at(texture, CUBE_TEXTURE_GET_CUBE_MAP_SURFACE));
+    let f: unsafe extern "system" fn(usize, u32, u32, usize) -> u32 =
+        transmute(virtual_at(texture, CUBE_TEXTURE_GET_CUBE_MAP_SURFACE));
     f(texture, face, level, out)
 }
 
@@ -1111,7 +1200,11 @@ mod tests {
         assert_eq!(call(o), 0x8000_0000 | count as u32, "the result at slot {slot:#x}");
         let mut expected = vec![o as u32];
         expected.extend(1..=count as u32);
-        assert_eq!(CALLS.with(|calls| calls.borrow().clone()), [expected], "the arguments at slot {slot:#x}");
+        assert_eq!(
+            CALLS.with(|calls| calls.borrow().clone()),
+            [expected],
+            "the arguments at slot {slot:#x}"
+        );
     }
 
     #[test]
@@ -1126,8 +1219,12 @@ mod tests {
             check(D3D_GET_ADAPTER_DISPLAY_MODE, 2, |o| d3d_get_adapter_display_mode(o, 1, 2));
             check(D3D_CHECK_DEVICE_TYPE, 5, |o| d3d_check_device_type(o, 1, 2, 3, 4, 5));
             check(D3D_CHECK_DEVICE_FORMAT, 6, |o| d3d_check_device_format(o, 1, 2, 3, 4, 5, 6));
-            check(D3D_CHECK_DEVICE_MULTI_SAMPLE_TYPE, 5, |o| d3d_check_device_multi_sample_type(o, 1, 2, 3, 4, 5));
-            check(D3D_CHECK_DEPTH_STENCIL_MATCH, 5, |o| d3d_check_depth_stencil_match(o, 1, 2, 3, 4, 5));
+            check(D3D_CHECK_DEVICE_MULTI_SAMPLE_TYPE, 5, |o| {
+                d3d_check_device_multi_sample_type(o, 1, 2, 3, 4, 5)
+            });
+            check(D3D_CHECK_DEPTH_STENCIL_MATCH, 5, |o| {
+                d3d_check_depth_stencil_match(o, 1, 2, 3, 4, 5)
+            });
             check(D3D_GET_DEVICE_CAPS, 3, |o| d3d_get_device_caps(o, 1, 2, 3));
             check(D3D_CREATE_DEVICE, 6, |o| d3d_create_device(o, 1, 2, 3, 4, 5, 6));
         }
@@ -1139,18 +1236,28 @@ mod tests {
             check(DEVICE_ADD_REF, 0, |o| device_add_ref(o));
             check(DEVICE_RELEASE, 0, |o| device_release(o));
             check(DEVICE_TEST_COOPERATIVE_LEVEL, 0, |o| device_test_cooperative_level(o));
-            check(DEVICE_RESOURCE_MANAGER_DISCARD_BYTES, 1, |o| device_resource_manager_discard_bytes(o, 1));
+            check(DEVICE_RESOURCE_MANAGER_DISCARD_BYTES, 1, |o| {
+                device_resource_manager_discard_bytes(o, 1)
+            });
             check(DEVICE_RESET, 1, |o| device_reset(o, 1));
             check(DEVICE_PRESENT, 4, |o| device_present(o, 1, 2, 3, 4));
             check(DEVICE_CREATE_TEXTURE, 7, |o| device_create_texture(o, 1, 2, 3, 4, 5, 6, 7));
-            check(DEVICE_CREATE_CUBE_TEXTURE, 6, |o| device_create_cube_texture(o, 1, 2, 3, 4, 5, 6));
-            check(DEVICE_CREATE_VERTEX_BUFFER, 5, |o| device_create_vertex_buffer(o, 1, 2, 3, 4, 5));
-            check(DEVICE_CREATE_INDEX_BUFFER, 5, |o| device_create_index_buffer(o, 1, 2, 3, 4, 5));
+            check(DEVICE_CREATE_CUBE_TEXTURE, 6, |o| {
+                device_create_cube_texture(o, 1, 2, 3, 4, 5, 6)
+            });
+            check(DEVICE_CREATE_VERTEX_BUFFER, 5, |o| {
+                device_create_vertex_buffer(o, 1, 2, 3, 4, 5)
+            });
+            check(DEVICE_CREATE_INDEX_BUFFER, 5, |o| {
+                device_create_index_buffer(o, 1, 2, 3, 4, 5)
+            });
             check(DEVICE_CREATE_IMAGE_SURFACE, 4, |o| device_create_image_surface(o, 1, 2, 3, 4));
             check(DEVICE_COPY_RECTS, 5, |o| device_copy_rects(o, 1, 2, 3, 4, 5));
             check(DEVICE_SET_RENDER_TARGET, 2, |o| device_set_render_target(o, 1, 2));
             check(DEVICE_GET_RENDER_TARGET, 1, |o| device_get_render_target(o, 1));
-            check(DEVICE_GET_DEPTH_STENCIL_SURFACE, 1, |o| device_get_depth_stencil_surface(o, 1));
+            check(DEVICE_GET_DEPTH_STENCIL_SURFACE, 1, |o| {
+                device_get_depth_stencil_surface(o, 1)
+            });
             check(DEVICE_BEGIN_SCENE, 0, |o| device_begin_scene(o));
             check(DEVICE_END_SCENE, 0, |o| device_end_scene(o));
             check(DEVICE_CLEAR, 6, |o| device_clear(o, 1, 2, 3, 4, 5, 6));
@@ -1160,9 +1267,13 @@ mod tests {
             check(DEVICE_LIGHT_ENABLE, 2, |o| device_light_enable(o, 1, 2));
             check(DEVICE_SET_RENDER_STATE, 2, |o| device_set_render_state(o, 1, 2));
             check(DEVICE_SET_TEXTURE, 2, |o| device_set_texture(o, 1, 2));
-            check(DEVICE_SET_TEXTURE_STAGE_STATE, 3, |o| device_set_texture_stage_state(o, 1, 2, 3));
+            check(DEVICE_SET_TEXTURE_STAGE_STATE, 3, |o| {
+                device_set_texture_stage_state(o, 1, 2, 3)
+            });
             check(DEVICE_DRAW_PRIMITIVE, 3, |o| device_draw_primitive(o, 1, 2, 3));
-            check(DEVICE_DRAW_INDEXED_PRIMITIVE, 5, |o| device_draw_indexed_primitive(o, 1, 2, 3, 4, 5));
+            check(DEVICE_DRAW_INDEXED_PRIMITIVE, 5, |o| {
+                device_draw_indexed_primitive(o, 1, 2, 3, 4, 5)
+            });
             check(DEVICE_SET_VERTEX_SHADER, 1, |o| device_set_vertex_shader(o, 1));
             check(DEVICE_SET_STREAM_SOURCE, 3, |o| device_set_stream_source(o, 1, 2, 3));
             check(DEVICE_SET_INDICES, 2, |o| device_set_indices(o, 1, 2));
@@ -1177,7 +1288,9 @@ mod tests {
             check(BUFFER_UNLOCK, 0, |o| buffer_unlock(o));
             check(BUFFER_GET_DESC, 1, |o| buffer_get_desc(o, 1));
             check(TEXTURE_GET_SURFACE_LEVEL, 2, |o| texture_get_surface_level(o, 1, 2));
-            check(CUBE_TEXTURE_GET_CUBE_MAP_SURFACE, 3, |o| cube_texture_get_cube_map_surface(o, 1, 2, 3));
+            check(CUBE_TEXTURE_GET_CUBE_MAP_SURFACE, 3, |o| {
+                cube_texture_get_cube_map_surface(o, 1, 2, 3)
+            });
             check(SURFACE_GET_DESC, 1, |o| surface_get_desc(o, 1));
             check(SURFACE_LOCK_RECT, 3, |o| surface_lock_rect(o, 1, 2, 3));
             check(SURFACE_UNLOCK_RECT, 0, |o| surface_unlock_rect(o));
@@ -1189,7 +1302,10 @@ mod tests {
         assert_eq!(NAMES[DEVICE_ADD_REF / 4], "AddRef");
         assert_eq!(NAMES[DEVICE_RELEASE / 4], "Release");
         assert_eq!(NAMES[DEVICE_TEST_COOPERATIVE_LEVEL / 4], "TestCooperativeLevel");
-        assert_eq!(NAMES[DEVICE_RESOURCE_MANAGER_DISCARD_BYTES / 4], "ResourceManagerDiscardBytes");
+        assert_eq!(
+            NAMES[DEVICE_RESOURCE_MANAGER_DISCARD_BYTES / 4],
+            "ResourceManagerDiscardBytes"
+        );
         assert_eq!(NAMES[DEVICE_RESET / 4], "Reset");
         assert_eq!(NAMES[DEVICE_PRESENT / 4], "Present");
         assert_eq!(NAMES[DEVICE_GET_BACK_BUFFER / 4], "GetBackBuffer");
@@ -1252,7 +1368,10 @@ mod tests {
         }
         // The fault is off in the unit tests, thus the two values go to the device as they are.
         assert_eq!(fault(), 0);
-        assert_eq!(CALLS.with(|calls| calls.borrow().clone()), [[o as u32, 23, 4], [o as u32, 25, 4]]);
+        assert_eq!(
+            CALLS.with(|calls| calls.borrow().clone()),
+            [[o as u32, 23, 4], [o as u32, 25, 4]]
+        );
     }
 
     #[test]

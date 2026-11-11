@@ -210,7 +210,11 @@ impl Views {
     pub(crate) fn note_scene_record(&mut self, data: &[u8]) {
         let word = |at| crate::data::word(data, at);
         self.note_repeat_walk(data);
-        let target = if word(20) & crate::data::SCENE_BACK_BUFFER != 0 { 0 } else { word(16) };
+        let target = if word(20) & crate::data::SCENE_BACK_BUFFER != 0 {
+            0
+        } else {
+            word(16)
+        };
         self.note_scene(scene_view(data), word(8), word(12), target);
     }
 
@@ -310,9 +314,14 @@ impl Views {
         // and the target: the later scene has a root of its own, so the plugin gives it another
         // slot ([`ViewSlot::same_key`]).
         if scene::later_world_scene(kind) {
-            let key = |slot: Option<u8>| slot.and_then(|slot| self.slots[slot as usize]).map(|key| (key.camera, key.target));
+            let key = |slot: Option<u8>| {
+                slot.and_then(|slot| self.slots[slot as usize])
+                    .map(|key| (key.camera, key.target))
+            };
             let this = key(view_slot);
-            let world = self.groups.iter().rposition(|group| group.world_camera && group.kind == view && this.is_some() && key(group.view_slot) == this);
+            let world = self.groups.iter().rposition(|group| {
+                group.world_camera && group.kind == view && this.is_some() && key(group.view_slot) == this
+            });
             if world.is_some() {
                 self.open = world;
                 return true;
@@ -320,14 +329,32 @@ impl Views {
         }
         // The full tier is for the views of a mod: the main view has every part already.
         // A scene that repeats its key in the flush has the place of the key's first slot.
-        let grant = view_slot.filter(|_| view != ViewKind::Main).and_then(|slot| match first_slot {
-            Some(first) => self.tier.scene_of_repeat(first),
-            None => self.tier.scene(slot),
-        });
-        let additions = view.additions(self.ui_seen).with(Additions::from_option_parts(grant.map_or(0, |grant| grant.parts)));
+        let grant = view_slot
+            .filter(|_| view != ViewKind::Main)
+            .and_then(|slot| match first_slot {
+                Some(first) => self.tier.scene_of_repeat(first),
+                None => self.tier.scene(slot),
+            });
+        let additions = view
+            .additions(self.ui_seen)
+            .with(Additions::from_option_parts(grant.map_or(0, |grant| grant.parts)));
         let place = grant.map(|grant| grant.place);
-        let repeat = place.map_or(0, |place| self.groups.iter().filter(|group| group.place == Some(place)).count().min(usize::from(u8::MAX)) as u8);
-        self.groups.push(Group { world_camera: kind == scene::SCENE_WORLD, kind: view, additions, view_slot, place, repeat, ..Group::default() });
+        let repeat = place.map_or(0, |place| {
+            self.groups
+                .iter()
+                .filter(|group| group.place == Some(place))
+                .count()
+                .min(usize::from(u8::MAX)) as u8
+        });
+        self.groups.push(Group {
+            world_camera: kind == scene::SCENE_WORLD,
+            kind: view,
+            additions,
+            view_slot,
+            place,
+            repeat,
+            ..Group::default()
+        });
         self.open = Some(self.groups.len() - 1);
         true
     }
@@ -412,12 +439,19 @@ impl Views {
 
     /// The ids of a run, for its item; a run draws once.
     pub(crate) fn take_run(&mut self, group: usize, run: usize) -> Vec<u32> {
-        self.groups.get_mut(group).and_then(|g| g.runs.get_mut(run)).map(core::mem::take).unwrap_or_default()
+        self.groups
+            .get_mut(group)
+            .and_then(|g| g.runs.get_mut(run))
+            .map(core::mem::take)
+            .unwrap_or_default()
     }
 
     /// The sorted places of a group that came so far, for its item.
     pub(crate) fn take_sorted(&mut self, group: usize) -> Vec<u32> {
-        self.groups.get_mut(group).map(|g| core::mem::take(&mut g.sorted)).unwrap_or_default()
+        self.groups
+            .get_mut(group)
+            .map(|g| core::mem::take(&mut g.sorted))
+            .unwrap_or_default()
     }
 }
 
@@ -492,8 +526,20 @@ mod tests {
     fn the_places_of_a_scene_draw_in_runs_and_its_sorted_places_at_the_flush() {
         let mut views = Views::default();
         views.scene_begin(SCENE_WORLD, true, true);
-        views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [2.0; 16], origin: None, target_size: (128, 128), values: None });
-        views.note_facts(|| ViewFacts { view: [3.0; 16], projection: [3.0; 16], origin: None, target_size: (1, 1), values: None });
+        views.note_facts(|| ViewFacts {
+            view: [1.0; 16],
+            projection: [2.0; 16],
+            origin: None,
+            target_size: (128, 128),
+            values: None,
+        });
+        views.note_facts(|| ViewFacts {
+            view: [3.0; 16],
+            projection: [3.0; 16],
+            origin: None,
+            target_size: (1, 1),
+            values: None,
+        });
         assert_eq!(views.group(0).unwrap().facts.unwrap().target_size, (128, 128));
         assert_eq!(views.place(10, true, false), Place::New(0, 0));
         assert_eq!(views.place(11, true, true), Place::Joined);
@@ -527,7 +573,13 @@ mod tests {
         let mut views = Views::default();
         views.note_scene(Some(1), camera, 0x30, target);
         assert!(views.scene_begin(SCENE_WORLD, true, true));
-        views.note_facts(|| ViewFacts { view: [1.0; 16], projection: [1.0; 16], origin: None, target_size: (128, 128), values: None });
+        views.note_facts(|| ViewFacts {
+            view: [1.0; 16],
+            projection: [1.0; 16],
+            origin: None,
+            target_size: (128, 128),
+            values: None,
+        });
         assert_eq!(views.place(10, true, false), Place::New(0, 0));
         assert_eq!(views.scene_end(), None);
         views.note_scene(None, 0x40, 0x50, target);
@@ -553,7 +605,13 @@ mod tests {
     fn a_view_in_a_target_has_its_facts_from_its_camera_with_no_place() {
         use crate::engine::scene::SCENE_WATER;
         let (camera, target) = (0x10, 0x20);
-        let facts = |n: f32| ViewFacts { view: [n; 16], projection: [n; 16], origin: None, target_size: (128, 128), values: None };
+        let facts = |n: f32| ViewFacts {
+            view: [n; 16],
+            projection: [n; 16],
+            origin: None,
+            target_size: (128, 128),
+            values: None,
+        };
         let mut views = Views::default();
         // A scene with no view of its own (the back buffer's world) has no facts due.
         assert!(!views.scene_begin(SCENE_WORLD, false, true));
@@ -611,7 +669,14 @@ mod tests {
         views.note_scene(Some(3), 20, 200, 7);
         views.note_scene(None, 30, 300, 0);
         views.frame_start();
-        assert_eq!(views.slots[3], Some(ViewSlot { camera: 20, root: 200, target: 7 }));
+        assert_eq!(
+            views.slots[3],
+            Some(ViewSlot {
+                camera: 20,
+                root: 200,
+                target: 7
+            })
+        );
         views.note_scene(Some(0), 10, 101, 0);
         assert_eq!(views.slot_counts.rekeyed, 0);
         views.note_scene(Some(3), 20, 201, 7);
@@ -624,7 +689,9 @@ mod tests {
         views.note_scene(Some(3), 40, 400, 9);
         assert_eq!(views.slot_counts.rekeyed, 1);
         assert_eq!((views.slot_counts.scenes, views.slot_counts.view_scenes), (6, 5));
-        assert!(views.slots_line().starts_with("view slots: 6 scenes, 5 of them of a view; 2 slots known now (1 into a texture)"));
+        assert!(views
+            .slots_line()
+            .starts_with("view slots: 6 scenes, 5 of them of a view; 2 slots known now (1 into a texture)"));
         // A new world camera takes the main slot with no retirement: no fault of the stream.
         views.note_scene(Some(MAIN_VIEW), 11, 100, 0);
         assert_eq!((views.slot_counts.rekeyed, views.slot_counts.main_cameras), (1, 1));
@@ -643,13 +710,27 @@ mod tests {
         };
         let mut views = Views::default();
         views.note_scene_record(&record(10, 100, 0x4000, crate::data::SCENE_BACK_BUFFER));
-        assert_eq!(views.slots[0], Some(ViewSlot { camera: 10, root: 100, target: 0 }));
+        assert_eq!(
+            views.slots[0],
+            Some(ViewSlot {
+                camera: 10,
+                root: 100,
+                target: 0
+            })
+        );
         // The last target set differs, and so does the root: the same back-buffer view.
         views.note_scene_record(&record(10, 101, 0x5000, crate::data::SCENE_BACK_BUFFER));
         assert_eq!((views.slot_counts.rekeyed, views.slot_counts.main_cameras), (0, 0));
         // Without the flag, word 4 is the target.
         views.note_scene_record(&record(10, 101, 0x5000, 0));
-        assert_eq!(views.slots[0], Some(ViewSlot { camera: 10, root: 101, target: 0x5000 }));
+        assert_eq!(
+            views.slots[0],
+            Some(ViewSlot {
+                camera: 10,
+                root: 101,
+                target: 0x5000
+            })
+        );
     }
 
     /// A mod's options (`mge.camera.setViewOptions`) add parts to the view of its slot, within the
@@ -663,7 +744,10 @@ mod tests {
         views.note_scene(Some(3), 20, 200, 7);
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         let picture = views.group(0).unwrap();
-        assert!(picture.additions.contains(Additions::LAND.with(Additions::STATICS)) && !picture.additions.contains(Additions::GRASS));
+        assert!(
+            picture.additions.contains(Additions::LAND.with(Additions::STATICS))
+                && !picture.additions.contains(Additions::GRASS)
+        );
         assert_eq!(picture.place, Some(0));
         views.note_scene(Some(4), 21, 200, 8);
         assert!(views.scene_begin(SCENE_WORLD, true, true));
@@ -688,7 +772,10 @@ mod tests {
         assert!(views.scene_begin(SCENE_WORLD, true, true));
         let picture = views.group(0).unwrap();
         assert!(picture.additions.contains(Additions::POST_COVER));
-        assert_eq!(crate::view_kind::tier_parts(picture.kind, picture.additions), Additions::TIER_POST);
+        assert_eq!(
+            crate::view_kind::tier_parts(picture.kind, picture.additions),
+            Additions::TIER_POST
+        );
         assert!(views.scene_begin(SCENE_OTHER, false, false));
         let screen = views.group(1).unwrap();
         assert!(screen.additions.contains(Additions::POST_COVER));
@@ -703,19 +790,55 @@ mod tests {
         let both = Additions::TIER_AFTER.with(Additions::TIER_POST);
         // A flush, then the scene's end.
         let flush = end_calls_due(both, (false, false), TierPoint::Flush);
-        assert_eq!(flush, EndCalls { grass: true, post: false });
+        assert_eq!(
+            flush,
+            EndCalls {
+                grass: true,
+                post: false
+            }
+        );
         let end = end_calls_due(both, (flush.grass, flush.post), TierPoint::SceneEnd);
-        assert_eq!(end, EndCalls { grass: false, post: true });
+        assert_eq!(
+            end,
+            EndCalls {
+                grass: false,
+                post: true
+            }
+        );
         assert_eq!(end_calls_due(both, (true, true), TierPoint::SceneEnd), EndCalls::default());
         // No flush: both at the scene's end.
-        assert_eq!(end_calls_due(both, (false, false), TierPoint::SceneEnd), EndCalls { grass: true, post: true });
+        assert_eq!(
+            end_calls_due(both, (false, false), TierPoint::SceneEnd),
+            EndCalls { grass: true, post: true }
+        );
         // The post chain alone waits for the scene's end; the grass alone has no post.
-        assert_eq!(end_calls_due(Additions::TIER_POST, (false, false), TierPoint::Flush), EndCalls::default());
-        assert_eq!(end_calls_due(Additions::TIER_POST, (false, false), TierPoint::SceneEnd), EndCalls { grass: false, post: true });
-        assert_eq!(end_calls_due(Additions::TIER_AFTER, (false, false), TierPoint::SceneEnd), EndCalls { grass: true, post: false });
+        assert_eq!(
+            end_calls_due(Additions::TIER_POST, (false, false), TierPoint::Flush),
+            EndCalls::default()
+        );
+        assert_eq!(
+            end_calls_due(Additions::TIER_POST, (false, false), TierPoint::SceneEnd),
+            EndCalls {
+                grass: false,
+                post: true
+            }
+        );
+        assert_eq!(
+            end_calls_due(Additions::TIER_AFTER, (false, false), TierPoint::SceneEnd),
+            EndCalls {
+                grass: true,
+                post: false
+            }
+        );
         // Parts of the start of the world, or no parts, have no call at the end.
-        assert_eq!(end_calls_due(Additions::TIER_BEFORE, (false, false), TierPoint::SceneEnd), EndCalls::default());
-        assert_eq!(end_calls_due(Additions::NONE, (false, false), TierPoint::SceneEnd), EndCalls::default());
+        assert_eq!(
+            end_calls_due(Additions::TIER_BEFORE, (false, false), TierPoint::SceneEnd),
+            EndCalls::default()
+        );
+        assert_eq!(
+            end_calls_due(Additions::NONE, (false, false), TierPoint::SceneEnd),
+            EndCalls::default()
+        );
     }
 
     /// The kind of a view comes from the camera and the target: the world camera on a mod's root
@@ -733,7 +856,10 @@ mod tests {
         assert_eq!(screen.kind, ViewKind::OtherScreen);
         assert!(screen.additions.contains(Additions::SHADOW_RECEIVE) && !screen.additions.contains(Additions::LAND));
         assert!(views.scene_begin(SCENE_WORLD, true, true));
-        assert_eq!((views.group(2).unwrap().kind, views.group(2).unwrap().additions), (ViewKind::Picture, Additions::NONE));
+        assert_eq!(
+            (views.group(2).unwrap().kind, views.group(2).unwrap().additions),
+            (ViewKind::Picture, Additions::NONE)
+        );
         views.scene_begin(SCENE_UI, false, false);
         assert!(views.scene_begin(SCENE_OTHER, false, false));
         let after = views.group(3).unwrap();
@@ -869,7 +995,7 @@ mod tests {
         };
         let due = plan_of(SCENE_WALK_DUE);
         assert!(!due.2.is_empty(), "the event starts the world");
-        assert!(due.1.0.is_empty(), "no draw starts the world");
+        assert!(due.1 .0.is_empty(), "no draw starts the world");
         // Not due: the draw after the sky starts the world, as in a stream without the event.
         let (_, started, _) = plan_of(0);
         assert_ne!(started, due.1);

@@ -56,7 +56,14 @@ struct Work {
     /// The number of calls that ran as Rust in the second frame.
     live_calls_ran: u64,
 }
-static mut WORK: Work = Work { first: Vec::new(), second: Vec::new(), third: Vec::new(), modes: Vec::new(), live_calls_before: 0, live_calls_ran: 0 };
+static mut WORK: Work = Work {
+    first: Vec::new(),
+    second: Vec::new(),
+    third: Vec::new(),
+    modes: Vec::new(),
+    live_calls_before: 0,
+    live_calls_ran: 0,
+};
 
 /// Starts a comparison at the next Present. Returns false when a comparison is in progress.
 pub fn request(kind: Kind) -> bool {
@@ -160,7 +167,10 @@ pub unsafe fn on_present() {
             device::end(&mut work.third);
             let ran = work.live_calls_ran;
             let mut text = if work.first != work.third {
-                format!("RETRY the scene changed between the two engine frames; {}", compare(&work.first, &work.third, "engine", "engine"))
+                format!(
+                    "RETRY the scene changed between the two engine frames; {}",
+                    compare(&work.first, &work.third, "engine", "engine")
+                )
             } else {
                 compare(&work.first, &work.second, "engine", "rust")
             };

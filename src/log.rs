@@ -56,7 +56,11 @@ fn find_mge_log_line() -> usize {
         }
         crate::win::GetProcAddress(module as *mut c_void, c"MGE_LogLine".as_ptr().cast())
     };
-    if export.is_null() { MISSING } else { export as usize }
+    if export.is_null() {
+        MISSING
+    } else {
+        export as usize
+    }
 }
 
 /// Names the plugin's own log at `path`, one time: a second call keeps the file of the first,
@@ -177,7 +181,10 @@ mod tests {
         // Back to the test build's own log for the other tests.
         MGE_LOG_LINE.store(MISSING, Ordering::Release);
         let taken = TAKEN.lock().unwrap().clone();
-        assert!(taken.iter().any(|line| line == "own device: made\nstream: two lines"), "{taken:?}");
+        assert!(
+            taken.iter().any(|line| line == "own device: made\nstream: two lines"),
+            "{taken:?}"
+        );
         assert!(taken.iter().any(|line| line == "a NUL inside"), "{taken:?}");
         assert!(!path.exists(), "open made a file with the export");
         std::fs::remove_dir_all(&folder).unwrap();

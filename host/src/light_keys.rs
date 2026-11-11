@@ -26,7 +26,11 @@ use crate::data::DrawData;
 pub(crate) fn colour_takes_no_light(data: &DrawData) -> bool {
     let diffuse_from_material = data.more[0] != 1;
     let ambient_from_material = data.counts[2] != 1;
-    lit_for_each_pixel(data) && diffuse_from_material && ambient_from_material && black(data.material_diffuse) && black(data.material_ambient)
+    lit_for_each_pixel(data)
+        && diffuse_from_material
+        && ambient_from_material
+        && black(data.material_diffuse)
+        && black(data.material_ambient)
 }
 
 /// The draw is lit, and the extension makes its light for each pixel (bit 128 of `counts.w`):

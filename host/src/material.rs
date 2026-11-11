@@ -124,23 +124,46 @@ impl Material {
         }
         let w = |i: usize| u32::from_le_bytes([data[i * 4], data[i * 4 + 1], data[i * 4 + 2], data[i * 4 + 3]]);
         let f = |i: usize| f32::from_bits(w(i));
-        let map = |at: usize| Map { texture: w(at), clamp: w(at + 1), filter: w(at + 2), set: w(at + 3), present: w(at + 4) != 0 };
+        let map = |at: usize| Map {
+            texture: w(at),
+            clamp: w(at + 1),
+            filter: w(at + 2),
+            set: w(at + 3),
+            present: w(at + 4) != 0,
+        };
         let effect = |at: usize, present: bool| -> Option<Effect> {
             (present && data.len() >= WORDS_WITH_EFFECTS * 4).then(|| {
                 let flags = w(at + 12);
                 if flags & EFFECT_TURNS != 0 {
-                    return Effect { matrix: [0.0; 9], translation: [0.0; 3], flags: flags & !EFFECT_TURNS, turning: Some(w(at)) };
+                    return Effect {
+                        matrix: [0.0; 9],
+                        translation: [0.0; 3],
+                        flags: flags & !EFFECT_TURNS,
+                        turning: Some(w(at)),
+                    };
                 }
-                Effect { matrix: core::array::from_fn(|k| f(at + k)), translation: core::array::from_fn(|k| f(at + 9 + k)), flags, turning: None }
+                Effect {
+                    matrix: core::array::from_fn(|k| f(at + k)),
+                    translation: core::array::from_fn(|k| f(at + 9 + k)),
+                    flags,
+                    turning: None,
+                }
             })
         };
         // Every word of a map past the 8 is in the record: `decals` counts them.
         let past_the_maps = (w(7) as usize).saturating_sub(2);
         let in_record = (data.len() / 4).saturating_sub(WORDS_WITH_EFFECTS) / MAP_WORDS;
         if past_the_maps > in_record {
-            println!("material: a record counts {} decals and has the words of {}: the rest are not drawn", w(7), 2 + in_record);
+            println!(
+                "material: a record counts {} decals and has the words of {}: the rest are not drawn",
+                w(7),
+                2 + in_record
+            );
         }
-        let maps =(0..8).map(|i| map(8 + i * MAP_WORDS)).chain((0..past_the_maps.min(in_record)).map(|i| map(WORDS_WITH_EFFECTS + i * MAP_WORDS))).collect();
+        let maps = (0..8)
+            .map(|i| map(8 + i * MAP_WORDS))
+            .chain((0..past_the_maps.min(in_record)).map(|i| map(WORDS_WITH_EFFECTS + i * MAP_WORDS)))
+            .collect();
         Some(Material {
             flags: w(1),
             source_blend: w(2),
@@ -158,9 +181,21 @@ impl Material {
             stencil: core::array::from_fn(|k| w(71 + k)),
             fog_mode: w(80),
             own_fog: (w(1) & OWN_FOG != 0).then(|| (w(78), f(54), f(55))),
-            environment: Map { texture: w(81), clamp: w(82), filter: w(83), set: 1, present: w(1) & ENVIRONMENT_MAP != 0 },
+            environment: Map {
+                texture: w(81),
+                clamp: w(82),
+                filter: w(83),
+                set: 1,
+                present: w(1) & ENVIRONMENT_MAP != 0,
+            },
             environment_coordinates: w(84),
-            fog_map: Map { texture: w(85), clamp: w(86), filter: w(87), set: 1, present: w(1) & FOG_MAP != 0 },
+            fog_map: Map {
+                texture: w(85),
+                clamp: w(86),
+                filter: w(87),
+                set: 1,
+                present: w(1) & FOG_MAP != 0,
+            },
             fog_map_coordinates: w(88),
             projected_lights: w(89),
             projected_shadows: w(90),
@@ -171,20 +206,35 @@ impl Material {
 
     /// The map of a stage's `source` that names one of [`Material::maps`].
     pub fn map_of_source(&self, source: u32) -> Map {
-        let index = if source >= SOURCE_PAST_THE_MAPS { source - SOURCE_PAST_THE_MAPS + 8 } else { source };
+        let index = if source >= SOURCE_PAST_THE_MAPS {
+            source - SOURCE_PAST_THE_MAPS + 8
+        } else {
+            source
+        };
         self.maps[index as usize]
     }
 
     /// The values of a bump stage for the shader: the four of the bump matrix, then the scale and
     /// the offset of the luminance, which the record has from the bump map.
     pub fn stage_bump(&self) -> [f32; 6] {
-        [self.bump[2], self.bump[3], self.bump[4], self.bump[5], self.bump[0], self.bump[1]]
+        [
+            self.bump[2],
+            self.bump[3],
+            self.bump[4],
+            self.bump[5],
+            self.bump[0],
+            self.bump[1],
+        ]
     }
 }
 
 /// The `source` of a stage of the map at `index` of [`Material::maps`].
 fn source_of_map(index: usize) -> u32 {
-    if index < 8 { index as u32 } else { SOURCE_PAST_THE_MAPS + (index - 8) as u32 }
+    if index < 8 {
+        index as u32
+    } else {
+        SOURCE_PAST_THE_MAPS + (index - 8) as u32
+    }
 }
 
 /// One stage of the derived state: the texture, the colour and alpha operations
@@ -285,7 +335,11 @@ impl Derived {
         if !has_color {
             return [0, 0, 0];
         }
-        [self.sources[0].unwrap_or(1), self.sources[1].unwrap_or(0), self.sources[2].unwrap_or(1)]
+        [
+            self.sources[0].unwrap_or(1),
+            self.sources[1].unwrap_or(0),
+            self.sources[2].unwrap_or(1),
+        ]
     }
 }
 
@@ -401,15 +455,30 @@ fn ops(slot: u32, first: bool, apply: bool, has_texture: bool) -> ([u32; 3], [u3
 /// `envmap_lit`: the game's environment map stages of the reflection vector take the lit
 /// colour (the stream header's `HEADER_ENVMAP_LIT`).
 pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
-    let mut d = Derived { modelled: m.flags & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0, ..Default::default() };
+    let mut d = Derived {
+        modelled: m.flags & (PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0,
+        ..Default::default()
+    };
     let apply = m.apply_mode != 0;
 
     // The render states (`NiDX8RenderState::updateD3DState` 0x6B82A0): the depth write is
     // flag 2 of the z-buffer property, its function ALWAYS without the test flag; the fill is
     // WIREFRAME (2) with the wireframe flag, else SOLID (3); the shade GOURAUD (2) with the
     // shade flag, else FLAT (1).
-    d.alpha_test = if m.flags & ALPHA_TEST != 0 { [1, compare_function(m.alpha_function), m.alpha_reference] } else { [0, 0, 0] };
-    d.depth = [1, (m.flags & DEPTH_WRITE != 0) as u32, if m.flags & DEPTH_TEST != 0 { compare_function(m.depth_function) } else { 8 }];
+    d.alpha_test = if m.flags & ALPHA_TEST != 0 {
+        [1, compare_function(m.alpha_function), m.alpha_reference]
+    } else {
+        [0, 0, 0]
+    };
+    d.depth = [
+        1,
+        (m.flags & DEPTH_WRITE != 0) as u32,
+        if m.flags & DEPTH_TEST != 0 {
+            compare_function(m.depth_function)
+        } else {
+            8
+        },
+    ];
     // The cull mode from the draw mode of the stencil property, with the stencil test on or
     // off (`setStencilStates` 0x6B8C10: `cullModeMapping` at 0x190, indexed by twice the mode
     // plus `bLeftRightSwap`, which the engine leaves 0): both or CCW draw with the CW faces
@@ -421,7 +490,15 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
     // does (`stencilFuncMapping` at 0x158); the alpha and z-buffer properties count the
     // other way.
     d.stencil = if m.flags & STENCIL != 0 {
-        [1, (m.stencil[0] + 1).min(8), m.stencil[1], m.stencil[2], stencil_action(m.stencil[3]), stencil_action(m.stencil[4]), stencil_action(m.stencil[5])]
+        [
+            1,
+            (m.stencil[0] + 1).min(8),
+            m.stencil[1],
+            m.stencil[2],
+            stencil_action(m.stencil[3]),
+            stencil_action(m.stencil[4]),
+            stencil_action(m.stencil[5]),
+        ]
     } else {
         [0; 7]
     };
@@ -467,7 +544,15 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
         let mp = m.maps[map];
         let (color, alpha) = ops(slot, first, apply, mp.texture != 0);
         let set = coordinate_set(mp.set, sets);
-        Stage { texture: mp.texture, color, alpha, set, source: source_of_map(map), clamp: mp.clamp, filter: mp.filter }
+        Stage {
+            texture: mp.texture,
+            color,
+            alpha,
+            set,
+            source: source_of_map(map),
+            clamp: mp.clamp,
+            filter: mp.filter,
+        }
     };
     let mut pass: Vec<Stage> = Vec::new();
     let mut pass_slot = 2u32;
@@ -482,7 +567,11 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
     // texture too). This test takes it also for the maps that give no stage here (a map
     // without a texture; a gloss or bump map without an environment map), taken to give the
     // same stages; the long path is not read for them.
-    let multi = textured(DARK) || textured(DETAIL) || textured(GLOW) || m.decals != 0 || (m.environment.present && (textured(GLOSS) || textured(BUMP)));
+    let multi = textured(DARK)
+        || textured(DETAIL)
+        || textured(GLOW)
+        || m.decals != 0
+        || (m.environment.present && (textured(GLOSS) || textured(BUMP)));
     let effects = m.environment.present || m.fog_map.present;
     if !multi && !effects {
         // The short path: the base stage, or the stage with no texture.
@@ -490,10 +579,22 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
             pass.push(stage(BASE, 2, true));
         } else {
             let (color, alpha) = ops(2, true, true, false);
-            pass.push(Stage { texture: 0, color, alpha, set: 0, source: 10, clamp: 3, filter: 1 });
+            pass.push(Stage {
+                texture: 0,
+                color,
+                alpha,
+                set: 0,
+                source: 10,
+                clamp: 3,
+                filter: 1,
+            });
         }
         d.passes.push(pass);
-        d.blends.push(if m.flags & BLEND != 0 { [1, blend_mode(m.source_blend), blend_mode(m.destination_blend)] } else { [0, 0, 0] });
+        d.blends.push(if m.flags & BLEND != 0 {
+            [1, blend_mode(m.source_blend), blend_mode(m.destination_blend)]
+        } else {
+            [0, 0, 0]
+        });
         d.alpha_tests.push(d.alpha_test);
         return d;
     }
@@ -505,7 +606,15 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
         }
     } else if !has(DARK) {
         let (color, alpha) = ops(2, true, true, false);
-        pass.push(Stage { texture: 0, color, alpha, set: 0, source: 10, clamp: 3, filter: 1 });
+        pass.push(Stage {
+            texture: 0,
+            color,
+            alpha,
+            set: 0,
+            source: 10,
+            clamp: 3,
+            filter: 1,
+        });
     }
     if has(DARK) {
         let first = pass.is_empty();
@@ -559,7 +668,15 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
         if envmap_lit && reflection {
             color = if first { [4, 2, 0] } else { [25, 2, 0] };
         }
-        pass.push(Stage { texture: m.environment.texture, color, alpha, set: 0, source: 8, clamp: m.environment.clamp, filter: m.environment.filter });
+        pass.push(Stage {
+            texture: m.environment.texture,
+            color,
+            alpha,
+            set: 0,
+            source: 8,
+            clamp: m.environment.clamp,
+            filter: m.environment.filter,
+        });
         if has(GLOSS) {
             pass.push(stage(GLOSS, 2, false));
         }
@@ -583,7 +700,15 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
             pass_slot = 1;
         }
         let (color, alpha) = ops(1, pass.is_empty(), false, true);
-        pass.push(Stage { texture: m.fog_map.texture, color, alpha, set: 1, source: 9, clamp: m.fog_map.clamp, filter: m.fog_map.filter });
+        pass.push(Stage {
+            texture: m.fog_map.texture,
+            color,
+            alpha,
+            set: 1,
+            source: 9,
+            clamp: m.fog_map.clamp,
+            filter: m.fog_map.filter,
+        });
     }
     if !pass.is_empty() {
         passes.push((pass, pass_slot));
@@ -591,11 +716,16 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
     for (index, (stages, slot)) in passes.into_iter().enumerate() {
         d.passes.push(stages);
         d.blends.push(if index == 0 {
-            if m.flags & BLEND != 0 { [1, blend_mode(m.source_blend), blend_mode(m.destination_blend)] } else { [0, 0, 0] }
+            if m.flags & BLEND != 0 {
+                [1, blend_mode(m.source_blend), blend_mode(m.destination_blend)]
+            } else {
+                [0, 0, 0]
+            }
         } else {
             template_blend(slot)
         });
-        d.alpha_tests.push(if index == 0 { d.alpha_test } else { template_alpha_test(slot) });
+        d.alpha_tests
+            .push(if index == 0 { d.alpha_test } else { template_alpha_test(slot) });
     }
     d
 }
@@ -635,12 +765,16 @@ const APPLY_MODULATE: u32 = 2;
 /// further stages). The engine's faders at rest are such draws: three full-screen quads
 /// each frame. Fog changes the colour, not the alpha.
 pub fn keeps_picture(m: &Material, material_alpha: f32) -> bool {
-    let blend_keeps = m.flags & BLEND != 0 && m.source_blend == ALPHA_SOURCE && matches!(m.destination_blend, ALPHA_INVERSE_SOURCE | ALPHA_ONE);
+    let blend_keeps = m.flags & BLEND != 0
+        && m.source_blend == ALPHA_SOURCE
+        && matches!(m.destination_blend, ALPHA_INVERSE_SOURCE | ALPHA_ONE);
     let writes_no_more = m.flags & (DEPTH_WRITE | STENCIL) == 0;
     let alpha_of_material = m.source_mode == VERTEX_SOURCE_IGNORE && m.lighting_mode == LIGHTING_EMISSIVE_AMBIENT_DIFFUSE;
     let base = &m.maps[BASE];
     let base_alone = !base.present || m.apply_mode == APPLY_MODULATE;
-    let no_other_stage = m.maps.iter().skip(1).all(|map| !map.present) && m.decals == 0 && m.flags & (ENVIRONMENT_MAP | FOG_MAP | PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0;
+    let no_other_stage = m.maps.iter().skip(1).all(|map| !map.present)
+        && m.decals == 0
+        && m.flags & (ENVIRONMENT_MAP | FOG_MAP | PROJECTED_LIGHTS | PROJECTED_SHADOWS) == 0;
     blend_keeps && writes_no_more && alpha_of_material && base_alone && no_other_stage && material_alpha == 0.0
 }
 
@@ -765,10 +899,21 @@ mod engine_rule_tests {
         // keep ADD and SELECTARG1 (the rainbow particles of the test level's exhibits 107 and
         // 108 drew black when every map took MULTIPLYADD by their black vertex colour).
         for mode in [0, 1, 4] {
-            assert_eq!(environment_stage(&derive(&material_of_mode(false, 0, mode), 1, true)).color, [7, 2, 1], "mode {mode}");
-            assert_eq!(environment_stage(&derive(&material_of_mode(true, 0, mode), 1, true)).color, [2, 2, 0], "mode {mode}");
+            assert_eq!(
+                environment_stage(&derive(&material_of_mode(false, 0, mode), 1, true)).color,
+                [7, 2, 1],
+                "mode {mode}"
+            );
+            assert_eq!(
+                environment_stage(&derive(&material_of_mode(true, 0, mode), 1, true)).color,
+                [2, 2, 0],
+                "mode {mode}"
+            );
         }
-        assert_eq!(environment_stage(&derive(&material_of_mode(false, 0, 3), 1, true)).color, [25, 2, 0]);
+        assert_eq!(
+            environment_stage(&derive(&material_of_mode(false, 0, 3), 1, true)).color,
+            [25, 2, 0]
+        );
     }
 
     #[test]
@@ -834,7 +979,11 @@ mod pass_slot_tests {
 
     /// The sources of the stages of each pass.
     fn passes(m: &Material) -> Vec<Vec<u32>> {
-        derive(m, 1, false).passes.iter().map(|pass| pass.iter().map(|stage| stage.source).collect()).collect()
+        derive(m, 1, false)
+            .passes
+            .iter()
+            .map(|pass| pass.iter().map(|stage| stage.source).collect())
+            .collect()
     }
 
     const ENVIRONMENT: u32 = 8;
@@ -849,7 +998,11 @@ mod pass_slot_tests {
         words[8] = 50;
         words[8 + 4] = 1;
         for i in 0..decals {
-            let at = if i < 2 { 8 + (DECAL0 + i) * MAP_WORDS } else { WORDS_WITH_EFFECTS + (i - 2) * MAP_WORDS };
+            let at = if i < 2 {
+                8 + (DECAL0 + i) * MAP_WORDS
+            } else {
+                WORDS_WITH_EFFECTS + (i - 2) * MAP_WORDS
+            };
             words[at] = 100 + i as u32;
             words[at + 1] = i as u32;
             words[at + 4] = 1;
@@ -871,7 +1024,10 @@ mod pass_slot_tests {
                 assert_eq!(stage.clamp, i as u32);
                 // The sampler and the coordinate of a stage find their map by its source.
                 assert_eq!(m.map_of_source(stage.source).texture, 100 + i as u32);
-                assert!(!matches!(stage.source, 8..=10), "a decal must not read as the environment map, the fog map or no texture");
+                assert!(
+                    !matches!(stage.source, 8..=10),
+                    "a decal must not read as the environment map, the fog map or no texture"
+                );
             }
         }
     }
@@ -897,12 +1053,18 @@ mod pass_slot_tests {
     fn a_stage_of_slot_0_does_not_join_a_decal_pass() {
         let [base, decal, glow] = [BASE as u32, DECAL0 as u32, GLOW as u32];
         let d = derive(&material(&[DECAL0, GLOW], false), 1, false);
-        assert_eq!(passes(&material(&[DECAL0, GLOW], false)), [vec![base], vec![decal], vec![glow]]);
+        assert_eq!(
+            passes(&material(&[DECAL0, GLOW], false)),
+            [vec![base], vec![decal], vec![glow]]
+        );
         // A pass of its own adds: in the decal's pass it blended by the decal's alpha.
         assert_eq!(d.blends[2], ADD);
 
         let d = derive(&material(&[DECAL0], true), 1, false);
-        assert_eq!(passes(&material(&[DECAL0], true)), [vec![base], vec![decal], vec![ENVIRONMENT]]);
+        assert_eq!(
+            passes(&material(&[DECAL0], true)),
+            [vec![base], vec![decal], vec![ENVIRONMENT]]
+        );
         assert_eq!(d.blends[2], ADD);
         // The first stage of a pass takes the texture alone (SELECTARG1).
         assert_eq!(d.passes[2][0].color, [2, 2, 0]);
@@ -911,18 +1073,28 @@ mod pass_slot_tests {
     #[test]
     fn the_glow_does_not_join_a_bump_pass_after_the_first() {
         let [base, decal, bump, glow] = [BASE as u32, DECAL0 as u32, BUMP as u32, GLOW as u32];
-        assert_eq!(passes(&material(&[DECAL0, BUMP, GLOW], true)), [vec![base], vec![decal], vec![bump, ENVIRONMENT], vec![glow]]);
+        assert_eq!(
+            passes(&material(&[DECAL0, BUMP, GLOW], true)),
+            [vec![base], vec![decal], vec![bump, ENVIRONMENT], vec![glow]]
+        );
     }
 
     #[test]
     fn the_glow_joins_a_pass_after_the_first_that_starts_with_slot_0() {
         let [base, gloss, glow] = [BASE as u32, GLOSS as u32, GLOW as u32];
-        assert_eq!(passes(&material(&[GLOSS, GLOW], true)), [vec![base], vec![ENVIRONMENT, gloss, glow]]);
+        assert_eq!(
+            passes(&material(&[GLOSS, GLOW], true)),
+            [vec![base], vec![ENVIRONMENT, gloss, glow]]
+        );
     }
 
     /// The sources of the stages of each pass for a geometry of `sets` texture sets.
     fn passes_of_sets(m: &Material, sets: u32) -> Vec<Vec<u32>> {
-        derive(m, sets, false).passes.iter().map(|pass| pass.iter().map(|stage| stage.source).collect()).collect()
+        derive(m, sets, false)
+            .passes
+            .iter()
+            .map(|pass| pass.iter().map(|stage| stage.source).collect())
+            .collect()
     }
 
     #[test]

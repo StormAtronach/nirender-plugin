@@ -32,7 +32,12 @@ pub unsafe fn entry_update(entry: usize, material: usize) -> u8 {
     wr(entry, ENTRY_REVISION, revision);
     // The game code moves alpha and shininess through the FPU. It copies the colours without the FPU.
     let alpha = x87_pass(rd(material, MP::alpha));
-    for (to, from) in [(EMISSIVE, MP::emissive), (AMBIENT, MP::ambient), (DIFFUSE, MP::diffuse), (SPECULAR, MP::specular)] {
+    for (to, from) in [
+        (EMISSIVE, MP::emissive),
+        (AMBIENT, MP::ambient),
+        (DIFFUSE, MP::diffuse),
+        (SPECULAR, MP::specular),
+    ] {
         wr::<u32>(entry, to, rd(material, from));
         wr::<u32>(entry, to + 4, rd(material, from + 4));
         wr::<u32>(entry, to + 8, rd(material, from + 8));
@@ -79,7 +84,8 @@ const PATCH_RENDER_TARGET_FLAGS: usize = 0x77445B;
 /// True when the game code calls `patchSetMaterialAlpha` in the place of `SetMaterial`.
 unsafe fn code_patch_material_alpha() -> bool {
     rd::<u8>(UPDATE_SET_MATERIAL_CALL, 0) == 0xE8
-        && (UPDATE_SET_MATERIAL_CALL + 5).wrapping_add(rd::<u32>(UPDATE_SET_MATERIAL_CALL, 1) as usize) == PATCH_SET_MATERIAL_ALPHA
+        && (UPDATE_SET_MATERIAL_CALL + 5).wrapping_add(rd::<u32>(UPDATE_SET_MATERIAL_CALL, 1) as usize)
+            == PATCH_SET_MATERIAL_ALPHA
 }
 
 /// 0x6C2680 `NiDX8MaterialManager::UpdateToDevice`: sends the current material to the device
@@ -127,26 +133,41 @@ unsafe fn set_current_material_regions(set: &mut crate::shadow::Regions, this: u
     set.add(entry, ENTRY_SIZE);
 }
 
-port_thiscall!(entry_update_port, 0x6C2240, "NiDX8MaterialManager::Entry::Update",
+port_thiscall!(
+    entry_update_port,
+    0x6C2240,
+    "NiDX8MaterialManager::Entry::Update",
     fn(this, material: usize) -> u8,
     compare_eax = true,
     regions = |set| set.add(this, ENTRY_SIZE),
-    rust = entry_update);
+    rust = entry_update
+);
 
-port_thiscall!(set_current_material_port, 0x6C2620, "NiDX8MaterialManager::SetCurrentMaterial",
+port_thiscall!(
+    set_current_material_port,
+    0x6C2620,
+    "NiDX8MaterialManager::SetCurrentMaterial",
     fn(this, material: usize) -> (),
     compare_eax = false,
     regions = |set| set_current_material_regions(set, this, material),
-    rust = set_current_material);
+    rust = set_current_material
+);
 
-port_thiscall!(update_to_device_port, 0x6C2680, "NiDX8MaterialManager::UpdateToDevice",
+port_thiscall!(
+    update_to_device_port,
+    0x6C2680,
+    "NiDX8MaterialManager::UpdateToDevice",
     fn(this, device: usize) -> (),
     compare_eax = false,
     regions = |set| update_to_device_regions(set, this),
-    rust = update_to_device);
+    rust = update_to_device
+);
 
-pub static PORTS: &[&crate::shadow::PortState] =
-    &[&entry_update_port::STATE, &set_current_material_port::STATE, &update_to_device_port::STATE];
+pub static PORTS: &[&crate::shadow::PortState] = &[
+    &entry_update_port::STATE,
+    &set_current_material_port::STATE,
+    &update_to_device_port::STATE,
+];
 
 #[cfg(test)]
 mod tests {
@@ -186,7 +207,11 @@ mod tests {
         let mut material = [0u8; MP::SIZE];
         let mut entry = [0u8; ENTRY_SIZE];
         let mut manager = [0u8; MM::SIZE];
-        let (m, e, mm) = (material.as_mut_ptr() as usize, entry.as_mut_ptr() as usize, manager.as_mut_ptr() as usize);
+        let (m, e, mm) = (
+            material.as_mut_ptr() as usize,
+            entry.as_mut_ptr() as usize,
+            manager.as_mut_ptr() as usize,
+        );
         unsafe {
             wr(m, MP::rendererData, e);
             wr::<u32>(m, MP::revisionID, 0); // The entry has this revision, so the port does not build it.

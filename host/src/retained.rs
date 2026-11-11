@@ -97,7 +97,12 @@ const _: () = assert!(core::mem::size_of::<SceneData>() == SCENE_SIZE);
 
 /// The buffers of the retained draws: the scenes, the light indexes, the lights.
 pub fn scene_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor { label: Some("scenes"), size: (SCENE_SLOTS * SCENE_SIZE) as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("scenes"),
+        size: (SCENE_SLOTS * SCENE_SIZE) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 pub fn light_index_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
@@ -352,13 +357,23 @@ impl JoinProbe {
     fn note(&mut self, counts: &mut JoinCounts, state: CallState) {
         if let Some(last) = &self.last {
             counts.pairs += 1;
-            let same = (last.key == state.key, last.stencil == state.stencil, last.vertices == state.vertices, last.indexes == state.indexes);
+            let same = (
+                last.key == state.key,
+                last.stencil == state.stencil,
+                last.vertices == state.vertices,
+                last.indexes == state.indexes,
+            );
             counts.same_pipeline += same.0 as u64;
             counts.same_stencil += same.1 as u64;
             counts.same_vertices += same.2 as u64;
             counts.same_indexes += same.3 as u64;
             let all = same.0 && same.1 && same.2 && same.3;
-            let stage = all && last.stages.as_ref().zip(state.stages.as_ref()).is_some_and(|(a, b)| Rc::ptr_eq(a, b));
+            let stage = all
+                && last
+                    .stages
+                    .as_ref()
+                    .zip(state.stages.as_ref())
+                    .is_some_and(|(a, b)| Rc::ptr_eq(a, b));
             Self::extend(&mut self.run, &mut counts.joins, all);
             Self::extend(&mut self.stage_run, &mut counts.stage_joins, stage);
         }
@@ -620,7 +635,9 @@ impl RetainedSet {
             if let Some(taken) = self.slots[slot as usize].take() {
                 self.ranges_total -= taken.ranges.len();
                 self.refresh_cull(slot);
-                self.light_indexes_live = self.light_indexes_live.saturating_sub(self.keys_of.get(&id).map_or(0, |keys| keys.len()));
+                self.light_indexes_live = self
+                    .light_indexes_live
+                    .saturating_sub(self.keys_of.get(&id).map_or(0, |keys| keys.len()));
                 pinned.extend(taken.pinned.iter().copied().filter(|&h| h != 0));
                 for entry in taken.effect_entries {
                     self.release_entry(entry);
@@ -639,7 +656,15 @@ impl RetainedSet {
     /// table or its draw changed: then it is made again.
     pub fn update_place(&mut self, id: u32, r: &Retained) -> bool {
         let Some(slots) = self.by_id.get(&id) else { return false };
-        let same = slots.iter().all(|&slot| self.slots[slot as usize].as_ref().is_some_and(|s| s.geometry == r.geometry && s.material == r.material && s.class == r.class && s.flags == r.flags && s.colours == r.colours));
+        let same = slots.iter().all(|&slot| {
+            self.slots[slot as usize].as_ref().is_some_and(|s| {
+                s.geometry == r.geometry
+                    && s.material == r.material
+                    && s.class == r.class
+                    && s.flags == r.flags
+                    && s.colours == r.colours
+            })
+        });
         if !same {
             return false;
         }
@@ -669,14 +694,18 @@ impl RetainedSet {
         let Some(slots) = self.by_id.get(&id) else { return };
         let step = uv.and_then(|uv| uv.matrix().map(|m| (uv.set, m)));
         for &slot in slots {
-            let Some(s) = self.slots[slot as usize].as_mut() else { continue };
+            let Some(s) = self.slots[slot as usize].as_mut() else {
+                continue;
+            };
             match step {
                 None => {
                     let Some(base) = s.uv_base.take() else { continue };
                     base.restore(&mut s.data);
                 }
                 Some((set, m)) => {
-                    let base = s.uv_base.get_or_insert_with(|| Box::new(crate::uv_animation::StageBase::of(&s.data)));
+                    let base = s
+                        .uv_base
+                        .get_or_insert_with(|| Box::new(crate::uv_animation::StageBase::of(&s.data)));
                     base.restore(&mut s.data);
                     crate::uv_animation::compose_matrix(&mut s.data, set, &m);
                 }
@@ -716,7 +745,11 @@ impl RetainedSet {
 
     /// The chains with a turning billboard, and those with only a controller.
     pub fn effect_chain_counts(&self) -> (usize, usize) {
-        let turning = self.effect_chains.values().filter(|chain| chain.turning_billboards() > 0).count();
+        let turning = self
+            .effect_chains
+            .values()
+            .filter(|chain| chain.turning_billboards() > 0)
+            .count();
         (turning, self.effect_chains.len() - turning)
     }
 
@@ -747,7 +780,9 @@ impl RetainedSet {
         }
         let matrix = match key {
             EntryKey::Chain(_) => [0.0; 16],
-            EntryKey::Plain(_) => crate::effect_turn::plain_stage(coordinates, &effect.matrix, &effect.translation, &self.entries_origin),
+            EntryKey::Plain(_) => {
+                crate::effect_turn::plain_stage(coordinates, &effect.matrix, &effect.translation, &self.entries_origin)
+            }
         };
         let entry = self.free_entries.pop().unwrap_or_else(|| {
             self.effect_entries.push(None);
@@ -761,7 +796,9 @@ impl RetainedSet {
 
     /// One stage less names the entry; the last one frees it.
     fn release_entry(&mut self, entry: u32) {
-        let Some(held) = self.effect_entries[entry as usize].as_mut() else { return };
+        let Some(held) = self.effect_entries[entry as usize].as_mut() else {
+            return;
+        };
         held.users -= 1;
         if held.users == 0 {
             let key = held.key;
@@ -798,7 +835,12 @@ impl RetainedSet {
                 }
                 EntryKey::Plain(words) if rebased => {
                     let f = |i: usize| f32::from_bits(words[1 + i]);
-                    crate::effect_turn::plain_stage(words[0], &core::array::from_fn(f), &core::array::from_fn(|i| f(9 + i)), &self.origin)
+                    crate::effect_turn::plain_stage(
+                        words[0],
+                        &core::array::from_fn(f),
+                        &core::array::from_fn(|i| f(9 + i)),
+                        &self.origin,
+                    )
                 }
                 EntryKey::Plain(_) => continue,
             };
@@ -812,10 +854,24 @@ impl RetainedSet {
     /// The stages of a draw at its place in the walk (a sky, weather or particle instance), whose
     /// record has the engine's: an effect that moves in the play takes its chain's value too, for the
     /// camera of the draw.
-    pub fn chain_stages(&self, material: &material::Material, view: &[f32; 16], location: [f64; 3], stages: &mut [[u32; EFFECT_STAGE_WORDS]; 2]) {
+    pub fn chain_stages(
+        &self,
+        material: &material::Material,
+        view: &[f32; 16],
+        location: [f64; 3],
+        stages: &mut [[u32; EFFECT_STAGE_WORDS]; 2],
+    ) {
         let camera = crate::effect_turn::Camera::of_view(view, location);
-        for (effect, words) in [material.environment_effect, material.fog_map_effect].iter().zip(stages.iter_mut()) {
-            let Some(chain) = effect.and_then(|effect| effect.turning).and_then(|id| self.effect_chains.get(&id)) else { continue };
+        for (effect, words) in [material.environment_effect, material.fog_map_effect]
+            .iter()
+            .zip(stages.iter_mut())
+        {
+            let Some(chain) = effect
+                .and_then(|effect| effect.turning)
+                .and_then(|id| self.effect_chains.get(&id))
+            else {
+                continue;
+            };
             for (word, value) in words[2..].iter_mut().zip(chain.camera_stage(&camera)) {
                 *word = value.to_bits();
             }
@@ -855,8 +911,10 @@ impl RetainedSet {
         };
         for b in 0..count as usize {
             let at = b * BONE_BYTES;
-            let rotation: [f32; 9] = core::array::from_fn(|i| f32::from_le_bytes(data[at + i * 4..at + i * 4 + 4].try_into().unwrap()));
-            let exact: [f64; 3] = core::array::from_fn(|i| f64::from_le_bytes(data[at + 36 + i * 8..at + 44 + i * 8].try_into().unwrap()));
+            let rotation: [f32; 9] =
+                core::array::from_fn(|i| f32::from_le_bytes(data[at + i * 4..at + i * 4 + 4].try_into().unwrap()));
+            let exact: [f64; 3] =
+                core::array::from_fn(|i| f64::from_le_bytes(data[at + 36 + i * 8..at + 44 + i * 8].try_into().unwrap()));
             self.bones[first as usize + b] = (rotation, exact);
         }
         self.bones_dirty = true;
@@ -896,7 +954,9 @@ impl RetainedSet {
 
     /// The first bone of a slot of the instance, for a slot made again.
     fn bones_first_of(&self, id: u32, needed: u32) -> u32 {
-        self.bones_of.get(&id).map_or(NO_BONES, |&(first, count)| slot_bones(first, count, needed))
+        self.bones_of
+            .get(&id)
+            .map_or(NO_BONES, |&(first, count)| slot_bones(first, count, needed))
     }
 
     /// The origin of the set follows the camera of the world: `camera` is the exact
@@ -970,7 +1030,10 @@ impl RetainedSet {
             }
             let (first, count) = (slot.data.light_range[0] as usize, slot.data.light_range[1] as usize);
             let indexes: Vec<u32> = self.light_indexes[first..(first + count).min(self.light_indexes.len())].to_vec();
-            println!("light dump retained table slot {} id {}: light_range {:?} counts {:?} indexes {:?} origin {:?} relative {}", slot.bucket, slot.id, slot.data.light_range, slot.data.counts, indexes, self.origin, self.relative);
+            println!(
+                "light dump retained table slot {} id {}: light_range {:?} counts {:?} indexes {:?} origin {:?} relative {}",
+                slot.bucket, slot.id, slot.data.light_range, slot.data.counts, indexes, self.origin, self.relative
+            );
             let values: Vec<LightData> = indexes.iter().filter_map(|&i| lights.get(i as usize).copied()).collect();
             crate::light_dump("retained table", &values);
         }
@@ -989,7 +1052,11 @@ impl RetainedSet {
 
     /// The texture handles that the slots pinned, a handle once for each use.
     pub fn pinned_textures(&self) -> impl Iterator<Item = u32> + '_ {
-        self.slots.iter().flatten().flat_map(|s| s.pinned).filter(|&handle| handle != 0)
+        self.slots
+            .iter()
+            .flatten()
+            .flat_map(|s| s.pinned)
+            .filter(|&handle| handle != 0)
     }
 
     /// The record `INSTANCE_SHOWN`: the instances that the engine displayed in the main view
@@ -1168,16 +1235,32 @@ pub fn view_planes(view: &[f32; 16], projection: &[f32; 16]) -> [[f32; 4]; 6] {
     let m = crate::replay::multiply64(&view.map(f64::from), &projection.map(f64::from));
     let col = |c: usize| [m[c], m[4 + c], m[8 + c], m[12 + c]];
     let (c0, c1, c2, c3) = (col(0), col(1), col(2), col(3));
-    let add = |a: [f64; 4], b: [f64; 4], sign: f64| [a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]];
-    let raw = [add(c3, c0, 1.0), add(c3, c0, -1.0), add(c3, c1, 1.0), add(c3, c1, -1.0), c2, add(c3, c2, -1.0)];
+    let add = |a: [f64; 4], b: [f64; 4], sign: f64| {
+        [a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]]
+    };
+    let raw = [
+        add(c3, c0, 1.0),
+        add(c3, c0, -1.0),
+        add(c3, c1, 1.0),
+        add(c3, c1, -1.0),
+        c2,
+        add(c3, c2, -1.0),
+    ];
     raw.map(|p| {
         let length = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-300);
-        [(p[0] / length) as f32, (p[1] / length) as f32, (p[2] / length) as f32, (p[3] / length) as f32]
+        [
+            (p[0] / length) as f32,
+            (p[1] / length) as f32,
+            (p[2] / length) as f32,
+            (p[3] / length) as f32,
+        ]
     })
 }
 
 fn in_view(bound: &[f32; 4], planes: &[[f32; 4]; 6]) -> bool {
-    planes.iter().all(|p| p[0] * bound[0] + p[1] * bound[1] + p[2] * bound[2] + p[3] >= -bound[3])
+    planes
+        .iter()
+        .all(|p| p[0] * bound[0] + p[1] * bound[1] + p[2] * bound[2] + p[3] >= -bound[3])
 }
 
 /// The view tests its planes: every view of the main view's instances but the main view itself
@@ -1243,7 +1326,12 @@ pub fn light_data(l: &[u8], origin: Option<[f64; 3]>) -> LightData {
         // The engine keeps the radius of a point light in its specular colour (written by
         // `game_dynamicLightTest` 0x4D3039, read back at 0x4D3150 and by
         // `game_getLightRadiusFromSpecular` 0x4D1B80): the first specular word.
-        cone: [(float(l, 24 * 4) * 0.5).cos(), (float(l, 25 * 4) * 0.5).cos(), float(l, 5 * 4), 0.0],
+        cone: [
+            (float(l, 24 * 4) * 0.5).cos(),
+            (float(l, 25 * 4) * 0.5).cos(),
+            float(l, 5 * 4),
+            0.0,
+        ],
     }
 }
 
@@ -1270,8 +1358,21 @@ pub(crate) fn view_world_begins(sky: bool, sky_hidden: bool, walk_marked: bool, 
 /// the draw that begins it ([`view_world_begins`]). `extension_world`: the scene is a view of
 /// its own or the world scene of the back buffer, and the extension draws the parts that the
 /// world's start orders.
-pub(crate) fn world_draw_is_early(extension_world: bool, held: bool, sky: bool, sky_hidden: bool, walk_marked: bool, sky_seen: bool, world_begun: bool) -> bool {
-    extension_world && !held && !world_begun && (sky_seen || sky_hidden) && !sky && !view_world_begins(sky, sky_hidden, walk_marked, sky_seen)
+pub(crate) fn world_draw_is_early(
+    extension_world: bool,
+    held: bool,
+    sky: bool,
+    sky_hidden: bool,
+    walk_marked: bool,
+    sky_seen: bool,
+    world_begun: bool,
+) -> bool {
+    extension_world
+        && !held
+        && !world_begun
+        && (sky_seen || sky_hidden)
+        && !sky
+        && !view_world_begins(sky, sky_hidden, walk_marked, sky_seen)
 }
 
 /// A place begins the world of a view of its own when its instance is not of the sky: the
@@ -1332,7 +1433,11 @@ impl Renderer {
         };
         // `pinned_free` goes from the highest slot to the lowest: `pop` takes the lowest.
         let index = if let Some(index) = self.pinned_free.pop() {
-            self.pinned_textures[index] = PinnedTexture { handle, view: view.clone(), uses: 1 };
+            self.pinned_textures[index] = PinnedTexture {
+                handle,
+                view: view.clone(),
+                uses: 1,
+            };
             index
         } else {
             if self.pinned_textures.len() + 1 >= self.array_cap.saturating_sub(crate::FRAME_RESERVE) {
@@ -1348,7 +1453,11 @@ impl Renderer {
                 self.counts.pinned_over += 1;
                 return 0;
             }
-            self.pinned_textures.push(PinnedTexture { handle, view: view.clone(), uses: 1 });
+            self.pinned_textures.push(PinnedTexture {
+                handle,
+                view: view.clone(),
+                uses: 1,
+            });
             self.pinned_textures.len() - 1
         };
         // The arrays of the frame in progress hold the pinned slots of its start at their
@@ -1374,7 +1483,9 @@ impl Renderer {
         if handle == 0 {
             return;
         }
-        let Some(&index) = self.pinned_index.get(&handle) else { return };
+        let Some(&index) = self.pinned_index.get(&handle) else {
+            return;
+        };
         let pinned = &mut self.pinned_textures[index];
         pinned.uses = pinned.uses.saturating_sub(1);
         if pinned.uses != 0 {
@@ -1498,7 +1609,11 @@ impl Renderer {
         set.dirty_entries.dedup();
         for &number in &set.dirty_entries {
             if let Some(entry) = set.effect_entries[number as usize].as_ref() {
-                self.queue.write_buffer(&self.effect_entry_buffer, u64::from(number) * EFFECT_ENTRY_BYTES, bytemuck::bytes_of(&entry.matrix));
+                self.queue.write_buffer(
+                    &self.effect_entry_buffer,
+                    u64::from(number) * EFFECT_ENTRY_BYTES,
+                    bytemuck::bytes_of(&entry.matrix),
+                );
                 set.counts.entry_writes += 1;
             }
         }
@@ -1509,9 +1624,15 @@ impl Renderer {
     /// the frame. A new buffer gets the whole segment.
     pub fn retained_upload(&mut self, set: &mut RetainedSet) {
         self.upload_effect_entries(set);
-        let slots = if std::mem::take(&mut self.force_segment_growth) { set.slots.len().max(self.retained_records + 1) } else { set.slots.len() };
+        let slots = if std::mem::take(&mut self.force_segment_growth) {
+            set.slots.len().max(self.retained_records + 1)
+        } else {
+            set.slots.len()
+        };
         self.retained_room(slots);
-        let all = set.all_dirty || self.record_generation != set.record_generation || self.instance_generation != set.instance_generation;
+        let all = set.all_dirty
+            || self.record_generation != set.record_generation
+            || self.instance_generation != set.instance_generation;
         set.record_generation = self.record_generation;
         set.instance_generation = self.instance_generation;
         set.all_dirty = false;
@@ -1533,7 +1654,11 @@ impl Renderer {
             }
             if !records.is_empty() {
                 self.queue.write_buffer(&self.record_buffer, 0, &records);
-                self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.retained_instance_copy[..]));
+                self.queue.write_buffer(
+                    &self.instance_buffer,
+                    0,
+                    bytemuck::cast_slice(&self.retained_instance_copy[..]),
+                );
             }
             self.counts.instance_uploads_whole += 1;
             self.counts.upload_all_seconds += case_began.elapsed().as_secs_f64();
@@ -1544,7 +1669,11 @@ impl Renderer {
             set.dirty.dedup();
             for &i in &set.dirty {
                 if let Some(slot) = set.slots[i as usize].as_ref() {
-                    self.queue.write_buffer(&self.record_buffer, (i as usize * RECORD_SIZE) as u64, bytemuck::bytes_of(&slot.data));
+                    self.queue.write_buffer(
+                        &self.record_buffer,
+                        (i as usize * RECORD_SIZE) as u64,
+                        bytemuck::bytes_of(&slot.data),
+                    );
                     self.counts.record_writes += 1;
                     self.counts.record_write_bytes += RECORD_SIZE as u64;
                 }
@@ -1576,7 +1705,11 @@ impl Renderer {
                     k += 1;
                 }
                 let run = &copy[first..=last];
-                self.queue.write_buffer(&self.instance_buffer, (first * INSTANCE_SIZE) as u64, bytemuck::cast_slice(run));
+                self.queue.write_buffer(
+                    &self.instance_buffer,
+                    (first * INSTANCE_SIZE) as u64,
+                    bytemuck::cast_slice(run),
+                );
                 self.counts.instance_upload_runs += 1;
                 self.counts.instance_upload_bytes += (run.len() * INSTANCE_SIZE) as u64;
                 self.counts.instance_entries_moved += entries as u64;
@@ -1600,7 +1733,8 @@ impl Renderer {
                 self.light_index_buffer = light_index_buffer(&self.device, self.light_index_capacity);
             }
             if !set.light_indexes.is_empty() {
-                self.queue.write_buffer(&self.light_index_buffer, 0, bytemuck::cast_slice(&set.light_indexes));
+                self.queue
+                    .write_buffer(&self.light_index_buffer, 0, bytemuck::cast_slice(&set.light_indexes));
             }
             set.light_indexes_dirty = false;
         }
@@ -1627,7 +1761,8 @@ impl Renderer {
                 })
                 .collect();
             if !matrices.is_empty() {
-                self.queue.write_buffer(&self.retained_bone_buffer, 0, bytemuck::cast_slice(&matrices));
+                self.queue
+                    .write_buffer(&self.retained_bone_buffer, 0, bytemuck::cast_slice(&matrices));
             }
         }
         set.counts.buckets = set.buckets.len() as u32;
@@ -1644,13 +1779,18 @@ impl Renderer {
     /// for the frame.
     pub fn upload_retained_lights(&self, lights: &[LightData]) {
         if !lights.is_empty() && lights.len() <= self.retained_light_capacity {
-            self.queue.write_buffer(&self.retained_light_buffer, 0, bytemuck::cast_slice(lights));
+            self.queue
+                .write_buffer(&self.retained_light_buffer, 0, bytemuck::cast_slice(lights));
         }
     }
 
     /// Writes the values of a view into a scene slot.
     pub fn write_scene(&self, slot: u32, scene: &SceneData) {
-        self.queue.write_buffer(&self.scene_buffer, (slot as usize * SCENE_SIZE) as u64, bytemuck::bytes_of(scene));
+        self.queue.write_buffer(
+            &self.scene_buffer,
+            (slot as usize * SCENE_SIZE) as u64,
+            bytemuck::bytes_of(scene),
+        );
     }
 }
 
@@ -1658,13 +1798,22 @@ impl Renderer {
 /// slot.
 fn slot_instance(i: usize, slot: &Slot) -> Instance {
     let bones = if slot.bones_first == NO_BONES { 0 } else { slot.bones_first };
-    Instance { world: slot.world, record: [i as u32, bones, 0, 0] }
+    Instance {
+        world: slot.world,
+        record: [i as u32, bones, 0, 0],
+    }
 }
 
 /// Draws the instances of the set in view, one indirect call for each run of draws of one
 /// bucket. The pass state is not known after it: the caller forgets its bound groups. With
 /// [`Sorted::Only`] the view draws the sorted blends kept by the main view and nothing else.
-pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Renderer, set: &mut RetainedSet, args: &mut Vec<IndirectArgs>, view: &RetainedView) {
+pub fn draw_retained(
+    pass: &mut wgpu::RenderPass<'static>,
+    renderer: &mut Renderer,
+    set: &mut RetainedSet,
+    args: &mut Vec<IndirectArgs>,
+    view: &RetainedView,
+) {
     if set.by_id.is_empty() {
         return;
     }
@@ -1695,9 +1844,17 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             if slot as usize >= renderer.retained_records {
                 continue;
             }
-            let Some(s) = set.slots[slot as usize].as_ref() else { continue };
+            let Some(s) = set.slots[slot as usize].as_ref() else {
+                continue;
+            };
             for &(first, count) in &s.ranges {
-                args.push(IndirectArgs { index_count: count, instance_count: 1, first_index: first, base_vertex: s.base_vertex, first_instance: slot });
+                args.push(IndirectArgs {
+                    index_count: count,
+                    instance_count: 1,
+                    first_index: first,
+                    base_vertex: s.base_vertex,
+                    first_instance: slot,
+                });
             }
         }
         let count = args.len() - start;
@@ -1718,9 +1875,14 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             };
         }
         // Scene slot 0 is the main view of the table; a replay has a slot of its own.
-        let origin = if view.scene_slot == 0 { crate::gpu::BindOrigin::Table } else { crate::gpu::BindOrigin::Replay };
+        let origin = if view.scene_slot == 0 {
+            crate::gpu::BindOrigin::Table
+        } else {
+            crate::gpu::BindOrigin::Replay
+        };
         let (vertices, indexes) = (Rc::as_ptr(&bucket.vertices) as usize, Rc::as_ptr(&bucket.indexes) as usize);
-        let stages = (renderer.tier == crate::request::TextureTier::C).then(|| renderer.stage_group(bucket.textures, bucket.samplers, view.target));
+        let stages = (renderer.tier == crate::request::TextureTier::C)
+            .then(|| renderer.stage_group(bucket.textures, bucket.samplers, view.target));
         let stages_same = match &stages {
             Some(group) => stages_bound.as_ref().is_some_and(|bound| Rc::ptr_eq(bound, group)),
             None => arrays_bound,
@@ -1728,7 +1890,11 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
         let direct = renderer.indirect && args.len() <= renderer.indirect_capacity;
         // A bucket that would set nothing that the bucket before did not set draws with the same state: its
         // arguments follow those of the bucket before in `args`, so one call draws both (D109 4B).
-        let repeats = bound.key == Some(key) && bound.stencil == Some(bucket.stencil) && bound.vertices == Some(vertices) && bound.indexes == Some(indexes) && stages_same;
+        let repeats = bound.key == Some(key)
+            && bound.stencil == Some(bucket.stencil)
+            && bound.vertices == Some(vertices)
+            && bound.indexes == Some(indexes)
+            && stages_same;
         if repeats && direct && run.extends(start) {
             run.count += count;
             let left_out = &mut set.counts.joins.left_out;
@@ -1737,7 +1903,16 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             left_out.vertices += 1;
             left_out.indexes += 1;
             left_out.calls += 1;
-            probe.note(&mut set.counts.joins, CallState { key, stencil: bucket.stencil, vertices, indexes, stages: stages_bound.clone() });
+            probe.note(
+                &mut set.counts.joins,
+                CallState {
+                    key,
+                    stencil: bucket.stencil,
+                    vertices,
+                    indexes,
+                    stages: stages_bound.clone(),
+                },
+            );
             set.counts.calls += 1;
             continue;
         }
@@ -1777,7 +1952,16 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             crate::gpu::note_array_bind(origin);
             arrays_bound = true;
         }
-        probe.note(&mut set.counts.joins, CallState { key, stencil: bucket.stencil, vertices, indexes, stages: stages_bound.clone() });
+        probe.note(
+            &mut set.counts.joins,
+            CallState {
+                key,
+                stencil: bucket.stencil,
+                vertices,
+                indexes,
+                stages: stages_bound.clone(),
+            },
+        );
         if BoundDraw::change(&mut bound.vertices, vertices) {
             pass.set_vertex_buffer(0, bucket.vertices.slice(..));
         } else {
@@ -1797,7 +1981,11 @@ pub fn draw_retained(pass: &mut wgpu::RenderPass<'static>, renderer: &mut Render
             run.open(start, count);
         } else {
             for a in &args[start..] {
-                pass.draw_indexed(a.first_index..a.first_index + a.index_count, a.base_vertex, a.first_instance..a.first_instance + 1);
+                pass.draw_indexed(
+                    a.first_index..a.first_index + a.index_count,
+                    a.base_vertex,
+                    a.first_instance..a.first_instance + 1,
+                );
             }
             args.truncate(start);
         }
@@ -1829,7 +2017,9 @@ impl RetainedSet {
     fn placed_entries(&self, id: u32, entries: &mut Vec<(u64, u32, u32, u32)>) -> u32 {
         let mut not_sorted = 0;
         for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
-            let Some(s) = self.slots[slot as usize].as_ref() else { continue };
+            let Some(s) = self.slots[slot as usize].as_ref() else {
+                continue;
+            };
             if s.held {
                 continue;
             }
@@ -1850,7 +2040,9 @@ impl RetainedSet {
     /// skinned slot without its bones, are left out.
     fn view_entries(&self, id: u32, entries: &mut Vec<(u64, u32, u32, u32)>) {
         for &slot in self.by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
-            let Some(s) = self.slots[slot as usize].as_ref() else { continue };
+            let Some(s) = self.slots[slot as usize].as_ref() else {
+                continue;
+            };
             let without_bones = s.flags & INSTANCE_SKINNED != 0 && s.bones_first == NO_BONES;
             if !s.held && !without_bones {
                 entries.push((0, s.bucket, 0, slot));
@@ -1909,7 +2101,9 @@ impl RetainedSet {
                 }
                 Verdict::Drawn => {}
             }
-            let Some(s) = self.slots[slot as usize].as_ref() else { continue };
+            let Some(s) = self.slots[slot as usize].as_ref() else {
+                continue;
+            };
             self.counts.drawn += 1;
             let centre = near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3];
             sequence += 1;
@@ -1940,8 +2134,17 @@ impl RetainedSet {
         // The main view: a blend out of the sort with a place in the engine's walk draws there.
         if view.sorted == Sorted::Keep {
             let slots = &self.slots;
-            self.counts.walk_reordered += self.walk.leave_out(&mut self.order, |slot| slots[slot as usize].as_ref().map(|s| s.id)) as u64;
-            self.counts.walk_without_place += self.order.iter().filter(|e| e.0 >> 32 == crate::engine::walk::GROUP_IN_PLACE && slots[e.3 as usize].as_ref().is_some_and(|s| s.in_place)).count() as u64;
+            self.counts.walk_reordered +=
+                self.walk
+                    .leave_out(&mut self.order, |slot| slots[slot as usize].as_ref().map(|s| s.id)) as u64;
+            self.counts.walk_without_place += self
+                .order
+                .iter()
+                .filter(|e| {
+                    e.0 >> 32 == crate::engine::walk::GROUP_IN_PLACE
+                        && slots[e.3 as usize].as_ref().is_some_and(|s| s.in_place)
+                })
+                .count() as u64;
             self.walk_view = Some(*view);
         }
         match view.sorted {
@@ -1999,7 +2202,10 @@ fn effect_stages(m: &material::Material) -> Option<[[u32; EFFECT_STAGE_WORDS]; 2
         words[1] = e.flags;
         words
     };
-    Some([stage(m.environment_effect, m.environment_coordinates), stage(m.fog_map_effect, m.fog_map_coordinates)])
+    Some([
+        stage(m.environment_effect, m.environment_coordinates),
+        stage(m.fog_map_effect, m.fog_map_coordinates),
+    ])
 }
 
 impl Player {
@@ -2016,7 +2222,9 @@ impl Player {
     pub(super) fn retained_settle_late(&mut self) {
         let set = &mut self.retained;
         for (slot, pinned_slots) in set.late.drain(..) {
-            let Some(s) = set.slots.get_mut(slot as usize).and_then(Option::as_mut) else { continue };
+            let Some(s) = set.slots.get_mut(slot as usize).and_then(Option::as_mut) else {
+                continue;
+            };
             for stage in 0..STAGES {
                 s.data.stages[stage].slots[0] = pinned_slots[stage][0];
                 s.data.stages[stage].slots[1] = pinned_slots[stage][1];
@@ -2042,7 +2250,18 @@ impl Player {
         let keys = self.retained.keys_of.get(&id).cloned();
         self.retained_remove_slots(id);
         let Some((fvf, stride, entries, strips, vertex, index, base_vertex, first_index)) =
-            self.renderer.geometries.get(&r.geometry).map(|g| (g.fvf, g.stride, g.entries, g.strips.clone(), g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index))
+            self.renderer.geometries.get(&r.geometry).map(|g| {
+                (
+                    g.fvf,
+                    g.stride,
+                    g.entries,
+                    g.strips.clone(),
+                    g.vertex.clone(),
+                    g.index.clone(),
+                    g.base_vertex,
+                    g.first_index,
+                )
+            })
         else {
             self.retained.counts.no_geometry += 1;
             return;
@@ -2066,7 +2285,12 @@ impl Player {
         // lights record), the scene's until that record comes.
         {
             let shape = &mut self.stream.shape;
-            shape.ambient = self.retained.ambient_of.get(&id).copied().unwrap_or_else(|| self.retained_values.map_or(0xFF00_0000, |v| v.0));
+            shape.ambient = self
+                .retained
+                .ambient_of
+                .get(&id)
+                .copied()
+                .unwrap_or_else(|| self.retained_values.map_or(0xFF00_0000, |v| v.0));
             shape.geometry = r.geometry;
             shape.fvf = fvf;
             shape.stride = stride;
@@ -2099,7 +2323,10 @@ impl Player {
         // `hold_shape` gives them to `hold`; as there, not for the sky, the water plane of the
         // game or a skinned shape.
         let colours = material::d3d_material(&r.colours);
-        let claim = (!derived.passes.is_empty() && r.flags & INSTANCE_SKINNED == 0 && !scene::sky_class(r.class) && r.class != scene::CLASS_WATER_PLANE)
+        let claim = (!derived.passes.is_empty()
+            && r.flags & INSTANCE_SKINNED == 0
+            && !scene::sky_class(r.class)
+            && r.class != scene::CLASS_WATER_PLANE)
             .then(|| {
                 let p = Pass::new(&derived, 0, &m, &self.renderer.textures, effects.as_ref());
                 DrawFacts {
@@ -2121,11 +2348,19 @@ impl Player {
                 stride,
                 topology,
                 blend: p.blend,
-                depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
+                depth: [
+                    (derived.depth[0] != 0) as u32,
+                    (derived.depth[1] != 0) as u32,
+                    derived.depth[2],
+                ],
                 cull: derived.cull,
                 fill: derived.fill,
                 color_write: p.color_write & 7,
-                stencil: if stencil[0] == 0 { [0; 7] } else { [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0] },
+                stencil: if stencil[0] == 0 {
+                    [0; 7]
+                } else {
+                    [1, stencil[4], stencil[5], stencil[6], stencil[1], stencil[3], !0]
+                },
                 // A draw of the table goes into the pass of the game; a view in another pass
                 // sets the samples of that pass (`RetainedView::samples`).
                 samples: self.renderer.samples,
@@ -2143,7 +2378,12 @@ impl Player {
             // The kind of the pass for the shade bits of the scene.
             let kind = slot_kind(p.blend, derived.depth[1] != 0);
             let world_lights = if derived.no_lights { 0 } else { crate::WORLD_LIGHTS_BIT };
-            data.light_range = [0, 0, kind, RETAINED_RECORD_BITS | crate::flat_shading_bit(&derived) | world_lights];
+            data.light_range = [
+                0,
+                0,
+                kind,
+                RETAINED_RECORD_BITS | crate::flat_shading_bit(&derived) | world_lights,
+            ];
             data.counts[0] = 0;
             // The slot's fog: on or off (z), and by the distance (w) for a RANGE_SQ material.
             // A shape with a fog property of its own keeps its colour and range (z 2).
@@ -2174,7 +2414,11 @@ impl Player {
             let mut pinned_slots = [[0u32; 2]; STAGES];
             let mut late = false;
             // Tier C has no arrays: the group of the bucket holds the textures.
-            let pin_stages = if self.renderer.tier == crate::request::TextureTier::A { STAGES } else { 0 };
+            let pin_stages = if self.renderer.tier == crate::request::TextureTier::A {
+                STAGES
+            } else {
+                0
+            };
             for stage in 0..pin_stages {
                 let mut texture = self.renderer.pin_texture(handles[stage]);
                 if texture != 0 {
@@ -2208,15 +2452,34 @@ impl Player {
                 effect_entries.push(entry);
             }
             // The stage key of the slot's record: the fragment shader made for its stages.
-            let key = PipelineKey { stages: self.renderer.stage_shaders.id_of(&data), ..key };
-            let bucket_key = BucketKey { class: r.class, key, stencil: stencil[2], vertices: Rc::as_ptr(&vertex) as usize, indexes: Rc::as_ptr(&index) as usize, textures: handles, samplers: sampler_values };
+            let key = PipelineKey {
+                stages: self.renderer.stage_shaders.id_of(&data),
+                ..key
+            };
+            let bucket_key = BucketKey {
+                class: r.class,
+                key,
+                stencil: stencil[2],
+                vertices: Rc::as_ptr(&vertex) as usize,
+                indexes: Rc::as_ptr(&index) as usize,
+                textures: handles,
+                samplers: sampler_values,
+            };
             let world = self.retained.world_of(r);
             let exact = r.exact_translation();
             let set = &mut self.retained;
             let bucket = match set.bucket_of.get(&bucket_key) {
                 Some(&b) => b,
                 None => {
-                    set.buckets.push(Bucket { class: r.class, key, stencil: stencil[2], vertices: vertex.clone(), indexes: index.clone(), textures: handles, samplers: sampler_values });
+                    set.buckets.push(Bucket {
+                        class: r.class,
+                        key,
+                        stencil: stencil[2],
+                        vertices: vertex.clone(),
+                        indexes: index.clone(),
+                        textures: handles,
+                        samplers: sampler_values,
+                    });
                     let b = (set.buckets.len() - 1) as u32;
                     set.bucket_of.insert(bucket_key, b);
                     b
@@ -2230,7 +2493,11 @@ impl Player {
             }
             // A skinned instance keeps its range of bones when it is made again; its bound
             // comes with the bones that the plugin sends after the instance record.
-            let bones_first = if r.flags & INSTANCE_SKINNED != 0 { set.bones_first_of(id, bones_needed) } else { NO_BONES };
+            let bones_first = if r.flags & INSTANCE_SKINNED != 0 {
+                set.bones_first_of(id, bones_needed)
+            } else {
+                NO_BONES
+            };
             // The engine's sorter takes the instance: the plugin's mark of its alpha property
             // (stream format 10), outside the sky. The helper's rule from the derived material
             // stays as the check.
@@ -2239,7 +2506,31 @@ impl Player {
                 self.renderer.counts.sort_mark_differs += 1;
             }
             let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
-            set.slots[slot as usize] = Some(Slot { id, geometry: r.geometry, material: r.material, class: r.class, flags: r.flags, colours: r.colours, exact, world, bound: r.bound, bucket, data, ranges: ranges.clone(), base_vertex, sorted, in_place, pinned, bones_first, bones_needed, no_lights: derived.no_lights, claim, held: false, uv_base: None, effect_entries });
+            set.slots[slot as usize] = Some(Slot {
+                id,
+                geometry: r.geometry,
+                material: r.material,
+                class: r.class,
+                flags: r.flags,
+                colours: r.colours,
+                exact,
+                world,
+                bound: r.bound,
+                bucket,
+                data,
+                ranges: ranges.clone(),
+                base_vertex,
+                sorted,
+                in_place,
+                pinned,
+                bones_first,
+                bones_needed,
+                no_lights: derived.no_lights,
+                claim,
+                held: false,
+                uv_base: None,
+                effect_entries,
+            });
             set.ranges_total += ranges.len();
             set.cull[slot as usize] = CullEntry::of(set.slots[slot as usize].as_ref());
             set.dirty.push(slot);
@@ -2272,18 +2563,38 @@ impl Player {
 
     /// The values of a view of the table: the ambient light and the fog of its scene's record
     /// (`values`, see `retained_scene_main`) with this view, projection, origin and target size.
-    fn retained_scene_of(&self, view: &[f32; 16], projection: &[f32; 16], origin: Option<[f64; 3]>, target_size: (u32, u32), values: Option<(u32, Option<[u32; 4]>)>) -> SceneData {
+    fn retained_scene_of(
+        &self,
+        view: &[f32; 16],
+        projection: &[f32; 16],
+        origin: Option<[f64; 3]>,
+        target_size: (u32, u32),
+        values: Option<(u32, Option<[u32; 4]>)>,
+    ) -> SceneData {
         let (ambient, fog) = match values {
             Some((ambient, fog)) => (color(known(ambient, 0)), fog.unwrap_or([0; 4])),
-            None => ([self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0], self.stream.fog),
+            None => (
+                [self.world_ambient[0], self.world_ambient[1], self.world_ambient[2], 1.0],
+                self.stream.fog,
+            ),
         };
         let mut data = SceneData {
             view: self.retained.scene_view(view, origin),
             projection: crate::depth::gpu_projection(projection),
             fog_color: color(fog[0]),
-            fog: [f32::from_bits(fog[1]), f32::from_bits(fog[2]), 1.0, (fog[3] != 0) as u32 as f32],
+            fog: [
+                f32::from_bits(fog[1]),
+                f32::from_bits(fog[2]),
+                1.0,
+                (fog[3] != 0) as u32 as f32,
+            ],
             scene_ambient: ambient,
-            pixel: [1.0 / target_size.0.max(1) as f32, -1.0 / target_size.1.max(1) as f32, 0.0, 0.0],
+            pixel: [
+                1.0 / target_size.0.max(1) as f32,
+                -1.0 / target_size.1.max(1) as f32,
+                0.0,
+                0.0,
+            ],
             clip_plane: [0.0; 4],
             extension5: [0.0; 4],
             extension7: [0.0; 4],
@@ -2317,14 +2628,18 @@ impl Player {
             return out;
         }
         let offer = self.parameters.as_ref().is_some_and(|p| p.hold);
-        let Some(mut extension) = self.extension.take() else { return out };
+        let Some(mut extension) = self.extension.take() else {
+            return out;
+        };
         let origin = self.retained.light_origin();
         let view = self.retained.scene_view(&facts.view, facts.origin);
         let ids: Vec<u32> = self.retained.claimed.iter().copied().collect();
         for id in ids {
             let slots = self.retained.by_id.get(&id).cloned().unwrap_or_default();
             let Some(&first) = slots.first() else { continue };
-            let Some(s) = self.retained.slots[first as usize].as_ref() else { continue };
+            let Some(s) = self.retained.slots[first as usize].as_ref() else {
+                continue;
+            };
             let Some(claim) = s.claim else { continue };
             let held = offer && self.retained.may_hold(s, planes) && extension.hold(&claim);
             if held {
@@ -2344,12 +2659,20 @@ impl Player {
                         indexes: bucket.indexes.clone(),
                         maps: self.renderer.held_maps(m, layout.coordinates.len() as u32),
                         layout,
-                        topology: if key.topology == 5 { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList },
+                        topology: if key.topology == 5 {
+                            wgpu::PrimitiveTopology::TriangleStrip
+                        } else {
+                            wgpu::PrimitiveTopology::TriangleList
+                        },
                         parts: s.ranges.clone(),
                         data,
                         origin,
                         lights: Vec::new(),
-                        depth: [(derived.depth[0] != 0) as u32, (derived.depth[1] != 0) as u32, derived.depth[2]],
+                        depth: [
+                            (derived.depth[0] != 0) as u32,
+                            (derived.depth[1] != 0) as u32,
+                            derived.depth[2],
+                        ],
                         cull: derived.cull,
                         stencil: derived.stencil,
                     };
@@ -2415,14 +2738,26 @@ impl Player {
         self.renderer.scene_main = scene;
         self.renderer.write_scene(0, &scene);
         if crate::dump_wanted() != 0 {
-            println!("scene dump: fog_color {:?} fog {:?} ambient {:?} counts {:?} extension5 {:?} extension7 {:?}", scene.fog_color, scene.fog, scene.scene_ambient, scene.counts, scene.extension5, scene.extension7);
+            println!(
+                "scene dump: fog_color {:?} fog {:?} ambient {:?} counts {:?} extension5 {:?} extension7 {:?}",
+                scene.fog_color, scene.fog, scene.scene_ambient, scene.counts, scene.extension5, scene.extension7
+            );
         }
         // The cull is in the space of the world: the bounds of the slots are the engine's.
         let planes = view_planes(&facts.view, &facts.projection);
         let held = self.retained_hold(facts, &planes);
         self.begin_pass();
         let Some(pass) = self.pass.as_mut() else { return };
-        let view = RetainedView { scene_slot: 0, classes: !0, planes, flip_cull: false, force_depth_test: false, target: self.pass_target, sorted: Sorted::Keep, samples: self.pass_samples };
+        let view = RetainedView {
+            scene_slot: 0,
+            classes: !0,
+            planes,
+            flip_cull: false,
+            force_depth_test: false,
+            target: self.pass_target,
+            sorted: Sorted::Keep,
+            samples: self.pass_samples,
+        };
         pass.push_debug_group("retained instances");
         draw_retained(pass, &mut self.renderer, &mut self.retained, &mut self.frame_args, &view);
         pass.pop_debug_group();
@@ -2436,7 +2771,11 @@ impl Player {
         // (a read-back) they may not be, and the instance draws at the end of the world scene.
         for (h, id, sorted) in held {
             let in_place = self.extension.as_ref().is_some_and(|extension| extension.held_in_place(&h));
-            let queued = sorted && self.frame_sorted.iter().any(|entry| matches!(entry.0, crate::Waiting::Table(place) if place == id));
+            let queued = sorted
+                && self
+                    .frame_sorted
+                    .iter()
+                    .any(|entry| matches!(entry.0, crate::Waiting::Table(place) if place == id));
             // A shape in place that the engine queued has its place in the queue: a blended mask
             // whose stencil it tests goes before it there.
             let in_queue = queued && self.extension.as_mut().is_some_and(|extension| extension.held_sorted(&h));
@@ -2460,17 +2799,35 @@ impl Player {
     /// `draw_retained` call; a draw of the engine's path is issued between them.
     /// Engine-rules R21, R22 (the skill wgpu-renderer-dev).
     pub(super) fn draw_retained_sorted(&mut self, generation: u32) {
-        let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted).into_iter().partition(|e| e.1 == generation);
+        let (deferred, later): (Vec<_>, Vec<_>) = core::mem::take(&mut self.frame_sorted)
+            .into_iter()
+            .partition(|e| e.1 == generation);
         self.frame_sorted = later;
-        let view = if generation == 0 { self.retained.sorted_view.take() } else { self.retained.sorted_view };
-        let all_kept = if generation == 0 && view.is_some() { core::mem::take(&mut self.retained.kept_sorted) } else { Vec::new() };
+        let view = if generation == 0 {
+            self.retained.sorted_view.take()
+        } else {
+            self.retained.sorted_view
+        };
+        let all_kept = if generation == 0 && view.is_some() {
+            core::mem::take(&mut self.retained.kept_sorted)
+        } else {
+            Vec::new()
+        };
         // Risk 34: the engine's queue takes every blend the engine displays and the plugin
         // writes its place, so a kept blend without one was not displayed by the engine in
         // this frame: the main view does not draw it. The count of them stays for the report.
-        let placed: std::collections::HashSet<u32> = deferred.iter().filter_map(|e| if let crate::Waiting::Table(id) = e.0 { Some(id) } else { None }).collect();
+        let placed: std::collections::HashSet<u32> = deferred
+            .iter()
+            .filter_map(|e| if let crate::Waiting::Table(id) = e.0 { Some(id) } else { None })
+            .collect();
         let without_place = all_kept
             .iter()
-            .filter(|entry| placed.is_empty() || !self.retained.slots[entry.3 as usize].as_ref().is_some_and(|s| placed.contains(&s.id)))
+            .filter(|entry| {
+                placed.is_empty()
+                    || !self.retained.slots[entry.3 as usize]
+                        .as_ref()
+                        .is_some_and(|s| placed.contains(&s.id))
+            })
             .count() as u64;
         self.renderer.counts.sorted_without_place += without_place;
         // Risk 34: a frame whose kept blends found no place at all points to a cause of the
@@ -2488,12 +2845,19 @@ impl Player {
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
         if crate::dump_wanted() != 0 {
-            println!("sorted blends: {} without a place (not drawn), {} of the engine's path, pass open {}, frame {}", without_place, deferred.len(), self.pass.is_some(), self.renderer.counts.frames);
+            println!(
+                "sorted blends: {} without a place (not drawn), {} of the engine's path, pass open {}, frame {}",
+                without_place,
+                deferred.len(),
+                self.pass.is_some(),
+                self.renderer.counts.frames
+            );
         }
         if deferred.is_empty() {
             return;
         }
-        self.renderer.counts.merged_blends += deferred.iter().filter(|e| matches!(e.0, crate::Waiting::Draw(_))).count() as u64;
+        self.renderer.counts.merged_blends +=
+            deferred.iter().filter(|e| matches!(e.0, crate::Waiting::Draw(_))).count() as u64;
         if !self.pass_wanted() {
             self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
         }
@@ -2580,7 +2944,11 @@ impl SortedPlan {
     /// `placed_entries` puts the sorted entries of an instance into the list and returns the number
     /// of its slots that the table does not sort. A run or a held group ends at a draw of the
     /// engine's path, and a run ends at a held shape. A place with entries ends a held group.
-    pub(crate) fn build(queue: &[QueuedKind], held_waits: &[u32], mut placed_entries: impl FnMut(u32, &mut Vec<(u64, u32, u32, u32)>) -> u32) -> SortedPlan {
+    pub(crate) fn build(
+        queue: &[QueuedKind],
+        held_waits: &[u32],
+        mut placed_entries: impl FnMut(u32, &mut Vec<(u64, u32, u32, u32)>) -> u32,
+    ) -> SortedPlan {
         let mut plan = SortedPlan::default();
         let mut waits = held_waits.to_vec();
         let mut run: Vec<(u64, u32, u32, u32)> = Vec::new();
@@ -2588,7 +2956,10 @@ impl SortedPlan {
         for (at, kind) in queue.iter().enumerate() {
             match *kind {
                 QueuedKind::Draw => {
-                    debug_assert!(run.is_empty() || held.is_empty(), "a run and a held group are never both open");
+                    debug_assert!(
+                        run.is_empty() || held.is_empty(),
+                        "a run and a held group are never both open"
+                    );
                     plan.close_run(&mut run);
                     plan.close_held(&mut held);
                     plan.steps.push(SortedStep::Draw(at));
@@ -2762,7 +3133,10 @@ impl Player {
         let world_camera = g.world_camera;
         let Some(slot) = engine::views::take_slot(&mut self.renderer.scene_slots_used, SCENE_SLOTS) else {
             if self.renderer.counts.views_dropped == 0 {
-                println!("views: all {SCENE_SLOTS} scene slots of the frame are taken: a view of its own is not drawn (frame {})", self.renderer.counts.frames);
+                println!(
+                    "views: all {SCENE_SLOTS} scene slots of the frame are taken: a view of its own is not drawn (frame {})",
+                    self.renderer.counts.frames
+                );
             }
             self.renderer.counts.views_dropped += 1;
             self.views.group_mut(group)?.dropped = true;
@@ -2785,7 +3159,8 @@ impl Player {
             }
             engine::views::ShadeChoice::None => None,
         };
-        let mut scene = self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size, facts.values);
+        let mut scene =
+            self.retained_scene_of(&facts.view, &facts.projection, facts.origin, facts.target_size, facts.values);
         if let Some(shade) = shade {
             apply_shade(&mut scene, &shade);
         }
@@ -2803,7 +3178,12 @@ impl Player {
 /// The values a shade of the table gives a view's scene ([`Extension::shade_table`]).
 fn apply_shade(scene: &mut SceneData, shade: &TableShade) {
     let s = shade.ambient_scale;
-    scene.scene_ambient = [scene.scene_ambient[0] * s[0], scene.scene_ambient[1] * s[1], scene.scene_ambient[2] * s[2], scene.scene_ambient[3]];
+    scene.scene_ambient = [
+        scene.scene_ambient[0] * s[0],
+        scene.scene_ambient[1] * s[1],
+        scene.scene_ambient[2] * s[2],
+        scene.scene_ambient[3],
+    ];
     // Each retained draw's own ambient is multiplied by the factor in the shader.
     scene.ambient_scale = [s[0], s[1], s[2], 1.0];
     scene.extension5 = shade.extension5;
@@ -2900,17 +3280,35 @@ mod list_tests {
     }
 
     /// The planes of a box of 10 units around the origin.
-    const BOX: [[f32; 4]; 6] = [[1.0, 0.0, 0.0, 10.0], [-1.0, 0.0, 0.0, 10.0], [0.0, 1.0, 0.0, 10.0], [0.0, -1.0, 0.0, 10.0], [0.0, 0.0, 1.0, 10.0], [0.0, 0.0, -1.0, 10.0]];
+    const BOX: [[f32; 4]; 6] = [
+        [1.0, 0.0, 0.0, 10.0],
+        [-1.0, 0.0, 0.0, 10.0],
+        [0.0, 1.0, 0.0, 10.0],
+        [0.0, -1.0, 0.0, 10.0],
+        [0.0, 0.0, 1.0, 10.0],
+        [0.0, 0.0, -1.0, 10.0],
+    ];
 
     /// The main view of the world in the box, as `draw_retained_main` makes it.
     fn main_view() -> RetainedView {
-        RetainedView { scene_slot: 0, classes: !0, planes: BOX, flip_cull: false, force_depth_test: false, target: None, sorted: Sorted::Keep, samples: 1 }
+        RetainedView {
+            scene_slot: 0,
+            classes: !0,
+            planes: BOX,
+            flip_cull: false,
+            force_depth_test: false,
+            target: None,
+            sorted: Sorted::Keep,
+            samples: 1,
+        }
     }
 
     /// The slots that the view draws, by the list and the verdicts of `collect_order` (a bucket
     /// needs a device, so the classes are not tested here).
     fn drawn(set: &RetainedSet, view: &RetainedView) -> Vec<u32> {
-        listed_slots(&set.shown, &set.by_id).filter(|&slot| slot_verdict(&set.cull[slot as usize], tests_planes(view), &view.planes) == Verdict::Drawn).collect()
+        listed_slots(&set.shown, &set.by_id)
+            .filter(|&slot| slot_verdict(&set.cull[slot as usize], tests_planes(view), &view.planes) == Verdict::Drawn)
+            .collect()
     }
 
     #[test]
@@ -3099,7 +3497,9 @@ mod order_tests {
 
     #[test]
     fn the_planes_have_unit_normals() {
-        let projection = [1.5, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.001, 1.0, 0.0, 0.0, -1.001, 0.0];
+        let projection = [
+            1.5, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.001, 1.0, 0.0, 0.0, -1.001, 0.0,
+        ];
         for plane in view_planes(&IDENTITY, &projection) {
             let length = (plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]).sqrt();
             assert!((length - 1.0).abs() < 1e-5, "{plane:?}");
@@ -3112,8 +3512,17 @@ mod order_tests {
         let m: [f32; 16] = core::array::from_fn(|i| (0..4).map(|k| view[i / 4 * 4 + k] * projection[k * 4 + i % 4]).sum());
         let col = |c: usize| [m[c], m[4 + c], m[8 + c], m[12 + c]];
         let (c0, c1, c2, c3) = (col(0), col(1), col(2), col(3));
-        let add = |a: [f32; 4], b: [f32; 4], sign: f32| [a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]];
-        let raw = [add(c3, c0, 1.0), add(c3, c0, -1.0), add(c3, c1, 1.0), add(c3, c1, -1.0), c2, add(c3, c2, -1.0)];
+        let add = |a: [f32; 4], b: [f32; 4], sign: f32| {
+            [a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]]
+        };
+        let raw = [
+            add(c3, c0, 1.0),
+            add(c3, c0, -1.0),
+            add(c3, c1, 1.0),
+            add(c3, c1, -1.0),
+            c2,
+            add(c3, c2, -1.0),
+        ];
         raw.map(|p| {
             let length = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-20);
             [p[0] / length, p[1] / length, p[2] / length, p[3] / length]
@@ -3126,10 +3535,31 @@ mod order_tests {
     fn far_distance(eye: [f64; 3], yaw: f64, planes_of: fn(&[f32; 16], &[f32; 16]) -> [[f32; 4]; 6]) -> f64 {
         let (near, far) = (1.0f64, 7168.0f64);
         let q = far / (far - near);
-        let projection = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, q as f32, 1.0, 0.0, 0.0, (-q * near) as f32, 0.0];
+        let projection = [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            q as f32,
+            1.0,
+            0.0,
+            0.0,
+            (-q * near) as f32,
+            0.0,
+        ];
         // Right, up and forward as the columns of the rotation.
         let (forward, up) = ([yaw.sin(), yaw.cos(), 0.0], [0.0, 0.0, 1.0]);
-        let right = [up[1] * forward[2] - up[2] * forward[1], up[2] * forward[0] - up[0] * forward[2], up[0] * forward[1] - up[1] * forward[0]];
+        let right = [
+            up[1] * forward[2] - up[2] * forward[1],
+            up[2] * forward[0] - up[0] * forward[2],
+            up[0] * forward[1] - up[1] * forward[0],
+        ];
         let mut view = [0.0f32; 16];
         for row in 0..3 {
             view[row * 4] = right[row] as f32;
@@ -3151,7 +3581,10 @@ mod order_tests {
             .map(|step| {
                 let yaw = step as f64 * 15f64.to_radians();
                 let at_origin = far_distance([0.0, 0.0, 600.0], yaw, planes_of);
-                assert!((at_origin - 7168.0).abs() < 5.0, "turn {step}: the far plane is {at_origin} from the eye at the origin");
+                assert!(
+                    (at_origin - 7168.0).abs() < 5.0,
+                    "turn {step}: the far plane is {at_origin} from the eye at the origin"
+                );
                 (far_distance([57717.0, -416069.0, 1322.0], yaw, planes_of) - at_origin).abs()
             })
             .fold(0.0, f64::max)
@@ -3163,9 +3596,15 @@ mod order_tests {
         // Both are a few units from 7168: the 32-bit projection's near / far term has that
         // rounding. The 32-bit product moved it by tens of units there (7038 to 7299).
         let drift = far_drift_at_narsis(view_planes);
-        assert!(drift < 0.5, "view_planes: the far plane at Narsis is {drift} from the one at the origin");
+        assert!(
+            drift < 0.5,
+            "view_planes: the far plane at Narsis is {drift} from the one at the origin"
+        );
         let old = far_drift_at_narsis(planes_of_32_bit_product);
-        assert!(old > 10.0, "the 32-bit product was expected to lose the far plane at Narsis: {old}");
+        assert!(
+            old > 10.0,
+            "the 32-bit product was expected to lose the far plane at Narsis: {old}"
+        );
     }
 
     #[test]
@@ -3280,7 +3719,12 @@ mod order_tests {
         set.relative = true;
         set.origin = [5097.25, 4257.5, 15126.5];
         let world = [eye[0], eye[1], eye[2] + 500.0];
-        let stored = [(world[0] as f64 - set.origin[0]) as f32, (world[1] as f64 - set.origin[1]) as f32, (world[2] as f64 - set.origin[2]) as f32, 10.0];
+        let stored = [
+            (world[0] as f64 - set.origin[0]) as f32,
+            (world[1] as f64 - set.origin[1]) as f32,
+            (world[2] as f64 - set.origin[2]) as f32,
+            10.0,
+        ];
         (set, stored)
     }
 
@@ -3293,12 +3737,18 @@ mod order_tests {
 
         // The null test: the view of the game as it is, which was drawn before, has the static
         // far outside the frustum.
-        assert!(!in_view(&stored, &view_planes(&view, &projection)), "the unchanged view must show the fault");
+        assert!(
+            !in_view(&stored, &view_planes(&view, &projection)),
+            "the unchanged view must show the fault"
+        );
 
         let scene = set.scene_view(&view, None);
         assert!(in_view(&stored, &view_planes(&scene, &projection)));
         // View space of the static: 500 in front of the camera.
-        let z = stored[0] as f64 * scene[2] as f64 + stored[1] as f64 * scene[6] as f64 + stored[2] as f64 * scene[10] as f64 + scene[14] as f64;
+        let z = stored[0] as f64 * scene[2] as f64
+            + stored[1] as f64 * scene[6] as f64
+            + stored[2] as f64 * scene[10] as f64
+            + scene[14] as f64;
         assert!((z - 500.0).abs() < 0.01, "view-space z {z}");
     }
 
@@ -3324,7 +3774,12 @@ mod order_tests {
             o[0] * view[c] as f64 + o[1] * view[4 + c] as f64 + o[2] * view[8 + c] as f64 + view[12 + c] as f64
         });
         for c in 0..3 {
-            assert!((scene[12 + c] as f64 - expected[c]).abs() < 1e-3, "axis {c}: {} against {}", scene[12 + c], expected[c]);
+            assert!(
+                (scene[12 + c] as f64 - expected[c]).abs() < 1e-3,
+                "axis {c}: {} against {}",
+                scene[12 + c],
+                expected[c]
+            );
         }
         assert_eq!(&scene[..12], &view[..12]);
     }
@@ -3337,7 +3792,14 @@ mod order_tests {
 
         // The camera form: the translation is the origin of the set less the camera.
         let scene = set.scene_view(&view, Some([3878.0, 3797.0, 15266.0]));
-        assert_eq!(&scene[12..15], &[(5097.25 - 3878.0) as f32, (4257.5 - 3797.0) as f32, (15126.5 - 15266.0) as f32]);
+        assert_eq!(
+            &scene[12..15],
+            &[
+                (5097.25 - 3878.0) as f32,
+                (4257.5 - 3797.0) as f32,
+                (15126.5 - 15266.0) as f32
+            ]
+        );
 
         // A set that is not relative takes the view of the game as it is, with a camera or not.
         set.relative = false;
@@ -3348,7 +3810,10 @@ mod order_tests {
     #[test]
     fn the_extension_text_reads_its_lights_and_its_values_through_functions() {
         let text = "let a = lights[idx[i]].diffuse + draws[record].extension[k].x; let v = draws[record].view;";
-        assert_eq!(rewrite_extension_text(text), "let a = light_at(idx[i]).diffuse + draw_extension(k).x; let v = draw_view();");
+        assert_eq!(
+            rewrite_extension_text(text),
+            "let a = light_at(idx[i]).diffuse + draw_extension(k).x; let v = draw_view();"
+        );
     }
 }
 
@@ -3431,11 +3896,29 @@ mod join_tests {
     use super::*;
 
     fn key(pipeline: u32) -> PipelineKey {
-        PipelineKey { fvf: pipeline, stride: 0, topology: 0, blend: [0; 3], depth: [0; 3], cull: 0, fill: 0, stencil: [0; 7], color_write: 0, samples: 1, stages: 0 }
+        PipelineKey {
+            fvf: pipeline,
+            stride: 0,
+            topology: 0,
+            blend: [0; 3],
+            depth: [0; 3],
+            cull: 0,
+            fill: 0,
+            stencil: [0; 7],
+            color_write: 0,
+            samples: 1,
+            stages: 0,
+        }
     }
 
     fn state(pipeline: u32, stencil: u32) -> CallState {
-        CallState { key: key(pipeline), stencil, vertices: 1, indexes: 2, stages: None }
+        CallState {
+            key: key(pipeline),
+            stencil,
+            vertices: 1,
+            indexes: 2,
+            stages: None,
+        }
     }
 
     /// The calls A A A B B C: three pairs repeat all four (two runs, of 3 and 2 calls), and each of
@@ -3447,8 +3930,25 @@ mod join_tests {
             probe.note(&mut counts, state(pipeline, stencil));
         }
         probe.end(&mut counts);
-        assert_eq!((counts.pairs, counts.same_pipeline, counts.same_stencil, counts.same_vertices, counts.same_indexes), (5, 4, 4, 5, 5));
-        assert_eq!((counts.joins.pairs, counts.joins.runs, counts.joins.calls, counts.joins.longest), (3, 2, 5, 3));
+        assert_eq!(
+            (
+                counts.pairs,
+                counts.same_pipeline,
+                counts.same_stencil,
+                counts.same_vertices,
+                counts.same_indexes
+            ),
+            (5, 4, 4, 5, 5)
+        );
+        assert_eq!(
+            (
+                counts.joins.pairs,
+                counts.joins.runs,
+                counts.joins.calls,
+                counts.joins.longest
+            ),
+            (3, 2, 5, 3)
+        );
         assert_eq!(counts.stage_joins.pairs, 0, "no stage group in tiers A and B");
     }
 
@@ -3463,7 +3963,16 @@ mod join_tests {
             }
         }
         probe.end(&mut counts);
-        assert_eq!((counts.pairs, counts.joins.pairs, counts.joins.runs, counts.joins.calls, counts.joins.longest), (2, 2, 2, 4, 2));
+        assert_eq!(
+            (
+                counts.pairs,
+                counts.joins.pairs,
+                counts.joins.runs,
+                counts.joins.calls,
+                counts.joins.longest
+            ),
+            (2, 2, 2, 4, 2)
+        );
     }
 
     /// The first set of a pass is always made, a repeat is left out, and a value that comes
@@ -3471,7 +3980,10 @@ mod join_tests {
     #[test]
     fn a_set_is_left_out_only_when_the_pass_has_the_value() {
         let mut bound = None;
-        let sets: Vec<bool> = [4, 4, 4, 7, 7, 4].into_iter().map(|stencil| BoundDraw::change(&mut bound, stencil)).collect();
+        let sets: Vec<bool> = [4, 4, 4, 7, 7, 4]
+            .into_iter()
+            .map(|stencil| BoundDraw::change(&mut bound, stencil))
+            .collect();
         assert_eq!(sets, vec![true, false, false, true, false, true]);
     }
 
@@ -3498,7 +4010,13 @@ mod join_tests {
     /// order: the calls together draw the arguments 0..9 once each, one after the other.
     #[test]
     fn buckets_that_repeat_the_state_join_one_call_and_keep_the_arguments_in_order() {
-        let buckets = [Some((0, 2, false)), Some((2, 3, true)), Some((5, 1, true)), Some((6, 2, false)), Some((8, 1, true))];
+        let buckets = [
+            Some((0, 2, false)),
+            Some((2, 3, true)),
+            Some((5, 1, true)),
+            Some((6, 2, false)),
+            Some((8, 1, true)),
+        ];
         let calls = calls_of(&buckets);
         assert_eq!(calls, vec![(0, 6), (6, 3)]);
         let drawn: Vec<usize> = calls.iter().flat_map(|&(start, count)| start..start + count).collect();
@@ -3510,7 +4028,16 @@ mod join_tests {
     /// before it were cut out).
     #[test]
     fn a_bucket_without_a_pipeline_or_a_gap_in_the_arguments_ends_the_run() {
-        assert_eq!(calls_of(&[Some((0, 2, false)), Some((2, 1, true)), None, Some((3, 2, true)), Some((5, 1, true))]), vec![(0, 3), (3, 3)]);
+        assert_eq!(
+            calls_of(&[
+                Some((0, 2, false)),
+                Some((2, 1, true)),
+                None,
+                Some((3, 2, true)),
+                Some((5, 1, true))
+            ]),
+            vec![(0, 3), (3, 3)]
+        );
         assert_eq!(calls_of(&[Some((0, 2, false)), Some((4, 1, true))]), vec![(0, 2), (4, 1)]);
         assert_eq!(calls_of(&[None, Some((0, 2, true))]), vec![(0, 2)]);
     }
@@ -3544,7 +4071,19 @@ mod sorted_plan_tests {
     #[test]
     fn the_flush_keeps_the_order_of_the_queue() {
         use QueuedKind::*;
-        let queue = [Table(1), Table(2), Draw, Table(3), Held, Held, Table(4), Table(5), Draw, Held, Table(6)];
+        let queue = [
+            Table(1),
+            Table(2),
+            Draw,
+            Table(3),
+            Held,
+            Held,
+            Table(4),
+            Table(5),
+            Draw,
+            Held,
+            Table(6),
+        ];
         let plan = SortedPlan::build(&queue, &[6], placed_of);
         assert_eq!(
             plan.steps,
@@ -3566,10 +4105,16 @@ mod sorted_plan_tests {
     fn a_waiting_held_draw_joins_the_held_group_at_its_place() {
         use QueuedKind::*;
         let plan = SortedPlan::build(&[Table(1), Table(2), Table(3)], &[2, 2], placed_of);
-        assert_eq!(plan.steps, vec![run_of(&[1]), SortedStep::Held(vec![HeldSource::Wait(2)]), run_of(&[3])]);
+        assert_eq!(
+            plan.steps,
+            vec![run_of(&[1]), SortedStep::Held(vec![HeldSource::Wait(2)]), run_of(&[3])]
+        );
         // The second wait of the id stays for a second place with that id.
         let twice = SortedPlan::build(&[Table(2), Table(2)], &[2, 2], placed_of);
-        assert_eq!(twice.steps, vec![SortedStep::Held(vec![HeldSource::Wait(2), HeldSource::Wait(2)])]);
+        assert_eq!(
+            twice.steps,
+            vec![SortedStep::Held(vec![HeldSource::Wait(2), HeldSource::Wait(2)])]
+        );
     }
 
     /// A place with no entries leaves the run and the held group as they are, and a place with slots
@@ -3584,7 +4129,14 @@ mod sorted_plan_tests {
             (id == 9) as u32
         };
         let plan = SortedPlan::build(&[Held, Table(9), Table(1), Draw], &[], without);
-        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Queue(0)]), run_of(&[1]), SortedStep::Draw(3)]);
+        assert_eq!(
+            plan.steps,
+            vec![
+                SortedStep::Held(vec![HeldSource::Queue(0)]),
+                run_of(&[1]),
+                SortedStep::Draw(3)
+            ]
+        );
         assert_eq!(plan.queued_not_sorted, 1);
         assert!(SortedPlan::build(&[], &[], placed_of).steps.is_empty());
     }
@@ -3596,7 +4148,10 @@ mod sorted_plan_tests {
         use QueuedKind::*;
         let without = |_id: u32, _placed: &mut Vec<(u64, u32, u32, u32)>| 1;
         let plan = SortedPlan::build(&[Held, Table(9), Held], &[], without);
-        assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Queue(0), HeldSource::Queue(2)])]);
+        assert_eq!(
+            plan.steps,
+            vec![SortedStep::Held(vec![HeldSource::Queue(0), HeldSource::Queue(2)])]
+        );
     }
 
     /// A held draw that waited belongs to one place. A second place of the same id draws its

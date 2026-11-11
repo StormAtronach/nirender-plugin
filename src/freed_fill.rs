@@ -48,7 +48,11 @@ pub unsafe fn install() {
     }
     let name: Vec<u16> = "msvcrt.dll\0".encode_utf16().collect();
     let module = crate::win::GetModuleHandleW(name.as_ptr());
-    let msize = if module.is_null() { core::ptr::null_mut() } else { crate::win::GetProcAddress(module, b"_msize\0".as_ptr()) };
+    let msize = if module.is_null() {
+        core::ptr::null_mut()
+    } else {
+        crate::win::GetProcAddress(module, b"_msize\0".as_ptr())
+    };
     if msize.is_null() {
         crate::log!("freed fill: msvcrt.dll has no _msize; the fill is off");
         return;
@@ -70,5 +74,9 @@ pub fn report() -> String {
     if ORIGINAL.load(Ordering::Relaxed) == 0 {
         return String::from("freed fill: off");
     }
-    format!("freed fill: {} blocks filled, {:.1} MB in all", FREES.load(Ordering::Relaxed), BYTES.load(Ordering::Relaxed) as f64 / 1048576.0)
+    format!(
+        "freed fill: {} blocks filled, {:.1} MB in all",
+        FREES.load(Ordering::Relaxed),
+        BYTES.load(Ordering::Relaxed) as f64 / 1048576.0
+    )
 }

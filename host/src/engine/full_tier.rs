@@ -77,7 +77,13 @@ pub(crate) struct FullTier {
 
 impl Default for FullTier {
     fn default() -> FullTier {
-        FullTier { max: DEFAULT_PLACES, wanted: [0; VIEW_SLOTS], places: [None; MAX_PLACES], frame: 0, counts: TierCounts::default() }
+        FullTier {
+            max: DEFAULT_PLACES,
+            wanted: [0; VIEW_SLOTS],
+            places: [None; MAX_PLACES],
+            frame: 0,
+            counts: TierCounts::default(),
+        }
     }
 }
 
@@ -104,7 +110,9 @@ impl FullTier {
     /// The frame event `EVENT_VIEW_OPTIONS`: the mod's parts for a slot. Parts 0 clear them, and
     /// the slot gives up its place.
     pub(crate) fn options(&mut self, slot: u32, parts: u32) {
-        let Some(wanted) = self.wanted.get_mut(slot as usize) else { return };
+        let Some(wanted) = self.wanted.get_mut(slot as usize) else {
+            return;
+        };
         *wanted = parts;
         if parts == 0 {
             self.counts.cleared += 1;
@@ -143,10 +151,16 @@ impl FullTier {
             return None;
         }
         let hold = Holder { slot, last: self.frame };
-        let held = self.places[..self.max].iter().position(|place| place.is_some_and(|holder| holder.slot == slot));
+        let held = self.places[..self.max]
+            .iter()
+            .position(|place| place.is_some_and(|holder| holder.slot == slot));
         let free = || self.places[..self.max].iter().position(Option::is_none);
         // A holder that rendered nothing for [`IDLE_FRAMES`] frames loses its place to this view.
-        let idle = || self.places[..self.max].iter().position(|place| place.is_some_and(|holder| self.frame.saturating_sub(holder.last) > IDLE_FRAMES));
+        let idle = || {
+            self.places[..self.max]
+                .iter()
+                .position(|place| place.is_some_and(|holder| self.frame.saturating_sub(holder.last) > IDLE_FRAMES))
+        };
         let (place, taken_over) = match (held, free(), idle()) {
             (Some(place), ..) => (place, false),
             (None, Some(place), _) => (place, false),
@@ -159,7 +173,10 @@ impl FullTier {
         self.places[place] = Some(hold);
         self.counts.taken_over += u64::from(taken_over);
         self.counts.granted += 1;
-        Some(Grant { place: place as u8, parts: wanted })
+        Some(Grant {
+            place: place as u8,
+            parts: wanted,
+        })
     }
 
     /// A scene that repeats the key of an earlier scene in the same flush (it has a second

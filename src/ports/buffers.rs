@@ -16,9 +16,9 @@ use crate::d3d::{
 use crate::engine::{vcall0, virtual_at, CREATE_CRITICAL_SECTION, VTBL_NI_REF_OBJECT};
 use crate::gen::layouts::{
     NiD3DShaderInterface as SI, NiD3DShaderInterface_Declaration as DECL, NiD3DShaderInterface_DeclarationElement as ELEM,
-    NiD3DShaderInterface_ShaderEntry as SE, NiDX8IndexBufferManager as IM, NiDX8VBResource as VR, NiDX8VertexBufferManager as VM,
-    NiDX8VertexBufferManager_VBInfo as VI, NiGeometryData as GD, NiSkinPartition_Partition as SP, THashMap as HM,
-    THashMap_Node as HN,
+    NiD3DShaderInterface_ShaderEntry as SE, NiDX8IndexBufferManager as IM, NiDX8VBResource as VR,
+    NiDX8VertexBufferManager as VM, NiDX8VertexBufferManager_VBInfo as VI, NiGeometryData as GD,
+    NiSkinPartition_Partition as SP, THashMap as HM, THashMap_Node as HN,
 };
 use crate::mem::{rd, wr};
 use crate::ports::{hash_map, ni};
@@ -86,7 +86,8 @@ const _: () = assert!(VM::SIZE == 0x3C && VM::hashmap_C == 0xC && VM::hashmap_1C
 const _: () = assert!(VI::SIZE == 0x1C && VI::nextFreeResourceIndex == 4 && VI::resources == 8);
 const _: () = assert!(VR::SIZE == 0x3C && VR::length == 0x14 && VR::pVB == 0x20 && VR::desc == 0x24);
 const _: () = assert!(SI::SIZE == 0xC0 && SI::shaderFunctions == 0x30 && SI::shaderUsages == 0x48 && SI::field_90 == 0x90);
-const _: () = assert!(SI::vertexShaderHandles == 0xA8 && SI::d3dDevice == 0xC && SI::field_1C == 0x1C && SI::declarations == 0x24);
+const _: () =
+    assert!(SI::vertexShaderHandles == 0xA8 && SI::d3dDevice == 0xC && SI::field_1C == 0x1C && SI::declarations == 0x24);
 
 // ---- engine functions and data at fixed addresses
 
@@ -107,7 +108,16 @@ mod eng {
 
     /// 0x6FA000 `NiSkinInstance::Deform`
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn skin_deform(skin: usize, vertices: usize, unused: u32, normals: usize, count: u32, out_vertices: usize, out_normals: usize, stride: u32) {
+    pub unsafe fn skin_deform(
+        skin: usize,
+        vertices: usize,
+        unused: u32,
+        normals: usize,
+        count: u32,
+        out_vertices: usize,
+        out_normals: usize,
+        stride: u32,
+    ) {
         type F = unsafe extern "thiscall" fn(usize, usize, u32, usize, u32, usize, usize, u32) -> u32;
         transmute::<usize, F>(0x6FA000)(skin, vertices, unused, normals, count, out_vertices, out_normals, stride);
     }
@@ -198,8 +208,13 @@ mod eng {
     extern "thiscall" fn map_dtor(_map: usize, _node: usize) -> u32 {
         0
     }
-    static MAP_VTBL: MapVtbl =
-        MapVtbl { deleting_dtor: 0, hash_key: map_hash, cmp_key: map_cmp, make_key_value_pair: map_make, dtor_key_value_pair: map_dtor };
+    static MAP_VTBL: MapVtbl = MapVtbl {
+        deleting_dtor: 0,
+        hash_key: map_hash,
+        cmp_key: map_cmp,
+        make_key_value_pair: map_make,
+        dtor_key_value_pair: map_dtor,
+    };
     static EMPTY: [u8; 4] = [0; 4];
 
     pub unsafe fn operator_new(size: usize) -> usize {
@@ -223,13 +238,26 @@ mod eng {
         resource_release(resource)
     }
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn skin_deform(_skin: usize, vertices: usize, _unused: u32, normals: usize, count: u32, out_vertices: usize, out_normals: usize, stride: u32) {
-        DEFORMED.with(|d| d.borrow_mut().push((vertices, normals, count, out_vertices, out_normals, stride)));
+    pub unsafe fn skin_deform(
+        _skin: usize,
+        vertices: usize,
+        _unused: u32,
+        normals: usize,
+        count: u32,
+        out_vertices: usize,
+        out_normals: usize,
+        stride: u32,
+    ) {
+        DEFORMED.with(|d| {
+            d.borrow_mut()
+                .push((vertices, normals, count, out_vertices, out_normals, stride))
+        });
     }
     /// The sets follow each other in one array, as in the game.
     pub unsafe fn texture_set(geometry: usize, set: u32) -> usize {
         use crate::gen::layouts::NiGeometryData;
-        rd::<usize>(geometry, NiGeometryData::textureCoords) + set as usize * rd::<u16>(geometry, NiGeometryData::vertexCount) as usize * 8
+        rd::<usize>(geometry, NiGeometryData::textureCoords)
+            + set as usize * rd::<u16>(geometry, NiGeometryData::vertexCount) as usize * 8
     }
     pub unsafe fn array_set_size(array: usize, size: u32) {
         let storage = operator_new(size as usize * 4);
@@ -271,7 +299,8 @@ mod eng {
 /// no function for this slot. `out` is the address of the handle.
 #[inline(always)]
 unsafe fn device_create_vertex_shader(device: usize, declaration: usize, function: u32, out: usize, usage: u32) -> u32 {
-    let f: unsafe extern "system" fn(usize, usize, u32, usize, u32) -> u32 = transmute(virtual_at(device, DEVICE_CREATE_VERTEX_SHADER));
+    let f: unsafe extern "system" fn(usize, usize, u32, usize, u32) -> u32 =
+        transmute(virtual_at(device, DEVICE_CREATE_VERTEX_SHADER));
     f(device, declaration, function, out, usage)
 }
 
@@ -400,7 +429,15 @@ unsafe fn index_buffer_fits(buffer: usize, usage: u32, pool: u32, size: u32) -> 
 #[inline(always)]
 unsafe fn new_index_buffer(device: usize, size: u32, usage: u32, pool: u32) -> usize {
     let mut buffer: usize = 0;
-    if device_create_index_buffer(device, size, usage, D3DFMT_INDEX16, pool, core::ptr::addr_of_mut!(buffer) as usize) != 0 {
+    if device_create_index_buffer(
+        device,
+        size,
+        usage,
+        D3DFMT_INDEX16,
+        pool,
+        core::ptr::addr_of_mut!(buffer) as usize,
+    ) != 0
+    {
         eng::log(TEXT_CREATE_INDEX_BUFFER);
         buffer = 0;
     }
@@ -495,7 +532,15 @@ pub unsafe fn index_manager_deleting_dtor(this: usize, flags: u8) -> usize {
 /// `this` points at a live `NiDX8IndexBufferManager`; `indices` is 0 or `index_count` indices;
 /// `index_buffer` is 0 or an index buffer of the device; `out_buffer_size` points at a word that
 /// the function can write.
-pub unsafe fn create_index_buffer(this: usize, indices: usize, index_count: u32, index_buffer: usize, out_buffer_size: usize, pool: u32, usage: u32) -> usize {
+pub unsafe fn create_index_buffer(
+    this: usize,
+    indices: usize,
+    index_count: u32,
+    index_buffer: usize,
+    out_buffer_size: usize,
+    pool: u32,
+    usage: u32,
+) -> usize {
     crate::shadow::touch(&create_index_buffer_port::STATE);
     if rd::<usize>(this, IM::device) == 0 {
         return 0;
@@ -596,7 +641,14 @@ pub unsafe fn get_or_build_quad_index_buffer(this: usize, quads: u32, fill: u8, 
 ///
 /// `this` points at a live `NiDX8IndexBufferManager`; `flags` is 0 or `vertex_count` flags;
 /// `out_index_count` points at a word that the function writes.
-pub unsafe fn build_line_segment_index_buffer(this: usize, vertex_count: u32, flags: usize, out_index_count: usize, usage: u32, pool: u32) -> usize {
+pub unsafe fn build_line_segment_index_buffer(
+    this: usize,
+    vertex_count: u32,
+    flags: usize,
+    out_index_count: usize,
+    usage: u32,
+    pool: u32,
+) -> usize {
     crate::shadow::touch(&build_line_segment_index_buffer_port::STATE);
     if rd::<usize>(this, IM::device) == 0 {
         return 0;
@@ -730,7 +782,9 @@ pub unsafe fn vertex_manager_dtor(this: usize) {
         device_release(device);
         wr::<u32>(this, VM::device, 0);
     } else {
-        crate::log!("vertex buffer manager: destroyed with no device; nothing to release (the game's code would call through 0)");
+        crate::log!(
+            "vertex buffer manager: destroyed with no device; nothing to release (the game's code would call through 0)"
+        );
     }
     map_destruct(this + VM::hashmapFVFUsage, eng::vtbl_vertex_map());
     map_destruct(this + VM::hashmap_1C, eng::vtbl_vertex_map());
@@ -864,7 +918,14 @@ pub unsafe fn create_vertex_buffer(this: usize, byte_count: u32, usage: u32, fvf
     if rd::<usize>(resource, VR::pVB) == 0 {
         let mut created: usize = 0;
         eng::lock(CREATE_CRITICAL_SECTION, NAME_CREATE_VERTEX_BUFFER);
-        let error = device_create_vertex_buffer(rd(this, VM::device), byte_count, usage, fvf, pool, core::ptr::addr_of_mut!(created) as usize);
+        let error = device_create_vertex_buffer(
+            rd(this, VM::device),
+            byte_count,
+            usage,
+            fvf,
+            pool,
+            core::ptr::addr_of_mut!(created) as usize,
+        );
         eng::unlock(CREATE_CRITICAL_SECTION);
         let buffer = if error != 0 {
             eng::log_value(TEXT_CREATE_VERTEX_BUFFER_FAILED, eng::direct_x_error_name(error));
@@ -878,7 +939,11 @@ pub unsafe fn create_vertex_buffer(this: usize, byte_count: u32, usage: u32, fvf
         wr(resource, VR::length, byte_count);
         wr(resource, VR::fvf, fvf);
         result = buffer;
-        wr::<u8>(info, VI::nextFreeResourceIndex, rd::<u8>(info, VI::nextFreeResourceIndex).wrapping_add(1));
+        wr::<u8>(
+            info,
+            VI::nextFreeResourceIndex,
+            rd::<u8>(info, VI::nextFreeResourceIndex).wrapping_add(1),
+        );
     }
     if rd::<u8>(info, VI::nextFreeResourceIndex) == RING as u8 {
         wr::<u8>(info, VI::nextFreeResourceIndex, 0);
@@ -963,7 +1028,14 @@ pub unsafe fn pack_untransformed_vb(
         let mut created: usize = 0;
         eng::lock(CREATE_CRITICAL_SECTION, NAME_CREATE_VERTEX_BUFFER);
         let length = count.wrapping_mul(stride);
-        let error = device_create_vertex_buffer(rd(this, VM::device), length, usage, fvf, pool, core::ptr::addr_of_mut!(created) as usize);
+        let error = device_create_vertex_buffer(
+            rd(this, VM::device),
+            length,
+            usage,
+            fvf,
+            pool,
+            core::ptr::addr_of_mut!(created) as usize,
+        );
         eng::unlock(CREATE_CRITICAL_SECTION);
         if error != 0 {
             eng::log_value(TEXT_CREATE_VERTEX_BUFFER_FAILED, eng::direct_x_error_name(error));
@@ -1199,7 +1271,13 @@ pub unsafe fn compile_vertex_shader(this: usize, shader_function: u32, shader_us
     }
     let entries = this + SI::field_90;
     let handles = this + SI::vertexShaderHandles;
-    let result = device_create_vertex_shader(rd(this, SI::d3dDevice), declaration, function, core::ptr::addr_of_mut!(handle) as usize, usage);
+    let result = device_create_vertex_shader(
+        rd(this, SI::d3dDevice),
+        declaration,
+        function,
+        core::ptr::addr_of_mut!(handle) as usize,
+        usage,
+    );
     if (result as i32) < 0 {
         let entry: usize = 0;
         if index >= rd::<u32>(entries, ARRAY_STORAGE_COUNT) {
@@ -1288,7 +1366,11 @@ pub unsafe fn build_vertex_buffer(
 ) -> usize {
     crate::shadow::touch(&build_vertex_buffer_port::STATE);
     // With a partition the game code sets only the low word of the count.
-    let active = if partition != 0 { rd::<u16>(partition, SP::numVertices) as u32 } else { geometry_active_vertex_count(geometry) };
+    let active = if partition != 0 {
+        rd::<u16>(partition, SP::numVertices) as u32
+    } else {
+        geometry_active_vertex_count(geometry)
+    };
     if active as u16 == 0 {
         return 0;
     }
@@ -1326,7 +1408,15 @@ pub unsafe fn build_vertex_buffer(
     if buffer == 0 {
         let length = count.wrapping_mul(stride);
         wr(out_buffer_size, 0, length);
-        if device_create_vertex_buffer(rd(this, SI::d3dDevice), length, usage, 0, pool, core::ptr::addr_of_mut!(buffer) as usize) != 0 {
+        if device_create_vertex_buffer(
+            rd(this, SI::d3dDevice),
+            length,
+            usage,
+            0,
+            pool,
+            core::ptr::addr_of_mut!(buffer) as usize,
+        ) != 0
+        {
             return 0;
         }
         if buffer == 0 {
@@ -1396,7 +1486,11 @@ unsafe fn set_first_shader_handle(handles: usize, shader: u32) {
                     let slot = rd::<usize>(handles, ARRAY_STORAGE) + i as usize * 4;
                     if rd::<u32>(slot, 0) != 0 {
                         wr::<u32>(slot, 0, 0);
-                        wr(handles, ARRAY_FILLED_COUNT, rd::<u32>(handles, ARRAY_FILLED_COUNT).wrapping_sub(1));
+                        wr(
+                            handles,
+                            ARRAY_FILLED_COUNT,
+                            rd::<u32>(handles, ARRAY_FILLED_COUNT).wrapping_sub(1),
+                        );
                     }
                     i += 1;
                     if i >= rd::<u32>(handles, ARRAY_END_INDEX) {
@@ -1422,9 +1516,17 @@ unsafe fn set_first_shader_handle(handles: usize, shader: u32) {
     }
     if rd::<u32>(handles, ARRAY_END_INDEX) == 0 {
         wr::<u32>(handles, ARRAY_END_INDEX, 1);
-        wr(handles, ARRAY_FILLED_COUNT, rd::<u32>(handles, ARRAY_FILLED_COUNT).wrapping_add(1));
+        wr(
+            handles,
+            ARRAY_FILLED_COUNT,
+            rd::<u32>(handles, ARRAY_FILLED_COUNT).wrapping_add(1),
+        );
     } else if rd::<u32>(rd::<usize>(handles, ARRAY_STORAGE), 0) == 0 {
-        wr(handles, ARRAY_FILLED_COUNT, rd::<u32>(handles, ARRAY_FILLED_COUNT).wrapping_add(1));
+        wr(
+            handles,
+            ARRAY_FILLED_COUNT,
+            rd::<u32>(handles, ARRAY_FILLED_COUNT).wrapping_add(1),
+        );
     }
     wr(rd::<usize>(handles, ARRAY_STORAGE), 0, shader);
 }
@@ -1440,7 +1542,15 @@ unsafe fn create_index_buffer_regions(set: &mut Regions, out_buffer_size: usize)
 /// The regions are the manager and, for the line buffer, the index count. The call is a skip when
 /// the buffer of the manager does not fit, because the function releases that buffer. A release
 /// cannot occur two times.
-unsafe fn shared_index_buffer_regions(set: &mut Regions, this: usize, buffer: usize, usage: u32, pool: u32, size: u32, out: usize) {
+unsafe fn shared_index_buffer_regions(
+    set: &mut Regions,
+    this: usize,
+    buffer: usize,
+    usage: u32,
+    pool: u32,
+    size: u32,
+    out: usize,
+) {
     if rd::<usize>(this, IM::device) != 0 && buffer != 0 && index_buffer_fits(buffer, usage, pool, size) == Some(false) {
         set.skip();
         return;
@@ -1544,7 +1654,15 @@ unsafe fn pack_untransformed_vb_regions(set: &mut Regions, out_buffer_size: usiz
 
 /// The regions are the two results and the regions of `CreateVertexBuffer` for the format and the
 /// length of the polygon. The call is a skip when that `CreateVertexBuffer` call is a skip.
-unsafe fn pack_screen_poly_vb_regions(set: &mut Regions, this: usize, vertex_count: u32, tex_coords: usize, colors: usize, out_fvf: usize, out_stride: usize) {
+unsafe fn pack_screen_poly_vb_regions(
+    set: &mut Regions,
+    this: usize,
+    vertex_count: u32,
+    tex_coords: usize,
+    colors: usize,
+    out_fvf: usize,
+    out_stride: usize,
+) {
     let mut fvf = D3DFVF_XYZ;
     let mut stride: u32 = 12;
     if colors != 0 {
@@ -1563,7 +1681,13 @@ unsafe fn pack_screen_poly_vb_regions(set: &mut Regions, this: usize, vertex_cou
 /// The call is a skip when it compiles the shaders: with `flag_28` set or with no first shader
 /// handle. That call makes vertex shaders, and the dry device does not make them. A call that must
 /// set the first shader handle is in this condition too. If not, the regions are the three results.
-unsafe fn build_vertex_buffer_regions(set: &mut Regions, this: usize, out_buffer_size: usize, out_stride: usize, out_shader: usize) {
+unsafe fn build_vertex_buffer_regions(
+    set: &mut Regions,
+    this: usize,
+    out_buffer_size: usize,
+    out_stride: usize,
+    out_shader: usize,
+) {
     if rd::<u8>(this, SI::flag_28) != 0 || rd::<u32>(rd::<usize>(this + SI::vertexShaderHandles, ARRAY_STORAGE), 0) == 0 {
         set.skip();
         return;
@@ -1575,144 +1699,271 @@ unsafe fn build_vertex_buffer_regions(set: &mut Regions, this: usize, out_buffer
 
 // The call of a constructor is a skip. A constructor runs one time, when the renderer starts, and
 // it takes a reference on the device.
-port_thiscall!(index_manager_ctor_port, 0x6BC970, "NiDX8IndexBufferManager::ctor",
+port_thiscall!(
+    index_manager_ctor_port,
+    0x6BC970,
+    "NiDX8IndexBufferManager::ctor",
     fn(this, device: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = index_manager_ctor);
+    rust = index_manager_ctor
+);
 
 // The call of a destructor is a skip, because a destructor releases the buffers and the device.
-port_thiscall!(index_manager_deleting_dtor_port, 0x6BCB80, "NiDX8IndexBufferManager::deleting_dtor",
+port_thiscall!(
+    index_manager_deleting_dtor_port,
+    0x6BCB80,
+    "NiDX8IndexBufferManager::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = index_manager_deleting_dtor);
+    rust = index_manager_deleting_dtor
+);
 
-port_thiscall!(index_manager_dtor_port, 0x6BCBA0, "NiDX8IndexBufferManager::dtor",
+port_thiscall!(
+    index_manager_dtor_port,
+    0x6BCBA0,
+    "NiDX8IndexBufferManager::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = index_manager_dtor);
+    rust = index_manager_dtor
+);
 
-port_thiscall!(create_index_buffer_port, 0x6BCE80, "NiDX8IndexBufferManager::createIndexBuffer",
+port_thiscall!(
+    create_index_buffer_port,
+    0x6BCE80,
+    "NiDX8IndexBufferManager::createIndexBuffer",
     fn(this, indices: usize, index_count: u32, index_buffer: usize, out_buffer_size: usize, pool: u32, usage: u32) -> usize,
     compare_eax = true,
     regions = |set| create_index_buffer_regions(set, out_buffer_size),
-    rust = create_index_buffer);
+    rust = create_index_buffer
+);
 
-port_thiscall!(get_or_build_quad_index_buffer_port, 0x6BCFE0, "NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer",
+port_thiscall!(
+    get_or_build_quad_index_buffer_port,
+    0x6BCFE0,
+    "NiDX8IndexBufferManager::getOrBuildQuadIndexBuffer",
     fn(this, quads: u32, fill: u8, usage: u32, pool: u32) -> usize,
     compare_eax = true,
-    regions = |set| shared_index_buffer_regions(set, this, rd(this, IM::indexBuffer), usage, pool, quads.wrapping_mul(12), 0),
-    rust = get_or_build_quad_index_buffer);
+    regions =
+        |set| shared_index_buffer_regions(set, this, rd(this, IM::indexBuffer), usage, pool, quads.wrapping_mul(12), 0),
+    rust = get_or_build_quad_index_buffer
+);
 
-port_thiscall!(build_line_segment_index_buffer_port, 0x6BD190, "NiDX8IndexBufferManager::buildLineSegmentIndexBuffer",
+port_thiscall!(
+    build_line_segment_index_buffer_port,
+    0x6BD190,
+    "NiDX8IndexBufferManager::buildLineSegmentIndexBuffer",
     fn(this, vertex_count: u32, flags: usize, out_index_count: usize, usage: u32, pool: u32) -> usize,
     compare_eax = true,
     regions = |set| shared_index_buffer_regions(
-        set, this, rd(this, IM::field_14), usage, pool, vertex_count.wrapping_mul(4).wrapping_add(4), out_index_count),
-    rust = build_line_segment_index_buffer);
+        set,
+        this,
+        rd(this, IM::field_14),
+        usage,
+        pool,
+        vertex_count.wrapping_mul(4).wrapping_add(4),
+        out_index_count
+    ),
+    rust = build_line_segment_index_buffer
+);
 
-port_thiscall!(index_manager_recreate_port, 0x6BD370, "NiDX8IndexBufferManager::Recreate",
+port_thiscall!(
+    index_manager_recreate_port,
+    0x6BD370,
+    "NiDX8IndexBufferManager::Recreate",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| recreate_regions(set, this, IM::SIZE, this + IM::hashmap_1C),
-    rust = index_manager_recreate);
+    rust = index_manager_recreate
+);
 
-port_thiscall!(index_map_dtor_port, 0x6BD560, "NiDX8IndexBufferManager::HashMap::dtor",
+port_thiscall!(
+    index_map_dtor_port,
+    0x6BD560,
+    "NiDX8IndexBufferManager::HashMap::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| map_dtor_regions(set, this, 0),
-    rust = index_map_dtor);
+    rust = index_map_dtor
+);
 
-port_thiscall!(vertex_manager_ctor_port, 0x6BD780, "NiDX8VertexBufferManager::ctor",
+port_thiscall!(
+    vertex_manager_ctor_port,
+    0x6BD780,
+    "NiDX8VertexBufferManager::ctor",
     fn(this, device: usize) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = vertex_manager_ctor);
+    rust = vertex_manager_ctor
+);
 
-port_thiscall!(vertex_manager_deleting_dtor_port, 0x6BD990, "NiDX8VertexBufferManager::deleting_dtor",
+port_thiscall!(
+    vertex_manager_deleting_dtor_port,
+    0x6BD990,
+    "NiDX8VertexBufferManager::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = vertex_manager_deleting_dtor);
+    rust = vertex_manager_deleting_dtor
+);
 
-port_thiscall!(vertex_manager_dtor_port, 0x6BD9B0, "NiDX8VertexBufferManager::dtor",
+port_thiscall!(
+    vertex_manager_dtor_port,
+    0x6BD9B0,
+    "NiDX8VertexBufferManager::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| set.skip(),
-    rust = vertex_manager_dtor);
+    rust = vertex_manager_dtor
+);
 
-port_thiscall!(create_vertex_buffer_port, 0x6BDC70, "NiDX8VertexBufferManager::CreateVertexBuffer",
+port_thiscall!(
+    create_vertex_buffer_port,
+    0x6BDC70,
+    "NiDX8VertexBufferManager::CreateVertexBuffer",
     fn(this, byte_count: u32, usage: u32, fvf: u32, pool: u32) -> usize,
     compare_eax = true,
     regions = |set| create_vertex_buffer_regions(set, this, byte_count, usage, fvf, pool),
-    rust = create_vertex_buffer);
+    rust = create_vertex_buffer
+);
 
-port_thiscall!(pack_untransformed_vb_port, 0x6BDE50, "NiDX8VertexBufferManager::PackUntransformedVB",
-    fn(this, geometry: usize, previous_vb: usize, out_buffer_size: usize, skin: usize, refill: u8, pool: u32, usage: u32,
-       out_stride: usize, out_fvf: usize) -> usize,
+port_thiscall!(
+    pack_untransformed_vb_port,
+    0x6BDE50,
+    "NiDX8VertexBufferManager::PackUntransformedVB",
+    fn(
+        this,
+        geometry: usize,
+        previous_vb: usize,
+        out_buffer_size: usize,
+        skin: usize,
+        refill: u8,
+        pool: u32,
+        usage: u32,
+        out_stride: usize,
+        out_fvf: usize,
+    ) -> usize,
     compare_eax = true,
     regions = |set| pack_untransformed_vb_regions(set, out_buffer_size, out_stride, out_fvf),
-    rust = pack_untransformed_vb);
+    rust = pack_untransformed_vb
+);
 
-port_thiscall!(pack_screen_poly_vb_port, 0x6BE180, "NiDX8VertexBufferManager::PackScreenPolyVB",
-    fn(this, vertex_count: u32, vertices: usize, tex_coords: usize, colors: usize, frustum_near: u32, frustum_distance: u32,
-       out_fvf: usize, out_stride: usize) -> usize,
+port_thiscall!(
+    pack_screen_poly_vb_port,
+    0x6BE180,
+    "NiDX8VertexBufferManager::PackScreenPolyVB",
+    fn(
+        this,
+        vertex_count: u32,
+        vertices: usize,
+        tex_coords: usize,
+        colors: usize,
+        frustum_near: u32,
+        frustum_distance: u32,
+        out_fvf: usize,
+        out_stride: usize,
+    ) -> usize,
     compare_eax = true,
     regions = |set| pack_screen_poly_vb_regions(set, this, vertex_count, tex_coords, colors, out_fvf, out_stride),
-    rust = pack_screen_poly_vb);
+    rust = pack_screen_poly_vb
+);
 
-port_thiscall!(get_vb_info_port, 0x6BE690, "NiDX8VertexBufferManager::GetVBInfo",
+port_thiscall!(
+    get_vb_info_port,
+    0x6BE690,
+    "NiDX8VertexBufferManager::GetVBInfo",
     fn(this, usage: u32, fvf: u32, pool: u32) -> usize,
     compare_eax = true,
     regions = |set| get_vb_info_regions(set, this, usage, fvf, pool),
-    rust = get_vb_info);
+    rust = get_vb_info
+);
 
-port_thiscall!(vertex_manager_recreate_port, 0x6BE910, "NiDX8VertexBufferManager::Recreate",
+port_thiscall!(
+    vertex_manager_recreate_port,
+    0x6BE910,
+    "NiDX8VertexBufferManager::Recreate",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| recreate_regions(set, this, VM::SIZE, this + VM::hashmap_C),
-    rust = vertex_manager_recreate);
+    rust = vertex_manager_recreate
+);
 
-port_thiscall!(vertex_map_dtor_port, 0x6BEA30, "NiDX8VertexBufferManager::HashMap::dtor",
+port_thiscall!(
+    vertex_map_dtor_port,
+    0x6BEA30,
+    "NiDX8VertexBufferManager::HashMap::dtor",
     fn(this) -> (),
     compare_eax = false,
     regions = |set| map_dtor_regions(set, this, 0),
-    rust = vertex_map_dtor);
+    rust = vertex_map_dtor
+);
 
-port_thiscall!(fvf_usage_hash_insert_port, 0x6BEA90, "NiDX8VertexBufferManager::FVFUsageHash::insert",
+port_thiscall!(
+    fvf_usage_hash_insert_port,
+    0x6BEA90,
+    "NiDX8VertexBufferManager::FVFUsageHash::insert",
     fn(this, key: u32, value: usize) -> (),
     compare_eax = false,
     regions = |set| map_insert_regions(set, this, key),
-    rust = fvf_usage_hash_insert);
+    rust = fvf_usage_hash_insert
+);
 
-port_thiscall!(vertex_map_deleting_dtor_port, 0x6BEB20, "NiDX8VertexBufferManager::Hash::deleting_dtor",
+port_thiscall!(
+    vertex_map_deleting_dtor_port,
+    0x6BEB20,
+    "NiDX8VertexBufferManager::Hash::deleting_dtor",
     fn(this, flags: u8) -> usize,
     compare_eax = true,
     regions = |set| map_dtor_regions(set, this, flags),
-    rust = vertex_map_deleting_dtor);
+    rust = vertex_map_deleting_dtor
+);
 
-port_thiscall!(vb_resource_ctor_port, 0x6C28A0, "NiDX8VBResource::ctor",
+port_thiscall!(
+    vb_resource_ctor_port,
+    0x6C28A0,
+    "NiDX8VBResource::ctor",
     fn(this) -> usize,
     compare_eax = true,
     regions = |set| set.add(this, VR::length),
-    rust = vb_resource_ctor);
+    rust = vb_resource_ctor
+);
 
 // The call is a skip. `CreateVertexShader` returns nothing on the dry device, so the two runs cannot
 // be equal.
-port_thiscall!(compile_vertex_shader_port, 0x6BEE00, "NiD3DShaderInterface::compileVertexShader",
+port_thiscall!(
+    compile_vertex_shader_port,
+    0x6BEE00,
+    "NiD3DShaderInterface::compileVertexShader",
     fn(this, shader_function: u32, shader_usage: u32, index: u32) -> u32,
     compare_eax = true,
     regions = |set| set.skip(),
-    rust = compile_vertex_shader);
+    rust = compile_vertex_shader
+);
 
-port_thiscall!(build_vertex_buffer_port, 0x6BF0B0, "NiD3DShaderInterface::buildVertexBuffer",
-    fn(this, geometry: usize, skin: usize, partition: usize, renderer_data: usize, previous_vb: usize, out_buffer_size: usize,
-       pool: u32, usage: u32, out_stride: usize, out_shader: usize, declaration_index: u32) -> usize,
+port_thiscall!(
+    build_vertex_buffer_port,
+    0x6BF0B0,
+    "NiD3DShaderInterface::buildVertexBuffer",
+    fn(
+        this,
+        geometry: usize,
+        skin: usize,
+        partition: usize,
+        renderer_data: usize,
+        previous_vb: usize,
+        out_buffer_size: usize,
+        pool: u32,
+        usage: u32,
+        out_stride: usize,
+        out_shader: usize,
+        declaration_index: u32,
+    ) -> usize,
     compare_eax = true,
     regions = |set| build_vertex_buffer_regions(set, this, out_buffer_size, out_stride, out_shader),
-    rust = build_vertex_buffer);
+    rust = build_vertex_buffer
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[
     &index_manager_ctor_port::STATE,
@@ -1820,7 +2071,14 @@ mod tests {
         unsafe { *out = fake_buffer(D3DFMT_VERTEXDATA, 3, usage, pool, length, fvf) };
         0
     }
-    extern "system" fn dev_create_ib(_device: usize, length: u32, usage: u32, format: u32, pool: u32, out: *mut usize) -> u32 {
+    extern "system" fn dev_create_ib(
+        _device: usize,
+        length: u32,
+        usage: u32,
+        format: u32,
+        pool: u32,
+        out: *mut usize,
+    ) -> u32 {
         call("CreateIndexBuffer", length, format);
         unsafe { *out = fake_buffer(format, D3DRTYPE_INDEXBUFFER, usage, pool, length, 0) };
         0
@@ -1895,7 +2153,10 @@ mod tests {
 
             // The port uses the same buffer again when it fits. Then it does not write the size.
             size = 0;
-            assert_eq!(create_index_buffer(manager, indices.as_ptr() as usize, 4, buffer, out, 1, 8), buffer);
+            assert_eq!(
+                create_index_buffer(manager, indices.as_ptr() as usize, 4, buffer, out, 1, 8),
+                buffer
+            );
             assert_eq!(calls(), [("Lock", 0, 8), ("Unlock", 0, 0)]);
             assert_eq!(size, 0);
             // Another pool gives a new buffer. The caller must release the old buffer.
@@ -1905,7 +2166,10 @@ mod tests {
 
             // After a failed lock the port unlocks and releases the buffer. The result is still the pointer.
             LOCK_RESULT.with(|r| *r.borrow_mut() = 0x8876_086C);
-            assert_eq!(create_index_buffer(manager, indices.as_ptr() as usize, 4, buffer, out, 1, 8), buffer);
+            assert_eq!(
+                create_index_buffer(manager, indices.as_ptr() as usize, 4, buffer, out, 1, 8),
+                buffer
+            );
             LOCK_RESULT.with(|r| *r.borrow_mut() = 0);
             assert_eq!(names(), ["Lock", "Unlock", "Release"]);
         }
@@ -1955,7 +2219,10 @@ mod tests {
             assert_eq!(rd::<u32>(manager, IM::field_18), 20);
 
             let open: [u8; 4] = [0, 1, 0, 0];
-            assert_eq!(build_line_segment_index_buffer(manager, 4, open.as_ptr() as usize, out, 8, 0), buffer);
+            assert_eq!(
+                build_line_segment_index_buffer(manager, 4, open.as_ptr() as usize, out, 8, 0),
+                buffer
+            );
             assert_eq!(names(), ["Lock", "Unlock"]);
             assert_eq!(count, 2);
             assert_eq!(rd::<[u16; 2]>(data_of(buffer), 0), [1, 2]);
@@ -2100,7 +2367,11 @@ mod tests {
             let manager = vertex_manager();
             let shape = geometry(2, true, true, 2);
             let (mut size, mut stride, mut fvf) = (0u32, 0u32, 0u32);
-            let outs = (core::ptr::addr_of_mut!(size) as usize, core::ptr::addr_of_mut!(stride) as usize, core::ptr::addr_of_mut!(fvf) as usize);
+            let outs = (
+                core::ptr::addr_of_mut!(size) as usize,
+                core::ptr::addr_of_mut!(stride) as usize,
+                core::ptr::addr_of_mut!(fvf) as usize,
+            );
             let buffer = pack_untransformed_vb(manager, shape, 0, outs.0, 0, 0, 1, 8, outs.1, outs.2);
             assert_eq!(calls(), [("CreateVertexBuffer", 88, 0x252), ("Lock", 0, 0), ("Unlock", 0, 0)]);
             assert_eq!((size, stride, fvf), (88, 44, 0x252));
@@ -2112,11 +2383,17 @@ mod tests {
 
             // The buffer fits the next time. The port makes no new buffer and does not write the size.
             size = 0;
-            assert_eq!(pack_untransformed_vb(manager, shape, buffer, outs.0, 0, 0, 1, 8, outs.1, outs.2), buffer);
+            assert_eq!(
+                pack_untransformed_vb(manager, shape, buffer, outs.0, 0, 0, 1, 8, outs.1, outs.2),
+                buffer
+            );
             assert_eq!(names(), ["Lock", "Unlock"]);
             assert_eq!(size, 0);
             // Another usage gives a new buffer.
-            assert_ne!(pack_untransformed_vb(manager, shape, buffer, outs.0, 0, 0, 1, 0, outs.1, outs.2), buffer);
+            assert_ne!(
+                pack_untransformed_vb(manager, shape, buffer, outs.0, 0, 0, 1, 0, outs.1, outs.2),
+                buffer
+            );
             assert_eq!(names(), ["CreateVertexBuffer", "Lock", "Unlock"]);
 
             // With positions only, one empty texture set is still part of the format.
@@ -2125,7 +2402,10 @@ mod tests {
             assert_eq!(calls(), [("CreateVertexBuffer", 60, 0x102), ("Lock", 0, 0), ("Unlock", 0, 0)]);
             assert_eq!(rd::<[u32; 5]>(data_of(buffer), 20), [0x1003, 0x1004, 0x1005, 0, 0]);
             // With no vertices the port does nothing.
-            assert_eq!(pack_untransformed_vb(manager, geometry(0, false, false, 0), 0, outs.0, 0, 0, 1, 8, 0, 0), 0);
+            assert_eq!(
+                pack_untransformed_vb(manager, geometry(0, false, false, 0), 0, outs.0, 0, 0, 1, 8, 0, 0),
+                0
+            );
             assert!(calls().is_empty());
         }
     }
@@ -2136,12 +2416,19 @@ mod tests {
             let manager = vertex_manager();
             let shape = geometry(2, true, true, 1);
             let (mut size, mut stride, mut fvf) = (0u32, 0u32, 0u32);
-            let outs = (core::ptr::addr_of_mut!(size) as usize, core::ptr::addr_of_mut!(stride) as usize, core::ptr::addr_of_mut!(fvf) as usize);
+            let outs = (
+                core::ptr::addr_of_mut!(size) as usize,
+                core::ptr::addr_of_mut!(stride) as usize,
+                core::ptr::addr_of_mut!(fvf) as usize,
+            );
             eng::DEFORMED.with(|d| d.borrow_mut().clear());
             let buffer = pack_untransformed_vb(manager, shape, 0, outs.0, 0x5151, 0, 1, 8, outs.1, outs.2);
             let data = data_of(buffer);
             let deformed = eng::DEFORMED.with(|d| core::mem::take(&mut *d.borrow_mut()));
-            assert_eq!(deformed, [(rd(shape, GD::vertices), rd(shape, GD::normals), 2, data, data + 12, 36)]);
+            assert_eq!(
+                deformed,
+                [(rd(shape, GD::vertices), rd(shape, GD::normals), 2, data, data + 12, 36)]
+            );
             // The port fills a new buffer fully. The colours and the texture coordinates are there.
             assert_eq!(rd::<[u32; 3]>(data, 24), [0x3000, 0x4000, 0x4001]);
             assert_eq!(rd::<u32>(data, 0), 0);
@@ -2152,12 +2439,18 @@ mod tests {
             wr::<[u32; 3]>(data, 24, [0; 3]);
             (stride, fvf) = (0, 0);
             calls();
-            assert_eq!(pack_untransformed_vb(manager, shape, buffer, outs.0, 0x5151, 0, 1, 8, outs.1, outs.2), buffer);
+            assert_eq!(
+                pack_untransformed_vb(manager, shape, buffer, outs.0, 0x5151, 0, 1, 8, outs.1, outs.2),
+                buffer
+            );
             assert_eq!(names(), ["Lock", "Unlock"]);
             assert_eq!(rd::<[u32; 3]>(data, 24), [0; 3]);
             assert_eq!((stride, fvf), (0, 0));
             // With a refill the port writes the remaining data again.
-            assert_eq!(pack_untransformed_vb(manager, shape, buffer, outs.0, 0x5151, 1, 1, 8, outs.1, outs.2), buffer);
+            assert_eq!(
+                pack_untransformed_vb(manager, shape, buffer, outs.0, 0x5151, 1, 1, 8, outs.1, outs.2),
+                buffer
+            );
             assert_eq!(rd::<[u32; 3]>(data, 24), [0x3000, 0x4000, 0x4001]);
             assert_eq!((stride, fvf), (36, 0x152));
         }
@@ -2179,7 +2472,10 @@ mod tests {
             let colors: [u32; 2] = [0xFF11_2233, 0x8044_5566];
             let uvs: [u32; 4] = [0xA0, 0xA1, 0xA2, 0xA3];
             let (mut fvf, mut stride) = (0u32, 0u32);
-            let (out_fvf, out_stride) = (core::ptr::addr_of_mut!(fvf) as usize, core::ptr::addr_of_mut!(stride) as usize);
+            let (out_fvf, out_stride) = (
+                core::ptr::addr_of_mut!(fvf) as usize,
+                core::ptr::addr_of_mut!(stride) as usize,
+            );
             // The port uses only the low word of the count.
             let buffer = pack_screen_poly_vb(
                 manager,
@@ -2297,7 +2593,11 @@ mod tests {
             let this = shader_interface(0x77);
             let shape = geometry(3, false, false, 0);
             let (mut size, mut stride, mut shader) = (0u32, 0u32, 0u32);
-            let outs = (core::ptr::addr_of_mut!(size) as usize, core::ptr::addr_of_mut!(stride) as usize, core::ptr::addr_of_mut!(shader) as usize);
+            let outs = (
+                core::ptr::addr_of_mut!(size) as usize,
+                core::ptr::addr_of_mut!(stride) as usize,
+                core::ptr::addr_of_mut!(shader) as usize,
+            );
             eng::PACKED.with(|p| p.borrow_mut().clear());
             let buffer = build_vertex_buffer(this, shape, 0x22, 0, 0x44, 0, outs.0, 1, 8, outs.1, outs.2, 1);
             assert_eq!(calls(), [("CreateVertexBuffer", 60, 0), ("Lock", 0, 0), ("Unlock", 0, 0)]);
@@ -2306,14 +2606,26 @@ mod tests {
             let elements: usize = rd(declaration, DECLARATION_ELEMENTS);
             let data = data_of(buffer) as u32;
             let packed = eng::PACKED.with(|p| core::mem::take(&mut *p.borrow_mut()));
-            let common = |element: usize, to: u32| (this, declaration, [0xABCD_0003, shape as u32, 0x22, 0, 0x44, element as u32, 20, to]);
+            let common = |element: usize, to: u32| {
+                (
+                    this,
+                    declaration,
+                    [0xABCD_0003, shape as u32, 0x22, 0, 0x44, element as u32, 20, to],
+                )
+            };
             assert_eq!(packed, [common(elements, data), common(elements + ELEMENT_SIZE, data + 12)]);
 
             // The port uses the buffer again while the size that the caller keeps is sufficient.
-            assert_eq!(build_vertex_buffer(this, shape, 0, 0, 0, buffer, outs.0, 1, 8, 0, 0, 1), buffer);
+            assert_eq!(
+                build_vertex_buffer(this, shape, 0, 0, 0, buffer, outs.0, 1, 8, 0, 0, 1),
+                buffer
+            );
             assert_eq!(names(), ["Lock", "Unlock"]);
             size = 59;
-            assert_ne!(build_vertex_buffer(this, shape, 0, 0, 0, buffer, outs.0, 1, 8, 0, 0, 1), buffer);
+            assert_ne!(
+                build_vertex_buffer(this, shape, 0, 0, 0, buffer, outs.0, 1, 8, 0, 0, 1),
+                buffer
+            );
             assert_eq!(names(), ["CreateVertexBuffer", "Lock", "Unlock"]);
             assert_eq!(size, 60);
 

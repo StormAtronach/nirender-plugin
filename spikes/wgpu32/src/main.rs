@@ -16,8 +16,8 @@ use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION,
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, PeekMessageW, RegisterClassW, ShowWindow,
-    TranslateMessage, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, PeekMessageW, RegisterClassW,
+    ShowWindow, TranslateMessage, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 const WIDTH: u32 = 1280;
@@ -64,7 +64,12 @@ fn memory() -> Memory {
         let mut address = 0usize;
         loop {
             let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
-            if VirtualQuery(address as *const _, &mut info, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 {
+            if VirtualQuery(
+                address as *const _,
+                &mut info,
+                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            ) == 0
+            {
                 break;
             }
             match info.State {
@@ -150,12 +155,21 @@ fn pipeline(
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(layout),
-        vertex: wgpu::VertexState { module: shader, entry_point: "vs", compilation_options: Default::default(), buffers: &[] },
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: "vs",
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: "fs",
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
@@ -169,7 +183,10 @@ fn run(name: &str, backends: wgpu::Backends, draws: u32, frames: u32) -> Result<
     println!("\n{name}");
     print_memory("before");
     let (window, hinstance) = unsafe { make_window(&format!("wgpu32 {name}")) };
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..Default::default() });
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        ..Default::default()
+    });
     let mut handle = Win32WindowHandle::new(NonZeroIsize::new(window as isize).ok_or("no window")?);
     handle.hinstance = NonZeroIsize::new(hinstance);
     let surface = unsafe {
@@ -186,7 +203,10 @@ fn run(name: &str, backends: wgpu::Backends, draws: u32, frames: u32) -> Result<
     }))
     .ok_or("no adapter for this backend")?;
     let info = adapter.get_info();
-    println!("  adapter: {} ({:?}, {:?}), driver {} {}", info.name, info.backend, info.device_type, info.driver, info.driver_info);
+    println!(
+        "  adapter: {} ({:?}, {:?}), driver {} {}",
+        info.name, info.backend, info.device_type, info.driver, info.driver_info
+    );
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: None,
@@ -200,13 +220,21 @@ fn run(name: &str, backends: wgpu::Backends, draws: u32, frames: u32) -> Result<
     // The swap chain has the size of the client area. The window is larger: it has a frame.
     let mut client: RECT = unsafe { std::mem::zeroed() };
     unsafe { GetClientRect(window, &mut client) };
-    let (width, height) = ((client.right - client.left).max(1) as u32, (client.bottom - client.top).max(1) as u32);
-    let mut config = surface.get_default_config(&adapter, width, height).ok_or("the surface has no configuration")?;
+    let (width, height) = (
+        (client.right - client.left).max(1) as u32,
+        (client.bottom - client.top).max(1) as u32,
+    );
+    let mut config = surface
+        .get_default_config(&adapter, width, height)
+        .ok_or("the surface has no configuration")?;
     config.present_mode = wgpu::PresentMode::AutoNoVsync;
     surface.configure(&device, &config);
     print_memory("with a device");
 
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+    });
     let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -240,7 +268,11 @@ fn run(name: &str, backends: wgpu::Backends, draws: u32, frames: u32) -> Result<
         layout: &bind_layout,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &uniforms, offset: 0, size: wgpu::BufferSize::new(32) }),
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &uniforms,
+                offset: 0,
+                size: wgpu::BufferSize::new(32),
+            }),
         }],
     });
 
@@ -253,7 +285,16 @@ fn run(name: &str, backends: wgpu::Backends, draws: u32, frames: u32) -> Result<
         for draw in 0..draws {
             let angle = draw as f32 * 0.1 + frame as f32 * 0.01;
             let radius = 0.1 + 0.85 * (draw as f32 / draws as f32);
-            let values = [radius * angle.cos(), radius * angle.sin(), 0.0, 0.0, 0.3 + 0.7 * (draw % 7) as f32 / 7.0, 0.6, 0.9, 0.8f32];
+            let values = [
+                radius * angle.cos(),
+                radius * angle.sin(),
+                0.0,
+                0.0,
+                0.3 + 0.7 * (draw % 7) as f32 / 7.0,
+                0.6,
+                0.9,
+                0.8f32,
+            ];
             let at = (draw as u64 * SLOT) as usize;
             for (index, value) in values.iter().enumerate() {
                 data[at + index * 4..at + index * 4 + 4].copy_from_slice(&value.to_le_bytes());
@@ -265,7 +306,9 @@ fn run(name: &str, backends: wgpu::Backends, draws: u32, frames: u32) -> Result<
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
                 surface.configure(&device, &config);
                 reconfigured += 1;
-                surface.get_current_texture().map_err(|e| format!("get_current_texture: {e}"))?
+                surface
+                    .get_current_texture()
+                    .map_err(|e| format!("get_current_texture: {e}"))?
             }
             Err(e) => return Err(format!("get_current_texture: {e}")),
         };
@@ -277,7 +320,10 @@ fn run(name: &str, backends: wgpu::Backends, draws: u32, frames: u32) -> Result<
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -322,7 +368,10 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let draws: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(5000);
     let frames: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(400);
-    println!("wgpu32: pointer size {} bits, {draws} draws in a frame, {frames} frames", usize::BITS);
+    println!(
+        "wgpu32: pointer size {} bits, {draws} draws in a frame, {frames} frames",
+        usize::BITS
+    );
     for (name, backends) in [("Vulkan", wgpu::Backends::VULKAN), ("D3D12", wgpu::Backends::DX12)] {
         if let Err(problem) = run(name, backends, draws, frames) {
             println!("  FAIL: {problem}");

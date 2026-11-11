@@ -19,7 +19,10 @@ struct State {
     ticks: Vec<i64>,
 }
 
-static mut STATE: State = State { last: 0, ticks: Vec::new() };
+static mut STATE: State = State {
+    last: 0,
+    ticks: Vec::new(),
+};
 
 /// Starts a measurement. The first frame time is the one after the next [`Present`].
 pub unsafe fn start() {
@@ -51,5 +54,9 @@ pub unsafe fn stop() -> Vec<f64> {
     let state = &mut *core::ptr::addr_of_mut!(STATE);
     let mut frequency = 1i64;
     QueryPerformanceFrequency(&mut frequency);
-    state.ticks.iter().map(|&t| t as f64 * 1_000_000.0 / frequency as f64).collect()
+    state
+        .ticks
+        .iter()
+        .map(|&t| t as f64 * 1_000_000.0 / frequency as f64)
+        .collect()
 }

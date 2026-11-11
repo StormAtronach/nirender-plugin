@@ -16,9 +16,9 @@ use core::mem::size_of;
 use crate::engine::{self, MAX_SIMULTANEOUS_TEXTURES, MAX_TEXTURE_BLEND_STAGES};
 use crate::gen::layouts::{
     NiAlphaProperty as AP, NiDX8ConfigurableTexturePipeline as CTP, NiDX8RenderState as RS, NiDX8TexturePass as TP,
-    NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES, NiDynamicEffectState_InternalList as DES_LIST,
-    NiPropertyState as PS, NiTexture,
-    NiTexturingProperty as NTP, NiTexturingProperty_BumpMap as BUMP, NiTexturingProperty_Map as MAP,
+    NiDX8TexturePass__1 as SUB, NiDX8TextureStage as ST, NiDynamicEffectState as DES,
+    NiDynamicEffectState_InternalList as DES_LIST, NiPropertyState as PS, NiTexture, NiTexturingProperty as NTP,
+    NiTexturingProperty_BumpMap as BUMP, NiTexturingProperty_Map as MAP,
 };
 use crate::mem::{rd, x87_pass};
 use crate::ports::ni::{self, REF_COUNT};
@@ -373,13 +373,21 @@ unsafe fn base_map_coordinate_set(property: usize, texture_sets: u32) -> u32 {
 unsafe fn next_stage<E: Env>(e: &mut E, this: usize) -> usize {
     let count: u32 = rd(this, TP::activeStageCount);
     e.wr(this, TP::activeStageCount, count.wrapping_add(1));
-    this.wrapping_add((count as usize).wrapping_mul(STAGE)).wrapping_add(TP::stage)
+    this.wrapping_add((count as usize).wrapping_mul(STAGE))
+        .wrapping_add(TP::stage)
 }
 
 /// A new stage for a map: the texture, the addressing mode and the filter mode. `sites` are
 /// the calls of `NiPointer::set`, `setStageAddressingMode` and `setStageFilterMode`.
 #[inline(always)]
-unsafe fn map_stage<E: Env>(e: &mut E, this: usize, texture: usize, clamp_mode: u32, filter_mode: u32, sites: [usize; 3]) -> usize {
+unsafe fn map_stage<E: Env>(
+    e: &mut E,
+    this: usize,
+    texture: usize,
+    clamp_mode: u32,
+    filter_mode: u32,
+    sites: [usize; 3],
+) -> usize {
     let stage = next_stage(e, this);
     e.pointer_set(sites[0], stage + ST::ptrTexture, texture);
     e.set_addressing(sites[1], pipeline_of(this), clamp_mode, stage);
@@ -410,7 +418,10 @@ unsafe fn template_for(this: usize, subpass: usize) -> Option<usize> {
     }
     let first_stage: usize = rd(subpass, SUB::field_14);
     let slot: u32 = rd(first_stage, ST::field_94);
-    Some(rd(pipeline_of(this).wrapping_add((slot as usize).wrapping_mul(4)), CTP::alphaTemplates))
+    Some(rd(
+        pipeline_of(this).wrapping_add((slot as usize).wrapping_mul(4)),
+        CTP::alphaTemplates,
+    ))
 }
 
 /// Gives the sub-pass its alpha template with the inline copy of `setNiObjectField48`: two
@@ -524,7 +535,11 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         // base stage the texture coordinate set of the base map. The hook reads the stack
         // frame of the game code, thus the port does not call it. When the call is there,
         // the port does the same work as the hook.
-        let base_set = if e.base_texcoord_patch() { base_map_coordinate_set(property, texture_sets) } else { 0 };
+        let base_set = if e.base_texcoord_patch() {
+            base_map_coordinate_set(property, texture_sets)
+        } else {
+            0
+        };
         e.wr::<u32>(stage, ST::sourceTexcoordIndex, base_set);
         e.wr::<u32>(stage, ST::textureTransformFlags, 0);
         e.wr::<u8>(stage, ST::field_90, 0);
@@ -694,7 +709,9 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                     }
                     // 6B4884-6B4917: the lights with no clip plane (bank 0x6F8), from the
                     // last to the first.
-                    let mut stage = this.wrapping_add((lights_left as usize).wrapping_mul(STAGE)).wrapping_add(TP::field_6F8);
+                    let mut stage = this
+                        .wrapping_add((lights_left as usize).wrapping_mul(STAGE))
+                        .wrapping_add(TP::field_6F8);
                     loop {
                         if lights_left == 0 {
                             break;
@@ -729,7 +746,9 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         // 6B49AE-6B4A3E: the lights with no clip plane that remain.
         if lights_left != 0 {
             let mut count = lights_left; // temp
-            let mut stage = this.wrapping_add((lights_left as usize).wrapping_mul(STAGE)).wrapping_add(TP::field_6F8);
+            let mut stage = this
+                .wrapping_add((lights_left as usize).wrapping_mul(STAGE))
+                .wrapping_add(TP::field_6F8);
             loop {
                 stage = stage.wrapping_sub(STAGE);
                 if stage != 0 {
@@ -862,7 +881,9 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                 // 6B4EAD-6B4F5B: the shadows with no clip plane (bank 0x2468), from the last
                 // to the first.
                 if limit != 0 {
-                    let mut stage = this.wrapping_add((shadows_left as usize).wrapping_mul(STAGE)).wrapping_add(TP::field_2468);
+                    let mut stage = this
+                        .wrapping_add((shadows_left as usize).wrapping_mul(STAGE))
+                        .wrapping_add(TP::field_2468);
                     loop {
                         if shadows_left == 0 {
                             break;
@@ -928,7 +949,9 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
                 if run {
                     // 6B5086-6B513C. The game code does not stop at the first stage of the
                     // bank here.
-                    let mut stage = this.wrapping_add((shadows_left as usize).wrapping_mul(STAGE)).wrapping_add(TP::field_2468);
+                    let mut stage = this
+                        .wrapping_add((shadows_left as usize).wrapping_mul(STAGE))
+                        .wrapping_add(TP::field_2468);
                     loop {
                         shadows_left = shadows_left.wrapping_sub(1);
                         stage = stage.wrapping_sub(STAGE);
@@ -985,7 +1008,11 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         }
         // 6B524E-6B526B: with a gloss map there is always a new pass. With no gloss map there
         // is a new pass when the check returns 1.
-        let new_pass = if gloss_map != 0 { true } else { e.init_or_check(0x6B525C, this, 0, needed, needed) != 0 };
+        let new_pass = if gloss_map != 0 {
+            true
+        } else {
+            e.init_or_check(0x6B525C, this, 0, needed, needed) != 0
+        };
         if new_pass {
             e.acquire_for_ps(0x6B526B, this);
         }
@@ -1151,7 +1178,15 @@ struct Model {
 
 impl Model {
     fn new(max_stages: u32, max_textures: u32, base_texcoord_patch: bool) -> Model {
-        Model { max_stages, max_textures, base_texcoord_patch, journal: Vec::with_capacity(256), scratch: Vec::new(), allocates: false, skip: false }
+        Model {
+            max_stages,
+            max_textures,
+            base_texcoord_patch,
+            journal: Vec::with_capacity(256),
+            scratch: Vec::new(),
+            allocates: false,
+            skip: false,
+        }
     }
 
     /// Puts back every byte that the run wrote, from the last write to the first.
@@ -1244,7 +1279,11 @@ impl Model {
             if index >= rd::<u32>(this, TP::TArray_18_endIndex) {
                 self.wr(this, TP::TArray_18_endIndex, index + 1);
             } else if rd::<usize>(Model::slot(this, index), 0) != 0 {
-                self.wr(this, TP::TArray_18_filledCount, rd::<u32>(this, TP::TArray_18_filledCount).wrapping_sub(1));
+                self.wr(
+                    this,
+                    TP::TArray_18_filledCount,
+                    rd::<u32>(this, TP::TArray_18_filledCount).wrapping_sub(1),
+                );
             }
             self.wr::<usize>(Model::slot(this, index), 0, 0);
         }
@@ -1320,7 +1359,11 @@ impl Model {
     /// `getAvailableSlotCounts`: the free stages and the free textures.
     unsafe fn free_slots(&self, subpass: usize) -> (u32, u32) {
         let used: u32 = rd(subpass, SUB::field_C);
-        let stages = if used == u32::MAX { self.max_stages } else { self.max_stages.wrapping_sub(used) };
+        let stages = if used == u32::MAX {
+            self.max_stages
+        } else {
+            self.max_stages.wrapping_sub(used)
+        };
         (stages, self.max_textures.wrapping_sub(rd(subpass, SUB::field_10)))
     }
 
@@ -1773,15 +1816,38 @@ unsafe fn plan(
 #[cfg_attr(test, allow(dead_code))]
 unsafe fn regions(set: &mut Regions, this: usize, property_state: usize, effect_state: usize, texture_sets: u32) {
     let patch = rd::<u8>(BASE_TEXCOORD_PATCH, 0) == 0xE8;
-    plan(set, rd(MAX_TEXTURE_BLEND_STAGES, 0), rd(MAX_SIMULTANEOUS_TEXTURES, 0), patch, this, property_state, effect_state, texture_sets, rd(this, TP::renderState));
+    plan(
+        set,
+        rd(MAX_TEXTURE_BLEND_STAGES, 0),
+        rd(MAX_SIMULTANEOUS_TEXTURES, 0),
+        patch,
+        this,
+        property_state,
+        effect_state,
+        texture_sets,
+        rd(this, TP::renderState),
+    );
 }
 
-port_thiscall!(set_ct_pipeline_state_port, 0x6B41B0, "NiDX8TexturePass::setCTPipelineState",
-    fn(this, property_state: usize, effect_state: usize, has_normals: u32, texture_sets: u32,
-       geometry_data: usize, skin_instance: usize, world_transform: usize, world_bound: usize) -> u32,
+port_thiscall!(
+    set_ct_pipeline_state_port,
+    0x6B41B0,
+    "NiDX8TexturePass::setCTPipelineState",
+    fn(
+        this,
+        property_state: usize,
+        effect_state: usize,
+        has_normals: u32,
+        texture_sets: u32,
+        geometry_data: usize,
+        skin_instance: usize,
+        world_transform: usize,
+        world_bound: usize,
+    ) -> u32,
     compare_eax = true,
     regions = |set| regions(set, this, property_state, effect_state, texture_sets),
-    rust = set_ct_pipeline_state);
+    rust = set_ct_pipeline_state
+);
 
 pub static PORTS: &[&crate::shadow::PortState] = &[&set_ct_pipeline_state_port::STATE];
 
@@ -1801,7 +1867,10 @@ mod tests {
             assert!(pair[0] + 5 <= pair[1], "{:#x} and {:#x}", pair[0], pair[1]);
         }
         for &site in SITES {
-            assert!(site >= func.ea && site + 5 <= func.ea + func.size, "{site:#x} is outside the function");
+            assert!(
+                site >= func.ea && site + 5 <= func.ea + func.size,
+                "{site:#x} is outside the function"
+            );
             assert_eq!(code[site - func.ea], 0xE8, "{site:#x} is not a call");
         }
         assert!(!SITES.contains(&BASE_TEXCOORD_PATCH));
@@ -2061,7 +2130,12 @@ mod tests {
             // the reference counts that change.
             let mut found = blocks_of(&model, this, pipeline, &[subpass]);
             found.sort();
-            let mut expected = vec![(subpass, SUB::SIZE), (base + REF_COUNT, 4), (glow + REF_COUNT, 4), (template_0 + REF_COUNT, 4)];
+            let mut expected = vec![
+                (subpass, SUB::SIZE),
+                (base + REF_COUNT, 4),
+                (glow + REF_COUNT, 4),
+                (template_0 + REF_COUNT, 4),
+            ];
             if base_linked {
                 expected.push((template_2 + REF_COUNT, 4));
             }
@@ -2137,7 +2211,11 @@ mod tests {
     impl Effect {
         fn new(world: &mut World, list: usize, plane: bool) -> (Effect, usize) {
             let texture = world.texture();
-            let mut effect = Effect { state: Box::new([0; 7]), node: Box::new([0; 2]), effect: Box::new([0; 0x148 / 4]) };
+            let mut effect = Effect {
+                state: Box::new([0; 7]),
+                node: Box::new([0; 2]),
+                effect: Box::new([0; 0x148 / 4]),
+            };
             unsafe {
                 // A texture with its device data: no device texture to make.
                 wr::<u32>(texture, NiTexture::rendererData, 1);

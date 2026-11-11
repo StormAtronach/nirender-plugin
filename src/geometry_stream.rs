@@ -16,11 +16,14 @@
 use std::collections::HashMap;
 
 use crate::checked::Open;
-use crate::main_thread::{MainCell, MainThread};
 use crate::d3d::{D3DFVF_DIFFUSE, D3DFVF_NORMAL, D3DFVF_TEX1, D3DFVF_XYZ};
 use crate::engine::vcall0;
-use crate::gen::layouts::{NiBoneData, NiGeometryData as GD, NiSkinData, NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P, NiTriStripsData as TS};
+use crate::gen::layouts::{
+    NiBoneData, NiGeometryData as GD, NiSkinData, NiSkinInstance, NiSkinPartition, NiSkinPartition_Partition as P,
+    NiTriStripsData as TS,
+};
 use crate::link::{DRAW_LINES, DRAW_SHAPE, DRAW_STRIPS};
+use crate::main_thread::{MainCell, MainThread};
 use crate::mem::rd;
 use crate::ports::ni;
 
@@ -130,7 +133,17 @@ pub fn state_part(t: &MainThread) -> (crate::state_summary::Part, u64) {
     let mut part = crate::state_summary::Part::default();
     for (&address, sent) in versions(t).iter() {
         let v = sent.version;
-        part.add(&[address, v.unique, v.revision as u32, v.vertices, v.entries, v.skin_data, sent.uv_set.unwrap_or(u32::MAX), sent.morph as u32, v.software as u32]);
+        part.add(&[
+            address,
+            v.unique,
+            v.revision as u32,
+            v.vertices,
+            v.entries,
+            v.skin_data,
+            sent.uv_set.unwrap_or(u32::MAX),
+            sent.morph as u32,
+            v.software as u32,
+        ]);
     }
     if let Some(morphs) = (*MORPH_SENT.get(t)).as_ref() {
         for (&address, &targets) in morphs {
@@ -197,7 +210,11 @@ pub unsafe fn gone(t: &MainThread, handle: u32, unique: u32) {
 
 /// Forgets these geometries, by their serials: the next draw of each sends it again.
 pub unsafe fn forget(t: &MainThread, handles: &[u32]) {
-    let addresses: Vec<u32> = serials(t).iter().filter(|(_, serial)| handles.contains(serial)).map(|(&(address, _), _)| address).collect();
+    let addresses: Vec<u32> = serials(t)
+        .iter()
+        .filter(|(_, serial)| handles.contains(serial))
+        .map(|(&(address, _), _)| address)
+        .collect();
     for handle in &addresses {
         versions(t).remove(handle);
     }
@@ -264,7 +281,8 @@ pub fn skin_from_partitions() -> bool {
 /// True when the record of a skinned shape needs the skin partitions: they are the source, or
 /// the skin data has no weights. A dying skin data gets no record (`note`), so it needs none.
 pub unsafe fn needs_partitions(skin_data: usize) -> bool {
-    (SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) || !has_bone_weights(skin_data)) && !skin_data_dying(skin_data)
+    (SKIN_FROM_PARTITIONS.load(core::sync::atomic::Ordering::Relaxed) || !has_bone_weights(skin_data))
+        && !skin_data_dying(skin_data)
 }
 
 /// The counts of the skins packed from the skin data, for the report.
@@ -321,7 +339,10 @@ unsafe fn has_bone_weights(skin_data: usize) -> bool {
     if count == 0 || count > 256 || bones == 0 {
         return false;
     }
-    (0..count as usize).all(|b| rd::<u16>(bones + b * BONE_DATA_SIZE, BONE_VERT_COUNT) == 0 || rd::<usize>(bones + b * BONE_DATA_SIZE, BONE_VERT_DATA) != 0)
+    (0..count as usize).all(|b| {
+        rd::<u16>(bones + b * BONE_DATA_SIZE, BONE_VERT_COUNT) == 0
+            || rd::<usize>(bones + b * BONE_DATA_SIZE, BONE_VERT_DATA) != 0
+    })
 }
 
 /// True when the skin data is in or after its destructor: a bone has a vertex count and no
@@ -336,7 +357,10 @@ pub unsafe fn skin_data_dying(skin_data: usize) -> bool {
     if count == 0 || count > 256 || bones == 0 {
         return false;
     }
-    (0..count as usize).any(|b| rd::<u16>(bones + b * BONE_DATA_SIZE, BONE_VERT_COUNT) != 0 && rd::<usize>(bones + b * BONE_DATA_SIZE, BONE_VERT_DATA) == 0)
+    (0..count as usize).any(|b| {
+        rd::<u16>(bones + b * BONE_DATA_SIZE, BONE_VERT_COUNT) != 0
+            && rd::<usize>(bones + b * BONE_DATA_SIZE, BONE_VERT_DATA) == 0
+    })
 }
 
 /// The weights of the bones of each vertex from the skin data, as the skin partition code of
@@ -509,7 +533,12 @@ fn same_influences(a: &([f32; 3], [u8; 4]), b: &([f32; 3], [u8; 4])) -> bool {
 /// the vertices with more than 4 bones, the triangles with more than 4 bones (the partitions
 /// take bones from those), and the vertices whose influences are not those of the partitions,
 /// when the skin has partitions. `triangles` gives the vertices of each triangle.
-unsafe fn skin_data_influences(t: &MainThread, skin_data: usize, vertices: usize, triangles: &[[usize; 3]]) -> Option<Vec<([f32; 3], [u8; 4])>> {
+unsafe fn skin_data_influences(
+    t: &MainThread,
+    skin_data: usize,
+    vertices: usize,
+    triangles: &[[usize; 3]],
+) -> Option<Vec<([f32; 3], [u8; 4])>> {
     let lists = skin_data_weights(skin_data, vertices)?;
     let packed: Vec<([f32; 3], [u8; 4])> = lists.iter().map(|list| pack_weights(list)).collect();
     let s = &mut *SKIN_COUNTS.get(t);
@@ -519,7 +548,10 @@ unsafe fn skin_data_influences(t: &MainThread, skin_data: usize, vertices: usize
     s.most = s.most.max(lists.iter().map(Vec::len).max().unwrap_or(0));
     s.triangles += triangles.len() as u64;
     for triangle in triangles {
-        let mut bones: Vec<u8> = triangle.iter().flat_map(|&v| lists.get(v).into_iter().flatten().map(|(bone, _)| *bone)).collect();
+        let mut bones: Vec<u8> = triangle
+            .iter()
+            .flat_map(|&v| lists.get(v).into_iter().flatten().map(|(bone, _)| *bone))
+            .collect();
         bones.sort_unstable();
         bones.dedup();
         s.triangles_over_four += (bones.len() > 4) as u64;
@@ -565,7 +597,14 @@ pub unsafe fn why_none(t: &MainThread, kind: u32, geom_data: usize) -> (&'static
         DRAW_LINES => return ("lines without vertices or segments", true),
         _ => return ("a draw kind without a geometry record", false),
     };
-    if !ni::is_kind_of(geom_data, if strips { RTTI_NI_TRI_STRIPS_DATA } else { RTTI_NI_TRI_SHAPE_DATA }) {
+    if !ni::is_kind_of(
+        geom_data,
+        if strips {
+            RTTI_NI_TRI_STRIPS_DATA
+        } else {
+            RTTI_NI_TRI_SHAPE_DATA
+        },
+    ) {
         return ("the data is not of the class of its draw function", false);
     }
     if vcall0(geom_data, V_GET_ACTIVE_VERTEX_COUNT) & 0xFFFF == 0 {
@@ -600,7 +639,14 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         DRAW_LINES => return note_lines(t, geom_data),
         _ => return 0,
     };
-    if !ni::is_kind_of(geom_data, if strips { RTTI_NI_TRI_STRIPS_DATA } else { RTTI_NI_TRI_SHAPE_DATA }) {
+    if !ni::is_kind_of(
+        geom_data,
+        if strips {
+            RTTI_NI_TRI_STRIPS_DATA
+        } else {
+            RTTI_NI_TRI_SHAPE_DATA
+        },
+    ) {
         return 0;
     }
     let active = vcall0(geom_data, V_GET_ACTIVE_VERTEX_COUNT) & 0xFFFF;
@@ -643,7 +689,14 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         return 0;
     }
     let software = skin != 0 && crate::ports::draw::skinned_in_software(strips, geom_data);
-    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: active, entries, skin_data: skin_data as u32, software };
+    let version = Version {
+        unique: rd(geom_data, GD::uniqueID),
+        revision: rd(geom_data, GD::revisionID),
+        vertices: active,
+        entries,
+        skin_data: skin_data as u32,
+        software,
+    };
     let stream = stream_handle(t, handle, version.unique);
     if known(t, handle, version) {
         return stream;
@@ -657,7 +710,11 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     if let Some(uv) = uv {
         let step = versions(t).get(&handle).is_some_and(|sent| {
             let before = sent.version;
-            sent.uv_set == Some(uv.set) && before.unique == version.unique && before.vertices == version.vertices && before.entries == version.entries && before.skin_data == version.skin_data
+            sent.uv_set == Some(uv.set)
+                && before.unique == version.unique
+                && before.vertices == version.vertices
+                && before.entries == version.entries
+                && before.skin_data == version.skin_data
         });
         if step {
             send_uv(stream, version.unique, &uv, false);
@@ -665,18 +722,34 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
             if uv_steps_check() {
                 check_uv(t, handle, geom_data, &uv);
             } else {
-                versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: Some(uv.set), morph: false });
+                versions(t).insert(
+                    handle,
+                    Sent {
+                        version,
+                        used: crate::camera_space::frame(t),
+                        uv_set: Some(uv.set),
+                        morph: false,
+                    },
+                );
                 return stream;
             }
         }
     }
     // A geometry whose only controller is a morph controller: a new revision alone, after its
     // targets went, goes as the weights of the targets.
-    let morph = if uv.is_none() { morph_controller(shape, geom_data) } else { None };
+    let morph = if uv.is_none() {
+        morph_controller(shape, geom_data)
+    } else {
+        None
+    };
     if let Some(morph) = &morph {
         let step = versions(t).get(&handle).is_some_and(|sent| {
             let before = sent.version;
-            sent.morph && before.unique == version.unique && before.vertices == version.vertices && before.entries == version.entries && before.skin_data == version.skin_data
+            sent.morph
+                && before.unique == version.unique
+                && before.vertices == version.vertices
+                && before.entries == version.entries
+                && before.skin_data == version.skin_data
         });
         if step {
             let weights = &mut *MORPH_SCRATCH.get(t);
@@ -686,7 +759,15 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
             if morph_weights_check() {
                 check_morph(t, morph, weights, geom_data);
             } else {
-                versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None, morph: true });
+                versions(t).insert(
+                    handle,
+                    Sent {
+                        version,
+                        used: crate::camera_space::frame(t),
+                        uv_set: None,
+                        morph: true,
+                    },
+                );
                 return stream;
             }
         }
@@ -740,7 +821,13 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     } else {
         None
     };
-    let mut fvf = if list.is_some() { D3DFVF_XYZB4 | D3DFVF_LASTBETA_UBYTE4 | FVF_INFLUENCES } else if skin != 0 { D3DFVF_XYZB4 | D3DFVF_LASTBETA_UBYTE4 } else { D3DFVF_XYZ };
+    let mut fvf = if list.is_some() {
+        D3DFVF_XYZB4 | D3DFVF_LASTBETA_UBYTE4 | FVF_INFLUENCES
+    } else if skin != 0 {
+        D3DFVF_XYZB4 | D3DFVF_LASTBETA_UBYTE4
+    } else {
+        D3DFVF_XYZ
+    };
     let mut stride = if skin != 0 { 28usize } else { 12usize };
     let normal_offset = stride;
     if normals != 0 {
@@ -778,10 +865,12 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
             to[16..20].copy_from_slice(&(count as f32).to_le_bytes());
         }
         if normals != 0 {
-            to[normal_offset..normal_offset + 12].copy_from_slice(core::slice::from_raw_parts((normals + i * 12) as *const u8, 12));
+            to[normal_offset..normal_offset + 12]
+                .copy_from_slice(core::slice::from_raw_parts((normals + i * 12) as *const u8, 12));
         }
         if colors != 0 {
-            to[color_offset..color_offset + 4].copy_from_slice(core::slice::from_raw_parts((colors + i * 4) as *const u8, 4));
+            to[color_offset..color_offset + 4]
+                .copy_from_slice(core::slice::from_raw_parts((colors + i * 4) as *const u8, 4));
         }
         for set in 0..sets as usize {
             // `NiGeometryData::getTextureSet`: the sets one after the other, each with all
@@ -794,7 +883,10 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
     let index_bytes = core::slice::from_raw_parts(indexes as *const u8, entries as usize * 2);
     let mut lengths = vec![0u8; ((strip_count as usize * 2) + 3) & !3];
     if strip_count != 0 {
-        lengths[..strip_count as usize * 2].copy_from_slice(core::slice::from_raw_parts(strip_lengths as *const u8, strip_count as usize * 2));
+        lengths[..strip_count as usize * 2].copy_from_slice(core::slice::from_raw_parts(
+            strip_lengths as *const u8,
+            strip_count as usize * 2,
+        ));
     }
     let list_bytes = list.as_ref().map_or(&[][..], |(_, entries)| entries);
     if list.is_some() {
@@ -802,7 +894,19 @@ pub unsafe fn note(t: &MainThread, kind: u32, geom_data: usize, skin: usize, sha
         counts.lists += 1;
         counts.list_entries += (list_bytes.len() as u64).saturating_sub(4) / LIST_ENTRY_BYTES as u64;
     }
-    send(t, handle, stream, version, fvf, stride as u32, strip_count, &lengths, &bytes, index_bytes, list_bytes);
+    send(
+        t,
+        handle,
+        stream,
+        version,
+        fvf,
+        stride as u32,
+        strip_count,
+        &lengths,
+        &bytes,
+        index_bytes,
+        list_bytes,
+    );
     if let Some(uv) = uv {
         send_uv(stream, version.unique, &uv, true);
         if let Some(sent) = versions(t).get_mut(&handle) {
@@ -880,13 +984,23 @@ unsafe fn morph_controller(shape: usize, geom_data: usize) -> Option<Morph> {
     let targets: u32 = rd(data, MD::numTargets);
     let vertices: u32 = rd(data, MD::numVertsPerTarget);
     let array: usize = rd(data, MD::arrayMorphTargets);
-    if targets == 0 || targets > MORPH_MOST_TARGETS || vertices == 0 || array == 0 || vertices > rd::<u16>(geom_data, GD::vertexCount) as u32 {
+    if targets == 0
+        || targets > MORPH_MOST_TARGETS
+        || vertices == 0
+        || array == 0
+        || vertices > rd::<u16>(geom_data, GD::vertexCount) as u32
+    {
         return None;
     }
     if (0..targets as usize).any(|i| rd::<usize>(array + i * MT::SIZE, MT::targetVerts) == 0) {
         return None;
     }
-    Some(Morph { data, targets, vertices, time: scaled_time(controller) })
+    Some(Morph {
+        data,
+        targets,
+        vertices,
+        time: scaled_time(controller),
+    })
 }
 
 /// The time that `GenMorphInterp` gets: what `NiTimeController::ComputeScaledTime` (0x6FC710)
@@ -1013,17 +1127,21 @@ unsafe fn check_morph(t: &MainThread, morph: &Morph, weights: &[f32], geom_data:
     let worst = distance(weights);
     // The weights of the step before of the same data, for the log: a lag of one step shows
     // as a small distance to them.
-    let before = (*MORPH_BEFORE.get(t)).get_or_insert_with(Default::default).insert(geom_data, (morph.time, weights.to_vec()));
+    let before = (*MORPH_BEFORE.get(t))
+        .get_or_insert_with(Default::default)
+        .insert(geom_data, (morph.time, weights.to_vec()));
     let check = &mut *MORPH_CHECK.get(t);
     check.0 += 1;
     if worst > 1e-3 {
         check.1 += 1;
         if check.1 <= 6 {
             let relative = rd::<u8>(morph.data, MD::bRelativeTargets);
-            let keys: Vec<(i32, i32)> = (0..morph.targets as usize).map(|i| {
-                let target = array + i * MT::SIZE;
-                (rd(target, MT::numKeys), rd(target, MT::eType))
-            }).collect();
+            let keys: Vec<(i32, i32)> = (0..morph.targets as usize)
+                .map(|i| {
+                    let target = array + i * MT::SIZE;
+                    (rd(target, MT::numKeys), rd(target, MT::eType))
+                })
+                .collect();
             let (time_before, to_before) = before.as_ref().map_or((f32::NAN, f32::NAN), |(time, w)| (*time, distance(w)));
             crate::log!(
                 "geometry: morph check {}: data 0x{:x}, {} targets of {} vertices, relative {}, time {} (the step before {}), keys (count, type) {:?}, weights {:?}, the most {} (to the weights before {})",
@@ -1066,7 +1184,9 @@ unsafe fn uv_controller(shape: usize, geom_data: usize) -> Option<UvState> {
     if controller == 0 || rd::<usize>(controller, crate::gen::layouts::NiTimeController::nextController) != 0 {
         return None;
     }
-    if ni::get_rtti(controller) != RTTI_NI_UV_CONTROLLER || rd::<usize>(controller, crate::gen::layouts::NiTimeController::target) != shape {
+    if ni::get_rtti(controller) != RTTI_NI_UV_CONTROLLER
+        || rd::<usize>(controller, crate::gen::layouts::NiTimeController::target) != shape
+    {
         return None;
     }
     if rd::<usize>(shape, crate::gen::layouts::NiGeometry::spModelData) != geom_data {
@@ -1076,7 +1196,10 @@ unsafe fn uv_controller(shape: usize, geom_data: usize) -> Option<UvState> {
     if set >= rd::<u16>(geom_data, GD::textureSets) as u32 {
         return None;
     }
-    Some(UvState { set, state: rd(controller, UV_STATE) })
+    Some(UvState {
+        set,
+        state: rd(controller, UV_STATE),
+    })
 }
 
 /// Sends the state of a UV controller; `base` when it is the state of the vertices of the
@@ -1112,14 +1235,19 @@ unsafe fn keep_uv_base(t: &MainThread, handle: u32, geom_data: usize, uv: &UvSta
 /// engine's coordinates (the closed form of `uv_animation.rs` of the helper).
 unsafe fn check_uv(t: &MainThread, handle: u32, geom_data: usize, uv: &UvState) {
     let uv_bases = UV_BASES.get(t);
-    let Some((base, kept)) = uv_bases.as_ref().and_then(|bases| bases.get(&handle)) else { return };
+    let Some((base, kept)) = uv_bases.as_ref().and_then(|bases| bases.get(&handle)) else {
+        return;
+    };
     let [base_u, base_v, base_tu, base_tv] = *base;
     let [now_u, now_v, now_tu, now_tv] = uv.state;
     if base_tu == 0.0 || base_tv == 0.0 {
         return;
     }
     let (ru, rv) = (now_tu / base_tu, now_tv / base_tv);
-    let (bu, bv) = ((1.0 - ru) * 0.5 - (now_u - ru * base_u), (1.0 - rv) * 0.5 + (now_v - rv * base_v));
+    let (bu, bv) = (
+        (1.0 - ru) * 0.5 - (now_u - ru * base_u),
+        (1.0 - rv) * 0.5 + (now_v - rv * base_v),
+    );
     let engine = texture_set(geom_data, uv.set);
     let mut worst = 0.0f32;
     for (k, e) in kept.iter().zip(engine) {
@@ -1159,35 +1287,70 @@ unsafe fn controller_classes(object: usize) -> String {
     let mut controller: usize = rd(object, crate::gen::layouts::NiAVObject::controllers);
     while controller != 0 && names.len() < 8 {
         let rtti = ni::get_rtti(controller);
-        let name: usize = if rtti != 0 { rd(rtti, crate::gen::layouts::NiRTTI::name) } else { 0 };
-        names.push(if name != 0 { core::ffi::CStr::from_ptr(name as *const core::ffi::c_char).to_string_lossy().into_owned() } else { String::from("?") });
+        let name: usize = if rtti != 0 {
+            rd(rtti, crate::gen::layouts::NiRTTI::name)
+        } else {
+            0
+        };
+        names.push(if name != 0 {
+            core::ffi::CStr::from_ptr(name as *const core::ffi::c_char)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            String::from("?")
+        });
         controller = rd(controller, crate::gen::layouts::NiTimeController::nextController);
     }
-    if names.is_empty() { String::from("none") } else { names.join("+") }
+    if names.is_empty() {
+        String::from("none")
+    } else {
+        names.join("+")
+    }
 }
 
 /// Counts a send of a geometry data for the census: the first send makes its entry; a later
 /// one counts as a revision when only the revision changed.
 unsafe fn census_note(t: &MainThread, handle: u32, version: Version, geom_data: usize, skin: usize, shape: usize) {
-    let before = versions(t).get(&handle).map(|sent| sent.version).filter(|sent| sent.unique == version.unique);
+    let before = versions(t)
+        .get(&handle)
+        .map(|sent| sent.version)
+        .filter(|sent| sent.unique == version.unique);
     let mut census_open = CENSUS.get(t);
     let census = census_open.get_or_insert_with(Default::default);
     let key = (handle, version.unique);
     if !census.contains_key(&key) {
         census.insert(key, {
-            let parent: usize = if shape != 0 { rd(shape, crate::gen::layouts::NiAVObject::parentNode) } else { 0 };
-            let above: usize = if parent != 0 { rd(parent, crate::gen::layouts::NiAVObject::parentNode) } else { 0 };
+            let parent: usize = if shape != 0 {
+                rd(shape, crate::gen::layouts::NiAVObject::parentNode)
+            } else {
+                0
+            };
+            let above: usize = if parent != 0 {
+                rd(parent, crate::gen::layouts::NiAVObject::parentNode)
+            } else {
+                0
+            };
             let path = format!(
                 "{} < {} < {}",
                 crate::ports::draw::object_name(shape),
                 crate::ports::draw::object_name(parent),
                 crate::ports::draw::object_name(above)
             );
-            let mut controllers = if shape != 0 { controller_classes(shape) } else { String::from("?") };
+            let mut controllers = if shape != 0 {
+                controller_classes(shape)
+            } else {
+                String::from("?")
+            };
             if skin != 0 {
                 controllers.push_str(", skinned");
             }
-            CensusEntry { revisions: 0, others: 0, bytes: 0, path, controllers }
+            CensusEntry {
+                revisions: 0,
+                others: 0,
+                bytes: 0,
+                path,
+                controllers,
+            }
         });
         return;
     }
@@ -1198,7 +1361,9 @@ unsafe fn census_note(t: &MainThread, handle: u32, version: Version, geom_data: 
         + 8 * (rd::<u16>(geom_data, GD::textureSets) as u64).min(8);
     let bytes = all * per_vertex + version.entries as u64 * 2;
     if let Some(entry) = census.get_mut(&key) {
-        let only_revision = before.is_some_and(|before| before.vertices == version.vertices && before.entries == version.entries && before.skin_data == version.skin_data);
+        let only_revision = before.is_some_and(|before| {
+            before.vertices == version.vertices && before.entries == version.entries && before.skin_data == version.skin_data
+        });
         if only_revision {
             entry.revisions += 1;
         } else {
@@ -1243,24 +1408,75 @@ pub unsafe fn census_report(t: &MainThread) -> Vec<String> {
     let total: u64 = by_class.values().map(|sum| sum.3).sum();
     let mut classes: Vec<_> = by_class.into_iter().collect();
     classes.sort_by_key(|(_, sum)| std::cmp::Reverse(sum.3));
-    lines.push(format!("geometry census: {} geometries, sent again {} times, {:.1} MB; by the controllers of the shape:", census.len(), classes.iter().map(|(_, sum)| sum.2).sum::<u64>(), total as f64 / 1e6));
+    lines.push(format!(
+        "geometry census: {} geometries, sent again {} times, {:.1} MB; by the controllers of the shape:",
+        census.len(),
+        classes.iter().map(|(_, sum)| sum.2).sum::<u64>(),
+        total as f64 / 1e6
+    ));
     for (class, (geometries, again, sends, bytes)) in classes.iter().take(16) {
-        lines.push(format!("  {class}: {geometries} geometries, {again} of them sent again, {sends} times, {:.1} MB ({:.1} %)", *bytes as f64 / 1e6, *bytes as f64 * 100.0 / total.max(1) as f64));
+        lines.push(format!(
+            "  {class}: {geometries} geometries, {again} of them sent again, {sends} times, {:.1} MB ({:.1} %)",
+            *bytes as f64 / 1e6,
+            *bytes as f64 * 100.0 / total.max(1) as f64
+        ));
     }
     let mut most: Vec<_> = census.values().filter(|entry| entry.revisions + entry.others > 0).collect();
     most.sort_by_key(|entry| std::cmp::Reverse(entry.bytes));
     lines.push(String::from("geometry census: the 20 geometries with the most bytes sent again (revision only, other changes, MB, controllers, shape < parent < above):"));
     for entry in most.iter().take(20) {
-        lines.push(format!("  {} {} {:.1} [{}] {}", entry.revisions, entry.others, entry.bytes as f64 / 1e6, entry.controllers, entry.path));
+        lines.push(format!(
+            "  {} {} {:.1} [{}] {}",
+            entry.revisions,
+            entry.others,
+            entry.bytes as f64 / 1e6,
+            entry.controllers,
+            entry.path
+        ));
     }
     lines
 }
 
 /// Sends a geometry record and notes its version. `lengths` has the strip lengths, padded
 /// to 4 bytes.
-unsafe fn send(t: &MainThread, handle: u32, stream: u32, version: Version, fvf: u32, stride: u32, strip_count: u32, lengths: &[u8], bytes: &[u8], index_bytes: &[u8], list: &[u8]) {
-    crate::capture::geometry(&[stream, version.unique, version.revision as u32, fvf, stride, version.vertices, version.entries, strip_count], lengths, bytes, index_bytes, list);
-    versions(t).insert(handle, Sent { version, used: crate::camera_space::frame(t), uv_set: None, morph: false });
+unsafe fn send(
+    t: &MainThread,
+    handle: u32,
+    stream: u32,
+    version: Version,
+    fvf: u32,
+    stride: u32,
+    strip_count: u32,
+    lengths: &[u8],
+    bytes: &[u8],
+    index_bytes: &[u8],
+    list: &[u8],
+) {
+    crate::capture::geometry(
+        &[
+            stream,
+            version.unique,
+            version.revision as u32,
+            fvf,
+            stride,
+            version.vertices,
+            version.entries,
+            strip_count,
+        ],
+        lengths,
+        bytes,
+        index_bytes,
+        list,
+    );
+    versions(t).insert(
+        handle,
+        Sent {
+            version,
+            used: crate::camera_space::frame(t),
+            uv_set: None,
+            morph: false,
+        },
+    );
     *RECORDS.get(t) += 1;
     *BYTES.get(t) += (32 + lengths.len() + bytes.len() + index_bytes.len() + list.len()) as u64;
 }
@@ -1305,7 +1521,14 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
         return 0;
     }
     let handle = geom_data as u32;
-    let version = Version { unique: rd(geom_data, GD::uniqueID), revision: rd(geom_data, GD::revisionID), vertices: count as u32, entries: indexes.len() as u32, skin_data: 0, software: false };
+    let version = Version {
+        unique: rd(geom_data, GD::uniqueID),
+        revision: rd(geom_data, GD::revisionID),
+        vertices: count as u32,
+        entries: indexes.len() as u32,
+        skin_data: 0,
+        software: false,
+    };
     let stream = stream_handle(t, handle, version.unique);
     if known(t, handle, version) {
         return stream;
@@ -1324,7 +1547,19 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
         }
     }
     let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
-    send(t, handle, stream, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes, &[]);
+    send(
+        t,
+        handle,
+        stream,
+        version,
+        fvf,
+        stride as u32,
+        0,
+        &[],
+        &bytes,
+        &index_bytes,
+        &[],
+    );
     stream
 }
 
@@ -1340,7 +1575,15 @@ unsafe fn note_lines(t: &MainThread, geom_data: usize) -> u32 {
 /// (53-bit precision, logged at install), so each x87 step rounds as an `f64` step does, and
 /// the product of two `f32` values is exact in both. The values here equal the game's. With
 /// 24-bit precision (a real Direct3D device) the game rounds each step to `f32`.
-pub unsafe fn note_screen_polygon(t: &MainThread, count: u32, vertices: usize, tex_coords: usize, colour: usize, near: f32, distance: f32) -> u32 {
+pub unsafe fn note_screen_polygon(
+    t: &MainThread,
+    count: u32,
+    vertices: usize,
+    tex_coords: usize,
+    colour: usize,
+    near: f32,
+    distance: f32,
+) -> u32 {
     if !crate::capture::recording() || vertices == 0 || count < 3 {
         return 0;
     }
@@ -1363,9 +1606,28 @@ pub unsafe fn note_screen_polygon(t: &MainThread, count: u32, vertices: usize, t
     let indexes: Vec<u16> = (0..count as u16 - 2).flat_map(|n| [0, n + 1, n + 2]).collect();
     let index_bytes: Vec<u8> = indexes.iter().flat_map(|i| i.to_le_bytes()).collect();
     let handle = vertices as u32;
-    let version = Version { unique: 0, revision: 0, vertices: count as u32, entries: indexes.len() as u32, skin_data: 0, software: false };
+    let version = Version {
+        unique: 0,
+        revision: 0,
+        vertices: count as u32,
+        entries: indexes.len() as u32,
+        skin_data: 0,
+        software: false,
+    };
     let stream = stream_handle(t, handle, 0);
-    send(t, handle, stream, version, fvf, stride as u32, 0, &[], &bytes, &index_bytes, &[]);
+    send(
+        t,
+        handle,
+        stream,
+        version,
+        fvf,
+        stride as u32,
+        0,
+        &[],
+        &bytes,
+        &index_bytes,
+        &[],
+    );
     // The next draw of the polygon sends it again.
     versions(t).remove(&handle);
     stream
@@ -1403,12 +1665,22 @@ unsafe fn skin_influences(skin_data: usize, vertices: usize) -> Option<Vec<([f32
         let bone_count = rd::<u16>(partition, P::numBones) as usize;
         let per_vertex = rd::<u16>(partition, P::numBonesPerVertex) as usize;
         let in_partition = rd::<u16>(partition, P::numVertices) as usize;
-        if bones == 0 || weights == 0 || map == 0 || per_vertex == 0 || per_vertex > 4 || (palette == 0 && per_vertex != bone_count) {
+        if bones == 0
+            || weights == 0
+            || map == 0
+            || per_vertex == 0
+            || per_vertex > 4
+            || (palette == 0 && per_vertex != bone_count)
+        {
             return None;
         }
         // The bone of the skin for weight `k` of vertex `v` of the partition.
         let bone = |v: usize, k: usize| -> Option<u8> {
-            let local = if palette != 0 { rd::<u8>(palette, v * per_vertex + k) as usize } else { k };
+            let local = if palette != 0 {
+                rd::<u8>(palette, v * per_vertex + k) as usize
+            } else {
+                k
+            };
             if local >= bone_count {
                 return None;
             }
@@ -1472,7 +1744,11 @@ mod tests {
         (shape[1], shape[4], shape[10], shape[15]) = (2.0, -2.0, 2.0, 1.0);
         (shape[12], shape[13], shape[14]) = (1000.0, -2000.0, 50.0);
         let weights = [0.2f32, 0.15, 0.1, 0.05, 0.05, 0.05];
-        let list = vec![weights.iter().enumerate().map(|(bone, &weight)| (bone as u8, weight)).collect::<Vec<_>>()];
+        let list = vec![weights
+            .iter()
+            .enumerate()
+            .map(|(bone, &weight)| (bone as u8, weight))
+            .collect::<Vec<_>>()];
         let (vertices, entries) = super::all_influences(&list, 6);
         assert_eq!(vertices, vec![(0, 7)]);
         let word = |at: usize| u32::from_le_bytes(entries[at..at + 4].try_into().unwrap());
@@ -1547,7 +1823,13 @@ mod tests {
         // A vertex with 4 gives what its packed form gives.
         let packed = pack_weights(&four);
         let spread = [10.0, 20.0, 30.0, 40.0, 0.0, 0.0];
-        let weight = |k: usize| if k < 3 { packed.0[k] } else { 1.0 - packed.0.iter().sum::<f32>() };
+        let weight = |k: usize| {
+            if k < 3 {
+                packed.0[k]
+            } else {
+                1.0 - packed.0.iter().sum::<f32>()
+            }
+        };
         let from_packed: f32 = (0..4).map(|k| weight(k) * spread[packed.1[k] as usize]).sum();
         assert!((summed(&spread, &vertices, &entries, 1, 0.0) - from_packed).abs() < 1e-3);
         // A vertex with none follows the first bone, as its packed form does. No entry names a bone

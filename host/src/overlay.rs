@@ -102,7 +102,10 @@ extern "system" {
 
 /// The working set and the private bytes of this process.
 fn process_memory() -> (u64, u64) {
-    let mut memory = ProcessMemory { size: core::mem::size_of::<ProcessMemory>() as u32, ..Default::default() };
+    let mut memory = ProcessMemory {
+        size: core::mem::size_of::<ProcessMemory>() as u32,
+        ..Default::default()
+    };
     // SAFETY: the structure has the size that it says.
     if unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut memory, memory.size) } == 0 {
         return (0, 0);
@@ -266,7 +269,9 @@ impl Overlay {
         if self.on && self.parts >= 2 {
             self.parts = 0;
             (self.shown.working_set, self.shown.private) = process_memory();
-            self.shown.gpu = device.generate_allocator_report().map(|report| (report.total_allocated_bytes, report.total_reserved_bytes));
+            self.shown.gpu = device
+                .generate_allocator_report()
+                .map(|report| (report.total_allocated_bytes, report.total_reserved_bytes));
         }
     }
 
@@ -280,7 +285,17 @@ impl Overlay {
     /// that turns, which `sign` selects. `lines` go under the numbers of the panel: the
     /// text of the extension of the renderer. `status` is the text of the extension for the
     /// upper left corner; with the panel on, its message is the first line of the panel.
-    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32), sign: Option<u32>, lines: &[String], status: &crate::Status) {
+    pub fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        size: (u32, u32),
+        sign: Option<u32>,
+        lines: &[String],
+        status: &crate::Status,
+    ) {
         if !self.on && sign.is_none() && status.message.is_none() && !status.frame_rate {
             return;
         }
@@ -292,7 +307,10 @@ impl Overlay {
         // The text has the same part of the height of a picture of any size: 1 at 1080 lines.
         let scale = (size.1 as f32 / 1080.0).max(0.75);
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0 as f32 / scale, size.1 as f32 / scale))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(size.0 as f32 / scale, size.1 as f32 / scale),
+            )),
             ..Default::default()
         };
         self.context.set_pixels_per_point(scale);
@@ -372,7 +390,10 @@ impl Overlay {
             }
         }
         let jobs = self.context.tessellate(output.shapes, output.pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [size.0, size.1], pixels_per_point: output.pixels_per_point };
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [size.0, size.1],
+            pixels_per_point: output.pixels_per_point,
+        };
         // The buffers of a paint callback: the panel has none.
         let _ = self.renderer.update_buffers(device, queue, encoder, &jobs, &screen);
         {
@@ -384,7 +405,10 @@ impl Overlay {
                         view,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -411,7 +435,14 @@ fn graph(ui: &mut egui::Ui, history: &VecDeque<f32>) {
     for (i, &ms) in history.iter().enumerate() {
         let x = rect.left() + i as f32 + 0.5;
         let height = (ms / top).min(1.0) * rect.height();
-        let color = if ms > LONG * mean { egui::Color32::from_rgb(240, 110, 90) } else { egui::Color32::from_rgb(120, 200, 140) };
-        painter.line_segment([egui::pos2(x, rect.bottom()), egui::pos2(x, rect.bottom() - height)], egui::Stroke::new(1.0, color));
+        let color = if ms > LONG * mean {
+            egui::Color32::from_rgb(240, 110, 90)
+        } else {
+            egui::Color32::from_rgb(120, 200, 140)
+        };
+        painter.line_segment(
+            [egui::pos2(x, rect.bottom()), egui::pos2(x, rect.bottom() - height)],
+            egui::Stroke::new(1.0, color),
+        );
     }
 }
