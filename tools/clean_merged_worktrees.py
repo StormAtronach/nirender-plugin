@@ -52,7 +52,8 @@ All of these must hold before a worktree goes:
   that points into a worktree either.
 - The tool does not run from it.
 - No game and no helper runs: a run writes into its worktree's results, and the walk would disturb
-  a timing. The tool stops before the walk.
+  a timing. The tool stops before the walk. With --apply it also keeps the game slot free for its run
+  (`clean_common.game_kept_free`, W363).
 - Nothing was written in it for `--idle-hours` hours, and it has no `.keep-worktree` file, and
   git does not hold it locked.
 - No other worktree's Cargo.toml names it by path.
@@ -97,7 +98,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # `python -I` leaves the folder of the script off the path.
 sys.path.insert(0, HERE)
 import clean_common as common  # noqa: E402
-from clean_common import DOCS, FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, current_folder, current_set, files_in, games_in, git, gigabytes, is_heavy, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, read_keep_list, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
+from clean_common import DOCS, FILE_ATTRIBUTE_REPARSE_POINT, KEEP_ROOT, REPOS_ROOT, REPOSITORIES, SETS, Evidence, GameNotFree, current_folder, current_set, files_in, game_kept_free, games_in, git, gigabytes, is_heavy, is_link, is_link_entry, kept_set_numbers, log_line, old_play_set, own_line, processes, project_trees, read_keep_list, remove_link, remove_tree, run_age_days, run_treatment, same_or_under, same_path, users_of, walk, worktrees_of  # noqa: E402
 
 # The shared checkouts and the test train's pair stay, whatever their branch has. Git's own main
 # worktree is one too.
@@ -683,6 +684,19 @@ def main():
     args = parser.parse_args()
     if args.self_test:
         return self_test()
+    if not args.apply:
+        return clean(args)
+    # No game may start in the middle of the cleaning (W363).
+    try:
+        with game_kept_free("clean_merged_worktrees.py"):
+            return clean(args)
+    except GameNotFree as error:
+        print("NOTHING DONE: %s" % error)
+        return 1
+
+
+def clean(args):
+    """The list, and with --apply the acts (inside `game_kept_free`)."""
     now = time.time()
     date = time.strftime("%Y-%m-%d")
     named = [os.path.abspath(name) for name in args.name]
