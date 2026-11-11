@@ -26,6 +26,13 @@ pub(crate) fn log_to(path: &str) -> Option<isize> {
     Some(handle as isize)
 }
 
+/// Sends the text of this program into the file `log` (when there is one), then runs `then`:
+/// what `then` prints is in the file. Gives the handle of the file and the result of `then`.
+pub(crate) fn open_log_then<T>(log: Option<&str>, then: impl FnOnce() -> T) -> (Option<isize>, T) {
+    let log_file = log.and_then(log_to);
+    (log_file, then())
+}
+
 /// Runs the renderer as the program `nirender-host` does. `args` are the arguments of the
 /// command line, with the name of the program first.
 ///
@@ -34,15 +41,18 @@ pub(crate) fn log_to(path: &str) -> Option<isize> {
 /// part, for example the helper of MGE XE. Without it, it draws a frame of a capture file
 /// into a picture file.
 pub fn run(args: Vec<String>) {
-    run_with(args, None)
+    run_with(args, || None)
 }
 
 /// `run` with a program that draws more than the game does: in the live mode, and for a
-/// capture file.
-pub fn run_with(args: Vec<String>, extension: Option<Box<dyn Extension>>) {
+/// capture file. `make_extension` makes that program's part after the log is set up, so that
+/// the lines it prints at its start are in the log.
+pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<dyn Extension>>) {
     let log = option(&args, "--log");
-    let log_file = log.as_deref().and_then(log_to);
-    crate::crash::install(crate::crash::dump_path(log.as_deref()));
+    let (log_file, extension) = open_log_then(log.as_deref(), || {
+        crate::crash::install(crate::crash::dump_path(log.as_deref()));
+        make_extension()
+    });
     println!("{}", live::reader_build(extension.as_deref()));
     switches::log_set();
     let backends = match option(&args, "--backend").as_deref() {
@@ -236,5 +246,38 @@ mod tests {
         assert!(capture_header(&[(tag::HEADER, &older)], "test").is_err());
         assert!(capture_header(&[(tag::SCENE_BEGIN, &scene), (tag::HEADER, &ours)], "test").is_err());
         assert!(capture_header(&[], "test").is_err());
+    }
+
+    extern "system" {
+        fn GetStdHandle(which: u32) -> isize;
+    }
+
+    /// What the program part prints at its start is in the log: `open_log_then` sets up the
+    /// log first. The print writes to the standard output itself, because the test harness
+    /// catches `println!`; the program has no harness and `println!` takes the same way.
+    #[test]
+    fn the_part_of_the_program_starts_after_the_log() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("nirender-host-log-first-{}.txt", std::process::id()));
+        let path_text = path.to_string_lossy().into_owned();
+        // STD_OUTPUT_HANDLE and STD_ERROR_HANDLE, back after the test.
+        // SAFETY: GetStdHandle only reads the standard handles of this process.
+        let (output, error) = unsafe { (GetStdHandle(-11i32 as u32), GetStdHandle(-12i32 as u32)) };
+        let (log_file, made) = open_log_then(Some(&path_text), || {
+            let mut out = std::io::stdout();
+            let _ = writeln!(out, "the part of the program starts");
+            let _ = out.flush();
+            7
+        });
+        // SAFETY: the handles are those of this process from before the test.
+        unsafe {
+            SetStdHandle(-11i32 as u32, output as _);
+            SetStdHandle(-12i32 as u32, error as _);
+        }
+        assert_eq!(made, 7);
+        assert!(log_file.is_some());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(text.contains("the part of the program starts"), "{text:?}");
     }
 }
