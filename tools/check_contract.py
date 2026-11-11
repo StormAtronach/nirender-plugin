@@ -18,6 +18,13 @@
    declarations stops at a difference (C2382 on 2026-10-27, after the merge of step 3); d3d8's
    build reads the header from the main nirender-plugin checkout, so a build of a branch can
    miss it, and this check needs no compile.
+5. With --mge: each export of the plugin that d3d8.dll looks up by its name there
+   (`GetProcAddress` with a name that starts with `nirender_`, in `d3d8/cpp`) is a
+   `#[no_mangle] extern "C" fn` of that name in the plugin's `src`. The cast of the lookup (a
+   `__cdecl` function pointer type, or its typedef in the same file) and the Rust function have
+   the same number of parameters, and each parameter and the return value are of the same class
+   (`C_CLASSES`, `RUST_CLASSES`: a 32-bit integer of a sign, a pointer, or nothing). A lookup
+   whose cast this check cannot read, a type with no class, or no lookup at all fails.
 
 The exit code is 0 when all checks pass.
 """
@@ -164,6 +171,76 @@ def exported_names(definition):
     return names
 
 
+# The exports of the plugin that d3d8.dll looks up by name start with this.
+PLUGIN_EXPORT_PREFIX = "nirender_"
+# The class of each C type of a lookup and of each Rust type of an export, as the call passes
+# it on x86: a type of the same class on both sides passes the same way. A type ending in `*`
+# (C), a raw pointer (Rust), and usize are a pointer.
+C_CLASSES = {"UINT": "u32", "uint32_t": "u32", "DWORD": "u32", "unsigned int": "u32", "int": "i32", "INT": "i32", "int32_t": "i32", "void": "void"}
+RUST_CLASSES = {"u32": "u32", "i32": "i32", "usize": "pointer", "isize": "pointer", "()": "void"}
+# The cast in front of a lookup: a typedef's name, or a function pointer type of its own.
+CAST_NAME = r"\(\s*(\w+)\s*\)\s*$"
+CAST_TYPE = r"\(\s*([\w \t\*]+?)\s*\(\s*__cdecl\s*\*\s*\)\s*\(([^()]*)\)\s*\)\s*$"
+TYPEDEF = r"typedef\s+([\w \t\*]+?)\s*\(\s*__cdecl\s*\*\s*(\w+)\s*\)\s*\(([^()]*)\)\s*;"
+LOOKUP = r'GetProcAddress\s*\(\s*\w+\s*,\s*"(%s\w+)"\s*\)' % PLUGIN_EXPORT_PREFIX
+EXPORT = r'#\[(?:unsafe\()?no_mangle\)?\]\s*pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+(\w+)\s*\(([^)]*)\)\s*(?:->\s*([^{]+?))?\s*\{'
+
+
+def c_class(text):
+    text = normal_type(text)
+    return "pointer" if text.endswith("*") else C_CLASSES.get(text)
+
+
+def rust_class(text):
+    text = re.sub(r"\s+", " ", text.strip())
+    return "pointer" if text.startswith(("*const ", "*mut ")) else RUST_CLASSES.get(text)
+
+
+def plugin_exports(sources):
+    """{name: (return type, parameter types)} of each `#[no_mangle] extern "C" fn` of the Rust
+    texts `sources`; the return type of a function without one is `()`."""
+    exports = {}
+    for text in sources:
+        for name, parameters, returned in re.findall(EXPORT, text):
+            types = [p.split(":", 1)[1].strip() for p in parameters.split(",") if p.strip()]
+            exports[name] = (returned.strip() or "()", types)
+    return exports
+
+
+def export_problems(cpp, sources):
+    """The number of the plugin's exports that d3d8's C++ files `cpp` look up by name, and the
+    problems: a lookup whose cast cannot be read, a name that the plugin's Rust texts `sources`
+    do not export, and a type of another class than the export's."""
+    exports = plugin_exports(sources)
+    count, problems = 0, []
+    for path, text in cpp:
+        code = without_comments(text)
+        typedefs = {name: (returned, parameters) for returned, name, parameters in re.findall(TYPEDEF, code)}
+        for match in re.finditer(LOOKUP, code):
+            count += 1
+            name, line = match.group(1), code.count("\n", 0, match.start()) + 1
+            where = "%s:%d" % (path, line)
+            before = code[max(0, match.start() - 300):match.start()]
+            typed, named = re.search(CAST_TYPE, before), re.search(CAST_NAME, before)
+            cast = typed.groups() if typed else typedefs.get(named.group(1)) if named else None
+            if not cast:
+                problems.append("%s: the lookup of %s has no cast to a __cdecl function pointer type that this check reads" % (where, name))
+                continue
+            if name not in exports:
+                problems.append("%s: d3d8 looks up %s, and no file of src exports it (#[no_mangle] extern \"C\" fn)" % (where, name))
+                continue
+            c_types = [cast[0]] + [t for t in parameter_types(cast[1]) if t != "void"]
+            rust_types = [exports[name][0]] + exports[name][1]
+            unknown = [t for t in c_types if c_class(t) is None] + [t for t in rust_types if rust_class(t) is None]
+            if unknown:
+                problems.append("%s: %s has a type with no class in this check: %s" % (where, name, ", ".join(unknown)))
+            elif [c_class(t) for t in c_types] != [rust_class(t) for t in rust_types]:
+                problems.append("%s: %s is %s(%s) in d3d8 and fn(%s) -> %s in the plugin" % (where, name, normal_type(cast[0]), ", ".join(c_types[1:]), ", ".join(rust_types[1:]), rust_types[0]))
+    if count == 0:
+        problems.append("d3d8/cpp looks up no export of the plugin (GetProcAddress with a name that starts with %s): this check finds nothing" % PLUGIN_EXPORT_PREFIX)
+    return count, problems
+
+
 def rust_sources():
     texts = []
     for root, _, files in os.walk(os.path.join(REPO, "src")):
@@ -203,6 +280,30 @@ def self_test():
     assert len(declaration_problems(contract, other, names)) == 1
     assert parameter_types("const char* text") == ["const char*"] and parameter_types("void") == ["void"]
     assert parameter_types("uint32_t clientVersion") == ["uint32_t"] and parameter_types("double origin[3]") == ["double*"]
+    # The plugin's exports that d3d8.dll looks up: a typedef cast, a cast of its own, and a lookup
+    # in a comment, which does not count.
+    lookups = ("typedef void* (__cdecl * CreateProc) (UINT);\n"
+               "CreateProc create = (CreateProc)GetProcAddress(plugin, \"nirender_direct3d_create8\");\n"
+               "get = (UINT (__cdecl *)(UINT, void*, UINT*))GetProcAddress(plugin, \"nirender_view_options_get\");\n"
+               "typedef const char* (__cdecl * BuildIdProc) ();\n"
+               "BuildIdProc id = (BuildIdProc)GetProcAddress(plugin, \"nirender_build_id\");\n"
+               "// (CreateProc)GetProcAddress(plugin, \"nirender_old\");\n")
+    exports = ["#[no_mangle]\npub unsafe extern \"C\" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {\n",
+               "#[no_mangle]\npub unsafe extern \"C\" fn nirender_view_options_get(kind: u32, key: usize, parts: *mut u32) -> u32 {\n",
+               "#[no_mangle]\npub extern \"C\" fn nirender_build_id() -> *const u8 {\n"]
+    assert export_problems([("main.cpp", lookups)], exports) == (3, []), export_problems([("main.cpp", lookups)], exports)
+    # The nulls: an export of another name, a parameter of another class, a cast that is not
+    # read, and no lookup at all.
+    renamed = [exports[0].replace("create8", "create9")] + exports[1:]
+    count, problems = export_problems([("main.cpp", lookups)], renamed)
+    assert count == 3 and len(problems) == 1 and "main.cpp:2: d3d8 looks up nirender_direct3d_create8" in problems[0], problems
+    retyped = exports[:1] + [exports[1].replace("key: usize", "key: u32")] + exports[2:]
+    problems = export_problems([("main.cpp", lookups)], retyped)[1]
+    assert len(problems) == 1 and "nirender_view_options_get is UINT(UINT, void*, UINT*) in d3d8" in problems[0], problems
+    unread = lookups.replace("(CreateProc)GetProcAddress", "reinterpret_cast<CreateProc>(GetProcAddress", 1)
+    problems = export_problems([("main.cpp", unread)], exports)[1]
+    assert len(problems) == 1 and "the lookup of nirender_direct3d_create8 has no cast" in problems[0], problems
+    assert export_problems([("main.cpp", "")], exports)[0] == 0 and "finds nothing" in export_problems([("main.cpp", "")], exports)[1][0]
     print("check_contract self-test: ok")
 
 
@@ -247,12 +348,16 @@ def main():
         for name in functions:
             if name not in exported:
                 problems.append("%s is declared in the header and not exported in %s" % (name, definition))
-        problems += declaration_problems(text, cpp_files(args.mge), functions)
+        cpp = cpp_files(args.mge)
+        problems += declaration_problems(text, cpp, functions)
+        lookups, lookup_problems = export_problems(cpp, sources)
+        problems += lookup_problems
 
     for problem in problems:
         print("FAIL: " + problem)
     if not problems:
-        print("contract ok: %d constants, %d structs, %d functions%s" % (len(defines), len(header_sizes), len(functions), " (and exported by d3d8.dll)" if args.mge else ""))
+        mge = " (and exported by d3d8.dll); %d exports of the plugin that d3d8.dll looks up" % lookups if args.mge else ""
+        print("contract ok: %d constants, %d structs, %d functions%s" % (len(defines), len(header_sizes), len(functions), mge))
     return 1 if problems else 0
 
 
