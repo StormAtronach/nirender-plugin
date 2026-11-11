@@ -715,7 +715,9 @@ impl Player {
             save_picture(&self.renderer.device, &buffer, row, width, height, blue_first, &path);
         }
         // The GPU objects of the frame (`objects`): a steady frame has no new content of the
-        // game and no change of the extension, and must make none.
+        // game and no change of the extension, and must make none. The groups of the arrays
+        // that a change of this frame dropped are made in it.
+        self.renderer.make_dropped_array_groups();
         let extension_change = self.extension.as_mut().and_then(|extension| extension.frame_changed());
         let change = self.frame_change.take().or(extension_change);
         if let Some(line) = crate::objects::end_frame(change) {

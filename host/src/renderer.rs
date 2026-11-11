@@ -832,6 +832,8 @@ impl Renderer {
             array_group: None,
             array_variants: FxHashMap::default(),
             small_array_group: None,
+            array_groups_dropped: false,
+            small_slots_dropped: None,
             tier,
             stage_groups: StageGroups::default(),
             geometries: FxHashMap::default(),
@@ -999,7 +1001,29 @@ impl Renderer {
     pub(crate) fn forget_array_groups(&mut self) {
         self.array_group = None;
         self.array_variants.clear();
-        self.small_array_group = None;
+        if let Some((slots, _)) = self.small_array_group.take() {
+            self.small_slots_dropped = Some(slots);
+        }
+        self.array_groups_dropped = true;
+    }
+
+    /// At the end of a frame whose change dropped the groups of the arrays: the group of the
+    /// frame, and the small group for the slots that the dropped one had, are made again now.
+    /// They bind the arrays that the next draws bind, so the group counts in the frame of the
+    /// change, not in the first steady frame that draws with the arrays ([`crate::objects`]).
+    /// The variants for the rendered targets wait for their first use.
+    pub(crate) fn make_dropped_array_groups(&mut self) {
+        if !std::mem::take(&mut self.array_groups_dropped) || self.tier == request::TextureTier::C {
+            return;
+        }
+        if self.array_group.is_none() && !self.frame_texture_views.is_empty() {
+            self.array_group_for(None);
+        }
+        if self.small_array_group.is_none() {
+            if let Some(slots) = self.small_slots_dropped.take() {
+                self.small_array_group(&slots);
+            }
+        }
     }
 
     /// The group of the arrays of the frame for a pass into `target` (a rendered texture of

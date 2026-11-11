@@ -809,6 +809,10 @@ struct Renderer {
     /// it was made for, the group, and the slot of each texture in it. It stays from frame to
     /// frame as the group of the frame does, and goes with it (`forget_array_groups`).
     small_array_group: Option<(Vec<u32>, SmallArrays)>,
+    /// A change of the arrays dropped their groups in the frame in progress, and the slots of
+    /// the small group it dropped (`Renderer::make_dropped_array_groups`).
+    array_groups_dropped: bool,
+    small_slots_dropped: Option<Vec<u32>>,
     /// How the world shader takes the textures (tier A: the arrays above; tier C: the groups
     /// below; `request::TextureTier`).
     pub(crate) tier: request::TextureTier,
