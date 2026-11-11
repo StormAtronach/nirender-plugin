@@ -240,12 +240,36 @@ unsafe extern "C" fn overlay(l: LuaState) -> i32 {
 /// `crash panic plugin` is a panic of the plugin on purpose, for a test of its crash data
 /// (`crash`); the helper takes `crash panic` and `crash fault` the same way.
 unsafe extern "C" fn tune(l: LuaState) -> i32 {
-    const TUNE: u32 = 5;
     let command = arg_str(l, 1).unwrap_or_default();
     if command.trim() == "crash panic plugin" {
         panic!("a panic asked by nirender.tune");
     }
     crate::capture::extension(TUNE, command.as_bytes());
+    0
+}
+
+/// The number of the extension data of a tune ([`tune`]).
+const TUNE: u32 = 5;
+
+/// `nirender.debug.view(name[, term])` turns on the debug view `name` of the renderer (with
+/// its term for `water` and `post`), and `nirender.debug.view("off")` turns the view off. It
+/// sends the tune `debug view ...`; the renderer checks the name and logs the result.
+unsafe extern "C" fn debug_view(l: LuaState) -> i32 {
+    let name = arg_str(l, 1).unwrap_or_default();
+    let command = match arg_str(l, 2) {
+        Some(term) => format!("debug view {name} {term}"),
+        None => format!("debug view {name}"),
+    };
+    crate::capture::extension(TUNE, command.as_bytes());
+    0
+}
+
+/// `nirender.debug.lines(name, on)` turns the line source `name` of the debug views on or off
+/// (the tune `debug lines <name> on|off`).
+unsafe extern "C" fn debug_lines(l: LuaState) -> i32 {
+    let name = arg_str(l, 1).unwrap_or_default();
+    let state = if lua_toboolean(l, 2) != 0 { "on" } else { "off" };
+    crate::capture::extension(TUNE, format!("debug lines {name} {state}").as_bytes());
     0
 }
 
@@ -836,6 +860,11 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "stateSummary", state_summary);
     set_fn(l, "overlay", overlay);
     set_fn(l, "tune", tune);
+    // `nirender.debug`: the debug views.
+    lua_createtable(l, 0, 2);
+    set_fn(l, "view", debug_view);
+    set_fn(l, "lines", debug_lines);
+    lua_setfield(l, -2, c"debug".as_ptr());
     set_fn(l, "hostState", host_state);
     set_fn(l, "failureHandled", failure_handled);
     set_fn(l, "loadingDone", loading_done);
