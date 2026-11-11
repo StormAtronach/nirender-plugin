@@ -401,6 +401,7 @@ impl Player {
             // draws it opens later, when the items run.
             samples: if in_back_buffer { renderer.samples } else { 1 },
             stages: 0,
+            debug: 0,
         };
         let stencil_reference = stencil[2];
         if self.stream.shape.geometry == crate::dump_wanted() {

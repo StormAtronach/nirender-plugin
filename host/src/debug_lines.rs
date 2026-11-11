@@ -22,6 +22,17 @@ pub mod view_id {
     pub const POST: u32 = 5;
 }
 
+/// The world variant of a shader view: the view itself for a view with code in the world shader
+/// (lights, shadow layers), else [`view_id::NONE`]. A draw of the world takes the variant of its
+/// frame, and the world shader's text names the views of the variants (`VIEW_LIGHTS`,
+/// `VIEW_SHADOW_LAYERS` in shader.wgsl).
+pub fn world_variant(view: u32) -> u32 {
+    match view {
+        view_id::LIGHTS | view_id::SHADOW_LAYERS => view,
+        _ => view_id::NONE,
+    }
+}
+
 /// A set of line sources, one bit for each.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LineSources(u32);
@@ -160,5 +171,19 @@ mod tests {
         let sources = LineSources::from_bits(1 << 16 | 2);
         assert_eq!(sources.bits(), 1 << 16 | 2);
         assert_eq!(sources.names().collect::<Vec<_>>(), ["shadow-boxes"]);
+    }
+
+    /// Only the views with code in the world shader make a world variant, and the world shader
+    /// names them with the ids here.
+    #[test]
+    fn the_world_variants_are_the_lights_and_the_shadow_layers() {
+        assert_eq!(world_variant(view_id::LIGHTS), view_id::LIGHTS);
+        assert_eq!(world_variant(view_id::SHADOW_LAYERS), view_id::SHADOW_LAYERS);
+        for view in [view_id::NONE, view_id::SHADOW_MAP, view_id::WATER, view_id::POST, 99] {
+            assert_eq!(world_variant(view), view_id::NONE, "view {view}");
+        }
+        let shader = include_str!("shader.wgsl");
+        assert!(shader.contains(&format!("const VIEW_LIGHTS: u32 = {}u;", view_id::LIGHTS)));
+        assert!(shader.contains(&format!("const VIEW_SHADOW_LAYERS: u32 = {}u;", view_id::SHADOW_LAYERS)));
     }
 }

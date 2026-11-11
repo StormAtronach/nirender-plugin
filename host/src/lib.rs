@@ -766,6 +766,11 @@ struct Renderer {
     /// The fragment shaders for each stage state of the draws (W293).
     pub(crate) stage_shaders: stage_shaders::StageShaders,
     pipelines: FxHashMap<PipelineKey, Rc<wgpu::RenderPipeline>>,
+    /// The world variant of the frame ([`Renderer::set_debug_variant`]), 0 in normal play.
+    debug_variant: u32,
+    /// The world shader's module of the variant, made at its first draw; None inside when the
+    /// module failed.
+    variant_shader: Option<Option<wgpu::ShaderModule>>,
     textures: FxHashMap<u32, Rc<wgpu::TextureView>>,
     /// The textures that the game draws into, by the handle of the texture, and the texture of
     /// each surface that the game got from a texture.
