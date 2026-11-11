@@ -73,7 +73,7 @@ macro_rules! port_impl {
 macro_rules! port_thiscall {
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($this:ident $(, $a:ident : $t:ty)*) -> $r:ty,
+        fn($this:ident $(, $a:ident : $t:ty)* $(,)?) -> $r:ty,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust = $rust:path
@@ -86,7 +86,7 @@ macro_rules! port_thiscall {
     };
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($this:ident $(, $a:ident : $t:ty)*) -> $r:ty,
+        fn($this:ident $(, $a:ident : $t:ty)* $(,)?) -> $r:ty,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust_main = $rust:path
@@ -105,7 +105,7 @@ macro_rules! port_thiscall {
 macro_rules! port_thiscall_float {
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($this:ident) -> f32,
+        fn($this:ident $(,)?) -> f32,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust = $rust:path
@@ -165,7 +165,7 @@ macro_rules! port_thiscall_float {
 macro_rules! port_cdecl {
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($($a:ident : $t:ty),*) -> $r:ty,
+        fn($($a:ident : $t:ty),* $(,)?) -> $r:ty,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust = $rust:path
@@ -178,7 +178,7 @@ macro_rules! port_cdecl {
     };
     (
         $modname:ident, $addr:literal, $ename:literal,
-        fn($($a:ident : $t:ty),*) -> $r:ty,
+        fn($($a:ident : $t:ty),* $(,)?) -> $r:ty,
         compare_eax = $cmp:literal,
         regions = |$set:ident| $regbody:expr,
         rust_main = $rust:path
