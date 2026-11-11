@@ -19,6 +19,9 @@ helper's reader (`host/src/tag.rs`).
      assertion; `x.to_le_bytes()` of an integer; `[a, b].concat()` of such parts;
    - a part of a local list of parts (`tables[i]`, `vec![..]`, `[..]`).
    Any other part is variable. A tag of SIZE_EXCEPTIONS is not compared; the check prints why.
+   A variable part adds 0 to the fixed part. So the check does not find an extra part that it
+   cannot read (for example a call `&crate::link::four()`) in the record of a fixed-length tag:
+   that record still passes.
    A tag that capture.rs writes and least_length does not name is not compared: the reader
    takes the whole record with its own check.
 
