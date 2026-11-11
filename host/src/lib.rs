@@ -654,6 +654,10 @@ mod cores {
     }
 }
 
+/// The small group of the texture arrays and the slot of each texture of the frame in it
+/// (`Renderer::small_array_group`).
+type SmallArrays = (Rc<wgpu::BindGroup>, Rc<FxHashMap<u32, u32>>);
+
 struct Renderer {
     device: Rc<wgpu::Device>,
     /// The format of the picture that the pipelines draw into.
@@ -802,7 +806,7 @@ struct Renderer {
     /// The small group of the arrays (`Renderer::small_array_group`): the slots of the frame
     /// it was made for, the group, and the slot of each texture in it. It stays from frame to
     /// frame as the group of the frame does, and goes with it (`forget_array_groups`).
-    small_array_group: Option<(Vec<u32>, Rc<wgpu::BindGroup>, Rc<FxHashMap<u32, u32>>)>,
+    small_array_group: Option<(Vec<u32>, SmallArrays)>,
     /// How the world shader takes the textures (tier A: the arrays above; tier C: the groups
     /// below; `request::TextureTier`).
     pub(crate) tier: request::TextureTier,
@@ -1129,7 +1133,7 @@ struct Player {
     /// The group of the textures of the game's draws before the world and after the post
     /// chain, with the slot of each texture in it, for the items in progress
     /// (`run_items_inner`, `issue`).
-    small_arrays: Option<(Rc<wgpu::BindGroup>, Rc<FxHashMap<u32, u32>>)>,
+    small_arrays: Option<SmallArrays>,
     /// The copy of the draw in progress for the small group: its first instance among the
     /// frame's instances (`mark_small_draws`).
     small_copy: Option<u32>,

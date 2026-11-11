@@ -1116,14 +1116,14 @@ impl Renderer {
     /// steady frame makes no group. A group holds a place for each element of the layout's
     /// arrays in the backend (Direct3D 12 fills the rest of an array with null views), and that
     /// place comes back only when the GPU has run the frames that used it.
-    pub(crate) fn small_array_group(&mut self, slots: &[u32]) -> (Rc<wgpu::BindGroup>, Rc<FxHashMap<u32, u32>>) {
+    pub(crate) fn small_array_group(&mut self, slots: &[u32]) -> crate::SmallArrays {
         let mut slots: Vec<u32> = slots.iter().copied().filter(|&slot| slot != 0).collect();
         slots.sort_unstable();
         slots.dedup();
-        if let Some((kept, group, remap)) = &self.small_array_group {
+        if let Some((kept, small)) = &self.small_array_group {
             if *kept == slots {
                 self.counts.small_groups_kept += 1;
-                return (group.clone(), remap.clone());
+                return small.clone();
             }
         }
         let mut remap = FxHashMap::default();
@@ -1157,9 +1157,9 @@ impl Renderer {
                 ],
             },
         ));
-        let remap = Rc::new(remap);
-        self.small_array_group = Some((slots, group.clone(), remap.clone()));
-        (group, remap)
+        let small = (group, Rc::new(remap));
+        self.small_array_group = Some((slots, small.clone()));
+        small
     }
 
     /// Room in the buffer of the indirect draws for `draws` arguments. A new buffer when the
