@@ -33,9 +33,10 @@ The checks of each list:
 - `check_format.py`: the Rust code is formatted as `cargo fmt` writes it, in each Rust root of
   this repository; with `--mge` (the MGE XE list): in the MGE XE workspace.
 
-The docs and MWSE are the siblings of this tree, else the siblings of its main checkout
-(`common.sibling`): a group of worktrees in C:/tmp has neither beside it. The docs checks read
-the code of this tree (`--plugin`), not the code of the checkout beside the docs.
+The docs scripts come from the docs checkout beside the main checkout, or from the tree that
+the local.json key "docs" names (`common.docs_place`), never from beside a worktree. MWSE is
+the sibling of this tree, else the sibling of its main checkout (`common.sibling`). The docs
+checks read the code of this tree (`--plugin`), not the code of the checkout beside the docs.
 
 Each takes well under a second. A check whose repository is not on this machine is skipped
 with a line; with `--strict` (release.py) such a check is a failure, since a release needs
@@ -54,17 +55,18 @@ import common  # noqa: E402
 
 PLUGIN = Path(__file__).resolve().parents[1]
 REPOS = PLUGIN.parent
-STATE_PARTS = ("moreFPS", "docs", "Numidium Project", "scripts", "state-page")
+STATE_PARTS = ("docs", "Numidium Project", "scripts", "state-page")
 MWSE_PARTS = ("MWSE", "MWSE")
 
 
-def places(siblings, main):
-    """The folder of the docs scripts and of the MWSE repository: beside `siblings`, else beside the main checkout
-    `main` (`common.find_sibling`)."""
-    return Path(common.find_sibling(siblings, main, STATE_PARTS)), Path(common.find_sibling(siblings, main, MWSE_PARTS))
+def places(siblings, main, docs=None):
+    """The folder of the docs scripts and of the MWSE repository. The docs scripts come from the docs checkout beside
+    the main checkout `main`, or from `docs` (the key "docs"; `common.find_docs`); MWSE from beside `siblings`, else
+    beside the main checkout (`common.find_sibling`)."""
+    return Path(common.find_docs(main, docs), *STATE_PARTS), Path(common.find_sibling(siblings, main, MWSE_PARTS))
 
 
-STATE, MWSE = places(str(REPOS), common.main_checkout())
+STATE, MWSE = Path(common.docs_place(*STATE_PARTS)), places(str(REPOS), common.main_checkout())[1]
 MWSE_HEADER = MWSE / "MWSE" / "MWSENativeApi.h"
 
 CHECKS = {
@@ -147,8 +149,9 @@ MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "clip products
 
 
 def self_test():
-    """The places of the docs and MWSE for a tree with no siblings (a group of worktrees in C:/tmp): those beside the
-    main checkout. With none there either, those beside the tree, so that the checks are skipped."""
+    """The places of the docs and MWSE for a tree in a group of worktrees in C:/tmp: the docs scripts always those of
+    the docs checkout beside the main checkout, also when a stale docs tree lies beside the tree (W355); MWSE beside the
+    tree, else beside the main checkout. With none anywhere, the checks are skipped."""
     import tempfile
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
@@ -157,15 +160,19 @@ def self_test():
         main = os.path.join(repos, "nirender-plugin")
         os.makedirs(os.path.join(group, "nirender-plugin"))
         os.makedirs(main)
-        beside_tree = (Path(group, *STATE_PARTS), Path(group, *MWSE_PARTS))
-        assert places(group, main) == beside_tree, "nothing anywhere: the places beside the tree, which do not exist"
+        main_state = Path(repos, common.DOCS_REPO, *STATE_PARTS)
+        assert places(group, main) == (main_state, Path(group, *MWSE_PARTS)), "nothing anywhere: places that do not exist"
 
-        os.makedirs(os.path.join(repos, *STATE_PARTS))
+        os.makedirs(main_state)
         os.makedirs(os.path.join(repos, *MWSE_PARTS))
-        assert places(group, main) == (Path(repos, *STATE_PARTS), Path(repos, *MWSE_PARTS)), "no sibling: the main checkout's"
+        assert places(group, main) == (main_state, Path(repos, *MWSE_PARTS)), "no sibling: the main checkout's"
 
-        os.makedirs(os.path.join(group, *STATE_PARTS))
-        assert places(group, main)[0] == beside_tree[0], "a sibling of the tree comes first"
+        # The null of W355: a stale docs tree named moreFPS beside the tree is not taken; MWSE beside it is.
+        stale = Path(group, common.DOCS_REPO)
+        os.makedirs(stale / Path(*STATE_PARTS))
+        os.makedirs(os.path.join(group, *MWSE_PARTS))
+        assert places(group, main) == (main_state, Path(group, *MWSE_PARTS)), places(group, main)
+        assert places(group, main, str(stale))[0] == stale / Path(*STATE_PARTS), "the key names a docs tree on purpose"
 
     for name in ("module headers", "skill names"):
         assert CHECKS[name][2] == ["--plugin", str(PLUGIN)], "the docs checks read the code of this tree"

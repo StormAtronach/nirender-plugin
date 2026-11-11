@@ -70,7 +70,7 @@ import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import SIBLINGS, find_sibling, local, main_checkout  # noqa: E402
+from common import SIBLINGS, docs_place, local, main_checkout  # noqa: E402
 from validate_tour import NOT_RUN, NOT_RUN_CODE  # noqa: E402
 import symbols  # noqa: E402
 from symbols import codeview  # noqa: E402,F401  (the tests and keep_pdbs read CodeView records by it)
@@ -92,10 +92,10 @@ PDBS = (
     (os.path.join("Data Files", "mwse", "lib", "akulakhan.dll"), "plugin", os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.pdb")),
 )
 KEPT_RUNS = "E:/nirender-keep/runs-%s"
-# The moreFPS repo is beside the repos folder, else beside the main checkout (a worktree group in C:/tmp has no moreFPS).
-HARNESS = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "scripts", "test-harness-2026-10-03"))
-BATCH = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua"))
-LIVECODING = find_sibling(REPOS, main_checkout(), ("moreFPS", "docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua"))
+# The docs checkout beside the main checkout, or the one of the key "docs" (common.docs_root).
+HARNESS = docs_place("docs", "scripts", "test-harness-2026-10-03")
+BATCH = docs_place("docs", "Numidium Project", "scripts", "wgpu-scene-audit", "batch-play-smoke.lua")
+LIVECODING = docs_place("docs", "Numidium Project", "scripts", "wgpu-scene-audit", "livecoding-mark.lua")
 BASELINE_PARTS = ("results", "baseline-records")
 
 
