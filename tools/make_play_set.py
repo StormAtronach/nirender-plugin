@@ -1374,8 +1374,8 @@ def main():
 
     # The slot first: a stop in the queue leaves no set folder behind.
     take_set_hold(slots, args.no_wait)
+    # The notes start in the try: a fault at their start still ends the hold (the Reviewer's verdict 289).
     holds_noted = contextlib.ExitStack()
-    holds_noted.enter_context(set_hold_noted(slots))
     name = None
     notes = []
     passed = False
@@ -1385,6 +1385,7 @@ def main():
             file.write(set_note(name, plugin_commit, mge_commit, result, SMOKE_MWSE))
 
     try:
+        holds_noted.enter_context(set_hold_noted(slots))
         # The wait for the slot can be long, and the set must be of the tips when the smoke starts (f187 was
         # an hour old). A build here runs in the set's own hold of the whole build side.
         moved = tips_moved((plugin_commit, mge_commit), current_tips())
