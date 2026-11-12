@@ -234,53 +234,17 @@ def refusal_of(lines):
     return None
 
 
-# The guard of a wgpu run against MGE XE's fall-back to Direct3D 9 (D328, verdict 314). Its checks 1 and 2 (the cached
-# none, the fall-back lines) go with W412: the owner's D386 removes the probe, its cache and the fall-back.
-#
-# MGE XE's cache of its probe of numidium.exe (render-link d3d8/crates/probe): one line of the key, the word and the
-# reason, separated by tabs, beside mgeXE.log. A cached none takes every start of the instance to Direct3D 9.
-PROBE_CACHE = "mgeXE-renderer-probe.txt"
-# The lines of MGE XE's d3d8.dll when the wgpu path falls back to Direct3D 9 (render-link d3d8/cpp/main.cpp):
-# wgpuPathOff writes the first for every fall-back, the probe writes the second.
-FALLBACK_MARKS = ("!! wgpu renderer: not in use,", "this start stays on Direct3D 9")
-
-
-def probe_cache_files(root=None, game=None):
-    """The places of MGE XE's probe cache: the overwrite folder of the instance (Root Builder) and the game folder."""
-    return [os.path.join(root or harness.MO2_ROOT, "overwrite", "Root", PROBE_CACHE), os.path.join(game or harness.GAME_DIR, PROBE_CACHE)]
-
-
-def probe_cache_lines(root=None, game=None):
-    """Each probe cache file that exists, as "<path>: <its first line>"."""
-    lines = []
-    for path in probe_cache_files(root, game):
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8", errors="replace") as file:
-                lines.append("%s: %s" % (path, file.readline().rstrip("\r\n").replace("\t", " | ")))
-    return lines
-
-
-def probe_cache_problem(root=None, game=None):
-    """Check 1: why a wgpu run must not start because MGE XE's probe cache says none, or None. The runner never deletes
-    the file: it belongs to the instance."""
-    for path in probe_cache_files(root, game):
-        if not os.path.isfile(path):
-            continue
-        with open(path, encoding="utf-8", errors="replace") as file:
-            fields = file.readline().rstrip("\r\n").split("\t", 2)
-        if len(fields) >= 2 and fields[1] == "none":
-            reason = fields[2] if len(fields) == 3 else "no reason"
-            return "MGE XE's probe cache %s says none (%s): a wgpu run would take Direct3D 9. Delete the file to ask the probe again" % (path, reason)
-    return None
+# The guard of a wgpu run against MGE XE's fall-back to Direct3D 9 (D328, verdict 314). The probe and its cache went
+# with W412 (D386). wgpuPathOff of MGE XE's d3d8.dll (render-link d3d8/cpp/main.cpp) still writes this line for the
+# starts that go to Direct3D 9: a part of the renderer is missing, or the plugin refuses the game's code.
+FALLBACK_MARKS = ("!! wgpu renderer: not in use,",)
 
 
 def fallback_of(lines):
-    """Check 2: the reason for a wgpu run to stop when `lines` hold MGE XE's fall-back to Direct3D 9, with the probe
-    cache named; else None."""
+    """The reason for a wgpu run to stop when `lines` hold MGE XE's fall-back to Direct3D 9; else None."""
     for line in lines:
         if any(mark in line for mark in FALLBACK_MARKS):
-            cache = "; ".join(probe_cache_lines()) or "no file %s" % " or ".join(probe_cache_files())
-            return "MGE XE fell back to Direct3D 9: %s (probe cache: %s)" % (line.strip(), cache)
+            return "MGE XE fell back to Direct3D 9: %s" % line.strip()
     return None
 
 

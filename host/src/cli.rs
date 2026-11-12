@@ -61,13 +61,6 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         Some("vulkan") => wgpu::Backends::VULKAN,
         _ => wgpu::Backends::PRIMARY,
     };
-    // `--probe`: the needs of the renderer against the backends, no window, the answer as
-    // lines and an exit code (`request::probe`). d3d8.dll runs it before it chooses the
-    // wgpu path.
-    if args.iter().any(|argument| argument == "--probe") {
-        let texture_slots = extension.as_ref().map_or(0, |extension| extension.texture_slots());
-        std::process::exit(crate::request::probe(backends, texture_slots));
-    }
     if let Some(name) = option(&args, "--live") {
         // The live mode writes its log through a pipe, so that no print of the frame thread
         // waits for the disk (`log_pipe`). The end of the stream drains the pipe: the program

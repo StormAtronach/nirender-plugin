@@ -47,7 +47,7 @@ static IN_STEP: AtomicBool = AtomicBool::new(false);
 static LOADING: AtomicBool = AtomicBool::new(false);
 /// The long steps in progress ([`LongStep`]).
 static LONG_STEPS: AtomicU32 = AtomicU32::new(0);
-/// The word `RING_ALLOWANCE` of the ring head, or null without a ring (a replay, the probe). The
+/// The word `RING_ALLOWANCE` of the ring head, or null without a ring (a replay). The
 /// head stays mapped for the process, as for `live::ENDING_WORD`.
 static ALLOWANCE_WORD: AtomicPtr<AtomicU32> = AtomicPtr::new(std::ptr::null_mut());
 /// The frames started: until then the word stays 0, and the plugin gives the helper its first

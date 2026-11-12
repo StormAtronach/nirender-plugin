@@ -38,7 +38,7 @@ code 1 and closes no item: NOT RUN is no pass.
 
 The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
 GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin. The
-stages of render-link: the tests of the helper, mge-config and mge-probe; the helper's GPU tests (cargo test -p mgeHost64 --
+stages of render-link: the tests of the helper and mge-config; the helper's GPU tests (cargo test -p mgeHost64 --
 --ignored --test-threads=1: the tests marked #[ignore] that need a GPU, one at a time, run through "merge_step.py
 --require-tests <command>", which fails when no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
 
@@ -290,7 +290,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
                   ("checks", plugin, tool("checks.py", "plugin")),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
     else:
-        stages = [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config", "-p", "mge-probe"]),
+        stages = [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config"]),
                   (GPU_STAGE, mge, gpu_command(plugin, ["-p", "mgeHost64"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
                   ("checks", plugin, tool("checks.py", "mge", "--mge", mge)),
@@ -1182,7 +1182,7 @@ def self_test():
         assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract"] + gate_tail
         mge_probe = {name: (folder, command) for name, folder, command in stages_for("mge", mge, ["mgeHost64/src/renderer.rs"])}[FEATURES_STAGE + "Morrowind75testing"]
         assert mge_probe[0] == plugin and "--features" in mge_probe[1], mge_probe
-        assert "mge-probe" in stages_for("mge", mge, [])[0][2]
+        assert stages_for("mge", mge, [])[0][2][-4:] == ["-p", "mgeHost64", "-p", "mge-config"], stages_for("mge", mge, [])[0][2]
         # The GPU tests run the ignored tests of the helper in its tree, through the wrapper that fails on 0 tests, and the
         # plugin's tests do not run them.
         gpu_folder, gpu_command = stages_for("mge", mge, [])[1][1:]

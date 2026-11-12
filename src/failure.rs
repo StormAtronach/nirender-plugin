@@ -219,7 +219,7 @@ fn show(text: &str) {
     for line in text.lines().filter(|line| !line.is_empty()) {
         crate::log!("box: {line}");
     }
-    // 0 to an hour, as the other boxes take the switch (`own_device::message_box`).
+    // 0 to an hour, as the helper's boxes take the switch (`box_seconds` in host/src/switches.rs).
     // At most an hour: the timeout of the box is in ms, and a larger value overflows it.
     let seconds = crate::switches::parsed("MGE_XE_BOX_SECONDS", "a number of seconds", |value| {
         value.trim().parse::<u32>().ok()

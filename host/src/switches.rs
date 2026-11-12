@@ -49,8 +49,8 @@ pub(crate) struct Switches {
     pub(crate) indirect: bool,
     /// `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a
     /// full room; below 256 the adapter goes to texture tier C, or is refused with
-    /// `MGE_XE_TEXTURE_TIER=a`, for the test of the probe and of the live start with a GPU the
-    /// renderer cannot use.
+    /// `MGE_XE_TEXTURE_TIER=a`, for the test of the live start with a GPU the renderer cannot
+    /// use.
     pub(crate) array_cap: Option<u32>,
     /// `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
     /// guard of the device's limit.
@@ -92,7 +92,7 @@ pub(crate) struct Switches {
     /// growth in the middle of a frame; 0 is never.
     pub(crate) force_segment_growth: u32,
     /// `MGE_XE_BOX_SECONDS=<n>`: a message box of this program closes itself after n seconds
-    /// (the harness mode of the boxes, [`crate::gpu::message_box`]); 0 or unset: the box waits
+    /// (the harness mode of the boxes, [`crate::gpu::refuse`]); 0 or unset: the box waits
     /// for the click. The plugin and MGE XE's d3d8.dll read the same variable for their boxes.
     pub(crate) box_seconds: u32,
     /// `MGE_XE_TEXTURE_TIER=a|c`: the texture binding tier for an A/B on one machine
@@ -100,7 +100,7 @@ pub(crate) struct Switches {
     /// else tier C.
     pub(crate) texture_tier: Option<crate::request::TextureTier>,
     /// `MGE_XE_OLD_GPU=least|downlevel`: the adapter taken as an old graphics card in the
-    /// request and the probe ([`crate::request::OldGpu`]); unset, the adapter as it is.
+    /// request ([`crate::request::OldGpu`]); unset, the adapter as it is.
     pub(crate) old_gpu: Option<crate::request::OldGpu>,
     /// `MGE_XE_MEMORY_MINUTES=<n>`: in the live mode the log gets the memory report
     /// ([`crate::gpu::memory_lines`]) at the first frame and then every n minutes; 0 or unset:

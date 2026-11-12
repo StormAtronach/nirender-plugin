@@ -100,10 +100,10 @@ mod request;
 mod stage_groups;
 mod stage_shaders;
 /// The request of the GPU and what a check of a shader without a GPU takes from it (the
-/// helper of MGE XE, `shader_check` of mgeHost64), the probe, and the exit code of a refusal.
+/// helper of MGE XE, `shader_check` of mgeHost64), and the exit code of a refusal.
 pub use request::{
-    fixed_limits, probe, required_features, required_features_of, tier_c_shader_source, world_shader_source,
-    world_variant_source, Refusal, TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES,
+    fixed_limits, required_features, required_features_of, tier_c_shader_source, world_shader_source, world_variant_source,
+    Refusal, TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES,
 };
 use stage_groups::{StageGroups, StageKey};
 mod effect_turn;

@@ -137,16 +137,16 @@ The run:
 - `MGE_XE_TEXTURE_TIER=a|c`: the texture binding tier of the helper, for an A/B on one
   machine. `a`: the binding arrays (the default when the adapter has them). `c`: no binding
   arrays, a small group of the 6 textures and 6 samplers of each set (the default on an
-  adapter without them). The helper's log and the probe say `texture tier: a` or `c`. Tier
+  adapter without them). The helper's log says `texture tier: a` or `c`. Tier
   `a` forced on an adapter without the arrays is a refusal (the code 20).
-- `MGE_XE_OLD_GPU=least|downlevel`: the helper and its probe take the graphics card as an
+- `MGE_XE_OLD_GPU=least|downlevel`: the helper takes the graphics card as an
   old one, for a test of the path of old hardware on any machine: the BC compression and the
   line mode are the only features (texture tier C, no float depth, no time stamps, no first
   instance or count of indirect draws), and the device has the limits of the profile, so that
   wgpu refuses anything above them. `least`: the least that the renderer asks for (32 sampled
   textures in a stage, wgpu's defaults for the rest), with textures of 16384 as every
-  Direct3D 12 card has. `downlevel`: wgpu's downlevel limits, which the probe refuses with the
-  lacks named. The log and the probe's line say `MGE_XE_OLD_GPU=<profile>`. Not emulated: the
+  Direct3D 12 card has. `downlevel`: wgpu's downlevel limits, which the live start refuses
+  with the lacks named. The log says `MGE_XE_OLD_GPU=<profile>`. Not emulated: the
   sample counts of multisampling and the formats' capabilities stay those of the real card.
 - `MGE_XE_MEMORY_MINUTES=<n>`: the helper's log gets a memory report at the first frame and
   then every n minutes, as `memory:` lines: the GPU memory of wgpu's allocator by the kind of
@@ -279,8 +279,8 @@ replays.
 - `MGE_XE_CORES=0`: the threads of the helper are left to the scheduler.
 - `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a full
   room; below 256 the adapter goes to texture tier C. With `MGE_XE_TEXTURE_TIER=a` the request
-  refuses it, for the test of `numidium.exe --probe` and of the live start with a GPU the
-  renderer cannot use (the exit code 20); `MGE_XE_OLD_GPU=downlevel` is the other way.
+  refuses it, for the test of the live start with a GPU the renderer cannot use (the exit
+  code 20); `MGE_XE_OLD_GPU=downlevel` is the other way.
 - `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
   guard of the device's limit.
 - `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).

@@ -250,9 +250,8 @@ pub const MESSAGES_HEAD: usize = 32;
 pub const EXIT_STREAM_FORMAT: u32 = 10;
 pub const EXIT_EXTENSION_FORMAT: u32 = 11;
 /// The GPU or the window cannot be used: no adapter on any backend, no binding arrays with
-/// their room, no BC compression, too few sampled textures, no surface. The live start and
-/// `--probe` exit with it; d3d8.dll reads it from the probe as `MGE_PROBE_EXIT_GPU` of
-/// `mgeversion.h` (a unit test of mgeHost64 compares the two).
+/// their room, no BC compression, too few sampled textures, no surface. The live start exits
+/// with it, after its own box.
 pub const EXIT_GPU: u32 = 20;
 
 /// The watchdog of the helper found its frame thread stalled and ended the program.
@@ -319,6 +318,16 @@ pub fn limit(ending: u32, allowance: u32) -> Limit {
     } else {
         Limit::Ending(ENDING_SECONDS)
     }
+}
+
+/// True when the announced exit `ending` ends the game's wait for room in a full ring at once,
+/// and holds the end of the stream until the helper's process has ended: a refusal (10 to 29).
+/// That helper reads no more records, and it ends only when its box closes. A game thread that
+/// waits for the helper keeps the box up (W412, the runs hob-w412-a2 to a5); the box's owner is
+/// the game's window \[I\]. The game goes on with no picture: its writes go nowhere (the ring
+/// has failed), and its own loop takes the box's WM_CLOSE.
+pub fn refusal_frees_the_game(ending: u32) -> bool {
+    helper_said_why(ending)
 }
 
 /// The seconds without a read, while records wait, after which the plugin ends the helper
@@ -567,6 +576,25 @@ mod tests {
         assert_eq!(limit(EXIT_STALLED, 30), Limit::Ending(10));
         assert_eq!(limit(EXIT_PANIC, 5), Limit::Ending(10));
         assert_eq!(limit(0xC000_0005, 30), Limit::Ending(10));
+    }
+
+    #[test]
+    fn only_an_announced_refusal_frees_the_game_from_the_wait_for_room() {
+        for ending in [10, EXIT_STREAM_FORMAT, EXIT_EXTENSION_FORMAT, EXIT_GPU, 29] {
+            assert!(refusal_frees_the_game(ending), "{ending}");
+        }
+        for ending in [
+            0,
+            9,
+            30,
+            EXIT_STALLED,
+            EXIT_PANIC,
+            EXIT_NOT_ANSWERING,
+            EXIT_HELPER_TOO_OLD,
+            0xC000_0005,
+        ] {
+            assert!(!refusal_frees_the_game(ending), "{ending}");
+        }
     }
 
     #[test]
