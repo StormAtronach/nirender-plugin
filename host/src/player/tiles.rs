@@ -221,6 +221,12 @@ impl Player {
         }
     }
 
+    /// A tile read is in progress: the game may wait for its pixels, which
+    /// [`Player::deliver_tiles`] gives between the records.
+    pub(crate) fn tile_reads_open(&self) -> bool {
+        !self.tile_reads.is_empty()
+    }
+
     /// Gives the game the pixels of the tile reads that the GPU finished, in their order.
     /// It does not wait.
     pub(crate) fn deliver_tiles(&mut self) {

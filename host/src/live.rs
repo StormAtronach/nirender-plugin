@@ -69,6 +69,18 @@ enum LookAction {
     Block,
 }
 
+/// The looks with a yield before a block: `today` (`MGE_XE_WAIT_YIELDS`, 256) for the wait of
+/// today; 0 with the wake for a batch (`NIRENDER_WAKE_BATCH`), as the game then wakes this
+/// program for its batches. While a tile read is in progress the wait of today stays, because
+/// this program gives the game the tile's pixels only between its looks.
+fn look_yields(today: u32, wake_batch: bool, tile_reads_open: bool) -> u32 {
+    if wake_batch && !tile_reads_open {
+        0
+    } else {
+        today
+    }
+}
+
 /// The action after the `looks`-th look with no record (from 1), with `yields` looks that
 /// yield (`MGE_XE_WAIT_YIELDS`, 256): `yields` yields, then a block, or the yields again
 /// while the game writes (`game_writes`, read only then). With 0 the wait blocks at once.
@@ -1172,7 +1184,8 @@ impl ApplicationHandler for App {
         // (between the frames), not after every record.
         let mut spins: u32 = 0;
         let mut looks: u32 = 0;
-        let yields = switches().wait_yields.unwrap_or(256);
+        let today_yields = switches().wait_yields.unwrap_or(256);
+        let wake_batch = switches().wake_batch.is_some();
         loop {
             // The device is lost: nothing draws any more. The records are read and dropped,
             // so that the game does not wait for this program. A request that the game waits
@@ -1240,7 +1253,9 @@ impl ApplicationHandler for App {
                     self.last_record
                 });
                 spins = spins.wrapping_add(1);
-                if spins % 256 == 0 && waiting.elapsed() > Duration::from_millis(20) {
+                // With the wake for a batch a look can sleep for a tick of the timer of
+                // Windows, so the way back to the window goes by the time alone.
+                if (wake_batch || spins % 256 == 0) && waiting.elapsed() > Duration::from_millis(20) {
                     // Back to the events of the window.
                     self.waited += waiting.elapsed();
                     self.idle += since.elapsed();
@@ -1252,6 +1267,8 @@ impl ApplicationHandler for App {
                 looks += 1;
                 // While the game writes the frame, the next record comes soon: the wait
                 // stays awake and looks at the phase again after the same yields.
+                let tile_reads_open = self.player.as_ref().unwrap().tile_reads_open();
+                let yields = look_yields(today_yields, wake_batch, tile_reads_open);
                 let game_writes = || self.ring.game_phase() == GamePhase::Writes;
                 match look_action(looks, yields, game_writes) {
                     LookAction::Yield => std::thread::yield_now(),
@@ -1820,6 +1837,20 @@ mod tests {
             UnmapViewOfFile(larger);
             CloseHandle(mapping);
         }
+    }
+
+    #[test]
+    fn the_wake_for_a_batch_blocks_at_once_except_while_a_tile_read_is_open() {
+        use super::look_yields;
+        // The wait of today, with or without a tile read.
+        assert_eq!(look_yields(256, false, false), 256);
+        assert_eq!(look_yields(256, false, true), 256);
+        // The wake for a batch: the first look blocks, also while the game writes.
+        assert_eq!(look_yields(256, true, false), 0);
+        assert_eq!(look_action(1, look_yields(256, true, false), || true), LookAction::Block);
+        // A tile read in progress keeps the wait of today.
+        assert_eq!(look_yields(256, true, true), 256);
+        assert_eq!(look_action(1, look_yields(256, true, true), || true), LookAction::Yield);
     }
 
     /// A spread with 0.1 ms as 10 ticks and 1 ms as 100 ticks.
