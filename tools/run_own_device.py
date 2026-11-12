@@ -2169,7 +2169,7 @@ def main():
         problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
         if not problem and (args.reference or args.engine_reference) and not args.reference_plugin:
             problem = overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
-        if not problem and not (args.reference or args.engine_reference):
+        if not problem and args.mge_build and not (args.reference or args.engine_reference):
             problem = session.probe_cache_problem()
         session.harness.refuse_stale_backups()
         enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
@@ -2243,7 +2243,8 @@ def main():
         for folder in (HOST_DIR, D3D8_DIR):
             subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
     problem = no_plugin and overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
-    if not problem and not args.reference:
+    # Only MGE XE's d3d8.dll (--mge-build) reads the probe cache; the d3d8.dll of this repo has no probe.
+    if not problem and args.mge_build and not args.reference:
         problem = session.probe_cache_problem()
     if problem:
         raise SystemExit("run_own_device: " + problem)
