@@ -85,6 +85,7 @@ pub mod queue_flush;
 pub mod resolution;
 #[cfg(feature = "rig")]
 pub mod resource;
+pub mod scene_kinds;
 pub mod shadow;
 pub mod shape_stream;
 pub mod site;

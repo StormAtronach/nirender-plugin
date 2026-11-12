@@ -64,6 +64,19 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
   and does not count them as another mod's change. The plugin's log says once whether the
   sites hold MWSE's locks: `count locks: 40 of 40 count sites hold MWSE's lock (...)`, or
   `count locks: the count sites are not locked (...)`.
+- The pass report (`host/src/pass_report.rs`, W341 step A): the helper's log says which parts
+  of a frame ran, and which did not run and why. It is always on, and no draw reads it. The
+  first frame prints its whole set, "pass report, frame F: N parts", with one line for each
+  part: that is set 1. After it, at the end of a frame, a set of parts that was not seen before
+  prints one block, "pass report, frame F: a set of parts not seen before (N distinct sets)",
+  then one line for each change against the frame before (`-` for an entry that went, `+` for
+  a new one): that set is set N. A change to a set seen before prints one line, "pass report,
+  frame F: back to set N (first printed at frame G)", the first time that the frame goes from
+  that set before to set N (W373). The same change again is only counted, as a menu over the world goes
+  back and forth each frame. A part that an earlier frame noted, with no note in this frame, is
+  "not run, reason unknown". At the exit one line gives the totals: the frames, the distinct
+  sets, the changes not printed, the parts with the reason unknown, and "N changes printed as
+  back to a set"; then one line for each part and outcome with its frames.
 - The comparison rig (the cargo feature `rig`, not in a player's build): a port can also
   run in the mode shadow, which runs the Rust and the engine function both and compares
   them call by call (`src/shadow.rs`), and the frame comparison compares the device calls
@@ -242,6 +255,9 @@ replays.
 - `NIRENDER_ZERO_LIGHT_KEY=0`: a draw lit for each pixel with no lights keeps the light loop in
   its shader. On by default, the draw takes `NO_LIGHTS_BIT` and its stage key leaves the loop
   out; the picture is the same.
+- `NIRENDER_OBJECTS_WARN_ALL=1`: each steady frame that makes GPU objects gives its warning
+  line in the log (`host/src/objects.rs`). Unset, the first 10 such frames give one, and then
+  each 600th; the report at the end counts them all.
 - `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),

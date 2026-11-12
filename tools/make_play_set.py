@@ -71,6 +71,7 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import SIBLINGS, docs_place, local, main_checkout  # noqa: E402
+from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
 from validate_tour import NOT_RUN, NOT_RUN_CODE  # noqa: E402
 import symbols  # noqa: E402
 from symbols import codeview  # noqa: E402,F401  (the tests and keep_pdbs read CodeView records by it)
@@ -81,7 +82,6 @@ MGE_REPO = os.path.join(REPOS, "MGE-XE-G7-render-link")
 PLUGIN_BRANCH = "master"
 MGE_BRANCH = "feature/wgpu-renderer"
 TREES = "C:/tmp/playset"
-SETS = "E:/nirender-keep/mgebuilds"
 # The pdbs of the sets, one folder for each set. It must not be inside SETS: no pdb is deployed.
 PDB_KEEP = "E:/nirender-keep/pdb"
 # Each binary of a set (its path in the set), the tree that built it, and its pdb in that tree.
@@ -178,12 +178,6 @@ def tips_moved(built, now):
     """A text that says which tips differ from the built commits, or an empty text."""
     moved = ["%s moved from %s to %s" % (branch, old, new) for branch, old, new in zip((PLUGIN_BRANCH, MGE_BRANCH), built, now, strict=True) if old != new]
     return ", ".join(moved)
-
-
-def next_set_number(names):
-    """The next number of a set folder. The highest number as a number: a text sort puts f99 after f100."""
-    numbers = [int(match.group(1)) for match in (re.fullmatch(r"f(\d+)", name) for name in names) if match]
-    return max(numbers, default=0) + 1
 
 
 def local_bat_values(text):
@@ -473,17 +467,6 @@ def build_step(command, folder, log_path):
         raise SystemExit("the build failed with exit code %d: see %s" % (done.returncode, log_path))
 
 
-def new_set_folder():
-    """Makes the next set folder. os.mkdir fails on a name that another session has just made."""
-    while True:
-        name = "f%d" % next_set_number(os.listdir(SETS))
-        try:
-            os.mkdir(os.path.join(SETS, name))
-        except FileExistsError:
-            continue
-        return name
-
-
 def copy_stage(stage, plugin_tree, folder, plugin_commit):
     """Copies the stage to the set, with no pdb, and the plugin beside it. Returns the plugin's path."""
     shutil.copytree(stage, folder, dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.pdb"))
@@ -570,11 +553,14 @@ def wait_clean():
 
 
 def newest_run(tree, label, since):
-    """The folder of the run that began after `since`. The tree's results stay between sets."""
+    """The folder of the run that began after `since`. The tree's results stay between sets. Two new folders of
+    the label mean that another run wrote there too, so neither is taken (W383)."""
     folders = [path for path in sorted(glob.glob(os.path.join(tree, "results", "*-" + label))) if os.path.getmtime(path) >= since]
     if not folders:
         raise SmokeFailed("no new run folder of %s" % label)
-    return folders[-1]
+    if len(folders) > 1:
+        raise SmokeFailed("%d new run folders of %s, not one: %s" % (len(folders), label, ", ".join(folders)))
+    return folders[0]
 
 
 def keep_run(run):
@@ -933,6 +919,32 @@ def self_test():
         assert accepted_baseline(tree, None) == tree_baseline
         assert has_captures(main_baseline) and not has_captures(os.path.join(folder, "none"))
 
+    # The run of a smoke is the one new folder of its label. An older folder is not taken, and two new ones stop
+    # the set with both names (W383). The null: the last of the two is what a pick of the newest took.
+    with tempfile.TemporaryDirectory() as tree:
+        since = time.time()
+        older, mine, other = (os.path.join(tree, "results", name + "-smoke-x") for name in ("20200101-000000", "20991231-000000", "20991231-000001"))
+        os.makedirs(older)
+        os.utime(older, (since - 3600, since - 3600))
+        try:
+            newest_run(tree, "smoke-x", since)
+            raise AssertionError("an older folder alone was taken")
+        except SmokeFailed as failed:
+            assert str(failed) == "no new run folder of smoke-x", failed
+        # The times are set: the file system's clock is coarser than time.time(), so a folder made just now can
+        # carry a time before `since`.
+        os.makedirs(mine)
+        os.utime(mine, (since + 1, since + 1))
+        assert newest_run(tree, "smoke-x", since) == mine
+        os.makedirs(other)
+        os.utime(other, (since + 2, since + 2))
+        assert sorted(glob.glob(os.path.join(tree, "results", "*-smoke-x")))[-1] == other
+        try:
+            newest_run(tree, "smoke-x", since)
+            raise AssertionError("one of two new folders was taken")
+        except SmokeFailed as failed:
+            assert str(failed) == "2 new run folders of smoke-x, not one: %s, %s" % (mine, other), failed
+
     # Two sets' gates at the same second write into two folders, outside the baseline folder.
     when = time.localtime()
     first, second = gate_now("tree", "E:/sets/f202", when), gate_now("tree", "E:/sets/f203", when)
@@ -1083,8 +1095,6 @@ def self_test():
         validate_tour.self_test()
     smoke_wiring_test(Side)
 
-    assert next_set_number(["f99", "f100", "f7", "other", "f12x"]) == 101
-    assert next_set_number([]) == 1
     assert tips_moved(("a", "b"), ("a", "b")) == ""
     assert PLUGIN_BRANCH in tips_moved(("a", "b"), ("c", "b")) and MGE_BRANCH not in tips_moved(("a", "b"), ("c", "b"))
     assert MGE_BRANCH in tips_moved(("a", "b"), ("a", "d"))

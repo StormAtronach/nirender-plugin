@@ -61,6 +61,15 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
   pair (a pass from before these refs) stops the tool: --sibling-base <commit> names the sibling's commit. It also takes the
   place of a kept pair. The sibling's commit must be an ancestor of the sibling's HEAD. The tool prints the option in the
   first line, and the key file of the base build names both commits;
+- after a pass that moves refs/merge-step/<branch>, the sibling's own refs/merge-step/<branch> moves to the sibling's
+  HEAD of the round only when this round ran and passed every stage that the sibling's own check of its diff since
+  that ref would run, matched by folder and command (W370). Else it stays, and one line names the stages that did not
+  run or pass, or why the sibling's stages cannot be known. It also stays while the sibling has tracked changes, at
+  the start of the round or at the move, as the docs and contract stages read its working tree, not its HEAD; and
+  when git refuses the update, as another check moved the ref meanwhile. A ref never moves past a diff whose
+  stages did not run. A
+  round of one repo does not run the fixed stages of the other (its tests and its checks), so a pair merge gets one
+  check for each repo;
 - the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
   of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these;
 - with the gate, `deploy rest` (tools/deploy_rest.py, the owner's D193: the test installs hold the latest build): after
@@ -91,7 +100,8 @@ commit writes merge-step-<commit>-2.log, then -3, and so on: it never overwrites
 A pass of the merge (every stage passed, against the accepted folder) closes the items that the merge subjects name (D180):
 a subject that ends with "(W<n>)" or "(W<n> <part>)", e.g. "(W96)" or "(W341 step A)". The item of a part keeps its part
 ("W341 step A"): it closes that part, not the row, which can hold other parts that are still open (W357). Only a subject
-without a part closes the whole row. The subjects are those of each merge
+without a part closes the whole row. A tail of decisions ", D<n>" or ", D<n>/D<m>/..." before the closing parenthesis is
+no part: "(W363, D325)" closes W363 and "(W341 step B, D300)" closes "W341 step B" (W365). The subjects are those of each merge
 commit on the first-parent path from <tip> to <commit> and of <commit> itself, so one check of a batch of merges closes
 each of them (D183). A path with no merge commit with such a subject, to a <commit> that is no merge, gets a WARNING line
 before the round: a fast-forward closes only the item of <commit>. Each item appends one line to
@@ -128,7 +138,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deploy_rest import REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, git_env, local  # noqa: E402
+from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, docs_place, git_env, local  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
@@ -143,12 +153,20 @@ LOG_FOLDER = "E:\\nirender-keep\\merge-step"
 # The closing lines of the items (D180): the Archivist reads this file in its batch. A pass of the merge appends one line for
 # each item that its merge subject names.
 CLOSES_FILE = os.path.join(LOG_FOLDER, "closes.tsv")
+# The cite check of the Frame Map (check_cites.py of the docs, D362), report only, after the round: a merge that changes a
+# cited range names the claims in the log. It never fails the round. The repo name of the page for each kind of tree.
+CITE_REPOS = {"plugin": "nirender", "mge": "render-link"}
+CITE_TOOL_PARTS = ("docs", "Numidium Project", "scripts", "frame-map", "check_cites.py")
+CITE_TIMEOUT_SECONDS = 300
 CLOSES_HEADER = "time\titem\trepo\tcommit\tstages\tlog\tsubject"
 # The item of a merge subject: the subject ends with "(W<n>)" or "(W<n> <part>)", the form of the Coordinator's merge
-# subjects ("(W96)", "(W341 step A)"). The item is the whole text in the parentheses, the part with it: a row with parts
-# closes one part at a time (W357). Any other subject names no item and closes nothing. A part that starts with "dropped"
-# is no part: master has "Merge: log pipe follow-ups W219 and W221 (W220 dropped)".
-ITEM = re.compile(r"\((W\d+(?: (?!dropped\b)[^()]+)?)\)$")
+# subjects ("(W96)", "(W341 step A)"). The item is the text in the parentheses, the part with it: a row with parts
+# closes one part at a time (W357). The decisions of the merge can follow as a tail ", D<n>" or ", D<n>/D<m>/...", which
+# the item drops: "(W363, D325)" is W363, "(W340, D288/D289/D310)" is W340 (W365). The part is lazy, so that the tail
+# is not taken into it; any other comma stays in the part ("(W341 step B, commit 1)"). Any other subject names no item
+# and closes nothing. A part that starts with "dropped" is no part: master has "Merge: log pipe follow-ups W219 and W221
+# (W220 dropped)".
+ITEM = re.compile(r"\((W\d+(?: (?!dropped\b)[^()]+?)?)(?:, D\d+(?:/D\d+)*)?\)$")
 # The tries of an append to the closes file while a reader holds it, and the wait between them.
 CLOSE_TRIES = 5
 CLOSE_WAIT_SECONDS = 0.5
@@ -366,6 +384,28 @@ def verdict(log, text):
     log.flush()
 
 
+def cite_lines(kind, base, commit, tool=None, run=subprocess.run):
+    """The lines of the cite check of the merge from `base` to `commit` (check_cites.py --merge, report only), each with
+    "cites: " first. It never raises: a missing tool, a failing run or a timeout gives one line that says why the cites
+    were not checked. A tree of no kind gives none."""
+    repo_name = CITE_REPOS.get(kind)
+    if not repo_name:
+        return []
+    tool = tool or docs_place(*CITE_TOOL_PARTS)
+    if not os.path.isfile(tool):
+        return ["cites: not checked: no %s" % tool]
+    try:
+        done = run([sys.executable, "-I", tool, "--merge", base, commit, "--repo", repo_name], capture_output=True, text=True,
+                   timeout=CITE_TIMEOUT_SECONDS, env=git_env())
+    except (OSError, subprocess.SubprocessError) as error:
+        return ["cites: not checked: %s" % error]
+    lines = [line for line in done.stdout.splitlines() if line.strip()]
+    if done.returncode != 0:
+        why = (lines or done.stderr.strip().splitlines() or ["no output"])[-1]
+        return ["cites: not checked (exit %d): %s" % (done.returncode, why)]
+    return ["cites: %s" % line for line in lines]
+
+
 # The start of the refusal of slot.py's `refuse_build_tool`, which replay.py calls for each replay of the gate.
 SLOT_REFUSAL = "Refused by the slot check: "
 
@@ -524,7 +564,8 @@ def base_older_than_capture(names, results, reasons):
 
 def items_of(subject):
     """The item that a merge subject names at its end, as a list of one, or no item. The item of a part keeps the part
-    ("W341 step A"); a row closes whole only from a subject without a part ("W341")."""
+    ("W341 step A"); a row closes whole only from a subject without a part ("W341"). A tail of decisions is dropped
+    ("(W363, D325)" is W363)."""
     match = ITEM.search(subject.strip())
     return [" ".join(match.group(1).split())] if match else []
 
@@ -888,6 +929,92 @@ def tips_for(kind, repo, base, sibling_base=None):
     return {kind: base, other: sibling_commit}, None
 
 
+def planned_stages(kind, repo, paths, baseline, commits, base, branch, sibling_base=None):
+    """The stages of a check of `paths` from `base`, as main() runs them: with the replay gate, also the base build of
+    tips_for and the A/B. (stages, tips, None); (stages, None, why) when the gate needs a base build that tips_for
+    cannot give."""
+    stages = stages_for(kind, repo, paths, baseline, commits=commits)
+    if not any(name == "replay gate" for name, _, _ in stages):
+        return stages, None, None
+    if not branch:
+        return stages, None, "the tree is on no branch, and the kept base build is one for each branch"
+    tips, why = tips_for(kind, repo, base, sibling_base)
+    if why:
+        return stages, None, why
+    return stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits), tips, None
+
+
+def stage_key(stage):
+    """What a stage runs: its folder and its command. A name is no proof, as both repos have a stage "checks"."""
+    _, folder, command = stage
+    return os.path.normcase(os.path.abspath(folder)), tuple(command)
+
+
+def missing_stages(needed, ran, results):
+    """The names of the stages of `needed` that no stage of `ran` matches by stage_key with a pass in `results`."""
+    passed = {stage_key(stage) for stage, result in zip(ran, results) if result}
+    return [name for name, folder, command in needed if stage_key((name, folder, command)) not in passed]
+
+
+def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits, sibling_changed=False):
+    """After a pass of the repo of `kind`: moves the sibling's refs/merge-step/<branch> to `sibling_head`, the
+    sibling's HEAD at the start of the round, only when the round ran and passed every stage that the sibling's own
+    check of its diff since that ref would run (W370). Else the ref stays, and one line says why. `sibling_changed`:
+    the sibling had tracked changes at the start of the round. The move names the old value, so that a ref that
+    another check moved meanwhile stays as it is, with a line. True when the ref moved."""
+    other = "mge" if kind == "plugin" else "plugin"
+    name = os.path.basename(sibling)
+    branch = branch_of(sibling)
+    if not branch:
+        say("%s: its merge-step ref stays: the tree is on no branch" % name)
+        return False
+    ref = "refs/merge-step/%s" % branch
+    last = resolve(sibling, ref)
+    head = resolve(sibling, "HEAD")
+    if last is None:
+        say("%s: %s stays absent: without it the diff of the sibling is not known" % (name, ref))
+        return False
+    if sibling_head is None or head != sibling_head:
+        say("%s: %s stays at %s: the HEAD of the sibling moved during the round" % (name, ref, last[:10]))
+        return False
+    # A plain run, as for the update below: a failing status keeps the ref with a line.
+    status = subprocess.run(["git", "-C", sibling, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, env=git_env())
+    if status.returncode != 0:
+        say("%s: %s stays at %s: git status of the sibling failed (%s)" % (name, ref, last[:10], status.stderr.strip()))
+        return False
+    changed_now = bool(status.stdout.strip())
+    if sibling_changed or changed_now:
+        when = "at the start of the round" if sibling_changed else "now"
+        say("%s: %s stays at %s: the sibling has tracked changes %s, and the docs and contract stages read its working "
+            "tree, not its HEAD" % (name, ref, last[:10], when))
+        return False
+    if last == head:
+        say("%s: %s is at its HEAD %s: nothing to move" % (name, ref, head[:10]))
+        return False
+    if not is_ancestor(sibling, last, head):
+        say("%s: %s stays at %s: it is not an ancestor of the HEAD %s" % (name, ref, last[:10], head[:10]))
+        return False
+    paths = git(sibling, "diff", "--name-only", last, head).splitlines()
+    needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, branch)
+    if why:
+        say("%s: %s stays at %s: the stages of its diff to %s are not known (%s)" % (name, ref, last[:10], head[:10], why))
+        return False
+    missing = missing_stages(needed, stages, results)
+    if missing:
+        say("%s: %s stays at %s: its diff to %s needs %s, which did not run and pass in this round; check it on its own"
+            % (name, ref, last[:10], head[:10], ", ".join(missing)))
+        return False
+    # A plain run, not git(): its SystemExit would end a round that passed with exit code 1.
+    update = subprocess.run(["git", "-C", sibling, "update-ref", ref, head, last], capture_output=True, text=True, env=git_env())
+    if update.returncode != 0:
+        now = resolve(sibling, ref)
+        say("%s: %s stays at %s: git update-ref refused the move from %s to %s (%s)"
+            % (name, ref, now[:10] if now else "nothing", last[:10], head[:10], update.stderr.strip()))
+        return False
+    say("%s: %s moves from %s to %s: this round ran and passed every stage of that diff" % (name, ref, last[:10], head[:10]))
+    return True
+
+
 def scratch_slots(state):
     """slot.py on a scratch state folder, as a module of its own: it reads SLOT_DIR and the process names when it loads. A
     fake session holds the slots, and the names of the game and the compilers match no process, so that a real game or a
@@ -1198,6 +1325,114 @@ def self_test():
             keep_pass("plugin", sibling_tree, "refs/merge-step/test", third, sibling_tree, second)
         assert resolve(sibling_tree, "refs/merge-step/test") == third and resolve(sibling_tree, pair_ref("plugin", third)) is None and "no pair kept" in said.getvalue()
         assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", "no-such-name")[1], "an unknown name"
+        # W370: a stage covers another by folder and command, with a pass; the name is no proof.
+        one = ("checks", os.path.join(root, "a"), ["python", "x"])
+        assert missing_stages([one], [one], [True]) == [], "the same stage, passed"
+        assert missing_stages([one], [one], [False]) == ["checks"], "the same stage, failed"
+        assert missing_stages([one], [], []) == ["checks"], "no stage ran"
+        assert missing_stages([one], [("other name", os.path.join(root, "a", ".").upper(), ["python", "x"])], [True]) == [], "a folder written another way"
+        assert missing_stages([one], [("checks", os.path.join(root, "a"), ["python", "y"])], [True]) == ["checks"], "the same name, another command"
+        assert missing_stages([one], [("checks", os.path.join(root, "b"), ["python", "x"])], [True]) == ["checks"], "the same name, another folder"
+        # W370: the sibling's ref after a pass. A scratch pair: the render-link side has its ref at c1 and HEAD at c2,
+        # which changes a path of the helper.
+        coverage = os.path.join(root, "coverage")
+        cover_plugin, cover_mge = os.path.join(coverage, PLUGIN_NAME), os.path.join(coverage, MGE_NAME)
+        for tree, branch in ((cover_plugin, "master"), (cover_mge, "feature/x")):
+            os.makedirs(tree)
+            subprocess.run(["git", "-C", tree, "init", "-q", "-b", branch], check=True, env=git_env())
+            subprocess.run(["git", "-C", tree, *author, "commit", "-q", "--allow-empty", "-m", "c1"], check=True, env=git_env())
+        c1 = resolve(cover_mge, "HEAD")
+        os.makedirs(os.path.join(cover_mge, "mgeHost64", "src"))
+        with open(os.path.join(cover_mge, "mgeHost64", "src", "x.rs"), "w", encoding="ascii") as changed:
+            changed.write("x\n")
+        subprocess.run(["git", "-C", cover_mge, "add", "mgeHost64/src/x.rs"], check=True, env=git_env())
+        subprocess.run(["git", "-C", cover_mge, *author, "commit", "-q", "-m", "c2"], check=True, env=git_env())
+        c2 = resolve(cover_mge, "HEAD")
+        cover_ref = "refs/merge-step/feature/x"
+        cover_commits = {"plugin": resolve(cover_plugin, "HEAD"), "mge": c2}
+        mge_round = stages_for("mge", cover_mge, ["mgeHost64/src/x.rs"], BASELINE, commits=cover_commits)
+        plugin_round = stages_for("plugin", cover_plugin, ["tools/x.py"], BASELINE, commits=cover_commits)
+
+        def sibling_move(stages, results, sibling_head=c2, changed=False):
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                moved = move_sibling_ref("plugin", cover_mge, sibling_head, stages, results, BASELINE, cover_commits, changed)
+            return moved, said.getvalue()
+
+        moved, said = sibling_move(plugin_round, [True] * len(plugin_round))
+        assert not moved and "stays absent" in said, said
+        subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c1], check=True, env=git_env())
+        # The null: a pass of a nirender round runs none of the helper's stages, so the render-link ref stays.
+        moved, said = sibling_move(plugin_round, [True] * len(plugin_round))
+        assert not moved and resolve(cover_mge, cover_ref) == c1, said
+        assert "needs helper tests, helper GPU tests, clippy baseline, checks" in said and "stays at %s" % c1[:10] in said, said
+        moved, said = sibling_move(mge_round, [True] * (len(mge_round) - 1) + [False])
+        assert not moved and resolve(cover_mge, cover_ref) == c1 and said.rstrip().endswith("check it on its own"), "a failed stage of the diff"
+        moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c1)
+        assert not moved and "moved during the round" in said and resolve(cover_mge, cover_ref) == c1, said
+        both_round, all_passed = plugin_round + mge_round, [True] * (len(plugin_round) + len(mge_round))
+        # Verdict 227: tracked changes of the sibling, at the start of the round or now, keep the ref.
+        moved, said = sibling_move(both_round, all_passed, changed=True)
+        assert not moved and "tracked changes at the start of the round" in said and resolve(cover_mge, cover_ref) == c1, said
+        tracked = os.path.join(cover_mge, "mgeHost64", "src", "x.rs")
+        with open(tracked, "w", encoding="ascii") as changed_file:
+            changed_file.write("changed\n")
+        moved, said = sibling_move(both_round, all_passed)
+        assert not moved and "tracked changes now" in said and resolve(cover_mge, cover_ref) == c1, said
+        with open(tracked, "w", encoding="ascii") as changed_file:
+            changed_file.write("x\n")
+        # Verdict 229: git status of the sibling fails at the move (a corrupt index): one line, no SystemExit.
+        index = os.path.join(cover_mge, ".git", "index")
+        with open(index, "rb") as kept_index:
+            index_bytes = kept_index.read()
+        with open(index, "wb") as broken_index:
+            broken_index.write(b"not an index")
+        try:
+            moved, said = sibling_move(both_round, all_passed)
+        finally:
+            with open(index, "wb") as restored_index:
+                restored_index.write(index_bytes)
+        assert not moved and "git status of the sibling failed" in said and resolve(cover_mge, cover_ref) == c1, said
+        # Verdict 227: another check moves the ref between the read and the update. git refuses the update, and the
+        # tool gives one line and keeps the other check's value; before, git() ended the round with SystemExit.
+        real_planned = planned_stages
+
+        def planned_with_a_race(*args, **kwargs):
+            subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c2], check=True, env=git_env())
+            return real_planned(*args, **kwargs)
+
+        globals()["planned_stages"] = planned_with_a_race
+        try:
+            moved, said = sibling_move(both_round, all_passed)
+        finally:
+            globals()["planned_stages"] = real_planned
+        assert not moved and "git update-ref refused the move from %s to %s" % (c1[:10], c2[:10]) in said, said
+        assert resolve(cover_mge, cover_ref) == c2 and "stays at %s" % c2[:10] in said, said
+        subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c1], check=True, env=git_env())
+        # The stages of the sibling's diff all ran and passed: the ref moves to the HEAD of the round.
+        moved, said = sibling_move(both_round, all_passed)
+        assert moved and resolve(cover_mge, cover_ref) == c2 and "moves from %s to %s" % (c1[:10], c2[:10]) in said, said
+        moved, said = sibling_move(mge_round, [True] * len(mge_round))
+        assert not moved and "nothing to move" in said, said
+        # A ref that is not an ancestor of HEAD, a diff with the gate and no kept pair, and a tree on no branch: it stays.
+        subprocess.run(["git", "-C", cover_mge, *author, "commit", "-q", "--allow-empty", "-m", "c3"], check=True, env=git_env())
+        c3 = resolve(cover_mge, "HEAD")
+        subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c3], check=True, env=git_env())
+        subprocess.run(["git", "-C", cover_mge, "reset", "-q", "--soft", c2], check=True, env=git_env())
+        moved, said = sibling_move(mge_round, [True] * len(mge_round))
+        assert not moved and "not an ancestor" in said and resolve(cover_mge, cover_ref) == c3, said
+        subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c1], check=True, env=git_env())
+        gate_file = GATE_PATHS["mge"][0]
+        assert gate_file == "mgeHost64/src/renderer.rs", "the case writes a file of the gate in a folder that exists"
+        with open(os.path.join(cover_mge, gate_file), "w", encoding="ascii") as changed:
+            changed.write("x\n")
+        subprocess.run(["git", "-C", cover_mge, "add", gate_file], check=True, env=git_env())
+        subprocess.run(["git", "-C", cover_mge, *author, "commit", "-q", "-m", "c4"], check=True, env=git_env())
+        c4 = resolve(cover_mge, "HEAD")
+        moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c4)
+        assert not moved and "are not known" in said and "keeps no pair" in said and resolve(cover_mge, cover_ref) == c1, said
+        subprocess.run(["git", "-C", cover_mge, "checkout", "-q", "--detach", "HEAD"], check=True, env=git_env())
+        moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c4)
+        assert not moved and "on no branch" in said, said
         # resolve gives a commit: a tree is none, and an annotated tag gives the commit it points to.
         tree_of_head = subprocess.run(["git", "-C", sibling_tree, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True, env=git_env()).stdout.strip()
         assert len(tree_of_head) == 40 and resolve(sibling_tree, tree_of_head) is None, "the name of a tree is no commit"
@@ -1664,12 +1899,21 @@ def self_test():
         assert items_of("Merge: the pass report (W341 step A)") == ["W341 step A"]
         assert items_of("Merge: the pass report, all steps (W341)") == ["W341"]
         assert items_of("Merge: a part with two spaces (W341  step  A)") == ["W341 step A"]
+        # W365: a tail of decisions after the item is dropped; any other comma stays in the part.
+        assert items_of("Merge: the cleaners keep the game free for their run (W363, D325)") == ["W363"]
+        assert items_of("Merge: GPU objects are counted, and a steady frame makes none (W340, D288/D289/D310)") == ["W340"]
+        assert items_of("Merge: the state once in frame() (W341 step B, D300)") == ["W341 step B"]
+        assert items_of("Merge: the view model has no part REFLECTION (W341 step B, commit 1)") == ["W341 step B, commit 1"]
+        assert items_of("Merge: a part and two decisions (W341 step B, D300/D301)") == ["W341 step B"]
         for no_item in ("Merge: W96 in the middle of the subject", "Merge: W96 in the middle (D161)", "Merge: dropped W220",
                         "Merge: log pipe follow-ups W219 and W221 (W220 dropped) and more", "Merge: lower case (w96)",
                         "Merge: log pipe follow-ups W219 and W221 (W220 dropped)", "Merge: a nested part (W234 (a))",
                         "Merge: a dropped item (W96 dropped)", "Merge: the item (W96) is not at the end",
                         "Merge: no parentheses W96", "Merge: two items (W222, W226)", "Merge: the plan (D161)",
-                        "Merge: say which views draw the table", "Merge: a letter on the number (W234a)", "Merge: empty ()"):
+                        "Merge: say which views draw the table", "Merge: a letter on the number (W234a)", "Merge: empty ()",
+                        "Merge: a dropped item with a decision (W96 dropped, D5)", "Merge: a tail only (D325)",
+                        "Merge: a tail with lower case (W363, d325)", "Merge: a tail without a number (W363, D)",
+                        "Merge: a tail with no space (W363,D325)"):
             assert items_of(no_item) == [], no_item
 
         closes = os.path.join(root, "closes", "closes.tsv")
@@ -1805,6 +2049,31 @@ def self_test():
         else:
             raise AssertionError("a round with no game stage ran a stage that writes to E:")
         assert holders() == [], holders()
+        # W399: the cite check of a merge, report only. A tree of no kind runs none; a missing tool, a failing run and a
+        # timeout each give one "not checked" line and no exception; a run that works gives its lines with "cites: ".
+        assert cite_lines(None, "a", "b") == []
+        missing = os.path.join(root, "no-check-cites.py")
+        assert cite_lines("plugin", "a", "b", missing) == ["cites: not checked: no %s" % missing]
+        tool = os.path.join(root, "check_cites.py")
+        open(tool, "w").close()
+        calls = []
+
+        def ran(code, stdout, stderr=""):
+            def run(command, **options):
+                calls.append(command)
+                return types.SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+            return run
+
+        said = cite_lines("mge", "1111111", "2222222", tool, ran(0, "cite changed by the merge (OK -> RECHECK): x\ncites of render-link: 9 checked, 1 changed\n"))
+        assert said == ["cites: cite changed by the merge (OK -> RECHECK): x", "cites: cites of render-link: 9 checked, 1 changed"], said
+        assert calls[-1][1:] == ["-I", tool, "--merge", "1111111", "2222222", "--repo", "render-link"], calls[-1]
+        assert cite_lines("plugin", "a", "b", tool, ran(2, "check_cites: no commit a\n")) == ["cites: not checked (exit 2): check_cites: no commit a"]
+        assert calls[-1][-1] == "nirender", calls[-1]
+
+        def slow(command, **options):
+            raise subprocess.TimeoutExpired(command, options["timeout"])
+
+        assert cite_lines("plugin", "a", "b", tool, slow)[0].startswith("cites: not checked: Command"), "a timeout is a line"
     print("merge_step self-test: ok")
 
 
@@ -1843,14 +2112,10 @@ def main():
     paths = git(repo, "diff", "--name-only", base, commit).splitlines()
     baseline = os.path.abspath(args.baseline)
     commits = under_test(kind, commit, resolve(sibling_of(kind, repo), "HEAD") if kind and os.path.isdir(sibling_of(kind, repo)) else None)
-    stages = stages_for(kind, repo, paths, baseline, commits=commits) if kind else []
-    tips = None
-    if kind and any(name == "replay gate" for name, _, _ in stages):
-        tips, why = tips_for(kind, repo, base, args.sibling_base) if branch else (None, "the tree is on no branch, and the kept base build is one for each branch")
-        if why:
-            say("FAIL the tree: %s" % why)
-            return 1
-        stages = stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits)
+    stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, branch, args.sibling_base) if kind else ([], None, None)
+    if why:
+        say("FAIL the tree: %s" % why)
+        return 1
     sibling = sibling_of(kind, repo) if kind else ""
     has_sibling = os.path.isdir(sibling)
     sibling_changed = has_sibling and bool(git(sibling, "status", "--porcelain", "--untracked-files=no"))
@@ -1891,6 +2156,11 @@ def main():
     say(summary)
     for line in NOT_DEPLOYED:
         say(line)
+    # The cites of the Frame Map that the merge changes (D362): in the log too, and never a failure of the round.
+    with open(log_path, "a", encoding="utf-8") as log:
+        for line in cite_lines(kind, base, commit):
+            say(line)
+            log.write(line + "\n")
     # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
     # of merges with one check closes the item of each merge on the first-parent path (D183).
     when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1912,6 +2182,8 @@ def main():
         return 1
     if moves_the_ref(baseline):
         keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
+        if has_sibling:
+            move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits, sibling_changed)
     else:
         say("%s stays: this pass is against %s, not the accepted folder" % (passed_ref, baseline))
     return 0

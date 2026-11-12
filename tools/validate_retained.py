@@ -288,6 +288,18 @@ def early_world_scenes(output):
     return int(match.group(2)) if match else None
 
 
+NO_VIEW_LINE = re.compile(r"^views of their own: .*?, (\d+) not drawn because their scene has no view", re.M)
+
+
+def places_without_view(output):
+    """The places of a view of its own (a save's picture, a mod's camera) that the helper did
+    not draw because their scene got no view, from the report line `views of their own: ...`
+    (`Player::print_counts`); None when the output has no such line (a helper from before the
+    count). Each is a place lost from a picture: the gate wants 0."""
+    match = NO_VIEW_LINE.search(output)
+    return int(match.group(1)) if match else None
+
+
 def adapter_of(output):
     """The adapter line of the helper's output ("adapter: <GPU> (<backend>, driver ...)"),
     without the prefix; None when the output has none."""
@@ -318,6 +330,11 @@ def self_test():
     assert early_world_scenes("frame 1\n" + line % 0 + "retained: 3\n") == 0
     assert early_world_scenes(line % 2) == 2
     assert early_world_scenes("frame 1\n") is None
+    # The places of a view of its own not drawn because their scene has no view.
+    line = "views of their own: 2 views drawn (a save's picture, a mod's camera), 97 places drawn in them, 0 of an instance with no slot to draw, %d not drawn because their scene has no view, 0 of an instance not known; 0 views not drawn because the scene slots were full; 0 views of another camera with the last frame's shade\n"
+    assert places_without_view("frame 1\n" + line % 0) == 0
+    assert places_without_view(line % 68) == 68
+    assert places_without_view("frame 1\n") is None
     same = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_note(same, same) == "adapter: %s, as the accepted pictures" % same
     assert adapter_note(None, same).endswith("(accept again to record it)")
@@ -347,6 +364,13 @@ def self_test():
     assert objects_verdict(one_view)[0] == "ok"
     two_views = clean + "gpu objects allowed (D310): the surface view, 118 in the steady frames, at most 2 a frame\n"
     assert objects_verdict(two_views) == ("fail", "a steady frame made 2 views of the window's surface; D310 allows 1")
+    # The frames that an arrival of distant statics changed first are named, not checked (W340);
+    # with none, the line stays as it was.
+    walk = clean + ("gpu objects: the frames that were not steady, by their first change: new geometry 3, "
+                    "an arrival of distant statics 9, texture 1\n")
+    assert objects_verdict(walk) == ("ok", "117 steady frames of 120 made no object (840 made in the others; "
+                                           "9 frames changed first by an arrival of distant statics, not checked)"), objects_verdict(walk)
+    assert arrival_frames(restless) == 0
     # A tool that ends with another code than 0 fails the stage, and its last lines show: an
     # exception, or a helper that died and printed no traceback.
     assert ran((0, "pictures in a folder"), "tool")
@@ -406,9 +430,17 @@ def self_test():
             new = os.path.join(repo, "results", time.strftime(RUN_TIME) + "-v-test")
             run_code = a_new_run
             assert game("v-test", [], "build") == new
-            # The clusters stage reads the capture of an earlier stage, so without a time the newest
-            # run counts.
             assert newest("v-test") == new and newest("v-test", "99991231-000000") is None
+            # The clusters stage takes only a capture of this validate run (W383). The null: an
+            # older capture of the place alone is the newest of its label, and it is refused.
+            older = os.path.join(repo, "results", "20200101-000000-v-capture-seyda")
+            os.makedirs(older)
+            open(os.path.join(older, "exterior.nircap"), "wb").close()
+            assert newest("v-capture-seyda") == older
+            run_code = lambda args, env=None: (0, "")
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                assert not stage_clusters("seyda", "build", time.strftime(RUN_TIME))
+            assert "FAIL no capture of this run at seyda: run the capture stage in this run" in printed.getvalue(), printed.getvalue()
     finally:
         REPO, run_code = real_repo, real_run_code
     # The weather: pinned clear by default, `any` for the game's; a run whose weather line does not
@@ -580,6 +612,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     os.makedirs(out, exist_ok=True)
     adapter = None
     early_captures = []
+    no_view_captures = []
     for capture in captures:
         code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
         if not ran((code, output), "replay.py", accept):
@@ -587,6 +620,8 @@ def stage_baseline(baseline, accept, mge_build, now=None):
         adapter = adapter or adapter_of(output)
         if early_world_scenes(output):
             early_captures.append(capture)
+        if places_without_view(output):
+            no_view_captures.append(capture)
     tour = os.path.join(baseline, "tour")
     if os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
         return False
@@ -605,6 +640,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     import picture_diff
 
     ok = check(not early_captures, "no replay had draws of its world in the target before the extension's parts" if not early_captures else "replays with draws of their world in the target before the extension's parts: %s" % ", ".join(early_captures))
+    ok &= check(not no_view_captures, "no replay had places of a view of its own without a view" if not no_view_captures else "replays with places of a view of its own not drawn because their scene has no view: %s" % ", ".join(no_view_captures))
     for a, b in [(accepted, out)] + ([(os.path.join(tour, "accepted"), tour_out)] if os.path.isdir(tour) else []):
         names = sorted(f for f in os.listdir(a) if f.endswith(".png")) if os.path.isdir(a) else []
         equal = 0
@@ -623,6 +659,8 @@ def stage_baseline(baseline, accept, mge_build, now=None):
 
 OBJECTS_LINE = re.compile(r"^gpu objects: (\d+) made in (\d+) frames; (\d+) steady frames, (\d+) of them made objects \((\d+) objects\)", re.M)
 OBJECTS_CHANGES = "gpu objects: the frames that were not steady, by their first change: "
+# The name of the helper's change for the subsets of distant statics that came (W340).
+OBJECTS_ARRIVAL = re.compile(r"an arrival of distant statics (\d+)")
 # The allowed object (D310): the view of the window's surface, at most 1 in a steady frame.
 OBJECTS_SURFACE = re.compile(r"^gpu objects allowed \(D310\): the surface view, (\d+) in the steady frames, at most (\d+) a frame", re.M)
 # The backends of the objects stage: each replay runs plain, to its last frame, with no GPU time
@@ -651,10 +689,22 @@ def objects_verdict(output):
     surface = OBJECTS_SURFACE.search(output)
     if surface and int(surface.group(2)) > 1:
         return "fail", "a steady frame made %s views of the window's surface; D310 allows 1" % surface.group(2)
+    arrivals = arrival_frames(output)
+    unchecked = "; %d frames changed first by an arrival of distant statics, not checked" % arrivals if arrivals else ""
     if steady_made:
         sites = next((line for line in output.splitlines() if line.startswith("gpu objects of the steady frames: ")), "")
-        return "sites", "%d of %d steady frames made %d objects: %s" % (steady_made, steady, objects, sites[len("gpu objects of the steady frames: "):])
-    return "ok", "%d steady frames of %d made no object (%d made in the others)" % (steady, frames, made)
+        return "sites", "%d of %d steady frames made %d objects: %s%s" % (steady_made, steady, objects, sites[len("gpu objects of the steady frames: "):], unchecked)
+    return "ok", "%d steady frames of %d made no object (%d made in the others%s)" % (steady, frames, made, unchecked)
+
+
+def arrival_frames(output):
+    """The frames whose first change is an arrival of distant statics (W340). The helper names
+    it after the new content of the game, its records and its loads, so none of them changed
+    these frames; a change that a part of the crate notes (a picture, the texture arrays) comes
+    after it. The steady rule does not check these frames."""
+    changes = next((line for line in output.splitlines() if line.startswith(OBJECTS_CHANGES)), "")
+    found = OBJECTS_ARRIVAL.search(changes)
+    return int(found.group(1)) if found else 0
 
 
 def stage_objects(baseline, mge_build):
@@ -711,12 +761,15 @@ def stage_only(place, mge_build):
     return ok
 
 
-def stage_clusters(place, mge_build):
+def stage_clusters(place, mge_build, started):
+    """The replays of the capture that this validate run made at the place (`started`, in RUN_TIME's
+    form, is the start of this run). An older capture of the place is not used: it can be of another
+    build or of another session."""
     print("clusters at %s" % place, flush=True)
-    folder = newest("v-capture-" + place)
+    folder = newest("v-capture-" + place, started)
     capture = folder and os.path.join(folder, "exterior.nircap")
     if not capture or not os.path.isfile(capture):
-        return check(False, "no capture of the place: run the capture stage first")
+        return check(False, "no capture of this run at %s: run the capture stage in this run" % place)
     a, b = os.path.join(folder, "replay-clusters.png"), os.path.join(folder, "replay-draw-lights.png")
     # The replays read the mgeXE.toml of the run (the fade of the lights is on in it).
     # The replays use the build under test: the default of replay.py is the folder of
@@ -835,6 +888,7 @@ def main():
     if args.gpu_time:
         GPU_TIME["MGE_XE_GPU_TIME"] = "1"
     places = args.places.split(",")
+    started = time.strftime(RUN_TIME)
     for stage in args.stages:
         if stage == "capture":
             for place in places:
@@ -852,7 +906,7 @@ def main():
                 return 1
         elif stage == "clusters":
             for place in places:
-                if not stage_clusters(place, args.mge_build):
+                if not stage_clusters(place, args.mge_build, started):
                     return 1
         elif stage == "weathers":
             for place in places:

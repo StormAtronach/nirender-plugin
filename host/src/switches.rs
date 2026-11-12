@@ -106,6 +106,9 @@ pub(crate) struct Switches {
     /// ([`crate::gpu::memory_lines`]) at the first frame and then every n minutes; 0 or unset:
     /// none. For a long run (risk 43).
     pub(crate) memory_minutes: u32,
+    /// `NIRENDER_OBJECTS_WARN_ALL=1`: each steady frame that makes GPU objects gives its
+    /// warning line ([`crate::objects`]). Unset: the first 10 such frames and then each 600th.
+    pub(crate) objects_warn_all: bool,
 }
 
 impl Switches {
@@ -167,6 +170,7 @@ impl Switches {
                 }
             }),
             memory_minutes: read.number("MGE_XE_MEMORY_MINUTES").unwrap_or(0),
+            objects_warn_all: read.on("NIRENDER_OBJECTS_WARN_ALL") == Some(true),
         };
         read.report();
         switches
