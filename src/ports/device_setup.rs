@@ -2186,6 +2186,8 @@ mod tests {
 
     thread_local! {
         static RELEASES: RefCell<Vec<Release>> = const { RefCell::new(Vec::new()) };
+        /// The bucket of each key of the made-up map, as (key, bucket).
+        static KEY_BUCKETS: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
     }
 
     unsafe extern "system" fn com_release_recorded(object: usize) -> u32 {
@@ -2198,8 +2200,17 @@ mod tests {
         0
     }
 
-    unsafe extern "thiscall" fn hash_key_by_bucket_count(map: usize, key: u32) -> u32 {
-        key % rd::<u32>(map, Map::bucketCount)
+    /// The hash of the made-up map: the bucket that [`MadeUpMap::new`] put the key in. A key
+    /// that the map does not hold stops the test.
+    unsafe extern "thiscall" fn hash_key_by_made_up_bucket(_map: usize, key: u32) -> u32 {
+        let bucket = KEY_BUCKETS.with(|buckets| {
+            buckets
+                .borrow()
+                .iter()
+                .find(|(held, _)| *held == key)
+                .map(|(_, bucket)| *bucket)
+        });
+        bucket.expect("the made-up map holds the key")
     }
 
     /// A made-up skin partition map of 4 buckets: two nodes in bucket 0, one in bucket 2, none
@@ -2223,7 +2234,7 @@ mod tests {
             let mut vtable = vec![0usize; 16];
             vtable[crate::ports::hash_map::SLOT_DTOR_KEY_VALUE_PAIR / 4] =
                 dtor_key_value_pair_recorded as *const () as usize;
-            vtable[crate::ports::hash_map::SLOT_HASH_KEY / 4] = hash_key_by_bucket_count as *const () as usize;
+            vtable[crate::ports::hash_map::SLOT_HASH_KEY / 4] = hash_key_by_made_up_bucket as *const () as usize;
             let mut device_vtable = vec![0usize; 4];
             device_vtable[crate::d3d::COM_RELEASE / 4] = com_release_recorded as *const () as usize;
 
@@ -2246,6 +2257,13 @@ mod tests {
                 }
             }
             // Bucket 0: node 0, then node 1. Bucket 2: node 2.
+            KEY_BUCKETS.with(|buckets| {
+                *buckets.borrow_mut() = [0, 0, 2]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, bucket)| (partitions[index].as_ptr() as u32, *bucket))
+                    .collect();
+            });
             let second = nodes[1].as_ptr() as usize;
             unsafe { wr(nodes[0].as_mut_ptr() as usize, Node::nextNode, second) };
             let mut buckets = vec![0u32; BUCKETS];
