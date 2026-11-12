@@ -22,7 +22,9 @@ plugin about its device. The first lines of progress.log, `[runner]`, and setup.
 run ran (`harness.write_setup`).
 """
 import argparse
+import contextlib
 import ctypes
+import io
 import json
 import math
 import os
@@ -1447,6 +1449,53 @@ def self_test_ring_problem():
             (session.harness.Deployment, session.harness.run_game, session.ring_problem_of_instance, session.RESULTS, session.stage_mwse_config) = saved
 
 
+def self_test_ending():
+    """W372: the three endings of a run and their exit codes. The nulls: DONE gives 0, a hand end 3, and a planted
+    abnormal exit or a dump the crash path (1), never 3."""
+    by_hand = {"reason": "exited", "codes": [0]}
+    assert run_ending(True, {"reason": "done", "codes": []}, []) == ENDED_DONE
+    assert run_ending(False, by_hand, []) == ENDED_BY_HAND
+    assert run_ending(False, {"reason": "exited", "codes": [0xC0000005]}, []) == ENDED_OTHER, "a planted abnormal exit"
+    assert run_ending(False, by_hand, ["MWSE_MiniDump.dmp"]) == ENDED_OTHER, "a dump with exit code 0"
+    assert run_ending(False, {"reason": "exited", "codes": [None]}, []) == ENDED_OTHER, "a code not read"
+    assert run_ending(False, {"reason": "exited", "codes": []}, []) == ENDED_OTHER, "no code"
+    for reason in ("timeout", "stopped", "never started"):
+        assert run_ending(False, {"reason": reason, "codes": []}, []) == ENDED_OTHER, reason
+    assert run_ending(False, {}, []) == ENDED_OTHER, "a harness with no LAST_END"
+    assert [run_exit_code(False, False, *pair) for pair in ((True, ENDED_DONE), (False, ENDED_BY_HAND), (False, ENDED_OTHER))] == [0, 3, 1]
+    assert run_exit_code(True, True, False, ENDED_BY_HAND) == 2, "a reference run that loaded the plugin"
+    progress = ["steps: interior,shaders (4)", "going to 'x'", "step interior: true ", "shader batch: start: run true",
+                "step sh-start: true ", "shader batch: live: run true held for the bridge"]
+    assert last_step(progress) == "sh-live" and last_step(progress[:3]) == "interior" and last_step(progress[:2]) is None
+    # A run folder of a live session (20261112-040607-w341b-live) ends with these lines: the live set was the last.
+    assert last_step(progress + ["step sh-live: true ", "weather event: changed immediately to 1 \"Cloudy\""]) == "sh-live"
+    # report_ending, as main() calls it: the harness's record and the files of a run folder decide; the line names the step.
+    class FakeRun:
+        def __init__(self, folder):
+            self.folder = folder
+
+        def path(self, name):
+            return os.path.join(self.folder, name)
+
+    saved = getattr(session.harness, "LAST_END", None)
+    with tempfile.TemporaryDirectory() as folder:
+        try:
+            session.harness.LAST_END = dict(by_hand)
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                assert report_ending(FakeRun(folder), False, progress) == ENDED_BY_HAND
+            assert said.getvalue() == "ended by hand after step sh-live (the game closed without DONE, with exit code 0)\n", said.getvalue()
+            with open(os.path.join(folder, session.harness.DUMPS_FILE), "w", encoding="ascii") as dumps:
+                dumps.write("E:/x/Morrowind.exe.1.dmp\n")
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                assert report_ending(FakeRun(folder), False, progress) == ENDED_OTHER and said.getvalue() == "", "a WER dump: the crash path"
+            os.remove(os.path.join(folder, session.harness.DUMPS_FILE))
+            del session.harness.LAST_END
+            assert report_ending(FakeRun(folder), False, progress) == ENDED_OTHER, "a harness from before W372"
+        finally:
+            if saved is not None:
+                session.harness.LAST_END = saved
+
+
 def self_test_full_dump():
     """--full-dump: the setting goes into the run's copy of MWSE.json only with the option, beside
     RunInBackground of a background run; --check names the size."""
@@ -1868,6 +1917,7 @@ def self_test():
     self_test_archive_arguments()
     self_test_plugin_evidence()
     self_test_full_dump()
+    self_test_ending()
     self_test_use_instance()
     build = os.path.join("target", "akulakhan.dll")
     assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
@@ -2224,21 +2274,68 @@ def main():
     failed = no_plugin and loaded
     if failed:
         print("ERROR: the game loaded akulakhan.dll in a reference run without the plugin: the run is no reference")
+    ending = report_ending(run, done, progress)
     print("pictures in " + run.dir)
     # The size of the run and of every run kept (the owner, 2026-10-18: the results folder
     # had grown to hundreds of GB unnoticed). The runner deletes nothing; the line says when
     # it is time to.
     print("size: this run %s; all runs in %s %s" % (folder_size(run.dir), os.path.dirname(run.dir), folder_size(os.path.dirname(run.dir))))
     print_disk_limits()
-    return run_exit_code(no_plugin, loaded, done)
+    return run_exit_code(no_plugin, loaded, done, ending)
 
 
-def run_exit_code(no_plugin, loaded, done):
+# The endings of a run (W372): DONE came; the game closed by itself without DONE and with exit code 0, which is a hand
+# end (taskkill without /F, or a close by the owner, gives 0x00000000); or any other end, the crash path among them.
+ENDED_DONE, ENDED_BY_HAND, ENDED_OTHER = "done", "by hand", "other"
+EXIT_ENDED_BY_HAND = 3
+STEP_LINE = re.compile(r"^step (\S+?):")
+SHADER_SET_LINE = re.compile(r"^shader batch: (\S+?): ")
+
+
+def run_ending(done, end, crash_files):
+    """The ending of a run, from the harness's LAST_END and the dumps of the run folder. A hand end needs the game's
+    own close ("exited") with every exit code read and 0, and no dump: an abnormal code, a code not read or a dump
+    is the crash path."""
+    if done:
+        return ENDED_DONE
+    codes = end.get("codes") or []
+    if end.get("reason") == "exited" and codes and all(code == 0 for code in codes) and not crash_files:
+        return ENDED_BY_HAND
+    return ENDED_OTHER
+
+
+def report_ending(run, done, progress):
+    """The ending of `run` from the harness's LAST_END (absent in a harness from before W372: the crash path, as before)
+    and the dumps that the harness moved into the run folder; prints the line of a hand end. Returns the ending."""
+    dumps = [path for path in (run.path("MWSE_MiniDump.dmp"), run.path(session.harness.DUMPS_FILE)) if os.path.isfile(path)]
+    ending = run_ending(done, getattr(session.harness, "LAST_END", {}), dumps)
+    if ending == ENDED_BY_HAND:
+        print("ended by hand after step %s (the game closed without DONE, with exit code 0)" % (last_step(progress) or "none: before the first step"))
+    return ending
+
+
+def last_step(progress):
+    """The last step that the progress lines show started: a "step <name>:" line, or the start of a set of a shader
+    batch ("shader batch: <set>: ...", the step sh-<set>). None before the first."""
+    found = None
+    for line in progress:
+        step = STEP_LINE.match(line)
+        shader_set = SHADER_SET_LINE.match(line)
+        if step:
+            found = step.group(1)
+        elif shader_set:
+            found = "sh-" + shader_set.group(1)
+    return found
+
+
+def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER):
     """2 for a run without the plugin that loaded it (no reference), else 0 when the steps were
-    done in the budget, 1 when not."""
+    done in the budget, 3 for a run ended by hand (W372), 1 for any other end."""
     if no_plugin and loaded:
         return 2
-    return 0 if done else 1
+    if done:
+        return 0
+    return EXIT_ENDED_BY_HAND if ending == ENDED_BY_HAND else 1
 
 
 def overwrite_problem(root, plugin_file):
