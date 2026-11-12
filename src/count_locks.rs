@@ -86,6 +86,11 @@ pub fn is_site(at: usize) -> bool {
     SITES.iter().any(|site| site.at == at)
 }
 
+/// The addresses of the sites, in the order of MWSE's table.
+pub fn site_addresses() -> impl Iterator<Item = usize> {
+    SITES.iter().map(|site| site.at)
+}
+
 /// Writes one line on the state of the sites: all locked by MWSE, none, or some.
 pub fn log_state() {
     // SAFETY: the sites are in the code of the game, which stays mapped and readable for the life
