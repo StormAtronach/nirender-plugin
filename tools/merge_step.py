@@ -950,7 +950,12 @@ def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, com
     if sibling_head is None or head != sibling_head:
         say("%s: %s stays at %s: the HEAD of the sibling moved during the round" % (name, ref, last[:10]))
         return False
-    changed_now = bool(git(sibling, "status", "--porcelain", "--untracked-files=no"))
+    # A plain run, as for the update below: a failing status keeps the ref with a line.
+    status = subprocess.run(["git", "-C", sibling, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, env=git_env())
+    if status.returncode != 0:
+        say("%s: %s stays at %s: git status of the sibling failed (%s)" % (name, ref, last[:10], status.stderr.strip()))
+        return False
+    changed_now = bool(status.stdout.strip())
     if sibling_changed or changed_now:
         when = "at the start of the round" if sibling_changed else "now"
         say("%s: %s stays at %s: the sibling has tracked changes %s, and the docs and contract stages read its working "
@@ -1348,6 +1353,18 @@ def self_test():
         assert not moved and "tracked changes now" in said and resolve(cover_mge, cover_ref) == c1, said
         with open(tracked, "w", encoding="ascii") as changed_file:
             changed_file.write("x\n")
+        # Verdict 229: git status of the sibling fails at the move (a corrupt index): one line, no SystemExit.
+        index = os.path.join(cover_mge, ".git", "index")
+        with open(index, "rb") as kept_index:
+            index_bytes = kept_index.read()
+        with open(index, "wb") as broken_index:
+            broken_index.write(b"not an index")
+        try:
+            moved, said = sibling_move(both_round, all_passed)
+        finally:
+            with open(index, "wb") as restored_index:
+                restored_index.write(index_bytes)
+        assert not moved and "git status of the sibling failed" in said and resolve(cover_mge, cover_ref) == c1, said
         # Verdict 227: another check moves the ref between the read and the update. git refuses the update, and the
         # tool gives one line and keeps the other check's value; before, git() ended the round with SystemExit.
         real_planned = planned_stages
