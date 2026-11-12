@@ -893,7 +893,7 @@ impl Renderer {
         self.frame_texture_views.clear();
         self.frame_sampler_slots.clear();
         self.frame_samplers.clear();
-        self.forget_array_groups();
+        self.forget_array_groups(array_change::LAID_OUT);
         self.frame_texture_views.push(self.white.clone());
         let plain = self.sampler(material::sampler_states(0, 0));
         self.frame_samplers.push(plain);
@@ -944,7 +944,7 @@ impl Renderer {
             }
         }
         if changed {
-            self.forget_array_groups();
+            self.forget_array_groups(array_change::TEXTURE_REPLACED);
             self.counts.textures_replaced += 1;
         }
         self.textures.insert(handle, view);
@@ -974,7 +974,7 @@ impl Renderer {
         self.frame_texture_slots.insert(handle, slot);
         self.counts.most_frame_textures = self.counts.most_frame_textures.max(slot + 1);
         // The groups made so far lack this texture.
-        self.forget_array_groups();
+        self.forget_array_groups(array_change::TEXTURE_IN);
         slot
     }
 
@@ -993,14 +993,17 @@ impl Renderer {
         let slot = self.frame_samplers.len() as u32;
         self.frame_samplers.push(sampler);
         self.frame_sampler_slots.insert(values, slot);
-        self.forget_array_groups();
+        self.forget_array_groups(array_change::SAMPLER_IN);
         slot
     }
 
     /// Drops the groups of the arrays (the group of the frame, its variants for the targets,
     /// and the small group): a view or a sampler of the arrays changed, or a slot came. The
-    /// next use makes them again.
-    pub(crate) fn forget_array_groups(&mut self) {
+    /// next use makes them again. The change of the arrays, `change` (one of [`array_change`]),
+    /// marks the frame as changed in the count of the GPU objects ([`crate::objects::changed`]):
+    /// the groups made again are its work, with or without a record of the game.
+    pub(crate) fn forget_array_groups(&mut self, change: &'static str) {
+        crate::objects::changed(change);
         self.array_group = None;
         self.array_variants.clear();
         if let Some((slots, _)) = self.small_array_group.take() {
@@ -1956,7 +1959,7 @@ impl Renderer {
                 if slot as usize > self.pinned_in_frame {
                     self.frame_texture_views[slot as usize] = self.white.clone();
                     self.frame_texture_slots.remove(&handle);
-                    self.forget_array_groups();
+                    self.forget_array_groups(array_change::TEXTURE_OUT);
                 }
             }
             self.counts.textures_gone += 1;
@@ -2426,6 +2429,52 @@ fn bytes_of(texture: &wgpu::Texture) -> u64 {
         texture.sample_count(),
         texture.format(),
     )
+}
+
+/// The changes of the texture arrays that drop their groups ([`Renderer::forget_array_groups`]),
+/// by their names in the count of the GPU objects.
+pub(crate) mod array_change {
+    pub(crate) const LAID_OUT: &str = "the texture arrays laid out";
+    pub(crate) const TEXTURE_REPLACED: &str = "a texture of the arrays replaced";
+    pub(crate) const TEXTURE_IN: &str = "a texture into the arrays";
+    pub(crate) const SAMPLER_IN: &str = "a sampler state into the arrays";
+    pub(crate) const TEXTURE_OUT: &str = "a texture out of the arrays";
+    pub(crate) const PINNED_IN: &str = "a pinned texture into the arrays";
+    pub(crate) const PINNED_OUT: &str = "a pinned texture out of the arrays";
+    pub(crate) const PINNED_SAMPLER_IN: &str = "a pinned sampler state into the arrays";
+}
+
+#[cfg(test)]
+mod array_change_tests {
+    use super::*;
+
+    /// A sampler state new to the arrays drops their groups and marks the frame as changed. The
+    /// null: the same state again has its slot, and marks nothing. Needs a GPU, and no other
+    /// test that notes changes at the same time:
+    /// `cargo test -p nirender-host -- --ignored sampler_state --test-threads=1`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_sampler_state_new_to_the_arrays_marks_its_frame_as_changed() {
+        let (mut renderer, _) = Renderer::new(
+            wgpu::Backends::all(),
+            None,
+            wgpu::TextureFormat::Rgba8Unorm,
+            crate::extension::extension_shaders(None),
+            0,
+            1,
+        )
+        .expect("a device");
+        assert_ne!(renderer.tier, request::TextureTier::C, "tier C has no texture arrays");
+        renderer.begin_frame_arrays();
+        crate::objects::take_noted_change();
+
+        let states = material::sampler_states(1, 1);
+        let slot = renderer.frame_sampler_slot(states);
+        assert_eq!(crate::objects::take_noted_change(), Some(array_change::SAMPLER_IN));
+
+        assert_eq!(renderer.frame_sampler_slot(states), slot);
+        assert_eq!(crate::objects::take_noted_change(), None);
+    }
 }
 
 #[cfg(test)]

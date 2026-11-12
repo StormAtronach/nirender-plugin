@@ -281,6 +281,13 @@ pub fn changed(change: &'static str) {
     }
 }
 
+/// The change noted for the frame in progress of the program, taken: for a test of a part
+/// that notes a change.
+#[cfg(test)]
+pub(crate) fn take_noted_change() -> Option<&'static str> {
+    LEDGER.lock().ok().and_then(|mut ledger| ledger.noted_change.take())
+}
+
 /// The end of a frame of the program ([`Ledger::end_frame`]).
 pub fn end_frame(change: Option<&'static str>) -> Option<String> {
     LEDGER.lock().ok().and_then(|mut ledger| {
