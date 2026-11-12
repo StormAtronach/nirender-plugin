@@ -7,9 +7,9 @@
 //! 0x471B00 and the others) are in `engine`. Do not use one form in place of the other: a
 //! port does what the game code does at that place.
 //!
-//! A change of a reference count here is one locked instruction, as the stubs of
-//! [`crate::atomic_count`] make the game's own: the main thread and the cell loader thread
-//! change the counts of shared objects (risk 56).
+//! A change of a reference count here is one locked instruction, as MWSE's count locks make the
+//! game's own (see [`crate::count_locks`]): the main thread and the cell loader thread change the
+//! counts of shared objects (risk 56).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
