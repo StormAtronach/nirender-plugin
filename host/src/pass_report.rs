@@ -8,8 +8,11 @@
 //! stamp's name: one name for the count and for the time.
 //!
 //! At the end of a frame (`end_frame`) the frame's set of parts is compared with the set of
-//! the frame before. A set that differs and was not seen before prints one block; a set seen
-//! before is only counted. A part that an earlier frame noted, and that has no note in this
+//! the frame before. A set that differs and was not seen before prints one block; it is set N,
+//! the "N distinct sets" of its block (the first block is set 1). A change to a set seen before
+//! prints one line, "back to set N (first printed at frame G)", the first time that the frame
+//! goes from that set before to set N (W373); the same change again is only counted, as a menu
+//! over the world goes back and forth each frame. A part that an earlier frame noted, and that has no note in this
 //! frame, in a view of a kind that this frame has, shows "not run, reason unknown": its skip
 //! is decided in a place that cannot name it, and that place is on the list of step B. A part
 //! that runs only when a record of the stream asks for it ([`on_request`]: a map tile, the
@@ -67,15 +70,31 @@ struct Report {
     unknown: Vec<Part>,
     /// The set of the frame before, sorted.
     last: Vec<Entry>,
-    /// The frames of each distinct set.
-    sets: BTreeMap<Vec<Entry>, u64>,
+    /// The number of the set of the frame before (0 before the first frame).
+    last_number: u32,
+    /// Each distinct set with its number and frames.
+    sets: BTreeMap<Vec<Entry>, SetSeen>,
+    /// The changes from one set to another, by their numbers, that a frame has made.
+    changes: BTreeSet<(u32, u32)>,
     /// The frames of each entry.
     totals: BTreeMap<Entry, u64>,
     /// The passes of each name since the start.
     passes: BTreeMap<&'static str, u64>,
     frames: u64,
-    /// The frames whose set differed from the frame before and was seen before: not printed.
+    /// The frames whose set differed from the frame before and was seen before, by a change
+    /// made before: not printed.
     repeats: u64,
+    /// The frames that printed "back to set N".
+    returns: u64,
+}
+
+/// A distinct set: its number (the order in which the sets came), the frame that printed it,
+/// and its frames.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct SetSeen {
+    number: u32,
+    first_frame: u64,
+    frames: u64,
 }
 
 impl Report {
@@ -89,11 +108,14 @@ impl Report {
             asked: Vec::new(),
             unknown: Vec::new(),
             last: Vec::new(),
+            last_number: 0,
             sets: BTreeMap::new(),
+            changes: BTreeSet::new(),
             totals: BTreeMap::new(),
             passes: BTreeMap::new(),
             frames: 0,
             repeats: 0,
+            returns: 0,
         }
     }
 
@@ -142,20 +164,34 @@ impl Report {
             *self.totals.entry(*entry).or_default() += 1;
         }
         // Only a set not seen before is copied into the map.
-        let first_time = match self.sets.get_mut(self.frame.as_slice()) {
-            Some(frames_of_set) => {
-                *frames_of_set += 1;
-                false
+        let (seen_set, first_time) = match self.sets.get_mut(self.frame.as_slice()) {
+            Some(seen_set) => {
+                seen_set.frames += 1;
+                (*seen_set, false)
             }
             None => {
-                self.sets.insert(self.frame.clone(), 1);
-                true
+                let number = u32::try_from(self.sets.len() + 1).unwrap_or(u32::MAX);
+                let seen_set = SetSeen {
+                    number,
+                    first_frame: self.frames,
+                    frames: 1,
+                };
+                self.sets.insert(self.frame.clone(), seen_set);
+                (seen_set, true)
             }
         };
         let block = if self.frame == self.last {
             None
         } else {
-            let block = if !first_time {
+            let new_change = self.changes.insert((self.last_number, seen_set.number));
+            self.last_number = seen_set.number;
+            let block = if !first_time && new_change {
+                self.returns += 1;
+                Some(vec![format!(
+                    "pass report, frame {}: back to set {} (first printed at frame {})",
+                    self.frames, seen_set.number, seen_set.first_frame
+                )])
+            } else if !first_time {
                 self.repeats += 1;
                 None
             } else if self.last.is_empty() {
@@ -192,11 +228,12 @@ impl Report {
     fn exit_lines(&self) -> Vec<String> {
         let unknown = self.totals.keys().filter(|(_, outcome)| *outcome == Outcome::Unknown).count();
         let mut lines = vec![format!(
-            "pass report: {} frames, {} distinct sets of parts, {} changes to a set seen before (not printed); {} parts not run with the reason unknown",
+            "pass report: {} frames, {} distinct sets of parts, {} changes to a set seen before (not printed); {} parts not run with the reason unknown; {} changes printed as back to a set",
             self.frames,
             self.sets.len(),
             self.repeats,
-            unknown
+            unknown,
+            self.returns
         )];
         lines.extend(
             self.totals
@@ -356,11 +393,53 @@ mod tests {
             change.contains(&"  + not run: post (main view): no environment".to_owned()),
             "{change:?}"
         );
-        // A menu over the world alternates the two sets: each is printed once, then counted.
-        assert!(frame(&mut report, &[("sky", None), ("post", None)]).is_none());
-        assert!(frame(&mut report, &[("sky", None), ("post", Some("no environment"))]).is_none());
-        assert_eq!(report.repeats, 2);
+        // A menu over the world alternates the two sets: each is printed once. The first return
+        // to set 1 prints its line (W373); the same changes again are only counted.
+        let back = frame(&mut report, &[("sky", None), ("post", None)]);
+        assert_eq!(
+            back,
+            Some(vec![
+                "pass report, frame 3: back to set 1 (first printed at frame 1)".to_owned()
+            ])
+        );
+        for _ in 0..10 {
+            assert!(frame(&mut report, &[("sky", None), ("post", Some("no environment"))]).is_none());
+            assert!(frame(&mut report, &[("sky", None), ("post", None)]).is_none());
+        }
+        assert_eq!((report.repeats, report.returns), (20, 1));
         assert_eq!(report.sets.len(), 2);
+    }
+
+    #[test]
+    fn a_return_to_a_known_set_prints_back_to_set_once_for_each_change() {
+        let mut report = Report::new();
+        // Set 1, set 2, set 3 (a look up), then back to set 2 (a look down): the line names set 2.
+        frame(&mut report, &[("sky", None), ("water", Some("no water in the cell"))]);
+        frame(&mut report, &[("sky", None), ("water", None)]);
+        let up = frame(&mut report, &[("sky", None), ("water", Some("out of view"))]).unwrap();
+        assert_eq!(
+            up[0],
+            "pass report, frame 3: a set of parts not seen before (3 distinct sets)"
+        );
+        assert_eq!(
+            frame(&mut report, &[("sky", None), ("water", None)]),
+            Some(vec![
+                "pass report, frame 4: back to set 2 (first printed at frame 2)".to_owned()
+            ])
+        );
+        // A steady frame after the return prints nothing, as before.
+        assert_eq!(frame(&mut report, &[("sky", None), ("water", None)]), None);
+        // From set 2 to set 3 was a change made at frame 3: counted, not printed. From set 3 to
+        // set 1 is new: printed.
+        assert_eq!(frame(&mut report, &[("sky", None), ("water", Some("out of view"))]), None);
+        let back = frame(&mut report, &[("sky", None), ("water", Some("no water in the cell"))]).unwrap();
+        assert_eq!(back, ["pass report, frame 7: back to set 1 (first printed at frame 1)"]);
+        assert_eq!((report.repeats, report.returns), (1, 2));
+        assert!(
+            report.exit_lines()[0].ends_with("; 2 changes printed as back to a set"),
+            "{:?}",
+            report.exit_lines()[0]
+        );
     }
 
     #[test]
@@ -413,7 +492,7 @@ mod tests {
         assert_eq!(block[0], "pass report, frame 1: 2 parts");
         frame(&mut report, &[("post", None), ("sky", None)]);
         assert_eq!(report.sets.len(), 1);
-        assert_eq!(report.sets.values().copied().collect::<Vec<_>>(), [2]);
+        assert_eq!(report.sets.values().map(|seen| seen.frames).collect::<Vec<_>>(), [2]);
         assert!(report.frame.is_empty() && report.asked.is_empty());
     }
 
