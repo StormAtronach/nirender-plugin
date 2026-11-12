@@ -71,6 +71,7 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import SIBLINGS, docs_place, local, main_checkout  # noqa: E402
+from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
 from validate_tour import NOT_RUN, NOT_RUN_CODE  # noqa: E402
 import symbols  # noqa: E402
 from symbols import codeview  # noqa: E402,F401  (the tests and keep_pdbs read CodeView records by it)
@@ -81,7 +82,6 @@ MGE_REPO = os.path.join(REPOS, "MGE-XE-G7-render-link")
 PLUGIN_BRANCH = "master"
 MGE_BRANCH = "feature/wgpu-renderer"
 TREES = "C:/tmp/playset"
-SETS = "E:/nirender-keep/mgebuilds"
 # The pdbs of the sets, one folder for each set. It must not be inside SETS: no pdb is deployed.
 PDB_KEEP = "E:/nirender-keep/pdb"
 # Each binary of a set (its path in the set), the tree that built it, and its pdb in that tree.
@@ -178,12 +178,6 @@ def tips_moved(built, now):
     """A text that says which tips differ from the built commits, or an empty text."""
     moved = ["%s moved from %s to %s" % (branch, old, new) for branch, old, new in zip((PLUGIN_BRANCH, MGE_BRANCH), built, now, strict=True) if old != new]
     return ", ".join(moved)
-
-
-def next_set_number(names):
-    """The next number of a set folder. The highest number as a number: a text sort puts f99 after f100."""
-    numbers = [int(match.group(1)) for match in (re.fullmatch(r"f(\d+)", name) for name in names) if match]
-    return max(numbers, default=0) + 1
 
 
 def local_bat_values(text):
@@ -471,17 +465,6 @@ def build_step(command, folder, log_path):
         done = subprocess.run(command, cwd=folder, env=env, stdout=log, stderr=subprocess.STDOUT)
     if done.returncode != 0:
         raise SystemExit("the build failed with exit code %d: see %s" % (done.returncode, log_path))
-
-
-def new_set_folder():
-    """Makes the next set folder. os.mkdir fails on a name that another session has just made."""
-    while True:
-        name = "f%d" % next_set_number(os.listdir(SETS))
-        try:
-            os.mkdir(os.path.join(SETS, name))
-        except FileExistsError:
-            continue
-        return name
 
 
 def copy_stage(stage, plugin_tree, folder, plugin_commit):
@@ -1083,8 +1066,6 @@ def self_test():
         validate_tour.self_test()
     smoke_wiring_test(Side)
 
-    assert next_set_number(["f99", "f100", "f7", "other", "f12x"]) == 101
-    assert next_set_number([]) == 1
     assert tips_moved(("a", "b"), ("a", "b")) == ""
     assert PLUGIN_BRANCH in tips_moved(("a", "b"), ("c", "b")) and MGE_BRANCH not in tips_moved(("a", "b"), ("c", "b"))
     assert MGE_BRANCH in tips_moved(("a", "b"), ("a", "d"))
