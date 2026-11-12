@@ -347,6 +347,13 @@ def self_test():
     assert objects_verdict(one_view)[0] == "ok"
     two_views = clean + "gpu objects allowed (D310): the surface view, 118 in the steady frames, at most 2 a frame\n"
     assert objects_verdict(two_views) == ("fail", "a steady frame made 2 views of the window's surface; D310 allows 1")
+    # The frames that an arrival of distant statics changed first are named, not checked (W340);
+    # with none, the line stays as it was.
+    walk = clean + ("gpu objects: the frames that were not steady, by their first change: new geometry 3, "
+                    "an arrival of distant statics 9, texture 1\n")
+    assert objects_verdict(walk) == ("ok", "117 steady frames of 120 made no object (840 made in the others; "
+                                           "9 frames changed first by an arrival of distant statics, not checked)"), objects_verdict(walk)
+    assert arrival_frames(restless) == 0
     # A tool that ends with another code than 0 fails the stage, and its last lines show: an
     # exception, or a helper that died and printed no traceback.
     assert ran((0, "pictures in a folder"), "tool")
@@ -623,6 +630,8 @@ def stage_baseline(baseline, accept, mge_build, now=None):
 
 OBJECTS_LINE = re.compile(r"^gpu objects: (\d+) made in (\d+) frames; (\d+) steady frames, (\d+) of them made objects \((\d+) objects\)", re.M)
 OBJECTS_CHANGES = "gpu objects: the frames that were not steady, by their first change: "
+# The name of the helper's change for the subsets of distant statics that came (W340).
+OBJECTS_ARRIVAL = re.compile(r"an arrival of distant statics (\d+)")
 # The allowed object (D310): the view of the window's surface, at most 1 in a steady frame.
 OBJECTS_SURFACE = re.compile(r"^gpu objects allowed \(D310\): the surface view, (\d+) in the steady frames, at most (\d+) a frame", re.M)
 # The backends of the objects stage: each replay runs plain, to its last frame, with no GPU time
@@ -651,10 +660,22 @@ def objects_verdict(output):
     surface = OBJECTS_SURFACE.search(output)
     if surface and int(surface.group(2)) > 1:
         return "fail", "a steady frame made %s views of the window's surface; D310 allows 1" % surface.group(2)
+    arrivals = arrival_frames(output)
+    unchecked = "; %d frames changed first by an arrival of distant statics, not checked" % arrivals if arrivals else ""
     if steady_made:
         sites = next((line for line in output.splitlines() if line.startswith("gpu objects of the steady frames: ")), "")
-        return "sites", "%d of %d steady frames made %d objects: %s" % (steady_made, steady, objects, sites[len("gpu objects of the steady frames: "):])
-    return "ok", "%d steady frames of %d made no object (%d made in the others)" % (steady, frames, made)
+        return "sites", "%d of %d steady frames made %d objects: %s%s" % (steady_made, steady, objects, sites[len("gpu objects of the steady frames: "):], unchecked)
+    return "ok", "%d steady frames of %d made no object (%d made in the others%s)" % (steady, frames, made, unchecked)
+
+
+def arrival_frames(output):
+    """The frames whose first change is an arrival of distant statics (W340). The helper names
+    it after the new content of the game, its records and its loads, so none of them changed
+    these frames; a change that a part of the crate notes (a picture, the texture arrays) comes
+    after it. The steady rule does not check these frames."""
+    changes = next((line for line in output.splitlines() if line.startswith(OBJECTS_CHANGES)), "")
+    found = OBJECTS_ARRIVAL.search(changes)
+    return int(found.group(1)) if found else 0
 
 
 def stage_objects(baseline, mge_build):
