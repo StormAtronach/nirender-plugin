@@ -10,6 +10,7 @@
   "game_dir": "D:/path/to/Morrowind",
   "mcpatch_root": "D:/path/to/testing-instance/mods/Morrowind Code Patch/Root",
   "vanilla_exe": "D:/path/to/testing-instance/overwrite/Root/Morrowind.Original.exe",
+  "luajit": "C:/path/to/MWSE/MWSE/deps/luajit2/src/luajit.exe",
   "mwse_deploys": {"Morrowind75testing": "D:/path/to/testing-instance/mods/MWSE/Root/MWSE.dll"},
   "rest_installs": {"Morrowind75testing": {"root": "D:/path/to/testing-instance", "mge_mod": "MGE XE G7 Fork", "nirender_mod": "nirender"}}
 }

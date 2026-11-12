@@ -40,6 +40,7 @@ from ctypes import wintypes
 
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lua_checks  # noqa: E402
 import session  # noqa: E402
 import symbols  # noqa: E402
 from common import REPO  # noqa: E402
@@ -219,12 +220,19 @@ def walk_budget_problem(args, read=read_text, environment=os.environ):
             % (args.budget, minutes, source, WALK_START_SECONDS, needed))
 
 
-def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ):
+def batch_lua_problems(path, text):
+    """The findings of the Lua file `path` with `text` that the game will run (`lua_checks`): its
+    syntax, and a local function used above its declaration."""
+    return lua_checks.problems(path, text, lua_checks.luajit())
+
+
+def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ, lua=None):
     """Every fault of the arguments that shows before the run starts anything: the form of
-    each value, the files and folders that the run reads, and a budget shorter than the walk
-    of its batch. One line for each fault; none for a good command. `--check` runs only this
-    (and the check of the save), so that a caller can refuse a bad command before it takes the
-    game slot."""
+    each value, the files and folders that the run reads, the faults of its Lua files
+    (`lua`, else `batch_lua_problems`), and a budget shorter than the walk of its batch. One
+    line for each fault; none for a good command. `--check` runs only this (and the check of
+    the save), so that a caller can refuse a bad command before it takes the game slot."""
+    lua = lua or batch_lua_problems
     problems = []
     if args.reference_plugin and not (args.reference or args.engine_reference):
         problems.append("--reference-plugin is for a run with --reference or --engine-reference")
@@ -254,6 +262,14 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
                          ("--mwse-dll", args.mwse_dll), ("--exe", args.exe), ("--log", args.log and os.path.dirname(os.path.abspath(args.log)))):
         if path and not exists(path):
             problems.append("%s: no %s" % (option, path))
+    # The Lua that the game runs: a fault there ends the run in the game, after its start.
+    for option, path in (("--shader-batch", args.shader_batch), ("--lua-file", args.lua_file)):
+        if path and exists(path):
+            text = read(path)
+            if text is None:
+                problems.append("%s: %s cannot be read as UTF-8 text" % (option, path))
+            else:
+                problems.extend("%s %s: %s" % (option, path, finding) for finding in lua(path, text))
     if args.mge_build:
         for name in ("d3d8.dll", "numidium.exe"):
             if not exists(os.path.join(args.mge_build, name)):
@@ -931,7 +947,11 @@ def self_test_checks():
     exists = present.__contains__
     good = namespace(position="-57717,-416069,1198", hour=21.58, weather=0, mge_build="E:/b", shader_batch="E:/batch.lua",
                      plugin_dll="E:/a.dll", env=["NIRENDER_WALK_MINUTES=8"], reference=True, reference_plugin=True)
-    assert argument_problems(good, exists) == [], argument_problems(good, exists)
+    # The Lua checks have their own cases below: here a batch of planted text, and no finding.
+    batch_text = {"E:/batch.lua": "return {}\n"}.get
+    def no_lua(path, text):
+        return []
+    assert argument_problems(good, exists, batch_text, {}, no_lua) == [], argument_problems(good, exists, batch_text, {}, no_lua)
     bad = [
         namespace(reference_plugin=True),
         namespace(position="57717,-416069"),
@@ -953,7 +973,7 @@ def self_test_checks():
     read = walk.get
     quiet = {}
     def walk_problems(**changes):
-        return argument_problems(namespace(shader_batch="E:/batch.lua", **changes), exists, read, quiet)
+        return argument_problems(namespace(shader_batch="E:/batch.lua", **changes), exists, read, quiet, no_lua)
     # The case of 2026-11-03: the batch's 60 minutes under the default 200 s.
     problems = walk_problems()
     assert len(problems) == 1 and "--budget 3720 or more" in problems[0] and "the batch's default" in problems[0], problems
@@ -967,14 +987,45 @@ def self_test_checks():
         assert len(problems) == 1 and "takes a number of minutes" in problems[0], (bad, problems)
     # Another default, in single quotes: 15 minutes need 1020 s.
     other = {"E:/batch.lua": "local MINUTES = tonumber(os.getenv('NIRENDER_WALK_MINUTES') or '') or 15\n"}.get
-    problems = argument_problems(namespace(shader_batch="E:/batch.lua", budget=1019), exists, other, quiet)
+    problems = argument_problems(namespace(shader_batch="E:/batch.lua", budget=1019), exists, other, quiet, no_lua)
     assert len(problems) == 1 and "(15 min, the batch's default)" in problems[0] and "--budget 1020 or more" in problems[0], problems
-    assert argument_problems(namespace(shader_batch="E:/batch.lua", budget=1020), exists, other, quiet) == []
+    assert argument_problems(namespace(shader_batch="E:/batch.lua", budget=1020), exists, other, quiet, no_lua) == []
     # The runner's environment, when --env does not set it.
     assert walk_budget_problem(namespace(shader_batch="E:/batch.lua", budget=600), read, {"NIRENDER_WALK_MINUTES": "4"}) is None
     assert walk_budget_problem(namespace(shader_batch="E:/batch.lua", budget=600), read, quiet)
     # A batch that does not walk, and no batch: no fault.
-    assert argument_problems(namespace(shader_batch="E:/batch.lua"), exists, {"E:/batch.lua": "return {}\n"}.get, quiet) == []
+    assert argument_problems(namespace(shader_batch="E:/batch.lua"), exists, batch_text, quiet, no_lua) == []
+
+    # The Lua checks of the files that the game runs (lua_checks): each finding of --shader-batch
+    # and of --lua-file is a fault that names the option and the file, and an unreadable file is one.
+    seen = []
+    def one_finding(path, text):
+        seen.append((path, text))
+        return ["the local function f is used on line 1 and declared on line 2"]
+    texts = {"E:/batch.lua": "f()\nlocal function f() end\n", "E:/file.lua": "return 1\n"}.get
+    both = namespace(shader_batch="E:/batch.lua", lua_file="E:/file.lua")
+    problems = argument_problems(both, (present | {"E:/file.lua"}).__contains__, texts, quiet, one_finding)
+    assert problems == ["--shader-batch E:/batch.lua: the local function f is used on line 1 and declared on line 2",
+                        "--lua-file E:/file.lua: the local function f is used on line 1 and declared on line 2"], problems
+    assert seen == [("E:/batch.lua", "f()\nlocal function f() end\n"), ("E:/file.lua", "return 1\n")], seen
+    assert argument_problems(namespace(shader_batch="E:/batch.lua"), exists, {}.get, quiet, no_lua) == [
+        "--shader-batch: E:/batch.lua cannot be read as UTF-8 text"]
+    # A missing file is the existence fault alone; the Lua checks do not run on it.
+    seen.clear()
+    assert argument_problems(namespace(shader_batch="E:/none.lua"), exists, texts, quiet, one_finding) == ["--shader-batch: no E:/none.lua"]
+    assert seen == []
+    # The real checks, when this machine has its LuaJIT: the reduced batch of 12ab3fcb (W381) is
+    # refused, a syntax fault is refused, and a clean batch passes.
+    if os.path.isfile(lua_checks.luajit()):
+        def real(text):
+            return argument_problems(namespace(shader_batch="E:/batch.lua"), exists, {"E:/batch.lua": text}.get, quiet)
+        refused = real(lua_checks.USE_ABOVE)
+        assert len(refused) == 1 and refused[0].startswith("--shader-batch E:/batch.lua: the local function setHover is used on line 5"), refused
+        assert real("local x = {\nlocal y = 1\n") == [
+            "--shader-batch E:/batch.lua: the Lua syntax: batch.lua:2: unexpected symbol near 'local'"], real("local x = {\n")
+        assert real("return {}\n") == []
+    else:
+        print("run_own_device self-test: the real Lua checks are skipped, no LuaJIT at %s" % lua_checks.luajit())
     assert walk_budget_problem(namespace(), read, quiet) is None
 
     assert run_exit_code(True, True, True) == 2
