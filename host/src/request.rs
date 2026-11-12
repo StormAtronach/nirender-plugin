@@ -199,7 +199,6 @@ pub(crate) struct Request {
     pub queue: wgpu::Queue,
     /// The format of the target: the wanted one, or a format of the surface without sRGB.
     pub target_format: wgpu::TextureFormat,
-    pub surface_usages: wgpu::TextureUsages,
     pub present_modes: Vec<wgpu::PresentMode>,
     pub depth_format: wgpu::TextureFormat,
     /// The samples of each pixel of the frame: the largest count up to the wanted one that
@@ -463,27 +462,18 @@ fn try_backend(
             lacks.push(format!("{name}: has {has}, needs {needs}"));
         }
     });
-    if !lacks.is_empty() {
-        return Err(refuse(name, lacks_text(backend, &lacks)));
-    }
-
-    // The choices from what the adapter has.
+    // The needs of the window. Its lacks join the adapter's, so that the other backend is tried.
     let mut target_format = wanted_format;
-    let mut surface_usages = wgpu::TextureUsages::empty();
     let mut present_modes = Vec::new();
     if let Some(surface) = surface.as_ref() {
-        // The game gives colours that are ready for the screen: no sRGB format.
         let capabilities = surface.get_capabilities(&adapter);
-        if !capabilities.formats.contains(&target_format) {
-            target_format = capabilities
-                .formats
-                .iter()
-                .copied()
-                .find(|format| !format.is_srgb())
-                .unwrap_or(capabilities.formats[0]);
-        }
-        surface_usages = capabilities.usages;
+        let format = window_format(wanted_format, &capabilities.formats);
+        lacks.extend(window_lacks(format, capabilities.usages));
+        target_format = format.unwrap_or(wanted_format);
         present_modes = capabilities.present_modes;
+    }
+    if !lacks.is_empty() {
+        return Err(refuse(name, lacks_text(backend, &lacks)));
     }
     // The format of the depth: a float depth with a stencil when the adapter has it. A
     // float depth is reversed: near 1, far 0 (`depth`). A fixed-point depth gains nothing
@@ -562,7 +552,6 @@ fn try_backend(
         device,
         queue,
         target_format,
-        surface_usages,
         present_modes,
         depth_format,
         samples,
@@ -623,6 +612,33 @@ fn lacks_text(backend: wgpu::Backends, lacks: &[String]) -> String {
 /// The lacks that a refusal names before their count ([`lacks_text`]).
 const LACKS_NAMED: usize = 3;
 
+/// The format of the window's picture: `wanted` when the surface offers it, else the first
+/// offered format that is not sRGB (the game gives colours that are ready for the screen),
+/// else the first offered. `None` when the surface offers no format.
+fn window_format(wanted: wgpu::TextureFormat, offered: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
+    if offered.contains(&wanted) {
+        return Some(wanted);
+    }
+    offered
+        .iter()
+        .copied()
+        .find(|format| !format.is_srgb())
+        .or_else(|| offered.first().copied())
+}
+
+/// What the window lacks: a format for its picture ([`window_format`]), and the copy into its
+/// picture, which the live frame needs (`COPY_DST` in the configuration of the surface).
+fn window_lacks(format: Option<wgpu::TextureFormat>, usages: wgpu::TextureUsages) -> Vec<String> {
+    let mut lacks = Vec::new();
+    if format.is_none() {
+        lacks.push("a format for the picture of the window (the surface offers none)".to_string());
+    }
+    if !usages.contains(wgpu::TextureUsages::COPY_DST) {
+        lacks.push("a copy into the picture of the window (COPY_DST)".to_string());
+    }
+    lacks
+}
+
 /// The box of the live start when no backend serves (the failure-path page, section 5, the
 /// code 20), and the log lines of the refusals; then the program ends with the code.
 pub(crate) fn refuse_live(refusals: &[Refusal]) -> ! {
@@ -639,10 +655,27 @@ pub(crate) fn refuse_live(refusals: &[Refusal]) -> ! {
         })
         .collect();
     let text = format!(
-        "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\nClose this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.",
+        "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\n{BOX_END}",
         why.join("\n")
     );
     gpu::refuse(crate::stream_format::EXIT_GPU, &reasons.join("\n"), &text)
+}
+
+/// The last lines of the boxes of a refusal at the start: what the player does.
+const BOX_END: &str = "Close this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.";
+
+/// The box of the live start when the window of this program cannot be made (the code 20, as
+/// for a device that cannot be used); then the program ends with the code.
+pub(crate) fn refuse_window(error: &str) -> ! {
+    gpu::refuse(
+        crate::stream_format::EXIT_GPU,
+        &format!("window: none: {error}"),
+        &window_refusal_text(error),
+    )
+}
+
+fn window_refusal_text(error: &str) -> String {
+    format!("The wgpu renderer of MGE XE cannot open its window: {error}.\n{BOX_END}")
 }
 
 #[cfg(test)]
@@ -726,6 +759,32 @@ mod tests {
             lacks_text(wgpu::Backends::VULKAN, &lacks[..3]),
             "lacks lack 1; lack 2; lack 3"
         );
+    }
+
+    #[test]
+    fn the_window_takes_the_wanted_format_else_one_without_srgb_else_the_first() {
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba8UnormSrgb};
+        assert_eq!(window_format(Bgra8Unorm, &[Rgba8Unorm, Bgra8Unorm]), Some(Bgra8Unorm));
+        assert_eq!(window_format(Bgra8Unorm, &[Rgba8UnormSrgb, Rgba8Unorm]), Some(Rgba8Unorm));
+        assert_eq!(window_format(Bgra8Unorm, &[Bgra8UnormSrgb]), Some(Bgra8UnormSrgb));
+        assert_eq!(window_format(Bgra8Unorm, &[]), None);
+    }
+
+    #[test]
+    fn a_window_without_a_format_or_a_copy_is_a_lack_of_its_backend() {
+        let all = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
+        assert!(window_lacks(Some(wgpu::TextureFormat::Bgra8Unorm), all).is_empty());
+        let lacks = window_lacks(None, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        assert_eq!(lacks.len(), 2);
+        assert!(lacks[0].contains("the surface offers none"));
+        assert!(lacks[1].contains("COPY_DST"));
+    }
+
+    #[test]
+    fn the_box_of_a_window_that_cannot_be_made_names_the_error_and_the_way_back() {
+        let text = window_refusal_text("the OS refused");
+        assert!(text.starts_with("The wgpu renderer of MGE XE cannot open its window: the OS refused.\n"));
+        assert!(text.ends_with(BOX_END));
     }
 
     #[test]
