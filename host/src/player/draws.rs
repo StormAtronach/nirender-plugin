@@ -409,13 +409,13 @@ impl Player {
         }
         // The buffers of the geometry record of the shape.
         let frame = renderer.geometry_frame;
-        let Some((vertex_buffer, index_buffer, base_vertex, geometry_first)) = renderer
+        let Some((vertex_buffer, index_buffer, base_vertex, geometry_first, particles)) = renderer
             .geometries
             .get_mut(&shape.geometry)
             .filter(|g| first_index + indexes <= g.entries)
             .map(|g| {
                 g.drawn_in = frame;
-                (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index)
+                (g.vertex.clone(), g.index.clone(), g.base_vertex, g.first_index, g.particles)
             })
         else {
             renderer.counts.geometry_short += 1;
@@ -530,6 +530,13 @@ impl Player {
         if crate::switches::switches().zero_light_key && crate::light_keys::has_no_lights(&draw_data) {
             draw_data.counts[3] |= crate::NO_LIGHTS_BIT;
             renderer.counts.zero_light_draws += 1;
+        }
+        // A particle with lights takes them at its corners when the frame asks for it (the
+        // setting `per_pixel_particles` off): a look, so also while a debug view is on.
+        let corners = self.parameters.as_ref().is_some_and(|p| p.particle_corners);
+        if corners && crate::light_keys::lights_at_corners(&draw_data, particles) {
+            draw_data.counts[3] |= crate::CORNER_LIGHT_BIT;
+            renderer.counts.corner_light_draws += 1;
         }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
         let clock = ticks::Clock::now();

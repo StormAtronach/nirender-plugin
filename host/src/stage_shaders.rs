@@ -146,10 +146,11 @@ const UBER_SET: [PipelineKey; 48] = [
 ];
 /// The bits of `counts.w` in a stage key: each one chooses a branch of `fs` or of the
 /// extension's shade (1 the extension shades, 2, 16, 32 the sun's shadow, 128 the light for
-/// each pixel, 512, and this crate's [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of
-/// the retained table also takes the bits of its kind from the scene (`draw_counts_w`): those
-/// stay values of the frame. The key keeps the bits in a `u16`.
-const SHADE_BITS: u32 = 1 | 2 | 16 | 32 | 128 | 512 | crate::NO_LIGHTS_BIT;
+/// each pixel, 512, and this crate's [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit at its
+/// corners, and [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained table
+/// also takes the bits of its kind from the scene (`draw_counts_w`): those stay values of the
+/// frame. The key keeps the bits in a `u16`.
+const SHADE_BITS: u32 = 1 | 2 | 16 | 32 | 128 | 512 | crate::CORNER_LIGHT_BIT | crate::NO_LIGHTS_BIT;
 const _: () = assert!(SHADE_BITS <= u16::MAX as u32, "the stage key keeps the shade bits in a u16");
 
 /// The codes that `fs` switches on for a draw. Only the stages below `count` are kept; the
@@ -1181,6 +1182,18 @@ mod tests {
         let without_lights = StageKey::of(&data).unwrap();
         assert_ne!(lit, without_lights);
         assert_eq!(u32::from(without_lights.shade), 1 | 16 | 128 | 512 | crate::NO_LIGHTS_BIT);
+    }
+
+    #[test]
+    fn the_corner_light_is_a_fact_of_the_key() {
+        let mut data = DrawData::zeroed();
+        data.counts[3] = 1 | 16 | 128 | 512;
+        data.flags = [1, 0, 1, 0];
+        let per_pixel = StageKey::of(&data).unwrap();
+        data.counts[3] |= crate::CORNER_LIGHT_BIT;
+        let corners = StageKey::of(&data).unwrap();
+        assert_ne!(per_pixel, corners);
+        assert_eq!(u32::from(corners.shade), 1 | 16 | 128 | 512 | crate::CORNER_LIGHT_BIT);
     }
 
     #[test]

@@ -215,6 +215,11 @@ pub struct FrameParameters {
     /// pixel (`world_lights_here` in the shader), not the lights the engine chose for it.
     /// `MGE_XE_LIGHTS=world` makes it true.
     pub world_lights: bool,
+    /// True when a particle draw lit for each pixel takes its lights at the corners of its
+    /// quads, in the vertex stage ([`crate::CORNER_LIGHT_BIT`]): the setting
+    /// `per_pixel_particles` off. A look the user chooses, not a key that removes invisible
+    /// work: it stays while a debug view is on. False (the default): each pixel.
+    pub particle_corners: bool,
     /// The reach of the extension's shadow map in units of the world, 0 without shadows:
     /// the plugin animates what the map reaches, so that a shadow moves while its caster
     /// is out of view.
@@ -656,6 +661,10 @@ pub trait Extension {
     ///   The shader's `fn fogged(color: vec3f, clear: f32) -> vec3f` gives the fog of the
     ///   draw: toward the fog colour, or darker with no fog colour for a draw that adds to
     ///   the picture ([`DrawFacts::adds_to_picture`]).
+    /// - Optional: `fn extension_corner_shade(world_position: vec3f, world_normal: vec3f,
+    ///   vertex_color: vec4f, color: vec4f) -> CornerShade`: in the vertex stage, the colour
+    ///   of a corner of a particle with [`crate::CORNER_LIGHT_BIT`] and the light it takes
+    ///   (`CornerShade { color, light }`). Without it the vertex stage's colour stays.
     ///
     /// The functions read the uniform of the draw as `draw` (see [`DrawData`]); the colour of
     /// such a draw is not kept between 0 and 1 after the stages.
@@ -668,8 +677,9 @@ pub trait Extension {
     /// world of the game into the back buffer with a perspective projection, when
     /// [`FrameParameters::shade`] is true. The extension sets bit 1 of `counts[3]` for a draw
     /// that its shader functions shade; bit 2 and the bits from 16 are its own, but
-    /// [`crate::NO_LIGHTS_BIT`], which the renderer sets after this call for a
-    /// draw lit for each pixel with no lights: its shader may leave its light loop out.
+    /// [`crate::NO_LIGHTS_BIT`] and [`crate::CORNER_LIGHT_BIT`], which the renderer sets after
+    /// this call: a draw lit for each pixel with no lights (its shader may leave its light loop
+    /// out), and a particle that takes its lights at its corners.
     fn shade(&mut self, _draw: &mut DrawData, _lights: &mut [LightData], _facts: &DrawFacts) {}
 
     /// The shade of the retained table for a frame, one time at the start of its world, when
