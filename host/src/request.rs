@@ -281,6 +281,84 @@ impl std::fmt::Display for Refusal {
     }
 }
 
+/// The steps of the request of one backend: each has a log line at its start and its time at
+/// its end, and the box of a hang names the step in progress ([`refuse_hang`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestStep {
+    /// Each try makes a new instance; for Vulkan it loads the loader and the layers that other
+    /// programs installed.
+    Instance = 1,
+    Surface = 2,
+    Adapter = 3,
+    Device = 4,
+}
+
+impl RequestStep {
+    const ALL: [RequestStep; 4] = [Self::Instance, Self::Surface, Self::Adapter, Self::Device];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Instance => "the instance",
+            Self::Surface => "the surface",
+            Self::Adapter => "the adapter",
+            Self::Device => "the device",
+        }
+    }
+
+    fn from_code(code: u8) -> Option<RequestStep> {
+        Self::ALL.into_iter().find(|step| *step as u8 == code)
+    }
+
+    /// The step of `MGE_XE_REQUEST_STALL` (its name without "the ").
+    pub(crate) fn from_switch(word: &str) -> Option<RequestStep> {
+        Self::ALL
+            .into_iter()
+            .find(|step| step.name().strip_prefix("the ") == Some(word))
+    }
+}
+
+/// The sleep of `MGE_XE_REQUEST_STALL`: longer than the limit of the request and the plugin's
+/// limit of 60 s, so that the null test (`MGE_XE_WATCHDOG=0`) ends by the plugin's limit.
+pub(crate) const STALL_SECONDS_FOR_TEST: u64 = 120;
+
+/// A step of the request in progress ([`step_begins`]).
+struct StepInProgress {
+    backend: wgpu::Backends,
+    step: RequestStep,
+    started: std::time::Instant,
+}
+
+/// The start of a step of the request: its log line, its name for the watchdog, and the sleep
+/// of `MGE_XE_REQUEST_STALL` (once, so on the first backend).
+fn step_begins(backend: wgpu::Backends, step: RequestStep) -> StepInProgress {
+    println!("gpu: {}: {}", backend_name(backend), step.name());
+    crate::watchdog::request_step(backend, step as u8);
+    static STALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if switches().request_stall == Some(step) && !STALLED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        println!("gpu: MGE_XE_REQUEST_STALL: {} sleeps {STALL_SECONDS_FOR_TEST} s", step.name());
+        std::thread::sleep(std::time::Duration::from_secs(STALL_SECONDS_FOR_TEST));
+    }
+    StepInProgress {
+        backend,
+        step,
+        started: std::time::Instant::now(),
+    }
+}
+
+impl StepInProgress {
+    /// The end of the step: its time in the log, then the check for a refusal that came while
+    /// it ran ([`gpu::after_request_step`]), before its result is used.
+    fn end(self) {
+        println!(
+            "gpu: {}: {}: {} ms",
+            backend_name(self.backend),
+            self.step.name(),
+            self.started.elapsed().as_millis()
+        );
+        gpu::after_request_step();
+    }
+}
+
 /// The backends in the order they are tried: a named one first, then the other; `auto`
 /// (the primary backends) is Vulkan, then Direct3D 12.
 fn order(backends: wgpu::Backends) -> Vec<wgpu::Backends> {
@@ -371,6 +449,7 @@ pub(crate) fn request(
     samples: u32,
 ) -> Result<Request, Vec<Refusal>> {
     let _log = crate::wgpu_log::RequestLog::begin();
+    let _watch = crate::watchdog::RequestWatch::begin();
     let mut refusals = Vec::new();
     for backend in order(backends) {
         match try_backend(backend, window.as_ref(), wanted_format, texture_slots, samples) {
@@ -409,17 +488,19 @@ fn try_backend(
     descriptor.flags.remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     descriptor.flags = descriptor.flags.with_env();
     descriptor.backend_options = backend_options();
+    let step = step_begins(backend, RequestStep::Instance);
     let instance = wgpu::Instance::new(descriptor);
+    step.end();
     // wgpu's own words when the backend did not load: only its debug line has them.
     let load_failure = crate::wgpu_log::take_backend_failure();
 
+    let step = step_begins(backend, RequestStep::Surface);
     let surface = match window {
-        None => None,
-        Some(WindowTarget::Own(window)) => Some(
-            instance
-                .create_surface(window.clone())
-                .map_err(|error| refuse(None, format!("made no surface on the window: {error}")))?,
-        ),
+        None => Ok(None),
+        Some(WindowTarget::Own(window)) => instance
+            .create_surface(window.clone())
+            .map(Some)
+            .map_err(|error| refuse(None, format!("made no surface on the window: {error}"))),
         // The game's window lives until the game ends, and this program ends with it.
         Some(WindowTarget::Game(handle)) => {
             use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
@@ -437,17 +518,23 @@ fn try_backend(
                     raw_window_handle: RawWindowHandle::Win32(window),
                 })
             };
-            Some(surface.map_err(|error| refuse(None, format!("made no surface on the window of the game: {error}")))?)
+            surface
+                .map(Some)
+                .map_err(|error| refuse(None, format!("made no surface on the window of the game: {error}")))
         }
     };
+    step.end();
+    let surface = surface?;
 
+    let step = step_begins(backend, RequestStep::Adapter);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: surface.as_ref(),
         force_fallback_adapter: false,
         ..Default::default()
-    }))
-    .map_err(|error| {
+    }));
+    step.end();
+    let adapter = adapter.map_err(|error| {
         let (mut words, update_driver) = no_adapter_words(backend, &error);
         // Direct3D 12 names no card: its reason for each card, from wgpu-hal.
         let no_card = matches!(&error, wgpu::RequestAdapterError::NotFound { no_adapter_backends, .. }
@@ -583,7 +670,8 @@ fn try_backend(
         samples_reason(asked, samples, adapter_formats)
     );
 
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let step = step_begins(backend, RequestStep::Device);
+    let made = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("nirender"),
         // The draws of an extension from the GPU (the distant statics of MGE XE) need the
         // first instance and the count of indirect draws, when the adapter has them.
@@ -617,8 +705,10 @@ fn try_backend(
         },
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()
-    }))
-    .map_err(|error| refuse(name.clone(), format!("the driver did not make the device ({error})")))?;
+    }));
+    step.end();
+    let (device, queue) =
+        made.map_err(|error| refuse(name.clone(), format!("the driver did not make the device ({error})")))?;
 
     Ok(Request {
         info,
@@ -810,6 +900,37 @@ fn live_refusal_text(refusals: &[Refusal]) -> String {
     )
 }
 
+/// The box of a hang at the start (the start page of D386, section 4): the request of the device
+/// was not done after `REQUEST_SECONDS`. From the watchdog thread, while the main thread is in
+/// the driver; then the program ends with the code `EXIT_GPU_HANG`. `step` is the code of the
+/// [`RequestStep`] in progress, 0 before the first.
+pub(crate) fn refuse_hang(backend: wgpu::Backends, step: u8, seconds: u64) -> ! {
+    let place = hang_place(backend, step);
+    gpu::refuse(
+        crate::stream_format::EXIT_GPU_HANG,
+        &format!("gpu: {place}: no answer for {seconds} s"),
+        &hang_refusal_text(&place),
+    )
+}
+
+/// The backend and the step of a hang, as the box names them ("vulkan: the device").
+fn hang_place(backend: wgpu::Backends, step: u8) -> String {
+    match RequestStep::from_code(step) {
+        Some(step) => format!("{}: {}", backend_name(backend), step.name()),
+        None => "before the first step of the request".to_string(),
+    }
+}
+
+fn hang_refusal_text(place: &str) -> String {
+    format!(
+        "The wgpu renderer of MGE XE cannot start on this graphics device.\n\
+         The graphics driver gave no answer for {} s ({place}).\n\
+         Close this box: the game closes. Update the graphics driver, or set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\n\
+         nirender-host.log in the folder of the game has the details.",
+        crate::stream_format::REQUEST_SECONDS
+    )
+}
+
 /// The last lines of the boxes of a refusal at the start: what the player does.
 const BOX_END: &str = "Close this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.";
 
@@ -951,6 +1072,36 @@ mod tests {
         assert!(!update);
         let (words, _) = no_adapter_words(vulkan, &wgpu::RequestAdapterError::EnvNotSet);
         assert_eq!(words, "gave no adapter: WGPU_ADAPTER_NAME not set");
+    }
+
+    #[test]
+    fn the_box_of_a_hang_names_the_backend_and_the_step() {
+        assert_eq!(
+            hang_place(wgpu::Backends::VULKAN, RequestStep::Device as u8),
+            "vulkan: the device"
+        );
+        assert_eq!(
+            hang_place(wgpu::Backends::DX12, RequestStep::Instance as u8),
+            "dx12: the instance"
+        );
+        assert_eq!(hang_place(wgpu::Backends::VULKAN, 0), "before the first step of the request");
+        let text = hang_refusal_text("vulkan: the device");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "The wgpu renderer of MGE XE cannot start on this graphics device.");
+        assert_eq!(lines[1], "The graphics driver gave no answer for 30 s (vulkan: the device).");
+        assert!(lines[2].starts_with("Close this box: the game closes. Update the graphics driver, or set"));
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn the_stall_switch_names_each_step() {
+        for step in RequestStep::ALL {
+            assert_eq!(RequestStep::from_code(step as u8), Some(step));
+        }
+        assert_eq!(RequestStep::from_switch("device"), Some(RequestStep::Device));
+        assert_eq!(RequestStep::from_switch("instance"), Some(RequestStep::Instance));
+        assert_eq!(RequestStep::from_switch("the device"), None);
+        assert_eq!(RequestStep::from_code(0), None);
     }
 
     #[test]

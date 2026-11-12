@@ -276,6 +276,13 @@ replays.
   window of it: for an A/B of the mouse's lag.
 - `MGE_XE_WATCHDOG=0`: no watchdog of the frame thread in the helper (`host/src/watchdog.rs`):
   for a test of the plugin's own limit, the allowance plus 5 s, on a helper that reads no record.
+  It also turns off the limit of the request of the device (30 s, then the box "The graphics
+  driver gave no answer" and the exit code 21): the plugin's limit of 60 s then ends a hang at
+  the start, with the exit code 31.
+- `MGE_XE_REQUEST_STALL=instance|surface|adapter|device`: the request of the device sleeps
+  120 s at the start of that step of its first backend, for the test of the limit of a hang at
+  the start: after 30 s the helper's box names the backend and the step, and the helper ends
+  with the exit code 21.
 - `MGE_XE_CORES=0`: the threads of the helper are left to the scheduler.
 - `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a full
   room; below 256 the adapter goes to texture tier C. With `MGE_XE_TEXTURE_TIER=a` the request

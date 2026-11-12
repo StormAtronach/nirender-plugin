@@ -25,7 +25,7 @@
 //! | --- | --- |
 //! | 0 | ended as asked |
 //! | 1 to 9 | its IPC host mode (`error.rs` of mgeHost64) |
-//! | 10 to 29 | a refusal with a message box of its own: 10 the stream format, 11 the extension format, 20 the GPU or the window ([`EXIT_GPU`]) |
+//! | 10 to 29 | a refusal with a message box of its own: 10 the stream format, 11 the extension format, 20 the GPU or the window ([`EXIT_GPU`]), 21 a driver that gave no answer at the start ([`EXIT_GPU_HANG`]) |
 //! | 30 | the watchdog of the helper: its frame thread made no progress for [`STALL_SECONDS`]; numidium.dmp written |
 //! | 31 | the plugin ended the helper: no read of the ring for the limit of its allowance ([`limit`]) |
 //! | 0xc0000409 | a Rust panic (the fast fail of the abort); numidium.dmp written by the panic hook |
@@ -253,6 +253,12 @@ pub const EXIT_EXTENSION_FORMAT: u32 = 11;
 /// their room, no BC compression, too few sampled textures, no surface. The live start exits
 /// with it, after its own box.
 pub const EXIT_GPU: u32 = 20;
+/// The graphics driver gave no answer at the start: the request of the device was not done
+/// after [`REQUEST_SECONDS`]. The watchdog thread of the helper refuses with its own box.
+pub const EXIT_GPU_HANG: u32 = 21;
+/// The seconds the request of the device may take before the helper refuses with
+/// [`EXIT_GPU_HANG`]: the limit of a long step, under the plugin's own limit.
+pub const REQUEST_SECONDS: u64 = LOADING_SECONDS;
 
 /// The watchdog of the helper found its frame thread stalled and ended the program.
 pub const EXIT_STALLED: u32 = 30;

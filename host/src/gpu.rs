@@ -410,6 +410,17 @@ fn turn(in_progress: u32) -> Turn {
     }
 }
 
+/// The end of a step of the request (the instance, the surface, the adapter, the device): when
+/// a refusal is in progress (the watchdog refused a hang while the step ran), this thread
+/// starts nothing more and waits behind it (the Architect's condition b of D388).
+pub(crate) fn after_request_step() {
+    if let Turn::Wait(first) = turn(REFUSING.load(Ordering::Acquire)) {
+        wait_behind(&format!(
+            "refusal: a step of the request ended during the refusal (code {first}); this thread waits"
+        ));
+    }
+}
+
 /// Logs `line` and waits without end behind the refusal in progress, whose box thread ends the
 /// program. The wait answers the messages sent to this thread's windows
 /// ([`answer_sent_messages`]): the main thread owns the child window in the game's window, and

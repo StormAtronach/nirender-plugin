@@ -79,9 +79,13 @@ pub(crate) struct Switches {
     /// `MGE_XE_WINDOW=game`: the surface goes on the window of the game itself, not on a
     /// child window of it: for an A/B of the mouse's lag.
     pub(crate) game_window: bool,
-    /// `MGE_XE_WATCHDOG=0`: no watchdog of the frame thread ([`crate::watchdog`]): for a test
-    /// of the plugin's own limit on a stalled helper.
+    /// `MGE_XE_WATCHDOG=0`: no watchdog of the frame thread and no limit of the request of the
+    /// device ([`crate::watchdog`]): for a test of the plugin's own limit on a stalled helper.
     pub(crate) watchdog: bool,
+    /// `MGE_XE_REQUEST_STALL=instance|surface|adapter|device`: the request of the device sleeps
+    /// [`crate::request::STALL_SECONDS_FOR_TEST`] at the start of that step of its first
+    /// backend, for the test of the limit of a hang at the start ([`crate::watchdog::RequestWatch`]).
+    pub(crate) request_stall: Option<crate::request::RequestStep>,
     /// `NIRENDER_FORCE_GROWTH=<n>`: every n frames the retained table grows on purpose, for
     /// the test of its growth; 0 is never.
     pub(crate) force_growth: u32,
@@ -148,6 +152,9 @@ impl Switches {
                 }),
             game_window: read.choice("MGE_XE_WINDOW", &["game", "child"]) == Some("game"),
             watchdog: read.on("MGE_XE_WATCHDOG") != Some(false),
+            request_stall: read
+                .choice("MGE_XE_REQUEST_STALL", &["instance", "surface", "adapter", "device"])
+                .and_then(crate::request::RequestStep::from_switch),
             force_growth: read.number("NIRENDER_FORCE_GROWTH").unwrap_or(0),
             growth_shots: read.text("NIRENDER_GROWTH_SHOTS"),
             force_segment_growth: read.number("NIRENDER_FORCE_SEGMENT_GROWTH").unwrap_or(0),
