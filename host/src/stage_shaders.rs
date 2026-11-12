@@ -514,6 +514,8 @@ pub(crate) struct StageShaders {
     pub(crate) failed_count: u32,
     pub(crate) uber_draws: u64,
     pub(crate) past_cap: u64,
+    /// The draws whose record has a code that does not fit a stage key: the uber-shader draws them.
+    pub(crate) no_key: u64,
     /// The keys of [`UBER_SET`] in this session, in its order, with the frame's samples in place. A search of it
     /// comes only at the first draw of a key of the uber-shader.
     uber_set: Vec<PipelineKey>,
@@ -557,6 +559,7 @@ impl StageShaders {
             failed_count: 0,
             uber_draws: 0,
             past_cap: 0,
+            no_key: 0,
             uber_set: Vec::new(),
             uber_ready: HashMap::new(),
             uber_drawn: HashSet::new(),
@@ -571,7 +574,10 @@ impl StageShaders {
         if !self.on {
             return 0;
         }
-        let Some(key) = StageKey::of(data) else { return 0 };
+        let Some(key) = StageKey::of(data) else {
+            self.no_key += 1;
+            return 0;
+        };
         self.intern(key)
     }
 
@@ -973,11 +979,12 @@ impl StageShaders {
 
     pub(crate) fn report(&self) -> String {
         format!(
-            "stage shaders: {} ({}), {} stage keys (cap {MAX_KEYS}, {} draws past it), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap), {} failed, {} draws on the uber-shader while their pipeline was not made",
+            "stage shaders: {} ({}), {} stage keys (cap {MAX_KEYS}, {} draws past it, {} draws with no key), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap), {} failed, {} draws on the uber-shader while their pipeline was not made",
             if self.on { "on" } else { "off" },
             if self.sync { "made at the first use" } else { "made on a thread" },
             self.keys.len() - 1,
             self.past_cap,
+            self.no_key,
             self.made_count,
             self.from_list,
             self.list_left_out,
