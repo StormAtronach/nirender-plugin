@@ -20,7 +20,7 @@ const LONG: f32 = 2.0;
 const SIGN: [&str; 4] = ["|", "/", "-", "\\"];
 /// The colour of the frame rate in the plain status view. It marks the renderer: on wgpu the
 /// number is green, on Direct3D 9 MGE XE draws it white, so the owner sees the renderer at a
-/// glance (the owner's choice, W400). A shadow of 1 pixel keeps it legible on a bright sky.
+/// glance (the owner's choice D364, W400). A shadow of 1 pixel keeps it legible on a bright sky.
 const RATE_COLOUR: egui::Color32 = egui::Color32::from_rgb(64, 232, 96);
 /// The shadow of the text of the plain status view, 1 pixel down and to the right.
 const TEXT_SHADOW: egui::Color32 = egui::Color32::from_black_alpha(192);
