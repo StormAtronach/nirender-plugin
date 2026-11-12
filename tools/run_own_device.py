@@ -1453,15 +1453,16 @@ def self_test_ending():
     """W372: the three endings of a run and their exit codes. The nulls: DONE gives 0, a hand end 3, and a planted
     abnormal exit or a dump the crash path (1), never 3."""
     by_hand = {"reason": "exited", "codes": [0]}
-    assert run_ending(True, {"reason": "done", "codes": []}, []) == ENDED_DONE
-    assert run_ending(False, by_hand, []) == ENDED_BY_HAND
-    assert run_ending(False, {"reason": "exited", "codes": [0xC0000005]}, []) == ENDED_OTHER, "a planted abnormal exit"
-    assert run_ending(False, by_hand, ["MWSE_MiniDump.dmp"]) == ENDED_OTHER, "a dump with exit code 0"
-    assert run_ending(False, {"reason": "exited", "codes": [None]}, []) == ENDED_OTHER, "a code not read"
-    assert run_ending(False, {"reason": "exited", "codes": []}, []) == ENDED_OTHER, "no code"
+    assert run_ending(True, {"reason": "done", "codes": []}, [], "a") == ENDED_DONE
+    assert run_ending(False, by_hand, [], "a") == ENDED_BY_HAND
+    assert run_ending(False, by_hand, [], None) == ENDED_OTHER, "code 0 before the first step: MWSE's check of MGE XE"
+    assert run_ending(False, {"reason": "exited", "codes": [0xC0000005]}, [], "a") == ENDED_OTHER, "a planted abnormal exit"
+    assert run_ending(False, by_hand, ["MWSE_MiniDump.dmp"], "a") == ENDED_OTHER, "a dump with exit code 0"
+    assert run_ending(False, {"reason": "exited", "codes": [None]}, [], "a") == ENDED_OTHER, "a code not read"
+    assert run_ending(False, {"reason": "exited", "codes": []}, [], "a") == ENDED_OTHER, "no code"
     for reason in ("timeout", "stopped", "never started"):
-        assert run_ending(False, {"reason": reason, "codes": []}, []) == ENDED_OTHER, reason
-    assert run_ending(False, {}, []) == ENDED_OTHER, "a harness with no LAST_END"
+        assert run_ending(False, {"reason": reason, "codes": []}, [], "a") == ENDED_OTHER, reason
+    assert run_ending(False, {}, [], "a") == ENDED_OTHER, "a harness with no LAST_END"
     assert [run_exit_code(False, False, *pair) for pair in ((True, ENDED_DONE), (False, ENDED_BY_HAND), (False, ENDED_OTHER))] == [0, 3, 1]
     assert run_exit_code(True, True, False, ENDED_BY_HAND) == 2, "a reference run that loaded the plugin"
     progress = ["steps: interior,shaders (4)", "going to 'x'", "step interior: true ", "shader batch: start: run true",
@@ -1483,7 +1484,9 @@ def self_test_ending():
             session.harness.LAST_END = dict(by_hand)
             with contextlib.redirect_stdout(io.StringIO()) as said:
                 assert report_ending(FakeRun(folder), False, progress) == ENDED_BY_HAND
-            assert said.getvalue() == "ended by hand after step sh-live (the game closed without DONE, with exit code 0)\n", said.getvalue()
+            assert said.getvalue() == "ended without DONE after step sh-live, with exit code 0 (a close from outside, or the game's own exit)\n", said.getvalue()
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                assert report_ending(FakeRun(folder), False, progress[:2]) == ENDED_OTHER and said.getvalue() == "", "no step started"
             with open(os.path.join(folder, session.harness.DUMPS_FILE), "w", encoding="ascii") as dumps:
                 dumps.write("E:/x/Morrowind.exe.1.dmp\n")
             with contextlib.redirect_stdout(io.StringIO()) as said:
@@ -2284,22 +2287,25 @@ def main():
     return run_exit_code(no_plugin, loaded, done, ending)
 
 
-# The endings of a run (W372): DONE came; the game closed by itself without DONE and with exit code 0, which is a hand
-# end (taskkill without /F, or a close by the owner, gives 0x00000000); or any other end, the crash path among them.
+# The endings of a run (W372): DONE came; the game closed by itself without DONE, after a step started, with exit code
+# 0 and no dump, which is a close from outside (taskkill without /F, a close by the owner or the Coordinator) or the
+# game's own exit (a mod's os.exit(0)): the runner cannot tell them apart; or any other end, the crash path among
+# them. A code 0 before the first step stays on the old path: MWSE's check of MGE XE exits with 0 at the start.
 ENDED_DONE, ENDED_BY_HAND, ENDED_OTHER = "done", "by hand", "other"
 EXIT_ENDED_BY_HAND = 3
 STEP_LINE = re.compile(r"^step (\S+?):")
 SHADER_SET_LINE = re.compile(r"^shader batch: (\S+?): ")
 
 
-def run_ending(done, end, crash_files):
-    """The ending of a run, from the harness's LAST_END and the dumps of the run folder. A hand end needs the game's
-    own close ("exited") with every exit code read and 0, and no dump: an abnormal code, a code not read or a dump
-    is the crash path."""
+def run_ending(done, end, crash_files, step):
+    """The ending of a run, from the harness's LAST_END, the dumps of the run folder and the last step that started
+    (`last_step`). A hand end needs the game's own close ("exited") with every exit code read and 0, no dump, and a
+    step that started: an abnormal code, a code not read or a dump is the crash path, and an exit before the first
+    step stays 1 (verdict 235)."""
     if done:
         return ENDED_DONE
     codes = end.get("codes") or []
-    if end.get("reason") == "exited" and codes and all(code == 0 for code in codes) and not crash_files:
+    if step and end.get("reason") == "exited" and codes and all(code == 0 for code in codes) and not crash_files:
         return ENDED_BY_HAND
     return ENDED_OTHER
 
@@ -2308,9 +2314,10 @@ def report_ending(run, done, progress):
     """The ending of `run` from the harness's LAST_END (absent in a harness from before W372: the crash path, as before)
     and the dumps that the harness moved into the run folder; prints the line of a hand end. Returns the ending."""
     dumps = [path for path in (run.path("MWSE_MiniDump.dmp"), run.path(session.harness.DUMPS_FILE)) if os.path.isfile(path)]
-    ending = run_ending(done, getattr(session.harness, "LAST_END", {}), dumps)
+    step = last_step(progress)
+    ending = run_ending(done, getattr(session.harness, "LAST_END", {}), dumps, step)
     if ending == ENDED_BY_HAND:
-        print("ended by hand after step %s (the game closed without DONE, with exit code 0)" % (last_step(progress) or "none: before the first step"))
+        print("ended without DONE after step %s, with exit code 0 (a close from outside, or the game's own exit)" % step)
     return ending
 
 
