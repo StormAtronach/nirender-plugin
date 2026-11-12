@@ -172,7 +172,12 @@ impl Stream {
             shape.lights.len() / STATE_LIGHT_SIZE
         };
         counts.most_lights = counts.most_lights.max(lights as u32);
-        data.light_range = [frame_lights.len() as u32, lights as u32, 0, flat_shading_bit(derived)];
+        data.light_range = [
+            frame_lights.len() as u32,
+            lights as u32,
+            0,
+            flat_shading_bit(derived) | adds_bit(pass.blend),
+        ];
         data.counts[0] = lights as u32;
         if let Some((first, _)) = self.shape_bones {
             // A skinned shape: the vertex blend reads four bones of the palette of the frame, or

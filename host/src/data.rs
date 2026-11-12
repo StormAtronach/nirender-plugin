@@ -201,7 +201,8 @@ pub struct DrawData {
     /// z: the first bone of a skinned draw in the palette buffer of the frame. w: bit 1
     /// when the light of a pixel of the draw can come from the clusters of the frame
     /// (`cluster_lights` in the shader) in place of the lights of the draw; bit 2 when the
-    /// world matrix of the draw comes from its instance.
+    /// world matrix of the draw comes from its instance; bit 64 when the draw adds to the
+    /// picture ([`crate::adds_to_picture`]).
     pub light_range: [u32; 4],
     /// The lights of the draw among the clustered lights of the frame, one bit for each
     /// slot (`Clusters::note`): a pixel of the draw takes a light of its cluster only when

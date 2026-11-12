@@ -4,10 +4,10 @@
 //! `fs` switches on (the stage count, the colour and alpha operations and their arguments, the
 //! alpha test function), and the facts of the draw that choose the branches of `fs` and of the
 //! extension's shade (the bits of `counts.w` in [`SHADE_BITS`], the lighting and normal flags,
-//! and whether the draw takes the scene's values). For each key the helper makes a fragment
-//! shader from the world shader's own text, with those codes and facts as constants and the
-//! reads of the stages past the count left out. The arithmetic is the same; the switches, the
-//! branches that the key's draws cannot take and the record loads go.
+//! whether the draw takes the scene's values, and whether it adds to the picture). For each key
+//! the helper makes a fragment shader from the world shader's own text, with those codes and
+//! facts as constants and the reads of the stages past the count left out. The arithmetic is the
+//! same; the switches, the branches that the key's draws cannot take and the record loads go.
 //!
 //! The world shader stays as the uber-shader: it draws a key until that key's pipeline is made,
 //! when a pipeline fails, past the cap on the keys, and with `MGE_XE_STAGE_SHADERS=0`. It is
@@ -46,8 +46,8 @@ const STAGES: usize = 6;
 /// The first line of the list, then [`LIST_FORMAT`] and the hash of the world shader's text.
 const LIST_HEADER: &str = "numidium stage pipelines";
 /// The format of the list's lines; it is in the list's file name too ([`list_name`]). 3: the
-/// key's shade bits have [`crate::NO_LIGHTS_BIT`].
-const LIST_FORMAT: u32 = 3;
+/// key's shade bits have [`crate::NO_LIGHTS_BIT`]. 4: the key has the add bit (`adds`).
+const LIST_FORMAT: u32 = 4;
 /// The frames between two writes of a changed list.
 const SAVE_FRAMES: u32 = 600;
 /// The list's pipelines go to the thread while it has fewer jobs than this, so that a key of
@@ -56,7 +56,7 @@ const LIST_BATCH: usize = 4;
 /// The stage keys that the list may take; the rest of the cap is for the keys of first use.
 const LIST_KEYS: usize = MAX_KEYS / 2;
 /// The words of a stage key in the list.
-const KEY_WORDS: usize = 6 + STAGES * 7;
+const KEY_WORDS: usize = 7 + STAGES * 7;
 
 /// The samples of a key of [`UBER_SET`] that draws into the frame's targets. [`StageShaders::start`] puts the
 /// frame's count in its place: it is the user's multisample setting.
@@ -170,6 +170,9 @@ pub(crate) struct StageKey {
     normal: u8,
     /// Bit 4 of `light_range.w`: the draw takes the scene's values (`from_scene`).
     scene: bool,
+    /// Bit 64 of `light_range.w`: the draw adds to the picture ([`crate::adds_to_picture`]),
+    /// and `fogged` makes it darker in the fog.
+    adds: bool,
 }
 
 impl StageKey {
@@ -187,6 +190,7 @@ impl StageKey {
             lit: small(data.flags[0])?,
             normal: small(data.flags[1])?,
             scene: data.light_range[3] & 4 != 0,
+            adds: data.light_range[3] & crate::ADDS_BIT != 0,
             ..Default::default()
         };
         for stage in 0..count as usize {
@@ -210,6 +214,7 @@ impl StageKey {
             self.lit as u32,
             self.normal as u32,
             self.scene as u32,
+            self.adds as u32,
         ];
         for stage in 0..STAGES {
             words.extend(self.color[stage].iter().map(|&v| v as u32));
@@ -226,10 +231,10 @@ impl StageKey {
         let shade = u16::try_from(words[2])
             .ok()
             .filter(|&shade| shade as u32 & !SHADE_BITS == 0)?;
-        let scene = match words[5] {
-            0 => false,
-            1 => true,
-            _ => return None,
+        let flag = |word: u32| match word {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
         };
         let mut key = StageKey {
             count: small(words[0])?,
@@ -237,14 +242,15 @@ impl StageKey {
             shade,
             lit: small(words[3])?,
             normal: small(words[4])?,
-            scene,
+            scene: flag(words[5])?,
+            adds: flag(words[6])?,
             ..Default::default()
         };
         if key.count as usize > STAGES {
             return None;
         }
         for stage in 0..STAGES {
-            let at = 6 + stage * 7;
+            let at = 7 + stage * 7;
             for part in 0..4 {
                 key.color[stage][part] = small(words[at + part])?;
             }
@@ -313,10 +319,11 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
 }
 
 /// The text with the draw's facts of the key as constants, so that the compiler leaves out the
-/// branches that the key's draws cannot take: `from_scene` returns the key's scene bit, a read
-/// of the record's `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits
-/// of a retained draw stay values of the frame), and the reads of `flags.x` and `flags.y` are the
-/// key's values. None when the text lacks one of these parts.
+/// branches that the key's draws cannot take: `from_scene` returns the key's scene bit, the test
+/// of `fogged` for a draw that adds to the picture is the key's add bit, a read of the record's
+/// `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits of a retained
+/// draw stay values of the frame), and the reads of `flags.x` and `flags.y` are the key's values.
+/// None when the text lacks one of these parts.
 fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
     let scene_test = "fn from_scene() -> bool {\n    return (draws[record].light_range.w & 4u) != 0u;\n}\n";
     if source.matches(scene_test).count() != 1 {
@@ -327,6 +334,13 @@ fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
         &format!("fn from_scene() -> bool {{\n    return {};\n}}\n", key.scene),
         1,
     );
+
+    // The one test of the add bit is in `fogged`, which `fs` and the extension's finish call.
+    let adds_test = format!("(draws[record].light_range.w & {}u) != 0u", crate::ADDS_BIT);
+    if source.matches(&adds_test).count() != 1 {
+        return None;
+    }
+    let source = source.replacen(&adds_test, &key.adds.to_string(), 1);
 
     let counts_w = "draws[record].counts.w";
     if !source.contains(counts_w) {
@@ -500,6 +514,8 @@ pub(crate) struct StageShaders {
     pub(crate) failed_count: u32,
     pub(crate) uber_draws: u64,
     pub(crate) past_cap: u64,
+    /// The draws whose record has a code that does not fit a stage key: the uber-shader draws them.
+    pub(crate) no_key: u64,
     /// The keys of [`UBER_SET`] in this session, in its order, with the frame's samples in place. A search of it
     /// comes only at the first draw of a key of the uber-shader.
     uber_set: Vec<PipelineKey>,
@@ -543,6 +559,7 @@ impl StageShaders {
             failed_count: 0,
             uber_draws: 0,
             past_cap: 0,
+            no_key: 0,
             uber_set: Vec::new(),
             uber_ready: HashMap::new(),
             uber_drawn: HashSet::new(),
@@ -557,7 +574,10 @@ impl StageShaders {
         if !self.on {
             return 0;
         }
-        let Some(key) = StageKey::of(data) else { return 0 };
+        let Some(key) = StageKey::of(data) else {
+            self.no_key += 1;
+            return 0;
+        };
         self.intern(key)
     }
 
@@ -959,11 +979,12 @@ impl StageShaders {
 
     pub(crate) fn report(&self) -> String {
         format!(
-            "stage shaders: {} ({}), {} stage keys (cap {MAX_KEYS}, {} draws past it), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap), {} failed, {} draws on the uber-shader while their pipeline was not made",
+            "stage shaders: {} ({}), {} stage keys (cap {MAX_KEYS}, {} draws past it, {} draws with no key), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap), {} failed, {} draws on the uber-shader while their pipeline was not made",
             if self.on { "on" } else { "off" },
             if self.sync { "made at the first use" } else { "made on a thread" },
             self.keys.len() - 1,
             self.past_cap,
+            self.no_key,
             self.made_count,
             self.from_list,
             self.list_left_out,
@@ -1059,17 +1080,18 @@ mod tests {
     #[test]
     fn each_set_of_facts_gives_valid_wgsl() {
         let world = world();
-        for (shade, lit, normal, scene) in [
-            (0, 0, 0, false),
-            (SHADE_BITS as u16, 1, 1, true),
-            (1 | 32 | 128, 1, 0, false),
-            (2 | 16 | 512, 0, 1, true),
+        for (shade, lit, normal, scene, adds) in [
+            (0, 0, 0, false, false),
+            (SHADE_BITS as u16, 1, 1, true, true),
+            (1 | 32 | 128, 1, 0, false, true),
+            (2 | 16 | 512, 0, 1, true, false),
         ] {
             let key = StageKey {
                 shade,
                 lit,
                 normal,
                 scene,
+                adds,
                 ..key(1, 0)
             };
             let source = fragment_source(&world, &key).expect("the rewrite finds its parts");
@@ -1088,6 +1110,7 @@ mod tests {
         };
         let source = fragment_source(&world(), &key).unwrap();
         assert!(source.contains("fn from_scene() -> bool {\n    return false;\n}\n"));
+        assert!(!source.contains("light_range.w & 64u"));
         assert!(!source.contains("draws[record].flags.x"));
         assert!(!source.contains("draws[record].flags.y"));
         let masked = format!("((draws[record].counts.w & {}u) | 33u)", !SHADE_BITS);
@@ -1114,13 +1137,38 @@ mod tests {
         let mut data = DrawData::zeroed();
         data.counts[3] = 1 | 4 | 32 | 1024;
         data.flags = [1, 1, 0, 0];
-        data.light_range[3] = 4 | 1;
+        data.light_range[3] = 4 | 1 | crate::ADDS_BIT;
         let key = StageKey::of(&data).unwrap();
-        assert_eq!((key.shade, key.lit, key.normal, key.scene), (1 | 32, 1, 1, true));
+        assert_eq!(
+            (key.shade, key.lit, key.normal, key.scene, key.adds),
+            (1 | 32, 1, 1, true, true)
+        );
         // A bit outside SHADE_BITS (4 the sky, 1024) does not split a key.
         let mut other = data;
         other.counts[3] = 1 | 32;
         assert_eq!(StageKey::of(&other), Some(key));
+    }
+
+    #[test]
+    fn the_add_bit_is_a_constant_of_the_key() {
+        // A draw that adds and one that does not take two keys, and each key's `fogged` has the
+        // test as a constant: the code of a draw that does not add has no branch on the bit (W287).
+        let mut data = DrawData::zeroed();
+        data.counts[3] = 1 | 128;
+        data.flags = [1, 1, 0, 0];
+        let other = StageKey::of(&data).unwrap();
+        data.light_range[3] = crate::ADDS_BIT;
+        let adding = StageKey::of(&data).unwrap();
+        assert_ne!(other, adding);
+
+        let world = world();
+        for (key, constant) in [(other, "if false {"), (adding, "if true {")] {
+            let source = fragment_source(&world, &key).unwrap();
+            let fogged = &source[source.find("fn fogged(").unwrap()..];
+            let fogged = &fogged[..fogged.find("\n}\n").unwrap()];
+            assert!(fogged.contains(constant), "{fogged}");
+            assert!(!source.contains("light_range.w & 64u"));
+        }
     }
 
     #[test]
@@ -1201,12 +1249,17 @@ mod tests {
     fn a_key_and_a_pipeline_go_through_the_list() {
         let stage = StageKey {
             scene: true,
+            adds: true,
             ..key(2, 5)
         };
         assert_eq!(StageKey::from_words(&stage.words()), Some(stage));
         // A bit outside SHADE_BITS is not a key of this build.
         let mut words = stage.words();
         words[2] |= 4;
+        assert_eq!(StageKey::from_words(&words), None);
+        // The add bit is a flag: another value is not a key of this build.
+        let mut words = stage.words();
+        words[6] = 2;
         assert_eq!(StageKey::from_words(&words), None);
         let pipeline = PipelineKey {
             fvf: 0x152,

@@ -207,6 +207,13 @@ fn draw_fog() -> vec4f {
     }
     return draws[record].fog;
 }
+// The colour of a pixel in the fog (`clear` 1 is no fog). A draw that adds to the picture
+// (bit 64 of `light_range.w`, `adds_to_picture`) gets darker and takes no fog colour, as
+// MGE XE's Direct3D 9 FFE does; any other draw goes toward the fog colour.
+fn fogged(color: vec3f, clear: f32) -> vec3f {
+    if (draws[record].light_range.w & 64u) != 0u { return color * clear; }
+    return mix(draw_fog_color().rgb, color, clear);
+}
 fn draw_clip_plane() -> vec4f {
     if from_scene() { return scene.clip_plane; }
     return draws[record].clip_plane;
@@ -727,5 +734,5 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     if (draw_counts_w() & 8u) != 0u {
         return vec4f(extension_sky_color(normalize(inp.world_position), inp.clip.xy), current.a);
     }
-    return vec4f(mix(draw_fog_color().rgb, current.rgb, clear), current.a);
+    return vec4f(fogged(current.rgb, clear), current.a);
 }
