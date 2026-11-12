@@ -1,6 +1,8 @@
 """The resting build: puts a build of `cargo xtask dist` into both test installs, and keeps a copy of it.
 
     python -I tools/deploy_rest.py --build <dist-staging> [--plugin-commit SHA] [--mge-commit SHA] [--tag NAME] [--no-keep] [--dry-run]
+    python -I tools/deploy_rest.py --build <dist-staging> --mwse-dll <MWSE.dll> [...]   # the build and its MWSE together
+    python -I tools/deploy_rest.py --mwse-dll <MWSE.dll> [--tag NAME] [--dry-run]       # an MWSE.dll beside the installed plugin
     python -I tools/deploy_rest.py --self-test    # the tests: scratch installs, no game, nothing of the real installs
 
 The merge step runs this as the stage "deploy rest" (the owner's D193: the test installs always hold the latest build).
@@ -28,9 +30,20 @@ when given (the merge step gives the commits it checks). WHAT.txt names the comm
 
 Unless --no-keep, it keeps the build as the next set folder f<N> of SETS (E:\\nirender-keep\\mgebuilds) with no pdb, the
 plugin beside it as akulakhan-<commit>.dll, and a one-line WHAT.txt: the same shape as the play sets of make_play_set.py.
-The tag of the backups is that name. The copy to E: is the stage's write on the evidence disk: the merge step runs this
-stage only in a round that holds the game slot (the stages of the replay gate), and the stage refuses while a game runs.
+The tag of the backups is that name. The copy to E: is the stage's write on the evidence disk: the merge step holds the
+game slot in a round with this stage (its GAME_STAGES), and the stage refuses while a game runs.
 The output prints the MD5 of d3d8.dll, numidium.exe and akulakhan.dll. --dry-run reads the installs and writes nothing.
+
+--mwse-dll (W406) puts that MWSE.dll into each install too, at its place in MWSE_DEPLOYS, after the build: a plugin that
+needs a new MWSE and that MWSE go together, under one backup tag. Without --build it puts only the MWSE.dll, beside the
+plugin that the installs hold. Before any write (and in the dry run) it probes the DLL for the MWSE features that the
+plugin needs (tools/check_mwse_sites.py --features, which runs the plugin's tests through cargo: a compile, so take a
+build place first when you run it by hand): a missing required feature refuses with exit code 4
+(MISSING_FEATURE_EXIT), any other failure of the probe is exit code 1, and nothing is written. The probe is the code of
+this tree, so the tree must be at the commit of the plugin that goes beside the DLL, with no change in src/: the build's
+plugin, or without --build the plugin of both installs (one commit). The output and WHAT.txt name the MD5 of the
+MWSE.dll. A fault of the MWSE copy after the build was written says so: the installs may then hold the new plugin
+beside the old MWSE.dll, and the replaced files are in the backups.
 """
 import argparse
 import dataclasses
@@ -44,7 +57,8 @@ import tempfile
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import REPO, local, parts_problems  # noqa: E402
+from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
+from common import BUILD_ID_RE, REPO, git_env, local, parts_problems, same_commit  # noqa: E402
 from make_play_set import say  # noqa: E402
 from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
 import symbols  # noqa: E402
@@ -55,6 +69,14 @@ REST_INSTALLS = local("rest_installs", {
     "Morrowind75testing": {"root": "D:/Modlists/Morrowind75testing", "mge_mod": "MGE XE G7 Fork", "nirender_mod": "nirender"},
     "Outlander-test": {"root": "D:/Modlists/Outlander-test", "mge_mod": "MGE XE G7", "nirender_mod": "nirender"},
 })
+# The MWSE.dll that each test install has deployed (the line build), by install: the "mwse features" and "mwse sites"
+# stages of merge_step.py check these, and --mwse-dll writes them. Never a `Harness - *` mod: a live run puts its own
+# MWSE.dll there for its game hold. The key "mwse_deploys" of local.json changes the places.
+MWSE_DEPLOYS = local("mwse_deploys", {
+    "Morrowind75testing": "D:/Modlists/Morrowind75testing/mods/MWSE/Root/MWSE.dll",
+    "Outlander-test": "D:/Modlists/Outlander-test/mods/MWSE-Update for Nightly Builds/Root/MWSE.dll",
+})
+CHECK_MWSE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_mwse_sites.py")
 # The programs that stop a deploy, as a part of the name of the image (without the case).
 BUSY_PROGRAMS = ("morrowind", "numidium", "modorganizer")
 REFUSED_EXIT = 3
@@ -81,6 +103,10 @@ class DeployError(Exception):
 
 class Refused(DeployError):
     """A game or Mod Organizer runs: the deploy writes nothing and does not wait."""
+
+
+class MissingFeature(DeployError):
+    """The MWSE.dll lacks a feature that the plugin needs: the deploy writes nothing."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -200,19 +226,93 @@ def put(build, item, install, tag, copy=shutil.copyfile):
     source = os.path.join(build, *item.source.split("/"))
     folder = mod_folder(install, item.mod)
     dest = os.path.join(folder, *item.dest.split("/"))
+    backup = os.path.join(install["root"], "mge-backup-" + tag, os.path.basename(folder), *item.dest.split("/"))
+    return replace_file(source, dest, backup, copy, item.source)
+
+
+def replace_file(source, dest, backup, copy=shutil.copyfile, label=None):
+    """Copies `source` to `dest`: 'unchanged' when they are equal, else 'copied' after the backup of the file it replaces
+    to `backup` (only when there is no backup yet). Raises DeployError when the copy does not equal its source."""
     digest = md5_of(source)
     if os.path.isfile(dest):
         if md5_of(dest) == digest:
             return "unchanged"
-        backup = os.path.join(install["root"], "mge-backup-" + tag, os.path.basename(folder), *item.dest.split("/"))
         if not os.path.exists(backup):
             os.makedirs(os.path.dirname(backup), exist_ok=True)
             shutil.copy2(dest, backup)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     copy(source, dest)
     if md5_of(dest) != digest:
-        raise DeployError("MD5 MISMATCH after the copy of %s to %s" % (item.source, dest))
+        raise DeployError("MD5 MISMATCH after the copy of %s to %s" % (label or source, dest))
     return "copied"
+
+
+def plugin_commit_of(dll):
+    """The commit in the build id of a plugin file, with its "-dirty"; DeployError when it holds no single id."""
+    with open(dll, "rb") as file:
+        ids = sorted({m.group(2).decode() + (m.group(3) or b"").decode() for m in BUILD_ID_RE.finditer(file.read()) if m.group(1) == b"nirender"})
+    if len(ids) != 1:
+        raise DeployError("%s holds %s build id of nirender%s" % (dll, "no" if not ids else "%d different" % len(ids), ": " + ", ".join(ids) if ids else ""))
+    return ids[0]
+
+
+def installed_plugin_commit(installs):
+    """The commit of the plugin that every install holds; DeployError when the installs hold plugins of two commits."""
+    commits = {name: plugin_commit_of(os.path.join(mod_folder(install, "nirender"), "MWSE", "lib", "akulakhan.dll")) for name, install in installs.items()}
+    if len(set(commits.values())) != 1:
+        raise DeployError("the installs hold plugins of different commits (%s): deploy a build with the MWSE.dll" % ", ".join("%s %s" % item for item in sorted(commits.items())))
+    return next(iter(commits.values()))
+
+
+def tree_head():
+    """The commit of this tree, with "-dirty" when src/ has a tracked change: the probe of the features is its code."""
+    head = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"], capture_output=True, text=True, env=git_env()).stdout.strip()
+    changed = subprocess.run(["git", "-C", REPO, "diff", "--quiet", "HEAD", "--", "src"], env=git_env()).returncode != 0
+    return head + ("-dirty" if changed else "")
+
+
+def probe_features(dll):
+    """tools/check_mwse_sites.py --features on `dll`, in this tree: (exit code, output)."""
+    done = subprocess.run([sys.executable, "-I", CHECK_MWSE, "--features", dll], cwd=REPO, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
+    return done.returncode, done.stdout + done.stderr
+
+
+def mwse_backup(install, dest, tag):
+    """The backup of an install's MWSE.dll: below mge-backup-<tag> by its path below the install's mods folder."""
+    mods = os.path.join(install["root"], "mods")
+    below = os.path.relpath(dest, mods)
+    return os.path.join(install["root"], "mge-backup-" + tag, below if not below.startswith("..") else os.path.basename(dest))
+
+
+def mwse_targets(mwse_dll, installs, plugin_commit, deploys, probe, tree_commit):
+    """The place of the MWSE.dll in each install, {install name: path}, after the checks before any write: the file, the
+    tree at the plugin's commit, the probe of the features, a place for each install in an existing folder. Raises
+    MissingFeature when the probe names a missing required feature, DeployError on any other fault."""
+    if not os.path.isfile(mwse_dll):
+        raise DeployError("no file %s" % mwse_dll)
+    tree = tree_commit()
+    # same_commit compares by the start, so a "-dirty" tree would pass it.
+    if tree.endswith("-dirty") or not same_commit(tree, plugin_commit):
+        raise DeployError("the probe of the features is the code of this tree, at %s, but the plugin that goes beside %s is %s: run this in a tree at %s with no change in src/" % (
+            tree, mwse_dll, plugin_commit, plugin_commit))
+    code, output = probe(mwse_dll)
+    for line in output.splitlines():
+        if line.startswith(("feature: ", MISSING, "absent: ", "md5: ")):
+            say("  " + line)
+    if code == MISSING_FEATURE_EXIT:
+        missing = [line[len(MISSING):] for line in output.splitlines() if line.startswith(MISSING)]
+        raise MissingFeature("MISSING FEATURE: %s lacks MWSE features that the plugin %s needs: %s" % (mwse_dll, plugin_commit, "; ".join(missing) or "see the probe"))
+    if code != 0:
+        raise DeployError("the probe of the features of %s failed with exit code %d: %s" % (mwse_dll, code, (output.strip().splitlines() or ["no output"])[-1]))
+    targets = {}
+    for name in installs:
+        if name not in deploys:
+            raise DeployError("no place of the MWSE.dll of %s in mwse_deploys" % name)
+        if not os.path.isdir(os.path.dirname(deploys[name])):
+            raise DeployError("%s has no folder %s: the deploy makes none" % (name, os.path.dirname(deploys[name])))
+        targets[name] = deploys[name]
+    return targets
 
 
 def deploy(build, installs, tag, items, copy=shutil.copyfile):
@@ -281,27 +381,44 @@ def check_parts(build, plugin_commit=None, mge_commit=None):
 
 
 def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile,
-        add_symbols=None):
+        add_symbols=None, mwse_dll=None, mwse_deploys=None, probe=probe_features, tree_commit=tree_head):
     """The whole deploy. Returns the exit code. `add_symbols` (symbols.add from the command line) puts the build's pdbs
-    into the symbol store: the pdbs of render-link's tree around the dist-staging folder, and of this tree's plugin."""
-    items, left_out = plan_of(files_below(build))
-    check_sources(build, items)
+    into the symbol store: the pdbs of render-link's tree around the dist-staging folder, and of this tree's plugin.
+    `mwse_dll` goes into each install at its place of `mwse_deploys` (MWSE_DEPLOYS), after the build, or alone when
+    `build` is None; `probe` and `tree_commit` are the probe of its features and the commit of the probe's code."""
+    if build is None and mwse_dll is None:
+        raise DeployError("nothing to deploy: give a build, an MWSE.dll or both")
     check_installs(installs)
-    plugin_commit, mge_commit = check_parts(build, plugin_commit, mge_commit)
-    say("parts: one build of nirender-plugin %s and render-link %s" % (plugin_commit, mge_commit))
-    digests = [(label, md5_of(os.path.join(build, *path.split("/")))) for label, path in NAMED_DIGESTS]
+    items, left_out, digests = [], [], []
+    if build is not None:
+        items, left_out = plan_of(files_below(build))
+        check_sources(build, items)
+        plugin_commit, mge_commit = check_parts(build, plugin_commit, mge_commit)
+        say("parts: one build of nirender-plugin %s and render-link %s" % (plugin_commit, mge_commit))
+        digests = [(label, md5_of(os.path.join(build, *path.split("/")))) for label, path in NAMED_DIGESTS]
+    targets = {}
+    if mwse_dll is not None:
+        beside = plugin_commit if build is not None else installed_plugin_commit(installs)
+        targets = mwse_targets(mwse_dll, installs, beside, MWSE_DEPLOYS if mwse_deploys is None else mwse_deploys, probe, tree_commit)
+        say("MWSE.dll %s: has every MWSE feature that the plugin %s needs" % (mwse_dll, beside))
+        digests.append(("MWSE.dll", md5_of(mwse_dll)))
     if dry_run:
-        say("dry run: %d items for each of %d installs; nothing is written" % (len(items), len(installs)))
-        for name, changed in would_copy(build, installs, items).items():
-            first = ": " + ", ".join(changed[:5]) + (", ..." if len(changed) > 5 else "") if changed else ""
-            say("  %s: would copy %d, unchanged %d%s" % (name, len(changed), len(items) - len(changed), first))
-        say("left out of the plan: %s" % (left_out_summary(left_out) or "nothing"))
-        for install_name, install in installs.items():
-            say("  %s: shaders only in the mod: %s" % (install_name, ", ".join(only_in_mod(install, items)) or "none"))
+        if build is not None:
+            say("dry run: %d items for each of %d installs; nothing is written" % (len(items), len(installs)))
+            for name, changed in would_copy(build, installs, items).items():
+                first = ": " + ", ".join(changed[:5]) + (", ..." if len(changed) > 5 else "") if changed else ""
+                say("  %s: would copy %d, unchanged %d%s" % (name, len(changed), len(items) - len(changed), first))
+            say("left out of the plan: %s" % (left_out_summary(left_out) or "nothing"))
+            for install_name, install in installs.items():
+                say("  %s: shaders only in the mod: %s" % (install_name, ", ".join(only_in_mod(install, items)) or "none"))
+        for install_name, dest in targets.items():
+            same = os.path.isfile(dest) and md5_of(dest) == md5_of(mwse_dll)
+            say("  %s: MWSE.dll %s: %s" % (install_name, dest, "unchanged" if same else "would copy"))
         for label, digest in digests:
             say("md5 %s %s" % (label, digest))
         return 0
     check_nothing_runs(tasklist)
+    keep = keep and build is not None
     if keep:
         os.makedirs(sets, exist_ok=True)
     name = new_set_folder(sets) if keep else None
@@ -309,13 +426,21 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
     if keep:
         keep_build(build, os.path.join(sets, name), plugin_commit)
         say("kept: %s" % os.path.join(sets, name))
-    counts = deploy(build, installs, tag, items, copy)
-    for install_name, (copied, unchanged) in counts.items():
-        say("%s: copied %d, unchanged %d; backups in %s" % (install_name, copied, unchanged, os.path.join(installs[install_name]["root"], "mge-backup-" + tag)))
-    say("left out of the plan: %s" % (left_out_summary(left_out) or "nothing"))
-    # Not `name`: that is the set folder, and WHAT.txt goes into it below.
-    for install_name, install in installs.items():
-        say("%s: shaders only in the mod: %s" % (install_name, ", ".join(only_in_mod(install, items)) or "none"))
+    if build is not None:
+        counts = deploy(build, installs, tag, items, copy)
+        for install_name, (copied, unchanged) in counts.items():
+            say("%s: copied %d, unchanged %d; backups in %s" % (install_name, copied, unchanged, os.path.join(installs[install_name]["root"], "mge-backup-" + tag)))
+        say("left out of the plan: %s" % (left_out_summary(left_out) or "nothing"))
+        # Not `name`: that is the set folder, and WHAT.txt goes into it below.
+        for install_name, install in installs.items():
+            say("%s: shaders only in the mod: %s" % (install_name, ", ".join(only_in_mod(install, items)) or "none"))
+    for install_name, dest in targets.items():
+        try:
+            done = replace_file(mwse_dll, dest, mwse_backup(installs[install_name], dest, tag), copy, mwse_dll)
+        except (OSError, DeployError) as error:
+            raise DeployError("%s%s; the files that this run replaced are in mge-backup-%s of each install" % (
+                error, ": the installs may now hold the new plugin beside the old MWSE.dll" if build is not None else "", tag))
+        say("%s: MWSE.dll %s; backup in %s" % (install_name, done, os.path.join(installs[install_name]["root"], "mge-backup-" + tag)))
     for label, digest in digests:
         say("md5 %s %s" % (label, digest))
     if keep:
@@ -323,11 +448,11 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
             file.write(what_line(name, plugin_commit, mge_commit, digests, list(installs)))
     pdbs = [path for install in installs.values() for mod in ("mge", "nirender") for path in files_below(mod_folder(install, mod)) if path.lower().endswith(".pdb")]
     say("pdb in the deployed mods: %d" % len(pdbs))
-    if add_symbols:
+    if add_symbols and build is not None:
         mge_tree = os.path.dirname(os.path.dirname(build))
         say(add_symbols(name or tag, [os.path.join(build, *path.split("/")) for path in SYMBOL_BINARIES],
                         symbols.tree_pdb_dirs(mge_tree, REPO)))
-    say("DONE: %d installs from %s with tag %s" % (len(installs), build, tag))
+    say("DONE: %d installs from %s with tag %s" % (len(installs), " and ".join(part for part in (build, mwse_dll) if part), tag))
     return 0
 
 
@@ -527,7 +652,101 @@ def self_test():
         assert "akulakhan-abcdef0.dll" in kept and "d3d8.dll" in kept and not any(path.endswith(".pdb") for path in kept), kept
         line = what_line(first, "abcdef0", "1234567", [("d3d8.dll", "00" * 16)], ["A", "B"], "2026-11-10 09:00")
         assert line.endswith("\n") and line.count("\n") == 1 and line.isascii() and "backups mge-backup-f101" in line and "no pdb" in line, line
+
+        mwse_test(root, build, quiet)
     print("self-test: all passed")
+
+
+def mwse_test(root, build, quiet):
+    """--mwse-dll (W406): the probe and the commit of the tree refuse before any write, a good DLL goes in after the build
+    under the same tag, and an MWSE.dll alone goes beside the plugin that the installs hold."""
+    def good(dll):
+        return 0, "feature: count locks: present (40 of 40 count lock sites in the data of MWSE.dll)\nmd5: x %s\n" % dll
+
+    def missing(dll):
+        return MISSING_FEATURE_EXIT, "MISSING: count locks: 0 of 40 count lock sites in the data of MWSE.dll, missing 0x6fe39f, ...: the plugin needs it\nmd5: y %s\n" % dll
+
+    def broken(dll):
+        return 1, "error[E0425]: cannot find value `x`\nmwse features: FAILED\n"
+
+    def at_plugin():
+        return FAKE_HEADS["plugin"] + "0" * 33
+
+    def refused(expected, **options):
+        """Runs a deploy that must raise `expected` (and not MissingFeature when `expected` is DeployError); its message."""
+        try:
+            run(**options)
+        except DeployError as error:
+            assert isinstance(error, expected) and (expected is MissingFeature or not isinstance(error, MissingFeature)), (expected, error)
+            return str(error)
+        raise AssertionError("the deploy passed: %s" % options)
+
+    mwse = os.path.join(root, "new-MWSE.dll")
+    write(mwse, "new mwse")
+    pair = {"G": fake_install(os.path.join(root, "G"), "MGE G", old="old"), "H": fake_install(os.path.join(root, "H"), "MGE H", old="old")}
+    deploys = {name: os.path.join(install["root"], "mods", "MWSE", "Root", "MWSE.dll") for name, install in pair.items()}
+    for path in deploys.values():
+        write(path, "old mwse")
+    fake_build(build, "v7")
+    sets = os.path.join(root, "mwse-sets")
+    joint = dict(build=build, installs=pair, plugin_commit=FAKE_HEADS["plugin"], mge_commit=FAKE_HEADS["mge"], tag=None, keep=True, sets=sets,
+                 tasklist=quiet, mwse_dll=mwse, mwse_deploys=deploys, tree_commit=at_plugin)
+    state = lambda: {name: tree_of(install["root"]) for name, install in pair.items()}  # noqa: E731
+    before = state()
+
+    # A DLL that the probe refuses: nothing is written, the deploy and its dry run alike. A missing feature is
+    # MissingFeature (exit code 4); a probe that could not judge is a plain fault (exit code 1).
+    for dry in (False, True):
+        text = refused(MissingFeature, **joint, dry_run=dry, probe=missing)
+        assert text.startswith("MISSING FEATURE: ") and "count locks: 0 of 40" in text and "the plugin %s needs" % FAKE_HEADS["plugin"] in text, text
+        assert "exit code 1" in refused(DeployError, **joint, dry_run=dry, probe=broken)
+    # The probe is the code of the tree: a tree at another commit, or with a change in src/, refuses before the probe.
+    asked = []
+    for tree in ("1234567", at_plugin() + "-dirty"):
+        text = refused(DeployError, **dict(joint, tree_commit=lambda tree=tree: tree), probe=lambda dll: asked.append(dll) or good(dll))
+        assert "run this in a tree at %s" % FAKE_HEADS["plugin"] in text, text
+    assert asked == [], "the probe ran in a tree of another commit"
+    # An install with no place, or no folder, for its MWSE.dll.
+    assert "no place of the MWSE.dll of H" in refused(DeployError, **dict(joint, mwse_deploys={"G": deploys["G"]}), probe=good)
+    assert "has no folder" in refused(DeployError, **dict(joint, mwse_deploys=dict(deploys, H=os.path.join(root, "none", "MWSE.dll"))), probe=good)
+    assert "no file" in refused(DeployError, **dict(joint, mwse_dll=os.path.join(root, "none.dll")), probe=good)
+    assert state() == before and not os.path.exists(sets), "a refused deploy wrote"
+
+    # The dry run of a good DLL writes nothing.
+    assert run(**joint, dry_run=True, probe=good) == 0
+    assert state() == before and not os.path.exists(sets), "the dry run wrote"
+
+    # A good DLL: the build and the MWSE.dll in both installs, both backed up under one tag, WHAT.txt with the MWSE md5.
+    assert run(**joint, probe=good) == 0
+    for name, install in pair.items():
+        assert md5_of(deploys[name]) == md5_of(mwse), name
+        assert open(os.path.join(install["root"], "mge-backup-f1", "MWSE", "Root", "MWSE.dll")).read() == "old mwse", name
+        assert open(os.path.join(install["root"], "mge-backup-f1", "MGE " + name, "Root", "d3d8.dll")).read() == "old", name
+        assert md5_of(os.path.join(mod_folder(install, "nirender"), "MWSE", "lib", "akulakhan.dll")) == md5_of(os.path.join(build, *NIRENDER_PLUGIN.split("/")))
+    what = open(os.path.join(sets, "f1", "WHAT.txt"), encoding="ascii").read()
+    assert "MWSE.dll %s" % md5_of(mwse) in what, what
+    assert not [path for path in files_below(sets) if path.lower().endswith(".pdb")]
+
+    # An MWSE.dll alone: it goes beside the plugin that both installs hold (79c752d now), after the same checks.
+    alone = dict(build=None, installs=pair, tag="m", keep=True, sets=sets, tasklist=quiet, mwse_dll=mwse, mwse_deploys=deploys, tree_commit=at_plugin)
+    newer = os.path.join(root, "newer-MWSE.dll")
+    write(newer, "newer mwse")
+    before = state()
+    assert "MISSING FEATURE: " in refused(MissingFeature, **dict(alone, mwse_dll=newer), probe=missing)
+    assert "run this in a tree at %s" % FAKE_HEADS["plugin"] in refused(DeployError, **dict(alone, mwse_dll=newer, tree_commit=lambda: "87f7049"), probe=good)
+    assert state() == before, "a refused MWSE deploy wrote"
+    assert run(**dict(alone, mwse_dll=newer), probe=good) == 0
+    for name, install in pair.items():
+        assert md5_of(deploys[name]) == md5_of(newer)
+        assert open(os.path.join(install["root"], "mge-backup-m", "MWSE", "Root", "MWSE.dll")).read() == "new mwse", name
+    assert sorted(os.listdir(sets)) == ["f1"], "an MWSE.dll alone keeps no set"
+    # Installs that hold plugins of two commits, or a plugin with no build id: refused.
+    write(os.path.join(mod_folder(pair["H"], "nirender"), "MWSE", "lib", "akulakhan.dll"), "x nirender v0.3.6 87f7049")
+    assert "plugins of different commits" in refused(DeployError, **alone, probe=good)
+    write(os.path.join(mod_folder(pair["H"], "nirender"), "MWSE", "lib", "akulakhan.dll"), "no id")
+    assert "no build id of nirender" in refused(DeployError, **alone, probe=good)
+    assert "nothing to deploy" in refused(DeployError, **dict(alone, mwse_dll=None), probe=good)
+    assert os.path.basename(mwse_backup({"root": root}, os.path.join(os.path.dirname(root), "x", "MWSE.dll"), "t")) == "MWSE.dll"
 
 
 def main():
@@ -539,19 +758,23 @@ def main():
     parser.add_argument("--no-keep", action="store_true", help="keep no copy in %s" % SETS)
     parser.add_argument("--dry-run", action="store_true", help="print what a deploy would copy; write nothing")
     parser.add_argument("--sets", default=SETS, help="the folder of the kept sets (a test changes it)")
+    parser.add_argument("--mwse-dll", help="an MWSE.dll that goes into each install too, after its probe; without --build, beside the installed plugin")
     parser.add_argument("--self-test", action="store_true", help="the tests: scratch installs, no game")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
-    if not args.build:
-        parser.error("it needs --build")
+    if not args.build and not args.mwse_dll:
+        parser.error("it needs --build, --mwse-dll or both")
     try:
-        return run(os.path.abspath(args.build), REST_INSTALLS, args.plugin_commit, args.mge_commit, args.tag, not args.no_keep, args.dry_run, args.sets,
-                   add_symbols=symbols.add)
+        return run(os.path.abspath(args.build) if args.build else None, REST_INSTALLS, args.plugin_commit, args.mge_commit, args.tag, not args.no_keep,
+                   args.dry_run, args.sets, add_symbols=symbols.add, mwse_dll=os.path.abspath(args.mwse_dll) if args.mwse_dll else None)
     except Refused as error:
         say(str(error))
         return REFUSED_EXIT
+    except MissingFeature as error:
+        say(str(error))
+        return MISSING_FEATURE_EXIT
     except DeployError as error:
         say("FAIL: %s" % error)
         return FAULT_EXIT

@@ -33,6 +33,12 @@
 //! A baseline line is the value, the instruction form and its count: a new form or a higher
 //! count of a value fails until it is reviewed.
 //!
+//! The probe of MWSE's features ([`probe`], [`MWSE_FEATURES`], W406) asks another question: does
+//! this MWSE.dll have what this plugin needs? Each feature names the values that a DLL with it
+//! holds in its data; a required feature that the DLL lacks keeps the plugin out of an install
+//! with that DLL. The check of the sites fails on a new MWSE patch in a ported function; the
+//! probe does not look at the patches.
+//!
 //! Limits: an address that MWSE computes at run time is no operand (the census of the game
 //! start sees it); a patch that MWSE.json turns off still fails here (the safe side); a vtable
 //! override is seen only when MWSE passes the function as the expected old value. Code that only
@@ -921,6 +927,104 @@ pub fn check(pe: &[u8], baseline: &[Reviewed], followed: impl Fn(u32) -> bool) -
     report
 }
 
+/// A feature of MWSE that the plugin uses, and its static probe: the values that an MWSE.dll with
+/// the feature holds as aligned values in its data.
+pub struct Feature {
+    pub name: &'static str,
+    /// What the values are, for the line of the probe.
+    pub what: &'static str,
+    /// True when the plugin must not go into an install whose MWSE.dll lacks the feature.
+    pub required: bool,
+    pub values: fn() -> Vec<u32>,
+}
+
+/// The features of MWSE that the plugin uses (W406). A feature is present only when the DLL holds
+/// every one of its values: a part of a table is no feature.
+pub const MWSE_FEATURES: [Feature; 1] = [Feature {
+    name: "count locks",
+    what: "count lock sites",
+    // The plugin locks no reference count itself since W329 part 2: without MWSE's locks, no
+    // count is locked.
+    required: true,
+    values: count_lock_values,
+}];
+
+/// The entries of MWSE's table `NI::RefCountLocks::sites`: the addresses of the sites.
+fn count_lock_values() -> Vec<u32> {
+    crate::count_locks::site_addresses().map(|at| at as u32).collect()
+}
+
+/// The result of the probe of one feature.
+#[derive(Debug)]
+pub struct Probe {
+    pub name: &'static str,
+    pub what: &'static str,
+    pub required: bool,
+    pub wanted: usize,
+    /// The values that the data of the DLL does not hold, in the order of the feature.
+    pub missing: Vec<u32>,
+}
+
+impl Probe {
+    pub fn present(&self) -> bool {
+        self.missing.is_empty()
+    }
+
+    /// True when the DLL may not go beside this plugin.
+    pub fn blocks(&self) -> bool {
+        self.required && !self.present()
+    }
+
+    /// The line of the probe: "feature: " when present, "MISSING: " when required and absent,
+    /// else "absent: ". `tools/check_mwse_sites.py --features` reads these marks.
+    pub fn line(&self) -> String {
+        let found = self.wanted - self.missing.len();
+        let count = format!("{found} of {} {} in the data of MWSE.dll", self.wanted, self.what);
+        if self.present() {
+            return format!("feature: {}: present ({count})", self.name);
+        }
+        let shown: Vec<String> = self.missing.iter().take(4).map(|value| format!("{value:#x}")).collect();
+        let more = if self.missing.len() > shown.len() { ", ..." } else { "" };
+        let missing = format!("missing {}{more}", shown.join(", "));
+        if self.required {
+            format!("MISSING: {}: {count}, {missing}: the plugin needs it", self.name)
+        } else {
+            format!("absent: {}: {count}, {missing}: the plugin runs without it", self.name)
+        }
+    }
+}
+
+/// The values of the probe of `features` in `pe`, or None when `pe` is no PE file. Only aligned
+/// values in the sections that are not code count, as in the form `data`: an operand of code is
+/// another patch, not the table.
+pub fn probe(pe: &[u8], features: &[Feature]) -> Option<Vec<Probe>> {
+    let image = Pe::parse(pe)?;
+    let wanted: HashSet<u32> = features.iter().flat_map(|feature| (feature.values)()).collect();
+    let mut found = HashSet::new();
+    for section in image.sections.iter().filter(|section| section.name != ".text") {
+        for word in section.bytes.chunks_exact(4) {
+            let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+            if wanted.contains(&value) {
+                found.insert(value);
+            }
+        }
+    }
+    let probes = features
+        .iter()
+        .map(|feature| {
+            let values = (feature.values)();
+            Probe {
+                name: feature.name,
+                what: feature.what,
+                required: feature.required,
+                wanted: values.len(),
+                missing: values.into_iter().filter(|value| !found.contains(value)).collect(),
+            }
+        })
+        .collect();
+    Some(probes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1365,6 +1469,120 @@ mod tests {
             report.failures.len(),
             report.failures.join("\n")
         );
+    }
+
+    /// The features of the DLL that `NIRENDER_MWSE_DLL` names (`tools/check_mwse_sites.py
+    /// --features`). Skipped without the variable; it fails when a required feature is absent, or
+    /// when the file is no PE file.
+    #[test]
+    fn every_required_mwse_feature_is_present() {
+        let Ok(path) = std::env::var("NIRENDER_MWSE_DLL") else {
+            eprintln!("skipped: no NIRENDER_MWSE_DLL");
+            return;
+        };
+        let pe = std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        let probes = probe(&pe, &MWSE_FEATURES).unwrap_or_else(|| panic!("{path} is no PE file"));
+        for probe in &probes {
+            println!("{}", probe.line());
+        }
+        let blocking: Vec<&str> = probes.iter().filter(|probe| probe.blocks()).map(|probe| probe.name).collect();
+        assert!(blocking.is_empty(), "{path} lacks the MWSE features {blocking:?}");
+    }
+
+    /// A data section with each of `values` as an aligned value.
+    fn data_of(values: &[u32]) -> Vec<u8> {
+        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+    }
+
+    fn count_locks_of(pe: &[u8]) -> Probe {
+        probe(pe, &MWSE_FEATURES).unwrap().remove(0)
+    }
+
+    #[test]
+    fn count_locks_are_present_when_every_site_is_data() {
+        let sites = count_lock_values();
+        assert_eq!(sites.len(), 40);
+        let probe = count_locks_of(&made_up_pe(&[0xC3], &data_of(&sites), &[]));
+        assert!(probe.present() && !probe.blocks(), "{probe:?}");
+        assert_eq!(
+            probe.line(),
+            "feature: count locks: present (40 of 40 count lock sites in the data of MWSE.dll)"
+        );
+    }
+
+    #[test]
+    fn count_locks_are_missing_with_no_site() {
+        let probe = count_locks_of(&made_up_pe(&[0xC3], &data_of(&[0x6A9D83]), &[]));
+        assert!(probe.blocks() && probe.missing.len() == 40, "{probe:?}");
+        assert!(
+            probe
+                .line()
+                .starts_with("MISSING: count locks: 0 of 40 count lock sites in the data of MWSE.dll, missing 0x6fe39f, ")
+                && probe.line().ends_with(", ...: the plugin needs it"),
+            "{}",
+            probe.line()
+        );
+    }
+
+    #[test]
+    fn a_part_of_the_table_is_no_count_lock_and_names_the_missing_site() {
+        let mut sites = count_lock_values();
+        let gone = sites.remove(17);
+        let probe = count_locks_of(&made_up_pe(&[0xC3], &data_of(&sites), &[]));
+        assert!(probe.blocks() && probe.missing == vec![gone], "{probe:?}");
+        assert!(
+            probe.line().contains(&format!(
+                "39 of 40 count lock sites in the data of MWSE.dll, missing {gone:#x}:"
+            )),
+            "{}",
+            probe.line()
+        );
+    }
+
+    #[test]
+    fn the_sites_as_operands_of_code_are_no_count_lock() {
+        let pushes: Vec<u8> = count_lock_values()
+            .iter()
+            .flat_map(|&site| [&[0x68][..], &le(site)].concat())
+            .chain([0xC3])
+            .collect();
+        let probe = count_locks_of(&made_up_pe(&pushes, &[], &[]));
+        assert!(probe.blocks() && probe.missing.len() == 40, "{probe:?}");
+    }
+
+    #[test]
+    fn an_absent_feature_blocks_only_when_it_is_required() {
+        fn values() -> Vec<u32> {
+            vec![0x1234_5678]
+        }
+        let features = [
+            Feature {
+                name: "a",
+                what: "values",
+                required: true,
+                values,
+            },
+            Feature {
+                name: "b",
+                what: "values",
+                required: false,
+                values,
+            },
+        ];
+        let empty = made_up_pe(&[0xC3], &[], &[]);
+        let probes = probe(&empty, &features).unwrap();
+        assert!(probes[0].blocks() && !probes[1].blocks());
+        assert_eq!(
+            probes[0].line(),
+            "MISSING: a: 0 of 1 values in the data of MWSE.dll, missing 0x12345678: the plugin needs it"
+        );
+        assert_eq!(
+            probes[1].line(),
+            "absent: b: 0 of 1 values in the data of MWSE.dll, missing 0x12345678: the plugin runs without it"
+        );
+        let full = probe(&made_up_pe(&[0xC3], &data_of(&values()), &[]), &features).unwrap();
+        assert!(full.iter().all(Probe::present));
+        assert!(probe(b"no PE file", &features).is_none());
     }
 
     /// The null test of the decode on a real DLL (`NIRENDER_MWSE_DLL`, the DLL of 2026-11-09,
