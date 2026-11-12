@@ -553,11 +553,14 @@ def wait_clean():
 
 
 def newest_run(tree, label, since):
-    """The folder of the run that began after `since`. The tree's results stay between sets."""
+    """The folder of the run that began after `since`. The tree's results stay between sets. Two new folders of
+    the label mean that another run wrote there too, so neither is taken (W383)."""
     folders = [path for path in sorted(glob.glob(os.path.join(tree, "results", "*-" + label))) if os.path.getmtime(path) >= since]
     if not folders:
         raise SmokeFailed("no new run folder of %s" % label)
-    return folders[-1]
+    if len(folders) > 1:
+        raise SmokeFailed("%d new run folders of %s, not one: %s" % (len(folders), label, ", ".join(folders)))
+    return folders[0]
 
 
 def keep_run(run):
@@ -915,6 +918,32 @@ def self_test():
         assert accepted_baseline(tree, main) == tree_baseline, "the tree's own captures first"
         assert accepted_baseline(tree, None) == tree_baseline
         assert has_captures(main_baseline) and not has_captures(os.path.join(folder, "none"))
+
+    # The run of a smoke is the one new folder of its label. An older folder is not taken, and two new ones stop
+    # the set with both names (W383). The null: the last of the two is what a pick of the newest took.
+    with tempfile.TemporaryDirectory() as tree:
+        since = time.time()
+        older, mine, other = (os.path.join(tree, "results", name + "-smoke-x") for name in ("20200101-000000", "20991231-000000", "20991231-000001"))
+        os.makedirs(older)
+        os.utime(older, (since - 3600, since - 3600))
+        try:
+            newest_run(tree, "smoke-x", since)
+            raise AssertionError("an older folder alone was taken")
+        except SmokeFailed as failed:
+            assert str(failed) == "no new run folder of smoke-x", failed
+        # The times are set: the file system's clock is coarser than time.time(), so a folder made just now can
+        # carry a time before `since`.
+        os.makedirs(mine)
+        os.utime(mine, (since + 1, since + 1))
+        assert newest_run(tree, "smoke-x", since) == mine
+        os.makedirs(other)
+        os.utime(other, (since + 2, since + 2))
+        assert sorted(glob.glob(os.path.join(tree, "results", "*-smoke-x")))[-1] == other
+        try:
+            newest_run(tree, "smoke-x", since)
+            raise AssertionError("one of two new folders was taken")
+        except SmokeFailed as failed:
+            assert str(failed) == "2 new run folders of smoke-x, not one: %s, %s" % (mine, other), failed
 
     # Two sets' gates at the same second write into two folders, outside the baseline folder.
     when = time.localtime()
