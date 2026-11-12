@@ -408,8 +408,7 @@ fn try_backend(
     // by a compute pass (`WGPU_VALIDATION_INDIRECT_CALL=1` puts it back).
     descriptor.flags.remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     descriptor.flags = descriptor.flags.with_env();
-    // The new shader compiler of Direct3D, a part of this program: the old one is slow.
-    descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
+    descriptor.backend_options = backend_options();
     let instance = wgpu::Instance::new(descriptor);
     // wgpu's own words when the backend did not load: only its debug line has them.
     let load_failure = crate::wgpu_log::take_backend_failure();
@@ -449,7 +448,16 @@ fn try_backend(
         ..Default::default()
     }))
     .map_err(|error| {
-        let (words, update_driver) = no_adapter_words(backend, &error);
+        let (mut words, update_driver) = no_adapter_words(backend, &error);
+        // Direct3D 12 names no card: its reason for each card, from wgpu-hal.
+        let no_card = matches!(&error, wgpu::RequestAdapterError::NotFound { no_adapter_backends, .. }
+            if no_adapter_backends.contains(backend));
+        if backend == wgpu::Backends::DX12 && no_card {
+            for line in dx12_card_lines() {
+                words.push('\n');
+                words.push_str(&line);
+            }
+        }
         Refusal {
             update_driver,
             ..refuse(None, with_wgpu_words(words, load_failure.as_deref()))
@@ -705,6 +713,64 @@ fn window_lacks(format: Option<wgpu::TextureFormat>, usages: wgpu::TextureUsages
     lacks
 }
 
+/// The options of the backends: the new shader compiler of Direct3D, a part of this program
+/// (the old one is slow). The check of the shader model of a card depends on it.
+fn backend_options() -> wgpu::BackendOptions {
+    let mut options = wgpu::BackendOptions::default();
+    options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
+    options
+}
+
+/// Direct3D 12's reason for each card of the computer, one line each ([`card_line`]). The
+/// reason comes only to the telemetry of a wgpu-hal instance, which the instance of the `wgpu`
+/// crate does not set (wgpu-hal `Telemetry`): so a second instance of Direct3D 12, with the
+/// options of the request, lists the cards again. For the box of a refusal only.
+fn dx12_card_lines() -> Vec<String> {
+    use wgpu::hal::Instance as _;
+    // The telemetry is a function pointer: the lines go through a static.
+    static LINES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let telemetry = wgpu::hal::Telemetry {
+        d3d12_expose_adapter: |description, driver, result| {
+            let name = &description.Description;
+            let length = name.iter().position(|&unit| unit == 0).unwrap_or(name.len());
+            let line = card_line(&String::from_utf16_lossy(&name[..length]), driver.ok(), &result);
+            if let Ok(mut lines) = LINES.lock() {
+                lines.push(line);
+            }
+        },
+    };
+    let descriptor = wgpu::hal::InstanceDescriptor {
+        name: "nirender: the reasons of Direct3D 12",
+        flags: wgpu::InstanceFlags::empty(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        backend_options: backend_options(),
+        telemetry: Some(telemetry),
+        display: None,
+    };
+    // SAFETY: a new instance with no display; the adapters it lists are dropped with it.
+    match unsafe { wgpu::hal::dx12::Instance::init(&descriptor) } {
+        Ok(instance) => drop(unsafe { instance.enumerate_adapters(None) }),
+        Err(error) => println!("gpu: dx12: the reasons of the cards: no instance: {error}"),
+    }
+    LINES.lock().map(|mut lines| std::mem::take(&mut *lines)).unwrap_or_default()
+}
+
+/// The line of one card: its name, its driver and Direct3D 12's verdict.
+fn card_line(name: &str, driver: Option<[u16; 4]>, result: &wgpu::hal::D3D12ExposeAdapterResult) -> String {
+    use wgpu::hal::D3D12ExposeAdapterResult as Verdict;
+    let driver = driver.map_or_else(|| "not known".to_string(), |[a, b, c, d]| format!("{a}.{b}.{c}.{d}"));
+    let why = match result {
+        Verdict::CreateDeviceError(error) => format!("Direct3D 12 cannot make a device on it ({error:?})"),
+        Verdict::UnknownFeatureLevel(level) => format!("Direct3D 12 does not know its feature level ({level:#x})"),
+        Verdict::ResourceBindingTier2Requirement => {
+            "Direct3D 12 with resource binding tier 1 (the renderer needs tier 2)".to_string()
+        }
+        Verdict::ShaderModel6Requirement => "Direct3D 12 without shader model 6".to_string(),
+        Verdict::Success(level, model) => format!("Direct3D 12 can use it ({level:?}, {model:?})"),
+    };
+    format!("{name} (driver {driver}): {why}")
+}
+
 /// `words` with wgpu's own words for a backend that did not load, when wgpu gave them.
 fn with_wgpu_words(words: String, failure: Option<&str>) -> String {
     match failure {
@@ -885,6 +951,45 @@ mod tests {
         assert!(!update);
         let (words, _) = no_adapter_words(vulkan, &wgpu::RequestAdapterError::EnvNotSet);
         assert_eq!(words, "gave no adapter: WGPU_ADAPTER_NAME not set");
+    }
+
+    #[test]
+    fn a_card_line_names_the_card_its_driver_and_the_verdict_of_direct3d_12() {
+        use wgpu::hal::dx12::{CreateDeviceError, FeatureLevel, ShaderModel};
+        use wgpu::hal::D3D12ExposeAdapterResult as Verdict;
+        let line = |driver, result| card_line("A card", driver, &result);
+        assert_eq!(
+            line(Some([31, 0, 15, 1234]), Verdict::ShaderModel6Requirement),
+            "A card (driver 31.0.15.1234): Direct3D 12 without shader model 6"
+        );
+        assert_eq!(
+            line(None, Verdict::ResourceBindingTier2Requirement),
+            "A card (driver not known): Direct3D 12 with resource binding tier 1 (the renderer needs tier 2)"
+        );
+        assert_eq!(
+            line(None, Verdict::UnknownFeatureLevel(0xa000)),
+            "A card (driver not known): Direct3D 12 does not know its feature level (0xa000)"
+        );
+        assert_eq!(
+            line(None, Verdict::CreateDeviceError(CreateDeviceError::GetProcAddress)),
+            "A card (driver not known): Direct3D 12 cannot make a device on it (GetProcAddress)"
+        );
+        assert_eq!(
+            line(None, Verdict::CreateDeviceError(CreateDeviceError::RetDeviceIsNull)),
+            "A card (driver not known): Direct3D 12 cannot make a device on it (RetDeviceIsNull)"
+        );
+        assert_eq!(
+            line(None, Verdict::Success(FeatureLevel::V12_1, ShaderModel::V6_6)),
+            "A card (driver not known): Direct3D 12 can use it (V12_1, V6_6)"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs Direct3D 12: run by hand on a computer with a card"]
+    fn the_cards_of_this_computer_have_a_line_each() {
+        let lines = dx12_card_lines();
+        println!("{lines:#?}");
+        assert!(!lines.is_empty());
     }
 
     #[test]
