@@ -37,7 +37,8 @@ The output prints the MD5 of d3d8.dll, numidium.exe and akulakhan.dll. --dry-run
 --mwse-dll (W406) puts that MWSE.dll into each install too, at its place in MWSE_DEPLOYS, after the build: a plugin that
 needs a new MWSE and that MWSE go together, under one backup tag. Without --build it puts only the MWSE.dll, beside the
 plugin that the installs hold. Before any write (and in the dry run) it probes the DLL for the MWSE features that the
-plugin needs (tools/check_mwse_sites.py --features): a missing required feature refuses with exit code 4
+plugin needs (tools/check_mwse_sites.py --features, which runs the plugin's tests through cargo: a compile, so take a
+build place first when you run it by hand): a missing required feature refuses with exit code 4
 (MISSING_FEATURE_EXIT), any other failure of the probe is exit code 1, and nothing is written. The probe is the code of
 this tree, so the tree must be at the commit of the plugin that goes beside the DLL, with no change in src/: the build's
 plugin, or without --build the plugin of both installs (one commit). The output and WHAT.txt name the MD5 of the
