@@ -184,9 +184,16 @@ def writer_tags(text):
 
 class Source:
     """capture.rs with what its parts need: its constants, its functions, its structs, and the
-    sizes of the structs of link.rs."""
+    sizes of the structs of link.rs.
 
-    def __init__(self, text, link):
+    A part's length is the least that it holds: a `concat` counts its known parts, and a local
+    list of parts counts its items. With `strict`, a part's length is its whole length or None:
+    a `concat` with a variable part is variable, and so is a local list of parts that the
+    function pushes to or extends (tools/capture_ab.py, for the tags whose records have a fixed
+    length)."""
+
+    def __init__(self, text, link, strict=False):
+        self.strict = strict
         self.text = without_comments(text)
         self.constants = constants(self.text)
         self.structs = {}
@@ -262,6 +269,8 @@ class Source:
         if not bound or depth > 8:
             return None
         kind, text = bound
+        if self.strict and self.grown(name, at):
+            return None
         if kind == "type":
             return self.array_length(text)
         literal = re.fullmatch(r"(?:vec!)?\[(.*)\]", text, re.S)
@@ -304,7 +313,10 @@ class Source:
         concat = re.fullmatch(r"\[(.*)\]\.concat\(\)", part, re.S)
         if concat:
             # The least length of the joined parts: a variable part adds nothing.
-            return sum(self.part_length(p, at, depth + 1) or 0 for p in split_top(concat.group(1)))
+            lengths = [self.part_length(p, at, depth + 1) for p in split_top(concat.group(1))]
+            if self.strict and None in lengths:
+                return None
+            return sum(length or 0 for length in lengths)
         call = re.fullmatch(r"&?(\w+)\(.*\)", part, re.S)
         if call:
             if call.group(1) in self.returns:
@@ -314,6 +326,11 @@ class Source:
         if name:
             return self.name_length(name.group(1), at, 1, depth)
         return None
+
+    def grown(self, name, at):
+        """Whether the function around `at` pushes to the local list `name` or extends it."""
+        start = self.function_at(at)[0]
+        return re.search(r"\b%s\s*\.\s*(?:push|extend|extend_from_slice|append|insert)\(" % re.escape(name), self.text[start:at]) is not None
 
     def parts(self, expression, at):
         """The parts of the record that `expression` gives `write`: a list literal, a local list
@@ -327,6 +344,8 @@ class Source:
             bound = self.binding(name.group(1), at) if name else None
             listed = bound and bound[0] == "value" and re.fullmatch(r"(?:vec!)?\[(.*)\]", bound[1], re.S)
             items = split_top(listed.group(1)) if listed else [expression]
+            if listed and self.strict and self.grown(name.group(1), at):
+                items.append("%s, grown" % name.group(1))
         resolved = []
         for item in items:
             index = re.fullmatch(r"(\w+)\[(\d+)\]", item)
@@ -495,6 +514,20 @@ pub fn least_length(tag: u32) -> usize {
     # HEADER of start: 20 (header_record's last value, the words before .to_vec(); the build id
     # is not counted); CALL: 16 of vec![..], then 8.
     assert any("HEADER (start): fixed 20" in line for line in lines) and any("CALL (call): fixed 24" in line for line in lines), lines
+
+    # The strict mode (tools/capture_ab.py): the default keeps the least lengths above; strict
+    # makes a grown list and the concat of a variable part variable, and keeps the whole lengths.
+    def lengths(strict):
+        return {(tag, function): [length for _, length in parts] for tag, _, function, parts in Source(writer, link, strict).records()}
+    least, whole = lengths(False), lengths(True)
+    assert least[("HEADER", "start")] == [20] and whole[("HEADER", "start")] == [None], (least, whole)
+    assert least[("CALL", "call")] == [16, 8] and whole[("CALL", "call")] == [None, 8], (least, whole)
+    for record in (("END", "end"), ("SCENE", "scene")):
+        assert least[record] == whole[record] and None not in whole[record], (record, least, whole)
+    shown = "[words(&[ids.len() as u32]), words(ids)].concat()"
+    for strict, want in ((False, 4), (True, None)):
+        source = Source(writer, link, strict)
+        assert source.part_length(shown, source.text.index("write(tag::LIST")) == want, (strict, want)
 
     # The nulls: each must fail with its line.
     def fails(want, **changes):
