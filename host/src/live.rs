@@ -584,6 +584,8 @@ struct SpreadCounts {
     short_ticks: u64,
     long_waits: u64,
     long_ticks: u64,
+    /// The sum of all the waits inside a frame, of any length.
+    wait_ticks: u64,
     /// The sum of the spans from a frame's first record to its FRAME_END record.
     span_ticks: u64,
     /// The sleeps between a frame's first record and its end, and the other sleeps.
@@ -604,8 +606,8 @@ struct SpreadCounts {
 /// this program spends on a record is not in it. All times are ticks of [`super::ticks`].
 #[derive(Default)]
 struct WaitSpread {
-    /// The ticks of 0.1 ms and of 1 ms, read once.
-    limits: Option<(u64, u64)>,
+    /// The ticks of 0.1 ms and of 1 ms.
+    limits: (u64, u64),
     /// The time of the first look that found no record since the last record.
     idle_from: Option<u64>,
     /// The time of the first record of the frame, or [`None`] between two frames.
@@ -617,11 +619,15 @@ struct WaitSpread {
 }
 
 impl WaitSpread {
-    fn limits(&mut self) -> (u64, u64) {
-        *self.limits.get_or_insert_with(|| {
-            let ticks_per_ms = 1.0 / ms_per_tick();
-            ((ticks_per_ms / 10.0) as u64, ticks_per_ms as u64)
-        })
+    /// A spread with the limits read now. The first read of the ticks' rate waits until 20
+    /// ms after the clock's first read (`ticks::duration`), so it is made before the first
+    /// record, not at it.
+    fn new() -> WaitSpread {
+        let ticks_per_ms = 1.0 / ms_per_tick();
+        WaitSpread {
+            limits: ((ticks_per_ms / 10.0) as u64, ticks_per_ms as u64),
+            ..WaitSpread::default()
+        }
     }
 
     /// A look found no record.
@@ -642,7 +648,7 @@ impl WaitSpread {
 
     /// A record `tag` with `data`, read at `seen`.
     fn record(&mut self, seen: u64, tag: u32, data: &[u8]) {
-        let (short, long) = self.limits();
+        let (short, long) = self.limits;
         let wait = self.idle_from.take().map_or(0, |from| seen.saturating_sub(from));
         let retirement = tag == super::tag::FRAME_EVENT
             && data.len() >= 4
@@ -653,6 +659,7 @@ impl WaitSpread {
             None if retirement => return,
             None => *self.frame_first.insert(seen),
             Some(first) => {
+                counts.wait_ticks += wait;
                 if wait > short {
                     counts.short_waits += 1;
                     counts.short_ticks += wait;
@@ -705,14 +712,16 @@ fn spread_lines(counts: &SpreadCounts, ms: impl Fn(u64) -> f64 + Copy) -> [Strin
     let tenths = |values: &[u64; 10]| values.iter().map(u64::to_string).collect::<Vec<_>>().join(" ");
     [
         format!(
-            "records in a frame since the mark before: {} frames, {:.1} records a frame; waits for the next record over 0.1 ms {:.2} a frame ({:.3} ms), over 1 ms {:.2} a frame ({:.3} ms); span from the first record to the frame's end {:.3} ms",
+            "records in a frame since the mark before: {} frames, {:.1} records a frame; waits for the next record {:.3} ms in all, over 0.1 ms {:.2} a frame ({:.3} ms), over 1 ms {:.2} a frame ({:.3} ms); span from the first record to the frame's end {:.3} ms, busy in it (the span without the waits) {:.3} ms",
             counts.frames,
             counts.records as f64 / frames,
+            ms(counts.wait_ticks) / frames,
             counts.short_waits as f64 / frames,
             ms(counts.short_ticks) / frames,
             counts.long_waits as f64 / frames,
             ms(counts.long_ticks) / frames,
-            ms(counts.span_ticks) / frames
+            ms(counts.span_ticks) / frames,
+            ms(counts.span_ticks.saturating_sub(counts.wait_ticks)) / frames
         ),
         format!(
             "sleeps since the mark before: in a frame {}; outside a frame {}",
@@ -1649,7 +1658,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         busy_before: 0,
         busy_mean_us: 0.0,
         blocks: [0; 5],
-        spread: WaitSpread::default(),
+        spread: WaitSpread::new(),
     };
     EventLoop::new()
         .expect("an event loop")
@@ -1816,7 +1825,7 @@ mod tests {
     /// A spread with 0.1 ms as 10 ticks and 1 ms as 100 ticks.
     fn spread() -> super::WaitSpread {
         super::WaitSpread {
-            limits: Some((10, 100)),
+            limits: (10, 100),
             ..Default::default()
         }
     }
@@ -1850,6 +1859,13 @@ mod tests {
         assert_eq!((counts.short_waits, counts.short_ticks), (2, 170));
         assert_eq!((counts.long_waits, counts.long_ticks), (1, 150));
         assert_eq!(counts.span_ticks, 180);
+        // All the waits in the frame (0, 20 and 150), and the busy time is the span without them.
+        assert_eq!(counts.wait_ticks, 170);
+        let line = &super::spread_lines(&counts, |ticks| ticks as f64)[0];
+        assert!(
+            line.ends_with("waits for the next record 170.000 ms in all, over 0.1 ms 2.00 a frame (170.000 ms), over 1 ms 1.00 a frame (150.000 ms); span from the first record to the frame's end 180.000 ms, busy in it (the span without the waits) 10.000 ms"),
+            "{line}"
+        );
         // Another frame event starts a frame, and a frame of its end alone ends at once.
         spread.record(900, FRAME_EVENT, &[0; 12]);
         assert_eq!(spread.frame_first, Some(900));
