@@ -42,6 +42,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import check_stream_tags  # noqa: E402
+from common import git_env  # noqa: E402
 
 REPO = os.path.dirname(HERE)
 MAGIC = b"NIRCAP01"
@@ -91,7 +92,7 @@ def fixed_lengths(writer, link):
 def sources_at(rev):
     """(capture.rs, link.rs) of the plugin at the commit `rev`."""
     def show(path):
-        done = subprocess.run(["git", "-C", REPO, "show", "%s:%s" % (rev, path)], capture_output=True, text=True, encoding="utf-8")
+        done = subprocess.run(["git", "-C", REPO, "show", "%s:%s" % (rev, path)], capture_output=True, text=True, encoding="utf-8", env=git_env())
         if done.returncode != 0:
             raise SystemExit("capture_ab: git show %s:%s: %s" % (rev, path, done.stderr.strip()))
         return done.stdout
