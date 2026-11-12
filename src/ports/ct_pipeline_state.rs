@@ -32,7 +32,10 @@ use crate::shadow::Regions;
 #[cfg(not(test))]
 const ADDR_RESET_PASS_FLAGS: usize = 0x6B59E0;
 
-/// The two stores of the base stage that MWSE replaces with a call into MWSE.dll.
+/// The two stores of the base stage that MWSE replaces with a call into MWSE.dll. No port
+/// reads or calls the bytes there: the port always does the fix of that call. The probe of
+/// MWSE's features (a test) looks for this address in MWSE.dll.
+#[cfg(test)]
 pub(crate) const BASE_TEXCOORD_PATCH: usize = 0x6B42AC;
 
 /// The size of a texture stage. The game code multiplies an index by this size.
@@ -206,9 +209,6 @@ trait Env {
     unsafe fn add_reference(&mut self, object: usize);
     unsafe fn max_stages(&mut self) -> u32;
     unsafe fn max_textures(&mut self) -> u32;
-    /// True when the instruction at 0x6B42AC is a call. MWSE put its correction of the
-    /// texture coordinate set of the base map there.
-    unsafe fn base_texcoord_patch(&mut self) -> bool;
 
     /// `NiDX8TexturePass::setTexturePipeline(effectState)`
     unsafe fn set_texture_pipeline(&mut self, site: usize, pass: usize, effect_state: usize);
@@ -267,10 +267,6 @@ impl Env for Live {
     #[inline(always)]
     unsafe fn max_textures(&mut self) -> u32 {
         rd(MAX_SIMULTANEOUS_TEXTURES, 0)
-    }
-    #[inline(always)]
-    unsafe fn base_texcoord_patch(&mut self) -> bool {
-        rd::<u8>(BASE_TEXCOORD_PATCH, 0) == 0xE8
     }
     #[inline(always)]
     unsafe fn set_texture_pipeline(&mut self, site: usize, pass: usize, effect_state: usize) {
@@ -532,14 +528,9 @@ unsafe fn build<E: Env>(e: &mut E, this: usize, property_state: usize, effect_st
         // 6B42AC: `mov [edi+28h], ebp; mov [edi+48h], ebp` in the database. MWSE replaces
         // the two instructions with a call. The call is
         // `PatchNiDX8TexturePass_BaseMapTexcoord` in `PatchUtil.cpp` of MWSE. It gives the
-        // base stage the texture coordinate set of the base map. The hook reads the stack
-        // frame of the game code, thus the port does not call it. When the call is there,
-        // the port does the same work as the hook.
-        let base_set = if e.base_texcoord_patch() {
-            base_map_coordinate_set(property, texture_sets)
-        } else {
-            0
-        };
+        // base stage the texture coordinate set of the base map. The port always does that
+        // work itself, and does not read the bytes at 6B42AC.
+        let base_set = base_map_coordinate_set(property, texture_sets);
         e.wr::<u32>(stage, ST::sourceTexcoordIndex, base_set);
         e.wr::<u32>(stage, ST::textureTransformFlags, 0);
         e.wr::<u8>(stage, ST::field_90, 0);
@@ -1168,7 +1159,6 @@ struct Entry {
 struct Model {
     max_stages: u32,
     max_textures: u32,
-    base_texcoord_patch: bool,
     journal: Vec<Entry>,
     /// Blocks that represent the memory that the game allocates.
     scratch: Vec<Box<[u32]>>,
@@ -1177,11 +1167,10 @@ struct Model {
 }
 
 impl Model {
-    fn new(max_stages: u32, max_textures: u32, base_texcoord_patch: bool) -> Model {
+    fn new(max_stages: u32, max_textures: u32) -> Model {
         Model {
             max_stages,
             max_textures,
-            base_texcoord_patch,
             journal: Vec::with_capacity(256),
             scratch: Vec::new(),
             allocates: false,
@@ -1484,10 +1473,6 @@ impl Env for Model {
         self.max_textures
     }
 
-    unsafe fn base_texcoord_patch(&mut self) -> bool {
-        self.base_texcoord_patch
-    }
-
     unsafe fn set_texture_pipeline(&mut self, _site: usize, this: usize, effect_state: usize) {
         let pipeline = pipeline_of(this);
         if effect_state == rd::<usize>(pipeline, CTP::field_B04) {
@@ -1746,7 +1731,6 @@ unsafe fn plan(
     set: &mut Regions,
     max_stages: u32,
     max_textures: u32,
-    base_texcoord_patch: bool,
     this: usize,
     property_state: usize,
     effect_state: usize,
@@ -1774,7 +1758,7 @@ unsafe fn plan(
         }
     }
 
-    let mut model = Model::new(max_stages, max_textures, base_texcoord_patch);
+    let mut model = Model::new(max_stages, max_textures);
     build(&mut model, this, property_state, effect_state, texture_sets);
     model.roll_back();
     if model.skip {
@@ -1815,12 +1799,10 @@ unsafe fn plan(
 /// A new sub-pass or a longer array calls `set.allocates()`.
 #[cfg_attr(test, allow(dead_code))]
 unsafe fn regions(set: &mut Regions, this: usize, property_state: usize, effect_state: usize, texture_sets: u32) {
-    let patch = rd::<u8>(BASE_TEXCOORD_PATCH, 0) == 0xE8;
     plan(
         set,
         rd(MAX_TEXTURE_BLEND_STAGES, 0),
         rd(MAX_SIMULTANEOUS_TEXTURES, 0),
-        patch,
         this,
         property_state,
         effect_state,
@@ -2011,7 +1993,7 @@ mod tests {
             wr::<u32>(subpass, SUB::field_8, 3);
             wr::<u32>(subpass, SUB::field_C, 3);
             wr::<u32>(subpass, SUB::field_10, 3);
-            let mut model = Model::new(8, 8, false);
+            let mut model = Model::new(8, 8);
             assert_eq!(world.run(&mut model, 2), 0);
             assert!(!model.skip && !model.allocates);
             assert_eq!(rd::<u32>(this, TP::activeStageCount), 1);
@@ -2022,8 +2004,8 @@ mod tests {
             assert_eq!(rd::<u32>(stage, ST::field_94), 2);
             assert_eq!(rd::<u8>(stage, ST::field_90), 1);
             assert_eq!(rd::<usize>(stage, ST::texturePropMap), texture);
-            // The stores of the database give set 0. The set of the map has no effect.
-            assert_eq!(rd::<u32>(stage, ST::sourceTexcoordIndex), 0);
+            // The fix of MWSE, always on: the base stage takes the set of the base map.
+            assert_eq!(rd::<u32>(stage, ST::sourceTexcoordIndex), 1);
             assert_eq!(rd::<u32>(stage, ST::colorOp), 4);
             assert_eq!(rd::<u32>(subpass, SUB::field_8), 1);
             assert_eq!(rd::<u32>(subpass, SUB::field_C), 1);
@@ -2036,7 +2018,7 @@ mod tests {
     fn no_base_texture_binds_the_stage_without_texture() {
         let mut world = World::new(1);
         let (this, subpass) = (world.this(), world.subpass(0));
-        let mut model = Model::new(8, 8, false);
+        let mut model = Model::new(8, 8);
         assert_eq!(world.run(&mut model, 1), 0);
         unsafe {
             assert_eq!(rd::<u32>(this, TP::activeStageCount), 0);
@@ -2057,16 +2039,14 @@ mod tests {
             assert_eq!(base_map_coordinate_set(property, 4), 3);
             assert_eq!(base_map_coordinate_set(property, 9), 3);
         }
-        // The same through the body, with the call of MWSE at 0x6B42AC and without it.
+        // The same through the body: the fix is always on.
         let stage = world.stage(0);
-        for (patch, expected) in [(true, 1), (false, 0)] {
-            let mut model = Model::new(8, 8, patch);
-            world.run(&mut model, 2);
-            unsafe {
-                assert_eq!(rd::<u32>(stage, ST::sourceTexcoordIndex), expected);
-                assert_eq!(rd::<u32>(stage, ST::textureTransformFlags), 0);
-                model.roll_back();
-            }
+        let mut model = Model::new(8, 8);
+        world.run(&mut model, 2);
+        unsafe {
+            assert_eq!(rd::<u32>(stage, ST::sourceTexcoordIndex), 1);
+            assert_eq!(rd::<u32>(stage, ST::textureTransformFlags), 0);
+            model.roll_back();
         }
         // No base map: set 0.
         world.map_slots[0] = 0;
@@ -2080,7 +2060,7 @@ mod tests {
         let glow = world.map(4, 5);
         let (this, subpass) = (world.this(), world.subpass(0));
         let (base_stage, glow_stage) = (world.stage(0), world.stage(1));
-        let mut model = Model::new(8, 8, false);
+        let mut model = Model::new(8, 8);
         assert_eq!(world.run(&mut model, 2), 0);
         unsafe {
             assert!(!model.skip && !model.allocates);
@@ -2106,7 +2086,7 @@ mod tests {
         let (base_stage, glow_stage) = (world.stage(0), world.stage(1));
         let (template_0, template_2) = (world.template(0), world.template(2));
         let before = world.snapshot();
-        let mut model = Model::new(1, 1, false);
+        let mut model = Model::new(1, 1);
         let result = world.run(&mut model, 1);
         unsafe {
             assert!(!model.skip && model.allocates);
@@ -2144,7 +2124,7 @@ mod tests {
 
             let mut set = Regions::new();
             let state = world.state.as_mut_ptr() as usize;
-            plan(&mut set, 1, 1, false, this, state, 0, 1, 0);
+            plan(&mut set, 1, 1, this, state, 0, 1, 0);
             assert!(world.snapshot() == before, "the plan left a change");
             assert_eq!(set.as_slice().len(), 2 + expected.len());
             assert_eq!(set.as_slice()[0], (this, TP::SIZE));
@@ -2162,7 +2142,7 @@ mod tests {
         unsafe {
             wr(dark_stage, ST::ptrTexture, old);
             wr::<u32>(old, REF_COUNT, 2);
-            let mut model = Model::new(8, 8, false);
+            let mut model = Model::new(8, 8);
             assert_eq!(world.run(&mut model, 1), 0);
             assert!(!model.skip);
             assert_eq!(rd::<usize>(dark_stage, ST::ptrTexture), dark);
@@ -2175,7 +2155,7 @@ mod tests {
 
             // The last reference. The game deletes the texture, thus the call is a skip.
             wr::<u32>(old, REF_COUNT, 1);
-            let mut model = Model::new(8, 8, false);
+            let mut model = Model::new(8, 8);
             world.run(&mut model, 1);
             assert!(model.skip);
             model.roll_back();
@@ -2192,7 +2172,7 @@ mod tests {
             // The state in which `setTexturePipeline` leaves a pass with an environment map.
             wr::<u32>(this, TP::field_6E0, 1);
             wr::<u8>(this, TP::field_2B08, 1);
-            let mut model = Model::new(8, 8, false);
+            let mut model = Model::new(8, 8);
             assert_eq!(world.run(&mut model, 1), 0);
             assert!(!model.skip && !model.allocates);
             assert_eq!(rd::<[usize; 2]>(subpass, SUB::field_14), [base_stage, this + TP::field_2A4C]);
@@ -2241,7 +2221,7 @@ mod tests {
         let (effect, texture) = Effect::new(&mut world, DES::projLights, false);
         let this = world.this();
         unsafe {
-            let mut model = Model::new(8, 8, false);
+            let mut model = Model::new(8, 8);
             model.set_texture_pipeline(0, this, effect.state());
             assert!(!model.skip);
             assert_eq!(rd::<u32>(this, TP::field_CD8), 1);
@@ -2260,7 +2240,7 @@ mod tests {
         let (effect, _) = Effect::new(&mut world, DES::projShadows, false);
         let this = world.this();
         unsafe {
-            let mut model = Model::new(8, 8, false);
+            let mut model = Model::new(8, 8);
             model.set_texture_pipeline(0, this, effect.state());
             assert!(model.skip);
             assert_eq!(rd::<u32>(this, TP::field_2A48), 0);
@@ -2273,7 +2253,7 @@ mod tests {
         let (effect, _) = Effect::new(&mut world, DES::projLights, true);
         let this = world.this();
         unsafe {
-            let mut model = Model::new(8, 8, false);
+            let mut model = Model::new(8, 8);
             model.set_texture_pipeline(0, this, effect.state());
             assert!(model.skip);
             assert_eq!(rd::<u32>(this, TP::field_CD8), 0);

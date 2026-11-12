@@ -320,10 +320,13 @@ static FOLLOWED: &[Followed] = &[
         bytes: &[0x90, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75],
     },
     // `NiDX8TexturePass::setCTPipelineState`: the base map texture coordinate fix of MWSE
-    // (PatchNiDX8TexturePass_BaseMapTexcoord).
+    // (PatchNiDX8TexturePass_BaseMapTexcoord). A known change that is harmless: no port reads
+    // these bytes, and `ct_pipeline_state` always does the fix.
     Followed::InsertedCall { at: 0x6B42AC },
     // `NiDX8Renderer::ctor`: the hash map sizes that MWSE changes ("Optimize renderer hash map
-    // lookups"). The first operand is the bucket count. The others are sizes in bytes.
+    // lookups"). The first operand is the bucket count. The others are sizes in bytes. Known
+    // changes that are harmless: no port reads these bytes, and `draw_misc::renderer_ctor` uses
+    // its own sizes.
     Followed::Operand { at: 0x6A9AED, len: 4 },
     Followed::Operand { at: 0x6A9AF2, len: 4 },
     Followed::Operand { at: 0x6A9B38, len: 4 },

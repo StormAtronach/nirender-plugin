@@ -708,28 +708,32 @@ unsafe fn render_lines_regions(set: &mut Regions, this: usize, lines_data: usize
 // ---------------------------------------------------------------------------------------
 
 /// The operand of `mov ebp, imm32` at 0x6A9AEC: the bucket count of the four hash maps.
-/// It is 37 in the database.
+/// It is 37 in the database. No port reads it.
+#[cfg(test)]
 const HASH_MAP_BUCKETS_OPERAND: usize = 0x6A9AED;
 /// The operands of the four `push imm32` before `operator new`: the size in bytes of the
 /// bucket array of the maps for geometry buffers, skin partitions, rendered textures and
-/// rendered cube maps. Each is 0x94 in the database.
+/// rendered cube maps. Each is 0x94 in the database. No port reads them.
+#[cfg(test)]
 const HASH_MAP_BYTES_OPERANDS: [usize; 4] = [0x6A9AF2, 0x6A9B38, 0x6A9B7E, 0x6A9BC4];
+/// The bucket count of each of the four hash maps: the size of MWSE's patch "Optimize
+/// renderer hash map lookups" (PatchUtil.cpp), in place of the game's 37.
+const HASH_MAP_BUCKETS: u32 = 4093;
+/// The size in bytes of the bucket array of each of the four hash maps.
+const HASH_MAP_BUCKET_BYTES: u32 = HASH_MAP_BUCKETS * 4;
 /// The calls to `operator new` for the four bucket arrays.
 const HASH_MAP_NEW_SITES: [usize; 4] = [0x6A9B11, 0x6A9B57, 0x6A9B9D, 0x6A9BE3];
 
 /// 0x6A9A70 `NiDX8Renderer::ctor`
 ///
-/// MWSE changes the sizes of the hash maps in this code: 37 buckets become 4093. The patch is
-/// "Optimize renderer hash map lookups" in PatchUtil.cpp of MWSE. Thus the port reads the
-/// bucket count and the four allocation sizes from the instructions in memory, as the code
-/// in memory uses them.
+/// The four hash maps get [`HASH_MAP_BUCKETS`] buckets, as with MWSE's patch "Optimize renderer
+/// hash map lookups" (PatchUtil.cpp), whether that patch is in memory or not. The port does not
+/// read the sizes from the instructions in memory.
 ///
 /// # Safety
 ///
 /// `this` points at a block of the size of `NiDX8Renderer` that is not constructed yet, as the
-/// engine's allocation gives it. The function reads the bucket count and the allocation sizes of
-/// the hash maps from the game's code in memory at fixed addresses (MWSE's patch can change them),
-/// so that code is there.
+/// engine's allocation gives it.
 pub unsafe fn renderer_ctor(this: usize) -> usize {
     crate::shadow::touch(&renderer_ctor_port::STATE);
     site_thiscall!(0x6A9A90, this);
@@ -742,13 +746,12 @@ pub unsafe fn renderer_ctor(this: usize) -> usize {
     wr::<u32>(this, R::backbufferRenderTarget_field_C, 0);
     wr::<u32>(this, R::backbufferRenderTarget_field_18, 0);
 
-    let bucket_count: u32 = rd(HASH_MAP_BUCKETS_OPERAND, 0);
     for index in 0..4 {
         let map = this + R::hashGeomBuffers + index * THashMap::SIZE;
         wr(map, THashMap::vtbl, VTBL_HASH_MAPS[index]);
-        wr(map, THashMap::bucketCount, bucket_count);
+        wr(map, THashMap::bucketCount, HASH_MAP_BUCKETS);
         wr::<u32>(map, THashMap::count, 0);
-        let buckets = site_cdecl!(HASH_MAP_NEW_SITES[index], rd::<u32>(HASH_MAP_BYTES_OPERANDS[index], 0)) as usize;
+        let buckets = site_cdecl!(HASH_MAP_NEW_SITES[index], HASH_MAP_BUCKET_BYTES) as usize;
         // The game code reads the count from the map and clears that many pointers.
         let bytes = rd::<u32>(map, THashMap::bucketCount) << 2;
         wr(map, THashMap::arrayBuckets, buckets);
