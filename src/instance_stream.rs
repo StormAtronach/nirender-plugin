@@ -689,6 +689,7 @@ pub unsafe fn install_census() {
 /// A scene of the game begins: the camera of the world scene is kept for the check at its
 /// end.
 pub unsafe fn scene_begin(mt: &MainThread, kind: u32, camera: usize, route: Route, view: u32) {
+    crate::scene_kinds::begin(mt, kind);
     // The shapes destroyed on another thread leave the tables before any walk of the scene.
     crate::worker_events::drain();
     {
@@ -731,6 +732,7 @@ pub unsafe fn scene_end(mt: &MainThread) {
             views.scene_end(view);
         }
     }
+    crate::scene_kinds::end(mt);
 }
 
 /// The work of a destructor of a rendered texture that found the view table open
@@ -891,6 +893,7 @@ pub unsafe fn frame_tick(mt: &MainThread) {
     change_frame_end(mt);
     crate::effect_chain::frame_tick(mt);
     FRAME_DISPLAYS.get(mt).frame_end();
+    crate::scene_kinds::frame_end(mt);
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.frame = t.frame.wrapping_add(1);
@@ -2334,9 +2337,6 @@ const ENGINE_PATH_SCENES: [(u32, &str); 4] = [
 static ENGINE_PATH_DISPLAYS: MainCell<[u64; 5]> = MainCell::new([0; 5]);
 /// The places written in the scenes of [`Route::Places`].
 static VIEW_PLACES: MainCell<u64> = MainCell::new(0);
-/// The displays of retained shapes in a scene into the back buffer of a kind outside the main
-/// view's list, which the engine draws (`skipped_display_timed`).
-static HANDED_BACK: MainCell<u64> = MainCell::new(0);
 /// The displays of retained shapes in each frame, by route (D82 stage 0).
 static FRAME_DISPLAYS: MainCell<FrameDisplays> = MainCell::new(FrameDisplays::new());
 
@@ -2438,7 +2438,7 @@ pub fn engine_path_report(mt: &MainThread) -> String {
         "{} displays of retained shapes on the engine's path outside the table's scenes ({}); {} in scenes into the back buffer outside the main view's list; {} places in views of their own; {}",
         counts.iter().sum::<u64>(),
         parts.join(", "),
-        *HANDED_BACK.get(mt),
+        crate::scene_kinds::handed_back(mt),
         *VIEW_PLACES.get(mt),
         FRAME_DISPLAYS.get(mt).line()
     )
@@ -2471,9 +2471,9 @@ unsafe fn skipped_display_timed(mt: &MainThread, shape: usize, kind: u32) -> boo
         // A scene into the back buffer of a kind outside the main view's list (first person, a
         // shadow scene, the interface, the splash): the helper draws no table there, so the
         // engine draws the shape at its place, into the scene's target, as on Direct3D 9. The
-        // mark stays, as on the engine's path.
+        // mark stays, as on the engine's path. The count is by the scene's kind (W401).
         if t.scene_route == Route::Main && !main_view_kind(t.scene_kind) {
-            *HANDED_BACK.get(mt) += 1;
+            crate::scene_kinds::hand_back(mt, t.scene_kind);
             return false;
         }
         if let Some(instance) = t.instances.get_mut(&shape) {
@@ -3855,13 +3855,13 @@ mod tests {
             let test = ListTest::new(&mt, &[79]);
             let a = test.shapes[0];
             mark(a, true);
-            let handed_back = *HANDED_BACK.get(&mt);
+            let handed_back = crate::scene_kinds::handed_back(&mt);
             for kind in [SCENE_FIRST_PERSON, SCENE_UI] {
                 scene_begin(&mt, kind, 0, Route::Main, 0);
                 assert!(!skipped_display(&mt, a, DRAW_SHAPE), "kind {kind}");
                 assert_ne!(rd::<u16>(a, FLAGS) & RETAINED_BIT, 0, "kind {kind}");
             }
-            assert_eq!(*HANDED_BACK.get(&mt), handed_back + 2);
+            assert_eq!(crate::scene_kinds::handed_back(&mt), handed_back + 2);
             assert_eq!(take_shown_list(&mt), None);
             test.end(&mt);
             capture::test_record_deletes(false);
