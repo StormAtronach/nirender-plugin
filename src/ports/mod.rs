@@ -407,8 +407,9 @@ static FOLLOWED: &[Followed] = &[
     },
     // `NiDX8MaterialManager::dtor`: the patch of MWSE for a default material that is null (the
     // engine's exit handlers released it). A `call` and 25 `nop` in place of 30 bytes of code,
-    // and 3 `nop` in place of the write `mov [eax+18h], ebp`. `base::clear_default_material_entry`
-    // does the same: it skips the write when the default material is null. The function is in MWSE.dll.
+    // and 3 `nop` in place of the write `mov [eax+18h], ebp`. The function is in MWSE.dll. Known
+    // changes that are harmless: no port reads these bytes, and `base::clear_default_material_entry`
+    // has the same guard in its own code (it skips the write when the default material is null).
     Followed::CallOfPatch {
         at: 0x6C2578,
         head: &[0xE8],
@@ -426,7 +427,9 @@ static FOLLOWED: &[Followed] = &[
     Followed::Operand { at: 0x6B7357, len: 1 },
     Followed::Operand { at: 0x6B737A, len: 1 },
     // `NiRenderer::MapWindowPointToBufferPoint`: the UI scale patch of MWSE (at a request) or of
-    // MGE XE on Direct3D 9. `base::renderer_map_window_point_to_buffer_point` asks MWSE.
+    // MGE XE on Direct3D 9. A known change that is harmless: no port reads these bytes.
+    // `base::renderer_map_window_point_to_buffer_point` has both divisions and asks MWSE's native
+    // table which one holds.
     Followed::Patch {
         at: base::UI_SCALE_PATCH_AT,
         bytes: &base::UI_SCALE_PATCH,
