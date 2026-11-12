@@ -434,7 +434,7 @@ unsafe fn build_partition_pass(
 
 /// The 8 bytes at 0x6ACF1F in `RenderShape`, after the test for a skin. They are the
 /// instruction that selects hardware or software skinning, and the opcode of the jump after it.
-const RS_SKINNING_CHECK: usize = 0x6ACF1F;
+pub(crate) const RS_SKINNING_CHECK: usize = 0x6ACF1F;
 /// The bytes in the database: `cmp dword ptr [edi+3E0h], 4` and `jb`. The game uses software
 /// skinning when the device has fewer than 4 hardware bones.
 #[cfg(test)]

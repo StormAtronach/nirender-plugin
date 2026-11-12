@@ -35,9 +35,10 @@
 //!
 //! The probe of MWSE's features ([`probe`], [`MWSE_FEATURES`], W406) asks another question: does
 //! this MWSE.dll have what this plugin needs? Each feature names the values that a DLL with it
-//! holds in its data; a required feature that the DLL lacks keeps the plugin out of an install
-//! with that DLL. The check of the sites fails on a new MWSE patch in a ported function; the
-//! probe does not look at the patches.
+//! holds, and the forms that count: aligned values in its data for a site list, the operands of
+//! decoded code for the address of a patch; a required feature that the DLL lacks keeps the
+//! plugin out of an install with that DLL. The check of the sites fails on a new MWSE patch in a
+//! ported function; the probe asks only whether the patches that the plugin uses are there.
 //!
 //! Limits: an address that MWSE computes at run time is no operand (the census of the game
 //! start sees it); a patch that MWSE.json turns off still fails here (the safe side); a vtable
@@ -928,30 +929,79 @@ pub fn check(pe: &[u8], baseline: &[Reviewed], followed: impl Fn(u32) -> bool) -
 }
 
 /// A feature of MWSE that the plugin uses, and its static probe: the values that an MWSE.dll with
-/// the feature holds as aligned values in its data.
+/// the feature holds, in one of `forms`.
 pub struct Feature {
     pub name: &'static str,
     /// What the values are, for the line of the probe.
     pub what: &'static str,
     /// True when the plugin must not go into an install whose MWSE.dll lacks the feature.
     pub required: bool,
+    /// The forms in which a value counts: [`DATA`] for a site list, [`CODE`] for the address
+    /// that MWSE gives its patch helper.
+    pub forms: &'static [Form],
     pub values: fn() -> Vec<u32>,
 }
 
-/// The features of MWSE that the plugin uses (W406). A feature is present only when the DLL holds
-/// every one of its values: a part of a table is no feature.
-pub const MWSE_FEATURES: [Feature; 1] = [Feature {
-    name: "count locks",
-    what: "count lock sites",
-    // The plugin locks no reference count itself since W329 part 2: without MWSE's locks, no
-    // count is locked.
-    required: true,
-    values: count_lock_values,
-}];
+/// An aligned value in a section that is not code.
+pub const DATA: &[Form] = &[Form::Data];
+/// The 32-bit immediate of a decoded instruction. A value in unreached bytes does not count: a
+/// feature that the decode does not see is missing, the safe side.
+pub const CODE: &[Form] = &[Form::Push, Form::MovReg, Form::MovMem];
+
+/// The features of MWSE that the plugin uses (W406, D328). A feature is present only when the DLL
+/// holds every one of its values: a part of a table is no feature.
+pub const MWSE_FEATURES: [Feature; 3] = [
+    Feature {
+        name: "count locks",
+        what: "count lock sites",
+        // The plugin locks no reference count itself since W329 part 2: without MWSE's locks, no
+        // count is locked.
+        required: true,
+        forms: DATA,
+        values: count_lock_values,
+    },
+    Feature {
+        name: "skinning flag",
+        what: "patch addresses",
+        // The port of `RenderShape` reads both forms of the skinning check (draw.rs).
+        required: false,
+        forms: CODE,
+        values: skinning_flag_values,
+    },
+    Feature {
+        name: "base map texture coordinates",
+        what: "patch addresses",
+        // The port of `setCTPipelineState` tests for the patch's call (ct_pipeline_state.rs).
+        required: false,
+        forms: CODE,
+        values: base_texcoord_values,
+    },
+];
 
 /// The entries of MWSE's table `NI::RefCountLocks::sites`: the addresses of the sites.
 fn count_lock_values() -> Vec<u32> {
     crate::count_locks::site_addresses().map(|at| at as u32).collect()
+}
+
+/// The skinning check in `RenderShape` that MWSE replaces with a test of the geometry data's
+/// flags (MWSE 4415a58e90, `PatchNIDX8Renderer_RenderShape`).
+fn skinning_flag_values() -> Vec<u32> {
+    vec![crate::ports::draw::RS_SKINNING_CHECK as u32]
+}
+
+/// The store of the base stage's texture coordinate set that MWSE replaces with a call (MWSE
+/// c32c0c45c7, `PatchNiDX8TexturePass_BaseMapTexcoord`).
+fn base_texcoord_values() -> Vec<u32> {
+    vec![crate::ports::ct_pipeline_state::BASE_TEXCOORD_PATCH as u32]
+}
+
+/// Where the line of the probe says the values are.
+fn place_of(forms: &[Form]) -> &'static str {
+    if forms == DATA {
+        "in the data of MWSE.dll"
+    } else {
+        "in the code of MWSE.dll"
+    }
 }
 
 /// The result of the probe of one feature.
@@ -960,6 +1010,7 @@ pub struct Probe {
     pub name: &'static str,
     pub what: &'static str,
     pub required: bool,
+    pub forms: &'static [Form],
     pub wanted: usize,
     /// The values that the data of the DLL does not hold, in the order of the feature.
     pub missing: Vec<u32>,
@@ -979,7 +1030,7 @@ impl Probe {
     /// else "absent: ". `tools/check_mwse_sites.py --features` reads these marks.
     pub fn line(&self) -> String {
         let found = self.wanted - self.missing.len();
-        let count = format!("{found} of {} {} in the data of MWSE.dll", self.wanted, self.what);
+        let count = format!("{found} of {} {} {}", self.wanted, self.what, place_of(self.forms));
         if self.present() {
             return format!("feature: {}: present ({count})", self.name);
         }
@@ -994,31 +1045,25 @@ impl Probe {
     }
 }
 
-/// The values of the probe of `features` in `pe`, or None when `pe` is no PE file. Only aligned
-/// values in the sections that are not code count, as in the form `data`: an operand of code is
-/// another patch, not the table.
+/// The values of the probe of `features` in `pe`, or None when `pe` is no PE file. A value counts
+/// only in a form of its feature: the count lock table is data, and an operand of code with the
+/// same value is another patch, not the table.
 pub fn probe(pe: &[u8], features: &[Feature]) -> Option<Vec<Probe>> {
-    let image = Pe::parse(pe)?;
+    Pe::parse(pe)?;
     let wanted: HashSet<u32> = features.iter().flat_map(|feature| (feature.values)()).collect();
-    let mut found = HashSet::new();
-    for section in image.sections.iter().filter(|section| section.name != ".text") {
-        for word in section.bytes.chunks_exact(4) {
-            let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
-            if wanted.contains(&value) {
-                found.insert(value);
-            }
-        }
-    }
+    let (found, _) = operands(pe, |value| wanted.contains(&value));
     let probes = features
         .iter()
         .map(|feature| {
             let values = (feature.values)();
+            let held = |value: &u32| feature.forms.iter().any(|&form| found.contains_key(&(*value, form)));
             Probe {
                 name: feature.name,
                 what: feature.what,
                 required: feature.required,
+                forms: feature.forms,
                 wanted: values.len(),
-                missing: values.into_iter().filter(|value| !found.contains(value)).collect(),
+                missing: values.into_iter().filter(|value| !held(value)).collect(),
             }
         })
         .collect();
@@ -1560,12 +1605,14 @@ mod tests {
                 name: "a",
                 what: "values",
                 required: true,
+                forms: DATA,
                 values,
             },
             Feature {
                 name: "b",
                 what: "values",
                 required: false,
+                forms: DATA,
                 values,
             },
         ];
@@ -1583,6 +1630,49 @@ mod tests {
         let full = probe(&made_up_pe(&[0xC3], &data_of(&values()), &[]), &features).unwrap();
         assert!(full.iter().all(Probe::present));
         assert!(probe(b"no PE file", &features).is_none());
+    }
+
+    /// The probes of the two patch features, in the order of [`MWSE_FEATURES`].
+    fn patches_of(pe: &[u8]) -> Vec<Probe> {
+        probe(pe, &MWSE_FEATURES).unwrap().split_off(1)
+    }
+
+    #[test]
+    fn the_patches_are_present_as_operands_of_reached_code() {
+        let skinning = skinning_flag_values()[0];
+        let texcoord = base_texcoord_values()[0];
+        assert_eq!((skinning, texcoord), (0x6ACF1F, 0x6B42AC));
+        let text = code(&[
+            &[0x68],
+            &le(skinning), // push imm32
+            &[0xC7, 0x44, 0x24, 0x08],
+            &le(texcoord), // mov dword [esp+8], imm32
+            &[0xC3],
+        ]);
+        let probes = patches_of(&made_up_pe(&text, &[], &[]));
+        assert!(probes.iter().all(Probe::present), "{probes:?}");
+        assert_eq!(
+            probes[0].line(),
+            "feature: skinning flag: present (1 of 1 patch addresses in the code of MWSE.dll)"
+        );
+        assert_eq!(
+            probes[1].line(),
+            "feature: base map texture coordinates: present (1 of 1 patch addresses in the code of MWSE.dll)"
+        );
+    }
+
+    #[test]
+    fn a_patch_address_as_data_a_displacement_or_unreached_bytes_is_no_patch() {
+        let skinning = skinning_flag_values()[0];
+        let texcoord = base_texcoord_values()[0];
+        // `mov eax, [skinning]` is a displacement; the push after the `ret` is in no block.
+        let text = code(&[&[0xA1], &le(skinning), &[0xC3, 0x68], &le(texcoord)]);
+        let probes = patches_of(&made_up_pe(&text, &data_of(&[skinning, texcoord]), &[]));
+        assert!(probes.iter().all(|probe| !probe.present() && !probe.blocks()), "{probes:?}");
+        assert_eq!(
+            probes[0].line(),
+            "absent: skinning flag: 0 of 1 patch addresses in the code of MWSE.dll, missing 0x6acf1f: the plugin runs without it"
+        );
     }
 
     /// The null test of the decode on a real DLL (`NIRENDER_MWSE_DLL`, the DLL of 2026-11-09,

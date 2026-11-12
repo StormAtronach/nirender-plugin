@@ -33,7 +33,7 @@ use crate::shadow::Regions;
 const ADDR_RESET_PASS_FLAGS: usize = 0x6B59E0;
 
 /// The two stores of the base stage that MWSE replaces with a call into MWSE.dll.
-const BASE_TEXCOORD_PATCH: usize = 0x6B42AC;
+pub(crate) const BASE_TEXCOORD_PATCH: usize = 0x6B42AC;
 
 /// The size of a texture stage. The game code multiplies an index by this size.
 const STAGE: usize = ST::SIZE;
