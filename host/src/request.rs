@@ -328,9 +328,13 @@ struct StepInProgress {
     started: std::time::Instant,
 }
 
-/// The start of a step of the request: its log line, its name for the watchdog, and the sleep
-/// of `MGE_XE_REQUEST_STALL` (once, so on the first backend).
+/// The start of a step of the request: the check for a refusal in progress
+/// ([`gpu::after_request_step`]), its log line, its name for the watchdog, and the sleep of
+/// `MGE_XE_REQUEST_STALL` (once, so on the first backend).
 fn step_begins(backend: wgpu::Backends, step: RequestStep) -> StepInProgress {
+    // The limit counts the whole request: the watchdog can refuse between the end of one step and
+    // the start of the next. No new call of the driver after that.
+    gpu::after_request_step();
     println!("gpu: {}: {}", backend_name(backend), step.name());
     crate::watchdog::request_step(backend, step as u8);
     static STALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
