@@ -61,6 +61,12 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
   pair (a pass from before these refs) stops the tool: --sibling-base <commit> names the sibling's commit. It also takes the
   place of a kept pair. The sibling's commit must be an ancestor of the sibling's HEAD. The tool prints the option in the
   first line, and the key file of the base build names both commits;
+- after a pass that moves refs/merge-step/<branch>, the sibling's own refs/merge-step/<branch> moves to the sibling's
+  HEAD of the round only when this round ran and passed every stage that the sibling's own check of its diff since
+  that ref would run, matched by folder and command (W370). Else it stays, and one line names the stages that did not
+  run or pass, or why the sibling's stages cannot be known. A ref never moves past a diff whose stages did not run. A
+  round of one repo does not run the fixed stages of the other (its tests and its checks), so a pair merge gets one
+  check for each repo;
 - the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
   of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these;
 - with the gate, `deploy rest` (tools/deploy_rest.py, the owner's D193: the test installs hold the latest build): after
@@ -893,6 +899,74 @@ def tips_for(kind, repo, base, sibling_base=None):
     return {kind: base, other: sibling_commit}, None
 
 
+def planned_stages(kind, repo, paths, baseline, commits, base, branch, sibling_base=None):
+    """The stages of a check of `paths` from `base`, as main() runs them: with the replay gate, also the base build of
+    tips_for and the A/B. (stages, tips, None); (stages, None, why) when the gate needs a base build that tips_for
+    cannot give."""
+    stages = stages_for(kind, repo, paths, baseline, commits=commits)
+    if not any(name == "replay gate" for name, _, _ in stages):
+        return stages, None, None
+    if not branch:
+        return stages, None, "the tree is on no branch, and the kept base build is one for each branch"
+    tips, why = tips_for(kind, repo, base, sibling_base)
+    if why:
+        return stages, None, why
+    return stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits), tips, None
+
+
+def stage_key(stage):
+    """What a stage runs: its folder and its command. A name is no proof, as both repos have a stage "checks"."""
+    _, folder, command = stage
+    return os.path.normcase(os.path.abspath(folder)), tuple(command)
+
+
+def missing_stages(needed, ran, results):
+    """The names of the stages of `needed` that no stage of `ran` matches by stage_key with a pass in `results`."""
+    passed = {stage_key(stage) for stage, result in zip(ran, results) if result}
+    return [name for name, folder, command in needed if stage_key((name, folder, command)) not in passed]
+
+
+def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits):
+    """After a pass of the repo of `kind`: moves the sibling's refs/merge-step/<branch> to `sibling_head`, the
+    sibling's HEAD at the start of the round, only when the round ran and passed every stage that the sibling's own
+    check of its diff since that ref would run (W370). Else the ref stays, and one line says why. The move names the
+    old value, so that a ref that another check moved meanwhile stays as it is. True when the ref moved."""
+    other = "mge" if kind == "plugin" else "plugin"
+    name = os.path.basename(sibling)
+    branch = branch_of(sibling)
+    if not branch:
+        say("%s: its merge-step ref stays: the tree is on no branch" % name)
+        return False
+    ref = "refs/merge-step/%s" % branch
+    last = resolve(sibling, ref)
+    head = resolve(sibling, "HEAD")
+    if last is None:
+        say("%s: %s stays absent: without it the diff of the sibling is not known" % (name, ref))
+        return False
+    if sibling_head is None or head != sibling_head:
+        say("%s: %s stays at %s: the HEAD of the sibling moved during the round" % (name, ref, last[:10]))
+        return False
+    if last == head:
+        say("%s: %s is at its HEAD %s: nothing to move" % (name, ref, head[:10]))
+        return False
+    if not is_ancestor(sibling, last, head):
+        say("%s: %s stays at %s: it is not an ancestor of the HEAD %s" % (name, ref, last[:10], head[:10]))
+        return False
+    paths = git(sibling, "diff", "--name-only", last, head).splitlines()
+    needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, branch)
+    if why:
+        say("%s: %s stays at %s: the stages of its diff to %s are not known (%s)" % (name, ref, last[:10], head[:10], why))
+        return False
+    missing = missing_stages(needed, stages, results)
+    if missing:
+        say("%s: %s stays at %s: its diff to %s needs %s, which did not run and pass in this round; check it on its own"
+            % (name, ref, last[:10], head[:10], ", ".join(missing)))
+        return False
+    git(sibling, "update-ref", ref, head, last)
+    say("%s: %s moves from %s to %s: this round ran and passed every stage of that diff" % (name, ref, last[:10], head[:10]))
+    return True
+
+
 def scratch_slots(state):
     """slot.py on a scratch state folder, as a module of its own: it reads SLOT_DIR and the process names when it loads. A
     fake session holds the slots, and the names of the game and the compilers match no process, so that a real game or a
@@ -1203,6 +1277,75 @@ def self_test():
             keep_pass("plugin", sibling_tree, "refs/merge-step/test", third, sibling_tree, second)
         assert resolve(sibling_tree, "refs/merge-step/test") == third and resolve(sibling_tree, pair_ref("plugin", third)) is None and "no pair kept" in said.getvalue()
         assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", "no-such-name")[1], "an unknown name"
+        # W370: a stage covers another by folder and command, with a pass; the name is no proof.
+        one = ("checks", os.path.join(root, "a"), ["python", "x"])
+        assert missing_stages([one], [one], [True]) == [], "the same stage, passed"
+        assert missing_stages([one], [one], [False]) == ["checks"], "the same stage, failed"
+        assert missing_stages([one], [], []) == ["checks"], "no stage ran"
+        assert missing_stages([one], [("other name", os.path.join(root, "a", ".").upper(), ["python", "x"])], [True]) == [], "a folder written another way"
+        assert missing_stages([one], [("checks", os.path.join(root, "a"), ["python", "y"])], [True]) == ["checks"], "the same name, another command"
+        assert missing_stages([one], [("checks", os.path.join(root, "b"), ["python", "x"])], [True]) == ["checks"], "the same name, another folder"
+        # W370: the sibling's ref after a pass. A scratch pair: the render-link side has its ref at c1 and HEAD at c2,
+        # which changes a path of the helper.
+        coverage = os.path.join(root, "coverage")
+        cover_plugin, cover_mge = os.path.join(coverage, PLUGIN_NAME), os.path.join(coverage, MGE_NAME)
+        for tree, branch in ((cover_plugin, "master"), (cover_mge, "feature/x")):
+            os.makedirs(tree)
+            subprocess.run(["git", "-C", tree, "init", "-q", "-b", branch], check=True, env=git_env())
+            subprocess.run(["git", "-C", tree, *author, "commit", "-q", "--allow-empty", "-m", "c1"], check=True, env=git_env())
+        c1 = resolve(cover_mge, "HEAD")
+        os.makedirs(os.path.join(cover_mge, "mgeHost64", "src"))
+        with open(os.path.join(cover_mge, "mgeHost64", "src", "x.rs"), "w", encoding="ascii") as changed:
+            changed.write("x\n")
+        subprocess.run(["git", "-C", cover_mge, "add", "mgeHost64/src/x.rs"], check=True, env=git_env())
+        subprocess.run(["git", "-C", cover_mge, *author, "commit", "-q", "-m", "c2"], check=True, env=git_env())
+        c2 = resolve(cover_mge, "HEAD")
+        cover_ref = "refs/merge-step/feature/x"
+        cover_commits = {"plugin": resolve(cover_plugin, "HEAD"), "mge": c2}
+        mge_round = stages_for("mge", cover_mge, ["mgeHost64/src/x.rs"], BASELINE, commits=cover_commits)
+        plugin_round = stages_for("plugin", cover_plugin, ["tools/x.py"], BASELINE, commits=cover_commits)
+
+        def sibling_move(stages, results, sibling_head=c2):
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                moved = move_sibling_ref("plugin", cover_mge, sibling_head, stages, results, BASELINE, cover_commits)
+            return moved, said.getvalue()
+
+        moved, said = sibling_move(plugin_round, [True] * len(plugin_round))
+        assert not moved and "stays absent" in said, said
+        subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c1], check=True, env=git_env())
+        # The null: a pass of a nirender round runs none of the helper's stages, so the render-link ref stays.
+        moved, said = sibling_move(plugin_round, [True] * len(plugin_round))
+        assert not moved and resolve(cover_mge, cover_ref) == c1, said
+        assert "needs helper tests, helper GPU tests, clippy baseline, checks" in said and "stays at %s" % c1[:10] in said, said
+        moved, said = sibling_move(mge_round, [True] * (len(mge_round) - 1) + [False])
+        assert not moved and resolve(cover_mge, cover_ref) == c1 and said.rstrip().endswith("check it on its own"), "a failed stage of the diff"
+        moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c1)
+        assert not moved and "moved during the round" in said and resolve(cover_mge, cover_ref) == c1, said
+        # The stages of the sibling's diff all ran and passed: the ref moves to the HEAD of the round.
+        moved, said = sibling_move(plugin_round + mge_round, [True] * (len(plugin_round) + len(mge_round)))
+        assert moved and resolve(cover_mge, cover_ref) == c2 and "moves from %s to %s" % (c1[:10], c2[:10]) in said, said
+        moved, said = sibling_move(mge_round, [True] * len(mge_round))
+        assert not moved and "nothing to move" in said, said
+        # A ref that is not an ancestor of HEAD, a diff with the gate and no kept pair, and a tree on no branch: it stays.
+        subprocess.run(["git", "-C", cover_mge, *author, "commit", "-q", "--allow-empty", "-m", "c3"], check=True, env=git_env())
+        c3 = resolve(cover_mge, "HEAD")
+        subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c3], check=True, env=git_env())
+        subprocess.run(["git", "-C", cover_mge, "reset", "-q", "--soft", c2], check=True, env=git_env())
+        moved, said = sibling_move(mge_round, [True] * len(mge_round))
+        assert not moved and "not an ancestor" in said and resolve(cover_mge, cover_ref) == c3, said
+        subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c1], check=True, env=git_env())
+        gate_file = GATE_PATHS["mge"][0]
+        assert gate_file == "mgeHost64/src/renderer.rs", "the case writes a file of the gate in a folder that exists"
+        with open(os.path.join(cover_mge, gate_file), "w", encoding="ascii") as changed:
+            changed.write("x\n")
+        subprocess.run(["git", "-C", cover_mge, "add", gate_file], check=True, env=git_env())
+        subprocess.run(["git", "-C", cover_mge, *author, "commit", "-q", "-m", "c4"], check=True, env=git_env())
+        c4 = resolve(cover_mge, "HEAD")
+        moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c4)
+        assert not moved and "are not known" in said and "keeps no pair" in said and resolve(cover_mge, cover_ref) == c1, said
+        subprocess.run(["git", "-C", cover_mge, "checkout", "-q", "--detach", "HEAD"], check=True, env=git_env())
+        moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c4)
+        assert not moved and "on no branch" in said, said
         # resolve gives a commit: a tree is none, and an annotated tag gives the commit it points to.
         tree_of_head = subprocess.run(["git", "-C", sibling_tree, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True, env=git_env()).stdout.strip()
         assert len(tree_of_head) == 40 and resolve(sibling_tree, tree_of_head) is None, "the name of a tree is no commit"
@@ -1857,14 +2000,10 @@ def main():
     paths = git(repo, "diff", "--name-only", base, commit).splitlines()
     baseline = os.path.abspath(args.baseline)
     commits = under_test(kind, commit, resolve(sibling_of(kind, repo), "HEAD") if kind and os.path.isdir(sibling_of(kind, repo)) else None)
-    stages = stages_for(kind, repo, paths, baseline, commits=commits) if kind else []
-    tips = None
-    if kind and any(name == "replay gate" for name, _, _ in stages):
-        tips, why = tips_for(kind, repo, base, args.sibling_base) if branch else (None, "the tree is on no branch, and the kept base build is one for each branch")
-        if why:
-            say("FAIL the tree: %s" % why)
-            return 1
-        stages = stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits)
+    stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, branch, args.sibling_base) if kind else ([], None, None)
+    if why:
+        say("FAIL the tree: %s" % why)
+        return 1
     sibling = sibling_of(kind, repo) if kind else ""
     has_sibling = os.path.isdir(sibling)
     sibling_changed = has_sibling and bool(git(sibling, "status", "--porcelain", "--untracked-files=no"))
@@ -1926,6 +2065,8 @@ def main():
         return 1
     if moves_the_ref(baseline):
         keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
+        if has_sibling:
+            move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits)
     else:
         say("%s stays: this pass is against %s, not the accepted folder" % (passed_ref, baseline))
     return 0
