@@ -6,8 +6,11 @@
 //! nothing of the game's work.
 //!
 //! The time of a scene runs from [`begin`] to [`end`]: from the plugin's begin of the scene
-//! (after MGE XE's frame logic for it) to the engine's `EndPaint`, so it holds the engine's
-//! Click of that camera (the culling and the displays) and the plugin's work in it.
+//! (after MGE XE's frame logic for it) to the plugin's end of the scene, which comes after the
+//! engine's `EndPaint` and after the host's `scene_end` (`link_client::end_paint`). So it
+//! holds the engine's Click of that camera (the culling and the displays), the plugin's work
+//! in it and the host's `scene_end`. Only the scenes in the record count: the frames end
+//! there.
 
 use crate::main_thread::{MainCell, MainThread};
 
@@ -61,9 +64,14 @@ impl SceneKinds {
         }
     }
 
-    fn begin(&mut self, kind: u32, now: i64) {
+    /// A scene outside the record counts nothing: the frames end only in the record
+    /// (`capture::Phase::Record`), and its time would go into the first frame of the record.
+    fn begin(&mut self, kind: u32, now: i64, recording: bool) {
         // A begin with a scene still open (no end came) closes that scene here.
         self.end(now);
+        if !recording {
+            return;
+        }
         let index = index(kind);
         self.scenes[index] += 1;
         self.open = Some((index, now));
@@ -95,7 +103,7 @@ impl SceneKinds {
             .map(|i| {
                 format!(
                     "{} {} scenes, {:.3} ms a frame (worst {:.3}), handed back {}",
-                    NAMES.get(i).copied().unwrap_or("kind 13 or more"),
+                    name(i),
                     self.scenes[i],
                     ms(self.sum_ticks[i]) / frames,
                     ms(self.worst_ticks[i]),
@@ -111,11 +119,22 @@ fn index(kind: u32) -> usize {
     (kind as usize).min(KINDS - 1)
 }
 
+/// The name of a kind in the line. A kind above the list has its number; the last one holds
+/// the larger kinds too.
+fn name(index: usize) -> String {
+    match NAMES.get(index) {
+        Some(name) => (*name).to_string(),
+        None if index == KINDS - 1 => format!("kind {index} or more"),
+        None => format!("kind {index}"),
+    }
+}
+
 static SCENES: MainCell<SceneKinds> = MainCell::new(SceneKinds::new());
 
-/// A scene of the game begins (`instance_stream::scene_begin`).
+/// A scene of the game begins (`instance_stream::scene_begin`). It counts only in the record.
 pub fn begin(mt: &MainThread, kind: u32) {
-    SCENES.get(mt).begin(kind, crate::capture::ticks());
+    let recording = crate::capture::recording();
+    SCENES.get(mt).begin(kind, crate::capture::ticks(), recording);
 }
 
 /// The scene in progress ends (`instance_stream::scene_end`).
@@ -151,14 +170,14 @@ mod tests {
     #[test]
     fn a_scene_counts_its_time_and_its_kind() {
         let mut s = SceneKinds::new();
-        s.begin(5, 1000);
+        s.begin(5, 1000, true);
         s.end(1250);
-        s.begin(5, 2000);
+        s.begin(5, 2000, true);
         s.end(2050);
-        s.begin(1, 3000);
+        s.begin(1, 3000, true);
         s.end(4000);
         s.frame_end();
-        s.begin(5, 5000);
+        s.begin(5, 5000, true);
         s.end(5100);
         s.frame_end();
         assert_eq!(s.scenes[5], 3);
@@ -171,8 +190,8 @@ mod tests {
     #[test]
     fn a_begin_without_an_end_closes_the_open_scene() {
         let mut s = SceneKinds::new();
-        s.begin(1, 0);
-        s.begin(6, 400);
+        s.begin(1, 0, true);
+        s.begin(6, 400, true);
         s.end(500);
         s.frame_end();
         assert_eq!(s.sum_ticks[1], 400);
@@ -186,7 +205,7 @@ mod tests {
     #[test]
     fn the_line_names_the_shadow_kinds_with_zero_and_counts_hand_backs_by_kind() {
         let mut s = SceneKinds::new();
-        s.begin(1, 0);
+        s.begin(1, 0, true);
         s.end(1000);
         s.handed_back[6] += 2;
         s.frame_end();
@@ -198,7 +217,35 @@ mod tests {
              shadow casters 0 scenes, 0.000 ms a frame (worst 0.000), handed back 0; \
              first person 0 scenes, 0.000 ms a frame (worst 0.000), handed back 2"
         );
-        // A kind above the list counts as the last one.
+        // A kind above the list has its number, and the last one holds the larger kinds.
         assert_eq!(index(40), KINDS - 1);
+        assert_eq!(name(13), "kind 13");
+        assert_eq!(name(14), "kind 14");
+        assert_eq!(name(KINDS - 1), "kind 15 or more");
+    }
+
+    #[test]
+    fn a_scene_before_the_record_counts_nothing() {
+        let mut s = SceneKinds::new();
+        // The scenes from the game's start to the record: no frame ends for them.
+        s.begin(1, 0, false);
+        s.end(5000);
+        s.begin(5, 6000, false);
+        s.end(9000);
+        // The first frame of the record.
+        s.begin(1, 10_000, true);
+        s.end(10_200);
+        s.frame_end();
+        assert_eq!(s.scenes[1], 1);
+        assert_eq!(s.scenes[5], 0);
+        assert_eq!(s.sum_ticks[1], 200);
+        assert_eq!(s.worst_ticks[1], 200);
+        assert_eq!(s.sum_ticks[5], 0);
+        // A scene outside the record opens nothing, so the next scene's time is its own.
+        s.begin(1, 20_000, false);
+        s.begin(1, 30_000, true);
+        s.end(30_100);
+        s.frame_end();
+        assert_eq!(s.sum_ticks[1], 300);
     }
 }
