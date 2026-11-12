@@ -92,7 +92,7 @@ pub(crate) struct Switches {
     /// growth in the middle of a frame; 0 is never.
     pub(crate) force_segment_growth: u32,
     /// `MGE_XE_BOX_SECONDS=<n>`: a message box of this program closes itself after n seconds
-    /// (the harness mode of the boxes, [`crate::gpu::message_box`]); 0 or unset: the box waits
+    /// (the harness mode of the boxes, [`crate::gpu::refuse`]); 0 or unset: the box waits
     /// for the click. The plugin and MGE XE's d3d8.dll read the same variable for their boxes.
     pub(crate) box_seconds: u32,
     /// `MGE_XE_TEXTURE_TIER=a|c`: the texture binding tier for an A/B on one machine
