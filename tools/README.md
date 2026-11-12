@@ -91,6 +91,7 @@ branch under test, on purpose; the tool then names that tree and its branch on s
 | `shader_delta.py` | The effect of a post shader on each renderer, with the tone difference of the renderers out of the comparison. |
 | `shadow_factor.py` | The shadow factor of each of two renderers, from pictures with and without the shadows. |
 | `capture_dump.py` | The records of a capture, for the root cause of a difference of a picture; the interface's shapes, for a picture that a menu lacks. |
+| `frame_census.py` | The census of the frames of a capture: each scene by kind with its target and view, its records by tag, its draws by class and the names of its shapes; where the main view's lists stand against the swap and the reads. Stable lines that a page can cite by line. Refuses a capture of a stream format it does not read. |
 | `lights_count.py` | What clustered distant lights and a 3D light volume would hold, from a `lights.data`. |
 | `capture_space.py` | Which space the records of a capture are in (an origin, relative flags). |
 | `light_values_check.py` | The light values of a capture two ways: the LIGHT records against the lights inline in the SHAPE records. |
