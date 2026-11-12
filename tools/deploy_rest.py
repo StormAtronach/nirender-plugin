@@ -45,7 +45,8 @@ import tempfile
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import REPO, local, parts_problems  # noqa: E402
-from make_play_set import SETS, next_set_number, say  # noqa: E402
+from make_play_set import say  # noqa: E402
+from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
 import symbols  # noqa: E402
 
 # The test installs, by name: the folder of the install (MO2 instance) and the names of its two mods. The key
@@ -247,18 +248,6 @@ def would_copy(build, installs, items):
     return changes
 
 
-def new_set_folder(sets):
-    """Makes the next set folder f<N>. os.mkdir fails on a name that another session has just made."""
-    os.makedirs(sets, exist_ok=True)
-    while True:
-        name = "f%d" % next_set_number(os.listdir(sets))
-        try:
-            os.mkdir(os.path.join(sets, name))
-        except FileExistsError:
-            continue
-        return name
-
-
 def what_line(name, plugin_commit, mge_commit, digests, installs, stamp=None):
     """The one line of WHAT.txt."""
     stamp = stamp or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -313,6 +302,8 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
             say("md5 %s %s" % (label, digest))
         return 0
     check_nothing_runs(tasklist)
+    if keep:
+        os.makedirs(sets, exist_ok=True)
     name = new_set_folder(sets) if keep else None
     tag = tag or name or datetime.datetime.now().strftime("rest-%Y%m%d-%H%M")
     if keep:
