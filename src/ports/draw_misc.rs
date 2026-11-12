@@ -726,7 +726,7 @@ const HASH_MAP_NEW_SITES: [usize; 4] = [0x6A9B11, 0x6A9B57, 0x6A9B9D, 0x6A9BE3];
 
 /// 0x6A9A70 `NiDX8Renderer::ctor`
 ///
-/// The four hash maps get [`HASH_MAP_BUCKETS`] buckets, as with MWSE's patch "Optimize renderer
+/// The four hash maps get `HASH_MAP_BUCKETS` buckets, as with MWSE's patch "Optimize renderer
 /// hash map lookups" (PatchUtil.cpp), whether that patch is in memory or not. The port does not
 /// read the sizes from the instructions in memory.
 ///

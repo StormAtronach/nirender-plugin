@@ -47,7 +47,7 @@ const DELETING_DTOR: usize = 0x6A9D80;
 /// steals. No port calls it: [`deleting_dtor`] calls [`dtor`] itself.
 const DTOR_SITE: usize = 0x6A9D83;
 
-/// The call sites of this module whose changed target the census accepts. [`DTOR_SITE`] is a
+/// The call sites of this module whose changed target the census accepts. `DTOR_SITE` is a
 /// known change that is harmless: no port reads it.
 pub static SITES: &[usize] = &[DTOR_SITE];
 
