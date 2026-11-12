@@ -87,7 +87,7 @@ fn follows_change(
 pub unsafe fn census(hooked: bool) -> usize {
     let mut changed: Vec<usize> = Vec::new();
     for change in &census::changes(hooked) {
-        if crate::atomic_count::covers(change.func.ea + change.offset, change.len) {
+        if crate::count_locks::covers(change.func.ea + change.offset, change.len) {
             continue;
         }
         let port = ports::all().find(|p| p.addr == change.func.ea);
@@ -241,6 +241,7 @@ pub unsafe fn install() -> Result<String, String> {
     crate::log!("x87 control word {:#06x}", x87::control_word());
 
     // The census runs before the detours, because the detours change the entry bytes.
+    crate::count_locks::log_state();
     let changed = census(false);
     #[cfg(not(test))]
     if crate::link_client::own_d3d8() && !crate::ports::texture_link::install_format_rule() {
@@ -258,7 +259,6 @@ pub unsafe fn install() -> Result<String, String> {
     // The shapes the engine destroys on another thread.
     crate::worker_events::install();
     crate::freed_fill::install();
-    crate::atomic_count::install();
 
     let mut failed = 0;
     // A port left uninstalled to measure its own cost (`NIRENDER_SKIP_PORT=<name>`). Only a

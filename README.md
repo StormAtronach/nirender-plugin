@@ -58,10 +58,12 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
   side in `host/src/engine/views.rs`. A mod asks for the parts of MGE XE in a view that it
   draws itself with `mge.camera.setViewOptions` (`src/view_options.rs`); with
   `intoTextures` the options are the camera's default for each texture it draws into (D93).
-- The count writes: the plugin locks the reference count writes of the engine's objects on
-  the property paths, and the Rust ports change counts atomically (`src/atomic_count.rs`,
-  risk 56). The plugin's log names them: `atomic count: N of N sites locked (...)`; when the
-  bytes of a site are not the game's, all sites are refused and the line says so.
+- The count writes: MWSE locks the reference count writes of the engine's objects at 40
+  sites (its setting `LockReferenceCounts`, W329), and the Rust ports change counts
+  atomically (risk 56). The census knows MWSE's locks at those sites (`src/count_locks.rs`)
+  and does not count them as another mod's change. The plugin's log says once whether the
+  sites hold MWSE's locks: `count locks: 40 of 40 count sites hold MWSE's lock (...)`, or
+  `count locks: the count sites are not locked (...)`.
 - The comparison rig (the cargo feature `rig`, not in a player's build): a port can also
   run in the mode shadow, which runs the Rust and the engine function both and compares
   them call by call (`src/shadow.rs`), and the frame comparison compares the device calls

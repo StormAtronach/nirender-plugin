@@ -39,7 +39,6 @@ pub mod gen {
 #[cfg(feature = "rig")]
 pub mod alloc;
 pub mod animation;
-pub mod atomic_count;
 #[cfg(feature = "rig")]
 pub mod callers;
 pub mod camera_space;
@@ -47,6 +46,7 @@ pub mod capture;
 pub mod census;
 pub mod checked;
 pub mod cores;
+pub mod count_locks;
 pub mod crash;
 pub mod d3d;
 pub mod device;
