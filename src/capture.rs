@@ -652,10 +652,11 @@ impl Ring {
                 if self.capacity - (written - read) >= total {
                     break;
                 }
-                // The limit rule ends a silent host program; a host program that ended (a
-                // refusal after its box) ends the wait at once, and the frame end reads its
-                // exit code (`check_host`).
-                if self.look_at_host(true, ticks()) || crate::own_device::host_ended() {
+                // The limit rule ends a silent host program; a host program that ended, or that
+                // announced a refusal (its box is up), ends the wait at once, and the frame end
+                // reads its exit code (`check_host`).
+                if self.look_at_host(true, ticks()) || crate::own_device::host_ended() || self.announced_refusal().is_some()
+                {
                     return false;
                 }
                 self.wait_for_read();
@@ -722,6 +723,13 @@ impl Ring {
     /// A word of the ring head that the host program writes.
     unsafe fn head_word(&self, offset: usize) -> u32 {
         (*(self.base.add(offset) as *const core::sync::atomic::AtomicU32)).load(Ordering::Acquire)
+    }
+
+    /// The exit code of a refusal that the host program announced, while its box is up
+    /// ([`crate::stream_format::refusal_frees_the_game`]).
+    unsafe fn announced_refusal(&self) -> Option<u32> {
+        let ending = self.head_word(crate::stream_format::RING_ENDING);
+        crate::stream_format::refusal_frees_the_game(ending).then_some(ending)
     }
 
     /// The limit rule at one look ([`Silence`]), with the host program's two words: the
@@ -2058,9 +2066,13 @@ unsafe fn write_record(tag: u32, parts: &[&[u8]], file_only: bool) {
         }
         Some(Sink::Ring(ring)) => {
             if !ring.push(tag, parts) {
-                crate::log!(
-                    "stream: the host program ended, or the plugin ended it, while the ring was full; the stream ends"
-                );
+                if let Some(code) = ring.announced_refusal() {
+                    crate::log!("stream: the host program announced its refusal (exit code {code}) and reads no more; the stream ends when it has ended, and the game goes on with no picture until the box of the host program closes it");
+                } else {
+                    crate::log!(
+                        "stream: the host program ended, or the plugin ended it, while the ring was full; the stream ends"
+                    );
+                }
                 s.failed = true;
                 // The main thread finds the exit code at its frame end and runs the failure
                 // path (`check_host`).
@@ -2960,25 +2972,43 @@ pub(crate) fn frame_end_records(start: i64, end: i64, shown: Option<&[u32]>, ret
     records
 }
 
+/// The look at the host program at the end of a frame: an ended host program fails the ring
+/// and asks for the stop (`check_host`, [`host_gone`]). True while a host program that
+/// announced a refusal still runs: the stop waits for its end.
+#[cfg(not(test))]
+unsafe fn check_the_host(lock: &DeviceLock) -> bool {
+    // The allowance word names the watchdog's limit in the box of a stall.
+    let words = state(lock).and_then(|s| match s.out.as_ref() {
+        Some(Sink::Ring(ring)) => Some((ring.head_word(crate::stream_format::RING_ALLOWANCE), ring.announced_refusal())),
+        _ => None,
+    });
+    let (allowance, refusal) = words.unwrap_or((0, None));
+    if crate::own_device::check_host(allowance) {
+        host_gone(lock);
+        return false;
+    }
+    // `check_host` has just looked: the host program runs. A second look could find an end
+    // that this check did not log, and the stop would then come before the exit code.
+    refusal.is_some()
+}
+
+/// A test has no host program.
+#[cfg(test)]
+unsafe fn check_the_host(_lock: &DeviceLock) -> bool {
+    false
+}
+
 unsafe fn frame_end(lock: &DeviceLock) {
     loading_tick();
     // Before the stop: a helper that refused the stream at its HEADER stops reading, the ring
     // fills and its push fails (the stop below); after the stop no frame end comes, so the
     // helper's exit code would never be looked at (the D10 proof run, records entry 192). A
     // host program that ended reads no record again: no write waits for it in a full ring
-    // (`write` returns at a failed ring), and the stream ends at this frame end.
-    #[cfg(not(test))]
-    {
-        // The allowance word names the watchdog's limit in the box of a stall.
-        let allowance = state(lock).and_then(|s| match s.out.as_ref() {
-            Some(Sink::Ring(ring)) => Some(ring.head_word(crate::stream_format::RING_ALLOWANCE)),
-            _ => None,
-        });
-        if crate::own_device::check_host(allowance.unwrap_or(0)) {
-            host_gone(lock);
-        }
-    }
-    if STOP_ASKED.swap(false, Ordering::AcqRel) {
+    // (`write` returns at a failed ring), and the stream ends at this frame end. A host program
+    // that announced a refusal still shows its box: the stop waits until it has ended, so that
+    // this check finds its exit code.
+    let refusal_runs = check_the_host(lock);
+    if !refusal_runs && STOP_ASKED.swap(false, Ordering::AcqRel) {
         stop();
     }
     // The messages of the host for MGE XE.
