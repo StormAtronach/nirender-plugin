@@ -289,9 +289,9 @@ def lines(path, frames=None, top=TOP_NAMES, names=None):
     stream_format, build, read, scenes, shown, snapshot_copies = census(path, frames)
     out = ["census: %s format %d build %s frames %d; snapshot copies %d" % (
         os.path.basename(path), stream_format, build, read, snapshot_copies)]
-    shown_of = collections.defaultdict(list)
+    shown_of = {}
     for entry in shown:
-        shown_of[entry.frame].append(entry)
+        shown_of.setdefault(entry.frame, []).append(entry)
     by_kind = collections.defaultdict(Counts)
     per_frame = collections.defaultdict(collections.Counter)
     frames_seen = sorted(set(s.frame for s in scenes) | set(shown_of))
@@ -307,7 +307,7 @@ def lines(path, frames=None, top=TOP_NAMES, names=None):
                 out.append("%s names: %s" % (head, names_text(scene.counts.names, top)))
             by_kind[scene.kind].add(scene.counts)
             per_frame[scene.kind][frame] += 1
-        for entry in shown_of[frame]:
+        for entry in shown_of.get(frame, []):
             if entry.scene is not None:
                 place = "in " + scene_name(entry.scene, kinds)
             elif entry.last_scene is not None:
@@ -339,13 +339,14 @@ def record(tag, body):
     return struct.pack("<II", tag, len(body)) + body
 
 
-def plant(path, stream_format=READS_FORMATS[0], header_first=True, shadow=True):
+def plant(path, stream_format=READS_FORMATS[0], header_first=True, shadow=True, lists=True):
     """A small capture: 2 frames. Instance 7 (class 0, 'Tri Body') and a snapshot copy
     (CopyPixels) come in frame 0 before the scenes. Each frame: a shape outside any scene; a world scene into the back buffer with an
     object of class 12 ('Tri Wall') and 2 of its shapes, a draw and a queued place of instance 7,
     and a DrawIndexed command; with `shadow` a kind 5 scene into texture 0x50 of view slot 2
     with 3 shapes of an object of class 0 ('Tri Head'); a CopyPixels call; the list of the main
-    view with instance 7; the swap. Frame 1 has a second list after the swap."""
+    view with instance 7; the swap. Frame 1 has a second list after the swap. Without `lists`
+    frame 1 has no list."""
     def words(*values):
         return struct.pack("<%dI" % len(values), *values)
 
@@ -373,8 +374,11 @@ def plant(path, stream_format=READS_FORMATS[0], header_first=True, shadow=True):
         data += record(cd.TAG_COMMAND, words(4, 0, 0, 0)) + record(cd.TAG_SCENE_END, words(0))
         if shadow:
             data += scene(5, 0x20, 0x50, 3) + obj(0, b"Tri Head") + shape + shape + shape + record(cd.TAG_SCENE_END, words(1))
-        data += call(CALL_COPY_PIXELS) + record(cd.TAG_INSTANCE_SHOWN, words(1, 7)) + call(CALL_PRESENT)
-        if frame == 1:
+        data += call(CALL_COPY_PIXELS)
+        if lists or frame == 0:
+            data += record(cd.TAG_INSTANCE_SHOWN, words(1, 7))
+        data += call(CALL_PRESENT)
+        if frame == 1 and lists:
             data += record(cd.TAG_INSTANCE_SHOWN, words(1, 7))
         data += record(cd.TAG_FRAME_END, b"")
     with open(path, "wb") as f:
@@ -427,8 +431,11 @@ def self_test():
         assert lines(good, top=1, names=names)[2] == "frame 0 scene 0 names: 'Tri Body' 2 (1 of 2)"
         # The null: a capture with no kind 5 scene gives 0 for kind 5.
         plain = os.path.join(folder, "plain.nircap")
-        plant(plain, shadow=False)
-        summary = [line for line in lines(plain, names=names) if line.startswith("kind 5")]
+        plant(plain, shadow=False, lists=False)
+        plain_lines = lines(plain, names=names)
+        summary = [line for line in plain_lines if line.startswith("kind 5")]
+        # A frame with no list is not a frame with a list.
+        assert plain_lines[-1] == "shown: 1 sends in 1 of 2 frames, 0 frames with more than one; 0 in a scene; 1 after a read; 0 after the swap", plain_lines[-1]
         assert summary == ["kind 5 shadow_casters: 0 scenes in 0 of 2 frames, per frame 0 to 0; targets back buffer 0, texture 0; "
                            "views none; " + none + "; shapes 0 (); table draws 0 (); draw commands 0; up draws 0"], summary
         # Refusals: another format, no HEADER first, not a capture.
