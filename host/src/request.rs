@@ -1423,13 +1423,12 @@ mod tests {
     /// world shader has one, the extension's own or the one that keeps the vertex stage's colour.
     #[test]
     fn the_world_shader_has_one_corner_shade() {
-        let plain = world_shader_source("fn extension_shade(in: VertexOut) -> vec4f { return draw.fog_color; }\n");
+        let defaults = crate::extension::extension_shaders(None);
+        let plain = world_shader_source(&defaults);
         assert_eq!(plain.matches("fn extension_corner_shade(").count(), 1);
         assert!(plain.contains(NO_CORNER_SHADE));
         let own = "fn extension_corner_shade(world_position: vec3f, world_normal: vec3f, vertex_color: vec4f, color: vec4f) -> CornerShade { return CornerShade(vertex_color, vec3f(1.0)); }\n";
-        let with_own = world_shader_source(&format!(
-            "fn extension_shade(in: VertexOut) -> vec4f {{ return draw.fog_color; }}\n{own}"
-        ));
+        let with_own = world_shader_source(&format!("{defaults}{own}"));
         assert_eq!(with_own.matches("fn extension_corner_shade(").count(), 1);
         assert!(!with_own.contains(NO_CORNER_SHADE));
         crate::assert_wgsl("shader.wgsl with a corner shade", &with_own);
