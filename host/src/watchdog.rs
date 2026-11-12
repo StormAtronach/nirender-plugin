@@ -10,6 +10,10 @@
 //! `stream_format::RING_ALLOWANCE`), so that the plugin's own limit is always later. A step
 //! that the helper knows is long (the GPU objects of a load, the pipelines) has the same limit
 //! while it lasts ([`LongStep`]): a real hang inside it is still caught, at that limit.
+//! One more rule holds before the frames: the request of the device ([`RequestWatch`]). When
+//! it is not done after `REQUEST_SECONDS`, the driver gave no answer, and the watchdog thread
+//! refuses with the code `EXIT_GPU_HANG` and a box that names the backend and the step
+//! (`request::refuse_hang`). No dump: a dump of a process that hangs in a driver can hang too.
 //! `MGE_XE_WATCHDOG=0` leaves the watchdog off, for a test of the plugin's own limit. A
 //! refusal disarms it before its box ([`disarm`], `gpu::refuse`): the box waits for the
 //! player inside a step, and the program ends on purpose after it.
@@ -33,7 +37,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::crash::{StallEvidence, SAMPLES_KEPT};
-use crate::stream_format::{EXIT_STALLED, LOADING_SECONDS, STALL_SECONDS};
+use crate::stream_format::{EXIT_STALLED, LOADING_SECONDS, REQUEST_SECONDS, STALL_SECONDS};
 
 /// The time between two looks of the watchdog thread.
 const LOOK_MS: u64 = 250;
@@ -174,6 +178,47 @@ impl SampleRing {
 fn now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// The start of the request of the device in ms ([`now_ms`]), or [`NO_LOOK`] outside it.
+static REQUEST_STARTED: AtomicU64 = AtomicU64::new(NO_LOOK);
+/// The step of the request in progress: the bits of its backend over 8 bits of its step
+/// (`request::RequestStep`), 0 before the first step.
+static REQUEST_STEP: AtomicU32 = AtomicU32::new(0);
+
+/// The time of the request of the device (the start page of D386, section 4): when it is not
+/// done after `REQUEST_SECONDS`, the watchdog thread refuses with the code `EXIT_GPU_HANG` and
+/// the box that names the step ([`crate::request::refuse_hang`]). It ends when the guard drops.
+pub(crate) struct RequestWatch;
+
+impl RequestWatch {
+    pub(crate) fn begin() -> RequestWatch {
+        REQUEST_STEP.store(0, Ordering::Relaxed);
+        REQUEST_STARTED.store(now_ms(), Ordering::Release);
+        RequestWatch
+    }
+}
+
+impl Drop for RequestWatch {
+    fn drop(&mut self) {
+        REQUEST_STARTED.store(NO_LOOK, Ordering::Release);
+    }
+}
+
+/// The step of the request that starts now, for the box of a hang: `step` is the code of a
+/// `request::RequestStep`.
+pub(crate) fn request_step(backend: wgpu::Backends, step: u8) {
+    REQUEST_STEP.store((backend.bits() << 8) | u32::from(step), Ordering::Relaxed);
+}
+
+/// The seconds the request has run when they pass `REQUEST_SECONDS`, else `None` (also outside
+/// the request, `started` [`NO_LOOK`]).
+fn request_overdue(started: u64, now: u64) -> Option<u64> {
+    if started == NO_LOOK {
+        return None;
+    }
+    let seconds = now.saturating_sub(started) / 1000;
+    (seconds >= REQUEST_SECONDS).then_some(seconds)
 }
 
 /// Disarms the watchdog for good: the program ends on purpose (`gpu::refuse`).
@@ -351,6 +396,12 @@ pub(crate) fn start() {
                     Some(seconds) if !DISARMED.load(Ordering::Acquire) => stalled(frame_thread, seconds),
                     _ => {}
                 }
+                let overdue = request_overdue(REQUEST_STARTED.load(Ordering::Acquire), now_ms());
+                if let Some(seconds) = overdue.filter(|_| !DISARMED.load(Ordering::Acquire)) {
+                    let step = REQUEST_STEP.load(Ordering::Relaxed);
+                    let backend = wgpu::Backends::from_bits_truncate(step >> 8);
+                    crate::request::refuse_hang(backend, (step & 0xFF) as u8, seconds);
+                }
             }
         })
         .expect("the watchdog thread");
@@ -470,6 +521,21 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_that_is_not_done_after_its_limit_is_a_hang() {
+        let start = 1_000;
+        let limit_ms = REQUEST_SECONDS * 1000;
+        // Outside the request: never.
+        assert_eq!(request_overdue(NO_LOOK, u64::MAX - 1), None);
+        // In the request: not before the limit, then the seconds it has run.
+        assert_eq!(request_overdue(start, start), None);
+        assert_eq!(request_overdue(start, start + limit_ms - 1), None);
+        assert_eq!(request_overdue(start, start + limit_ms), Some(REQUEST_SECONDS));
+        assert_eq!(request_overdue(start, start + limit_ms + 1_250), Some(REQUEST_SECONDS + 1));
+        // A clock read before the start (another thread's look) is no hang.
+        assert_eq!(request_overdue(start, start - 1), None);
+    }
 
     fn looks(watch: &mut Watch, count: usize, look: Look) -> Option<u64> {
         (0..count).map(|_| watch.look(look)).last().flatten()

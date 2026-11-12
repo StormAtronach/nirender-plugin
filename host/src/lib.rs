@@ -52,6 +52,7 @@ mod crash;
 pub use crash::{hold_next_dump, rotate_log};
 mod log_pipe;
 mod watchdog;
+mod wgpu_log;
 pub use watchdog::LongStep;
 mod tag;
 // The one home of the stream format number, shared with the plugin crate (see the file).
@@ -683,8 +684,7 @@ struct Renderer {
     device: Rc<wgpu::Device>,
     /// The format of the picture that the pipelines draw into.
     target_format: wgpu::TextureFormat,
-    /// What the picture of the window can be used for, and the present modes of the window.
-    surface_usages: wgpu::TextureUsages,
+    /// The present modes of the window.
     present_modes: Vec<wgpu::PresentMode>,
     /// The anisotropic filter that MGE XE forces, for a comparison with its picture. 1 for the
     /// filters that the game asks for.

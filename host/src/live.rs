@@ -810,10 +810,7 @@ impl App {
             view_formats: vec![],
             color_space: Default::default(),
         });
-        assert!(
-            renderer.surface_usages.contains(wgpu::TextureUsages::COPY_DST),
-            "the window does not take a copy of a picture"
-        );
+        // The request refused a window without COPY_DST (`request::window_lacks`).
         self.overlay = Some(super::overlay::Overlay::new(&renderer.device, renderer.target_format));
         let mut player = Player::new(renderer);
         // The abilities of the stream are in its head: the player reads them as a replay does.
@@ -921,7 +918,10 @@ impl ApplicationHandler for App {
                 .with_decorations(false)
                 .with_position(PhysicalPosition::new(0, 0));
         }
-        let window = Arc::new(event_loop.create_window(attributes).expect("a window"));
+        let window = match event_loop.create_window(attributes) {
+            Ok(window) => Arc::new(window),
+            Err(error) => crate::request::refuse_window(&error.to_string()),
+        };
         if self.parent.is_some() {
             // A window that is not enabled takes no mouse and no keys: they go to the game.
             window.set_enable(false);

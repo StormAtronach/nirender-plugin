@@ -1107,6 +1107,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "jpeg-encoder",
+ "log",
  "png",
  "pollster",
  "rustc-hash 2.1.3",

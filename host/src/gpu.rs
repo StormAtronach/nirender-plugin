@@ -13,7 +13,7 @@
 //!   helper's memory; `MGE_XE_MEMORY_MINUTES`).
 
 use crate::objects::Create;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -389,6 +389,52 @@ pub fn set_game_window(window: isize) {
 #[cfg(test)]
 pub(crate) static NO_BOX: AtomicBool = AtomicBool::new(false);
 
+/// The code of the refusal in progress ([`refuse`]); 0 for none.
+static REFUSING: AtomicU32 = AtomicU32::new(0);
+
+/// What a caller does while a refusal may be in progress.
+#[derive(Debug, PartialEq, Eq)]
+enum Turn {
+    /// No refusal is in progress: a refusal shows its box, a step goes on.
+    Go,
+    /// The refusal with this code is in progress: the caller waits behind it.
+    Wait(u32),
+}
+
+/// The turn of a caller (a refusal, or a step of the request that ended) while the refusal with
+/// the code `in_progress` runs (0 for none). A refusal that took the slot itself sees 0.
+fn turn(in_progress: u32) -> Turn {
+    match in_progress {
+        0 => Turn::Go,
+        first => Turn::Wait(first),
+    }
+}
+
+/// The end of a step of the request (the instance, the surface, the adapter, the device): when
+/// a refusal is in progress (the watchdog refused a hang while the step ran), this thread
+/// starts nothing more and waits behind it (the Architect's condition b of D388).
+pub(crate) fn after_request_step() {
+    if let Turn::Wait(first) = turn(REFUSING.load(Ordering::Acquire)) {
+        wait_behind(&format!(
+            "refusal: a step of the request ended during the refusal (code {first}); this thread waits"
+        ));
+    }
+}
+
+/// Logs `line` and waits without end behind the refusal in progress, whose box thread ends the
+/// program. The wait answers the messages sent to this thread's windows
+/// ([`answer_sent_messages`]): the main thread owns the child window in the game's window, and
+/// the game's thread must not wait for it.
+fn wait_behind(line: &str) -> ! {
+    let mut lines = ExitLines::new();
+    lines.line(line);
+    lines.write_dropped_count();
+    loop {
+        answer_sent_messages(None);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Ends this program on a refusal with the exit `code` (10 to 29: the stream, the extension,
 /// the GPU), the log lines `reasons` (one line for each line of the text) and the box `text`.
 /// A refusal is an exit in progress, not a stall (the failure-path design, section 6.0), so
@@ -403,7 +449,19 @@ pub(crate) static NO_BOX: AtomicBool = AtomicBool::new(false);
 /// log first as "box: "; with `MGE_XE_BOX_SECONDS=<n>` the box closes itself after n seconds,
 /// through MessageBoxTimeoutW of user32 (not in the documented API, so taken by GetProcAddress;
 /// without it the box is only logged); without the switch it waits for the click.
+///
+/// One refusal for each process: the first caller takes it, before anything else, so that no
+/// later caller can announce another code than the box shows. A later caller (the main thread
+/// when the driver returns after the watchdog refused a hang) waits behind it (`wait_behind`).
 pub fn refuse(code: u32, reasons: &str, text: &str) -> ! {
+    let in_progress = REFUSING
+        .compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire)
+        .unwrap_or_else(|first| first);
+    if let Turn::Wait(first) = turn(in_progress) {
+        wait_behind(&format!(
+            "refusal: the code {code} waits behind the refusal in progress (code {first})"
+        ));
+    }
     crate::watchdog::disarm();
     crate::live::announce_exit(code);
     // The lines of the refusal take no lock of stdout (`ExitLines`): the watchdog is disarmed
@@ -411,6 +469,12 @@ pub fn refuse(code: u32, reasons: &str, text: &str) -> ! {
     let mut lines = ExitLines::new();
     for reason in reasons.lines() {
         lines.line(reason);
+    }
+    // A refusal during the request: the count line of the request's end does not come.
+    if crate::wgpu_log::requesting() {
+        if let Some(line) = crate::wgpu_log::dropped_line() {
+            lines.line(&line);
+        }
     }
     lines.line(&format!("refusal: the exit code {code} is announced; the box, then the end"));
     for line in text.lines() {
@@ -522,13 +586,20 @@ fn show_box_then_end(text: &str, code: u32) -> ! {
     }
 }
 
-/// Waits until the box's `thread` has ended, or the wait fails, and answers only the messages
-/// that other threads send to the windows of this thread (QS_SENDMESSAGE, PM_QS_SENDMESSAGE):
-/// PeekMessage runs them in their window procedures, so a thread that waits for an answer, the
-/// game's among them, is not held. No posted message and no paint is taken out.
+/// Waits until the box's `thread` has ended, or the wait fails ([`answer_sent_messages`]).
 #[cfg(windows)]
 fn wait_for_sent_messages<T>(thread: &std::thread::JoinHandle<T>) {
     use std::os::windows::io::AsRawHandle;
+    answer_sent_messages(Some(thread.as_raw_handle() as isize));
+}
+
+/// Answers only the messages that other threads send to the windows of this thread
+/// (QS_SENDMESSAGE, PM_QS_SENDMESSAGE) until the object `handle` is signalled or the wait fails;
+/// with no handle, until the wait fails. PeekMessage runs them in their window procedures, so a
+/// thread that waits for an answer, the game's among them, is not held. No posted message and no
+/// paint is taken out.
+#[cfg(windows)]
+fn answer_sent_messages(handle: Option<isize>) {
     #[link(name = "user32")]
     extern "system" {
         fn MsgWaitForMultipleObjects(count: u32, handles: *const isize, all: i32, milliseconds: u32, wake: u32) -> u32;
@@ -540,24 +611,30 @@ fn wait_for_sent_messages<T>(thread: &std::thread::JoinHandle<T>) {
     const WAIT_OBJECT_0: u32 = 0;
     const WAIT_FAILED: u32 = u32::MAX;
     const INFINITE: u32 = u32::MAX;
-    let handle = thread.as_raw_handle() as isize;
+    let (count, handles) = match &handle {
+        Some(handle) => (1, handle as *const isize),
+        None => (0, std::ptr::null()),
+    };
     // MSG: the window, the message, wParam, lParam, the time, the point and a private word; one
     // word each up to lParam on x86 and x64 (the message has padding on x64). Seven words hold
     // the 48 bytes of x64 and the 28 of x86.
     let mut message = [0usize; 7];
-    // SAFETY: the handle is the thread's, open while `thread` lives; the message buffer has the
+    // SAFETY: the handle is open while the caller holds its object; the message buffer has the
     // size and the alignment of MSG.
     unsafe {
         loop {
             // The sends that came before the wait, and those that woke it.
             while PeekMessageW(&mut message, 0, 0, 0, PM_REMOVE | PM_QS_SENDMESSAGE) != 0 {}
-            let woken = MsgWaitForMultipleObjects(1, &handle, 0, INFINITE, QS_SENDMESSAGE);
-            if woken == WAIT_OBJECT_0 || woken == WAIT_FAILED {
+            let woken = MsgWaitForMultipleObjects(count, handles, 0, INFINITE, QS_SENDMESSAGE);
+            if (count == 1 && woken == WAIT_OBJECT_0) || woken == WAIT_FAILED {
                 return;
             }
         }
     }
 }
+
+#[cfg(not(windows))]
+fn answer_sent_messages(_handle: Option<isize>) {}
 
 #[cfg(not(windows))]
 fn show_box_then_end(_text: &str, code: u32) -> ! {
@@ -734,6 +811,20 @@ fn counter_line(counts: &[(&str, isize)], buffer_memory: isize, texture_memory: 
 mod box_tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn the_first_refusal_takes_the_turn_and_later_callers_wait_behind_it() {
+        // The three callers of the Architect's conditions (D388). `refuse` and
+        // `after_request_step` give `turn` the code in progress.
+        let first_refusal = turn(0);
+        let later_refusal = turn(21);
+        let step_that_ended_well = turn(21);
+        assert_eq!(first_refusal, Turn::Go);
+        assert_eq!(later_refusal, Turn::Wait(21));
+        assert_eq!(step_that_ended_well, Turn::Wait(21));
+        // A step with no refusal in progress goes on.
+        assert_eq!(turn(0), Turn::Go);
+    }
 
     #[test]
     fn the_line_after_the_box_tells_the_time_limit_from_a_click() {

@@ -199,7 +199,6 @@ pub(crate) struct Request {
     pub queue: wgpu::Queue,
     /// The format of the target: the wanted one, or a format of the surface without sRGB.
     pub target_format: wgpu::TextureFormat,
-    pub surface_usages: wgpu::TextureUsages,
     pub present_modes: Vec<wgpu::PresentMode>,
     pub depth_format: wgpu::TextureFormat,
     /// The samples of each pixel of the frame: the largest count up to the wanted one that
@@ -258,11 +257,16 @@ impl Request {
 }
 
 /// Why a backend cannot serve: the adapter when there is one, and the lack with its number.
+/// Without an adapter, `reason` follows the name of the backend in the box ("Vulkan did not
+/// load: ...").
 #[derive(Debug, Clone)]
 pub struct Refusal {
     pub backend: wgpu::Backends,
     pub adapter: Option<String>,
     pub reason: String,
+    /// The backend did not load or names no card: the box ends with the advice to update the
+    /// graphics driver.
+    pub update_driver: bool,
 }
 
 impl std::fmt::Display for Refusal {
@@ -274,6 +278,84 @@ impl std::fmt::Display for Refusal {
             self.adapter.as_deref().unwrap_or("no adapter"),
             self.reason
         )
+    }
+}
+
+/// The steps of the request of one backend: each has a log line at its start and its time at
+/// its end, and the box of a hang names the step in progress ([`refuse_hang`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestStep {
+    /// Each try makes a new instance; for Vulkan it loads the loader and the layers that other
+    /// programs installed.
+    Instance = 1,
+    Surface = 2,
+    Adapter = 3,
+    Device = 4,
+}
+
+impl RequestStep {
+    const ALL: [RequestStep; 4] = [Self::Instance, Self::Surface, Self::Adapter, Self::Device];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Instance => "the instance",
+            Self::Surface => "the surface",
+            Self::Adapter => "the adapter",
+            Self::Device => "the device",
+        }
+    }
+
+    fn from_code(code: u8) -> Option<RequestStep> {
+        Self::ALL.into_iter().find(|step| *step as u8 == code)
+    }
+
+    /// The step of `MGE_XE_REQUEST_STALL` (its name without "the ").
+    pub(crate) fn from_switch(word: &str) -> Option<RequestStep> {
+        Self::ALL
+            .into_iter()
+            .find(|step| step.name().strip_prefix("the ") == Some(word))
+    }
+}
+
+/// The sleep of `MGE_XE_REQUEST_STALL`: longer than the limit of the request and the plugin's
+/// limit of 60 s, so that the null test (`MGE_XE_WATCHDOG=0`) ends by the plugin's limit.
+pub(crate) const STALL_SECONDS_FOR_TEST: u64 = 120;
+
+/// A step of the request in progress ([`step_begins`]).
+struct StepInProgress {
+    backend: wgpu::Backends,
+    step: RequestStep,
+    started: std::time::Instant,
+}
+
+/// The start of a step of the request: its log line, its name for the watchdog, and the sleep
+/// of `MGE_XE_REQUEST_STALL` (once, so on the first backend).
+fn step_begins(backend: wgpu::Backends, step: RequestStep) -> StepInProgress {
+    println!("gpu: {}: {}", backend_name(backend), step.name());
+    crate::watchdog::request_step(backend, step as u8);
+    static STALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if switches().request_stall == Some(step) && !STALLED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        println!("gpu: MGE_XE_REQUEST_STALL: {} sleeps {STALL_SECONDS_FOR_TEST} s", step.name());
+        std::thread::sleep(std::time::Duration::from_secs(STALL_SECONDS_FOR_TEST));
+    }
+    StepInProgress {
+        backend,
+        step,
+        started: std::time::Instant::now(),
+    }
+}
+
+impl StepInProgress {
+    /// The end of the step: its time in the log, then the check for a refusal that came while
+    /// it ran ([`gpu::after_request_step`]), before its result is used.
+    fn end(self) {
+        println!(
+            "gpu: {}: {}: {} ms",
+            backend_name(self.backend),
+            self.step.name(),
+            self.started.elapsed().as_millis()
+        );
+        gpu::after_request_step();
     }
 }
 
@@ -297,6 +379,73 @@ fn backend_name(backend: wgpu::Backends) -> &'static str {
     }
 }
 
+/// The name of a backend in the words of a box.
+fn backend_title(backend: wgpu::Backends) -> &'static str {
+    match backend {
+        wgpu::Backends::VULKAN => "Vulkan",
+        wgpu::Backends::DX12 => "Direct3D 12",
+        _ => "The backend",
+    }
+}
+
+/// Why `backend` gave no adapter, in the words of a box, from the fields of wgpu's error; and
+/// whether a new graphics driver can help. The fields follow the order of wgpu's own text
+/// (wgpu-types `RequestAdapterError`). They are not a stable interface of wgpu: a value that is
+/// not known keeps wgpu's sentence.
+fn no_adapter_words(backend: wgpu::Backends, error: &wgpu::RequestAdapterError) -> (String, bool) {
+    let wgpu_words = (format!("gave no adapter: {error}"), false);
+    let wgpu::RequestAdapterError::NotFound {
+        active_backends,
+        supported_backends,
+        no_adapter_backends,
+        incompatible_surface_backends,
+        ..
+    } = error
+    else {
+        return wgpu_words;
+    };
+    if !supported_backends.contains(backend) {
+        wgpu_words
+    } else if no_adapter_backends.contains(backend) {
+        let needs = if backend == wgpu::Backends::DX12 {
+            " (it needs shader model 6 and a current driver)"
+        } else {
+            ""
+        };
+        (format!("names no graphics card that the renderer can use{needs}"), true)
+    } else if incompatible_surface_backends.contains(backend) {
+        (
+            "has no graphics card that can draw into the window of the game".to_string(),
+            false,
+        )
+    } else if !active_backends.contains(backend) {
+        (did_not_load_words(backend), true)
+    } else {
+        wgpu_words
+    }
+}
+
+/// The words of a backend that did not load.
+fn did_not_load_words(backend: wgpu::Backends) -> String {
+    let what = if backend == wgpu::Backends::VULKAN {
+        ": no Vulkan driver is installed, or it is broken"
+    } else {
+        ""
+    };
+    format!("did not load{what}")
+}
+
+/// The words of a surface that the backend did not make (`what`), and whether a new graphics
+/// driver can help. A backend that did not load makes no surface either, and that comes first
+/// (the request makes the surface before it asks for the adapter): wgpu's words for the load
+/// say why, `failure` ([`crate::wgpu_log::take_backend_failure`]).
+fn no_surface_words(backend: wgpu::Backends, what: String, failure: Option<&str>) -> (String, bool) {
+    match failure {
+        Some(failure) => (with_wgpu_words(did_not_load_words(backend), Some(failure)), true),
+        None => (what, false),
+    }
+}
+
 fn adapter_line(info: &wgpu::AdapterInfo) -> String {
     format!(
         "{} ({:?}, driver {} {})",
@@ -315,6 +464,8 @@ pub(crate) fn request(
     texture_slots: u32,
     samples: u32,
 ) -> Result<Request, Vec<Refusal>> {
+    let _log = crate::wgpu_log::RequestLog::begin();
+    let _watch = crate::watchdog::RequestWatch::begin();
     let mut refusals = Vec::new();
     for backend in order(backends) {
         match try_backend(backend, window.as_ref(), wanted_format, texture_slots, samples) {
@@ -342,6 +493,7 @@ fn try_backend(
         backend,
         adapter,
         reason,
+        update_driver: false,
     };
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = backend;
@@ -351,17 +503,27 @@ fn try_backend(
     // by a compute pass (`WGPU_VALIDATION_INDIRECT_CALL=1` puts it back).
     descriptor.flags.remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     descriptor.flags = descriptor.flags.with_env();
-    // The new shader compiler of Direct3D, a part of this program: the old one is slow.
-    descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
+    descriptor.backend_options = backend_options();
+    let step = step_begins(backend, RequestStep::Instance);
     let instance = wgpu::Instance::new(descriptor);
+    step.end();
+    // wgpu's own words when the backend did not load: only its debug line has them.
+    let load_failure = crate::wgpu_log::take_backend_failure();
 
+    let no_surface = |what: String| {
+        let (words, update_driver) = no_surface_words(backend, what, load_failure.as_deref());
+        Refusal {
+            update_driver,
+            ..refuse(None, words)
+        }
+    };
+    let step = step_begins(backend, RequestStep::Surface);
     let surface = match window {
-        None => None,
-        Some(WindowTarget::Own(window)) => Some(
-            instance
-                .create_surface(window.clone())
-                .map_err(|error| refuse(None, format!("no surface on the window: {error}")))?,
-        ),
+        None => Ok(None),
+        Some(WindowTarget::Own(window)) => instance
+            .create_surface(window.clone())
+            .map(Some)
+            .map_err(|error| no_surface(format!("made no surface on the window: {error}"))),
         // The game's window lives until the game ends, and this program ends with it.
         Some(WindowTarget::Game(handle)) => {
             use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
@@ -379,17 +541,38 @@ fn try_backend(
                     raw_window_handle: RawWindowHandle::Win32(window),
                 })
             };
-            Some(surface.map_err(|error| refuse(None, format!("no surface on the window of the game: {error}")))?)
+            surface
+                .map(Some)
+                .map_err(|error| no_surface(format!("made no surface on the window of the game: {error}")))
         }
     };
+    step.end();
+    let surface = surface?;
 
+    let step = step_begins(backend, RequestStep::Adapter);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: surface.as_ref(),
         force_fallback_adapter: false,
         ..Default::default()
-    }))
-    .map_err(|error| refuse(None, format!("no graphics adapter: {error}")))?;
+    }));
+    step.end();
+    let adapter = adapter.map_err(|error| {
+        let (mut words, update_driver) = no_adapter_words(backend, &error);
+        // Direct3D 12 names no card: its reason for each card, from wgpu-hal.
+        let no_card = matches!(&error, wgpu::RequestAdapterError::NotFound { no_adapter_backends, .. }
+            if no_adapter_backends.contains(backend));
+        if backend == wgpu::Backends::DX12 && no_card {
+            for line in dx12_card_lines() {
+                words.push('\n');
+                words.push_str(&line);
+            }
+        }
+        Refusal {
+            update_driver,
+            ..refuse(None, with_wgpu_words(words, load_failure.as_deref()))
+        }
+    })?;
     let info = adapter.get_info();
     let name = Some(adapter_line(&info));
 
@@ -463,27 +646,18 @@ fn try_backend(
             lacks.push(format!("{name}: has {has}, needs {needs}"));
         }
     });
-    if !lacks.is_empty() {
-        return Err(refuse(name, lacks_text(backend, &lacks)));
-    }
-
-    // The choices from what the adapter has.
+    // The needs of the window. Its lacks join the adapter's, so that the other backend is tried.
     let mut target_format = wanted_format;
-    let mut surface_usages = wgpu::TextureUsages::empty();
     let mut present_modes = Vec::new();
     if let Some(surface) = surface.as_ref() {
-        // The game gives colours that are ready for the screen: no sRGB format.
         let capabilities = surface.get_capabilities(&adapter);
-        if !capabilities.formats.contains(&target_format) {
-            target_format = capabilities
-                .formats
-                .iter()
-                .copied()
-                .find(|format| !format.is_srgb())
-                .unwrap_or(capabilities.formats[0]);
-        }
-        surface_usages = capabilities.usages;
+        let format = window_format(wanted_format, &capabilities.formats);
+        lacks.extend(window_lacks(format, capabilities.usages));
+        target_format = format.unwrap_or(wanted_format);
         present_modes = capabilities.present_modes;
+    }
+    if !lacks.is_empty() {
+        return Err(refuse(name, lacks_text(backend, &lacks)));
     }
     // The format of the depth: a float depth with a stencil when the adapter has it. A
     // float depth is reversed: near 1, far 0 (`depth`). A fixed-point depth gains nothing
@@ -519,7 +693,8 @@ fn try_backend(
         samples_reason(asked, samples, adapter_formats)
     );
 
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let step = step_begins(backend, RequestStep::Device);
+    let made = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("nirender"),
         // The draws of an extension from the GPU (the distant statics of MGE XE) need the
         // first instance and the count of indirect draws, when the adapter has them.
@@ -553,8 +728,10 @@ fn try_backend(
         },
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()
-    }))
-    .map_err(|error| refuse(name.clone(), format!("no device: {error}")))?;
+    }));
+    step.end();
+    let (device, queue) =
+        made.map_err(|error| refuse(name.clone(), format!("the driver did not make the device ({error})")))?;
 
     Ok(Request {
         info,
@@ -562,7 +739,6 @@ fn try_backend(
         device,
         queue,
         target_format,
-        surface_usages,
         present_modes,
         depth_format,
         samples,
@@ -623,26 +799,176 @@ fn lacks_text(backend: wgpu::Backends, lacks: &[String]) -> String {
 /// The lacks that a refusal names before their count ([`lacks_text`]).
 const LACKS_NAMED: usize = 3;
 
+/// The format of the window's picture: `wanted` when the surface offers it, else the first
+/// offered format that is not sRGB (the game gives colours that are ready for the screen),
+/// else the first offered. `None` when the surface offers no format.
+fn window_format(wanted: wgpu::TextureFormat, offered: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
+    if offered.contains(&wanted) {
+        return Some(wanted);
+    }
+    offered
+        .iter()
+        .copied()
+        .find(|format| !format.is_srgb())
+        .or_else(|| offered.first().copied())
+}
+
+/// What the window lacks: a format for its picture ([`window_format`]), and the copy into its
+/// picture, which the live frame needs (`COPY_DST` in the configuration of the surface).
+fn window_lacks(format: Option<wgpu::TextureFormat>, usages: wgpu::TextureUsages) -> Vec<String> {
+    let mut lacks = Vec::new();
+    if format.is_none() {
+        lacks.push("a format for the picture of the window (the surface offers none)".to_string());
+    }
+    if !usages.contains(wgpu::TextureUsages::COPY_DST) {
+        lacks.push("a copy into the picture of the window (COPY_DST)".to_string());
+    }
+    lacks
+}
+
+/// The options of the backends: the new shader compiler of Direct3D, a part of this program
+/// (the old one is slow). The check of the shader model of a card depends on it.
+fn backend_options() -> wgpu::BackendOptions {
+    let mut options = wgpu::BackendOptions::default();
+    options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
+    options
+}
+
+/// Direct3D 12's reason for each card of the computer, one line each ([`card_line`]). The
+/// reason comes only to the telemetry of a wgpu-hal instance, which the instance of the `wgpu`
+/// crate does not set (wgpu-hal `Telemetry`): so a second instance of Direct3D 12, with the
+/// options of the request, lists the cards again. For the box of a refusal only.
+fn dx12_card_lines() -> Vec<String> {
+    use wgpu::hal::Instance as _;
+    // The telemetry is a function pointer: the lines go through a static.
+    static LINES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let telemetry = wgpu::hal::Telemetry {
+        d3d12_expose_adapter: |description, driver, result| {
+            let name = &description.Description;
+            let length = name.iter().position(|&unit| unit == 0).unwrap_or(name.len());
+            let line = card_line(&String::from_utf16_lossy(&name[..length]), driver.ok(), &result);
+            if let Ok(mut lines) = LINES.lock() {
+                lines.push(line);
+            }
+        },
+    };
+    let descriptor = wgpu::hal::InstanceDescriptor {
+        name: "nirender: the reasons of Direct3D 12",
+        flags: wgpu::InstanceFlags::empty(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        backend_options: backend_options(),
+        telemetry: Some(telemetry),
+        display: None,
+    };
+    // SAFETY: a new instance with no display; the adapters it lists are dropped with it.
+    match unsafe { wgpu::hal::dx12::Instance::init(&descriptor) } {
+        Ok(instance) => drop(unsafe { instance.enumerate_adapters(None) }),
+        Err(error) => println!("gpu: dx12: the reasons of the cards: no instance: {error}"),
+    }
+    LINES.lock().map(|mut lines| std::mem::take(&mut *lines)).unwrap_or_default()
+}
+
+/// The line of one card: its name, its driver and Direct3D 12's verdict.
+fn card_line(name: &str, driver: Option<[u16; 4]>, result: &wgpu::hal::D3D12ExposeAdapterResult) -> String {
+    use wgpu::hal::D3D12ExposeAdapterResult as Verdict;
+    let driver = driver.map_or_else(|| "not known".to_string(), |[a, b, c, d]| format!("{a}.{b}.{c}.{d}"));
+    let why = match result {
+        Verdict::CreateDeviceError(error) => format!("Direct3D 12 cannot make a device on it ({error:?})"),
+        Verdict::UnknownFeatureLevel(level) => format!("Direct3D 12 does not know its feature level ({level:#x})"),
+        Verdict::ResourceBindingTier2Requirement => {
+            "Direct3D 12 with resource binding tier 1 (the renderer needs tier 2)".to_string()
+        }
+        Verdict::ShaderModel6Requirement => "Direct3D 12 without shader model 6".to_string(),
+        Verdict::Success(level, model) => format!("Direct3D 12 can use it ({level:?}, {model:?})"),
+    };
+    format!("{name} (driver {driver}): {why}")
+}
+
+/// `words` with wgpu's own words for a backend that did not load, when wgpu gave them.
+fn with_wgpu_words(words: String, failure: Option<&str>) -> String {
+    match failure {
+        Some(failure) => format!("{words} (wgpu: {failure})"),
+        None => words,
+    }
+}
+
 /// The box of the live start when no backend serves (the failure-path page, section 5, the
 /// code 20), and the log lines of the refusals; then the program ends with the code.
 pub(crate) fn refuse_live(refusals: &[Refusal]) -> ! {
     let reasons: Vec<String> = refusals.iter().map(|refusal| format!("gpu: {refusal}")).collect();
+    gpu::refuse(
+        crate::stream_format::EXIT_GPU,
+        &reasons.join("\n"),
+        &live_refusal_text(refusals),
+    )
+}
+
+/// The words of the box of [`refuse_live`]: a line for each backend, then what the player does.
+fn live_refusal_text(refusals: &[Refusal]) -> String {
     let why: Vec<String> = refusals
         .iter()
-        .map(|refusal| {
-            format!(
-                "{} ({}) {}.",
-                refusal.adapter.as_deref().unwrap_or("No adapter"),
-                backend_name(refusal.backend),
-                refusal.reason
-            )
+        .map(|refusal| match &refusal.adapter {
+            Some(adapter) => format!("{adapter} ({}) {}.", backend_name(refusal.backend), refusal.reason),
+            None => format!("{} {}.", backend_title(refusal.backend), refusal.reason),
         })
         .collect();
-    let text = format!(
-        "The wgpu renderer of MGE XE cannot use this graphics device.\n{}\nClose this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.",
+    let advice = if refusals.iter().any(|refusal| refusal.update_driver) {
+        "\nUpdate the graphics driver."
+    } else {
+        ""
+    };
+    format!(
+        "The wgpu renderer of MGE XE cannot use this graphics device.\n{}{advice}\n{BOX_END}",
         why.join("\n")
-    );
-    gpu::refuse(crate::stream_format::EXIT_GPU, &reasons.join("\n"), &text)
+    )
+}
+
+/// The box of a hang at the start (the start page of D386, section 4): the request of the device
+/// was not done after `REQUEST_SECONDS`. From the watchdog thread, while the main thread is in
+/// the driver; then the program ends with the code `EXIT_GPU_HANG`. `step` is the code of the
+/// [`RequestStep`] in progress, 0 before the first.
+pub(crate) fn refuse_hang(backend: wgpu::Backends, step: u8, seconds: u64) -> ! {
+    let place = hang_place(backend, step);
+    gpu::refuse(
+        crate::stream_format::EXIT_GPU_HANG,
+        &format!("gpu: {place}: no answer for {seconds} s"),
+        &hang_refusal_text(&place),
+    )
+}
+
+/// The backend and the step of a hang, as the box names them ("vulkan: the device").
+fn hang_place(backend: wgpu::Backends, step: u8) -> String {
+    match RequestStep::from_code(step) {
+        Some(step) => format!("{}: {}", backend_name(backend), step.name()),
+        None => "before the first step of the request".to_string(),
+    }
+}
+
+fn hang_refusal_text(place: &str) -> String {
+    format!(
+        "The wgpu renderer of MGE XE cannot start on this graphics device.\n\
+         The graphics driver gave no answer for {} s ({place}).\n\
+         Close this box: the game closes. Update the graphics driver, or set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\n\
+         nirender-host.log in the folder of the game has the details.",
+        crate::stream_format::REQUEST_SECONDS
+    )
+}
+
+/// The last lines of the boxes of a refusal at the start: what the player does.
+const BOX_END: &str = "Close this box: the game closes. Set [runtime] renderer_wgpu = false in mgeXE.toml for Direct3D 9.\nnirender-host.log in the folder of the game has the details.";
+
+/// The box of the live start when the window of this program cannot be made (the code 20, as
+/// for a device that cannot be used); then the program ends with the code.
+pub(crate) fn refuse_window(error: &str) -> ! {
+    gpu::refuse(
+        crate::stream_format::EXIT_GPU,
+        &format!("window: none: {error}"),
+        &window_refusal_text(error),
+    )
+}
+
+fn window_refusal_text(error: &str) -> String {
+    format!("The wgpu renderer of MGE XE cannot open its window: {error}.\n{BOX_END}")
 }
 
 #[cfg(test)]
@@ -691,6 +1017,7 @@ mod tests {
             backend: wgpu::Backends::DX12,
             adapter: Some("A card (Dx12, driver x 1.0)".to_string()),
             reason: "lacks sampled textures in one stage: has 16, needs 32".to_string(),
+            update_driver: false,
         };
         assert_eq!(
             refusal.to_string(),
@@ -699,9 +1026,197 @@ mod tests {
         let none = Refusal {
             backend: wgpu::Backends::VULKAN,
             adapter: None,
-            reason: "no graphics adapter: x".to_string(),
+            reason: "did not load".to_string(),
+            update_driver: true,
         };
-        assert_eq!(none.to_string(), "vulkan: no adapter: no graphics adapter: x");
+        assert_eq!(none.to_string(), "vulkan: no adapter: did not load");
+    }
+
+    /// wgpu's error for a request of one backend that gives no adapter, with `bit` in the field
+    /// `field` (0 none, 1 no adapters, 2 an incompatible surface).
+    fn not_found(backend: wgpu::Backends, active: bool, field: u8) -> wgpu::RequestAdapterError {
+        let in_field = |n: u8| {
+            if field == n {
+                backend
+            } else {
+                wgpu::Backends::empty()
+            }
+        };
+        wgpu::RequestAdapterError::NotFound {
+            active_backends: if active { backend } else { wgpu::Backends::empty() },
+            requested_backends: backend,
+            supported_backends: wgpu::Backends::all(),
+            no_fallback_backends: wgpu::Backends::empty(),
+            no_adapter_backends: in_field(1),
+            incompatible_surface_backends: in_field(2),
+        }
+    }
+
+    #[test]
+    fn no_adapter_has_the_helpers_words_for_each_fact_of_wgpu() {
+        let vulkan = wgpu::Backends::VULKAN;
+        let dx12 = wgpu::Backends::DX12;
+        assert_eq!(
+            no_adapter_words(vulkan, &not_found(vulkan, false, 0)),
+            (
+                "did not load: no Vulkan driver is installed, or it is broken".to_string(),
+                true
+            )
+        );
+        assert_eq!(
+            no_adapter_words(dx12, &not_found(dx12, false, 0)),
+            ("did not load".to_string(), true)
+        );
+        assert_eq!(
+            no_adapter_words(vulkan, &not_found(vulkan, true, 1)),
+            ("names no graphics card that the renderer can use".to_string(), true)
+        );
+        assert_eq!(
+            no_adapter_words(dx12, &not_found(dx12, true, 1)),
+            (
+                "names no graphics card that the renderer can use (it needs shader model 6 and a current driver)"
+                    .to_string(),
+                true
+            )
+        );
+        assert_eq!(
+            no_adapter_words(dx12, &not_found(dx12, true, 2)),
+            (
+                "has no graphics card that can draw into the window of the game".to_string(),
+                false
+            )
+        );
+        // A fact that is not known (active, with no reason) and the other error keep wgpu's sentence.
+        let (words, update) = no_adapter_words(vulkan, &not_found(vulkan, true, 0));
+        assert!(
+            words.starts_with("gave no adapter: No suitable graphics adapter found"),
+            "{words}"
+        );
+        assert!(!update);
+        let (words, _) = no_adapter_words(vulkan, &wgpu::RequestAdapterError::EnvNotSet);
+        assert_eq!(words, "gave no adapter: WGPU_ADAPTER_NAME not set");
+    }
+
+    #[test]
+    fn the_box_of_a_hang_names_the_backend_and_the_step() {
+        assert_eq!(
+            hang_place(wgpu::Backends::VULKAN, RequestStep::Device as u8),
+            "vulkan: the device"
+        );
+        assert_eq!(
+            hang_place(wgpu::Backends::DX12, RequestStep::Instance as u8),
+            "dx12: the instance"
+        );
+        assert_eq!(hang_place(wgpu::Backends::VULKAN, 0), "before the first step of the request");
+        let text = hang_refusal_text("vulkan: the device");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "The wgpu renderer of MGE XE cannot start on this graphics device.");
+        assert_eq!(lines[1], "The graphics driver gave no answer for 30 s (vulkan: the device).");
+        assert!(lines[2].starts_with("Close this box: the game closes. Update the graphics driver, or set"));
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn the_stall_switch_names_each_step() {
+        for step in RequestStep::ALL {
+            assert_eq!(RequestStep::from_code(step as u8), Some(step));
+        }
+        assert_eq!(RequestStep::from_switch("device"), Some(RequestStep::Device));
+        assert_eq!(RequestStep::from_switch("instance"), Some(RequestStep::Instance));
+        assert_eq!(RequestStep::from_switch("the device"), None);
+        assert_eq!(RequestStep::from_code(0), None);
+    }
+
+    #[test]
+    fn a_card_line_names_the_card_its_driver_and_the_verdict_of_direct3d_12() {
+        use wgpu::hal::dx12::{CreateDeviceError, FeatureLevel, ShaderModel};
+        use wgpu::hal::D3D12ExposeAdapterResult as Verdict;
+        let line = |driver, result| card_line("A card", driver, &result);
+        assert_eq!(
+            line(Some([31, 0, 15, 1234]), Verdict::ShaderModel6Requirement),
+            "A card (driver 31.0.15.1234): Direct3D 12 without shader model 6"
+        );
+        assert_eq!(
+            line(None, Verdict::ResourceBindingTier2Requirement),
+            "A card (driver not known): Direct3D 12 with resource binding tier 1 (the renderer needs tier 2)"
+        );
+        assert_eq!(
+            line(None, Verdict::UnknownFeatureLevel(0xa000)),
+            "A card (driver not known): Direct3D 12 does not know its feature level (0xa000)"
+        );
+        assert_eq!(
+            line(None, Verdict::CreateDeviceError(CreateDeviceError::GetProcAddress)),
+            "A card (driver not known): Direct3D 12 cannot make a device on it (GetProcAddress)"
+        );
+        assert_eq!(
+            line(None, Verdict::CreateDeviceError(CreateDeviceError::RetDeviceIsNull)),
+            "A card (driver not known): Direct3D 12 cannot make a device on it (RetDeviceIsNull)"
+        );
+        assert_eq!(
+            line(None, Verdict::Success(FeatureLevel::V12_1, ShaderModel::V6_6)),
+            "A card (driver not known): Direct3D 12 can use it (V12_1, V6_6)"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs Direct3D 12: run by hand on a computer with a card"]
+    fn the_cards_of_this_computer_have_a_line_each() {
+        let lines = dx12_card_lines();
+        println!("{lines:#?}");
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn a_backend_that_did_not_load_says_so_at_the_surface_too() {
+        // Run hob-d388-a (Vulkan's drivers off): the surface failed first, with wgpu's empty map.
+        let what = "made no surface on the window: Failed to create surface for any enabled backend: {}".to_string();
+        let failure = "failed to create Vulkan backend: InstanceError { source: Some(ERROR_INCOMPATIBLE_DRIVER) }";
+        assert_eq!(
+            no_surface_words(wgpu::Backends::VULKAN, what.clone(), Some(failure)),
+            (
+                format!("did not load: no Vulkan driver is installed, or it is broken (wgpu: {failure})"),
+                true
+            )
+        );
+        // A backend that loaded keeps the surface's own words.
+        assert_eq!(no_surface_words(wgpu::Backends::VULKAN, what.clone(), None), (what, false));
+    }
+
+    #[test]
+    fn the_box_names_each_backend_wgpus_reason_and_the_advice() {
+        let refusals = [
+            Refusal {
+                backend: wgpu::Backends::VULKAN,
+                adapter: None,
+                reason: with_wgpu_words(
+                    "did not load".to_string(),
+                    Some("failed to create Vulkan backend: missing entry points"),
+                ),
+                update_driver: true,
+            },
+            Refusal {
+                backend: wgpu::Backends::DX12,
+                adapter: Some("A card (Dx12, driver 1)".to_string()),
+                reason: "lacks the BC texture compression (TEXTURE_COMPRESSION_BC)".to_string(),
+                update_driver: false,
+            },
+        ];
+        let text = live_refusal_text(&refusals);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "The wgpu renderer of MGE XE cannot use this graphics device.");
+        assert_eq!(
+            lines[1],
+            "Vulkan did not load (wgpu: failed to create Vulkan backend: missing entry points)."
+        );
+        assert_eq!(
+            lines[2],
+            "A card (Dx12, driver 1) (dx12) lacks the BC texture compression (TEXTURE_COMPRESSION_BC)."
+        );
+        assert_eq!(lines[3], "Update the graphics driver.");
+        assert!(text.ends_with(BOX_END));
+        // No backend that a driver can help: no advice.
+        assert!(!live_refusal_text(&refusals[1..]).contains("Update the graphics driver."));
+        assert_eq!(with_wgpu_words("x".to_string(), None), "x");
     }
 
     #[test]
@@ -726,6 +1241,32 @@ mod tests {
             lacks_text(wgpu::Backends::VULKAN, &lacks[..3]),
             "lacks lack 1; lack 2; lack 3"
         );
+    }
+
+    #[test]
+    fn the_window_takes_the_wanted_format_else_one_without_srgb_else_the_first() {
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba8UnormSrgb};
+        assert_eq!(window_format(Bgra8Unorm, &[Rgba8Unorm, Bgra8Unorm]), Some(Bgra8Unorm));
+        assert_eq!(window_format(Bgra8Unorm, &[Rgba8UnormSrgb, Rgba8Unorm]), Some(Rgba8Unorm));
+        assert_eq!(window_format(Bgra8Unorm, &[Bgra8UnormSrgb]), Some(Bgra8UnormSrgb));
+        assert_eq!(window_format(Bgra8Unorm, &[]), None);
+    }
+
+    #[test]
+    fn a_window_without_a_format_or_a_copy_is_a_lack_of_its_backend() {
+        let all = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
+        assert!(window_lacks(Some(wgpu::TextureFormat::Bgra8Unorm), all).is_empty());
+        let lacks = window_lacks(None, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        assert_eq!(lacks.len(), 2);
+        assert!(lacks[0].contains("the surface offers none"));
+        assert!(lacks[1].contains("COPY_DST"));
+    }
+
+    #[test]
+    fn the_box_of_a_window_that_cannot_be_made_names_the_error_and_the_way_back() {
+        let text = window_refusal_text("the OS refused");
+        assert!(text.starts_with("The wgpu renderer of MGE XE cannot open its window: the OS refused.\n"));
+        assert!(text.ends_with(BOX_END));
     }
 
     #[test]
