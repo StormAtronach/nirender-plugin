@@ -240,6 +240,9 @@ replays.
 - `NIRENDER_ZERO_LIGHT_KEY=0`: a draw lit for each pixel with no lights keeps the light loop in
   its shader. On by default, the draw takes `NO_LIGHTS_BIT` and its stage key leaves the loop
   out; the picture is the same.
+- `NIRENDER_OBJECTS_WARN_ALL=1`: each steady frame that makes GPU objects gives its warning
+  line in the log (`host/src/objects.rs`). Unset, the first 10 such frames give one, and then
+  each 600th; the report at the end counts them all.
 - `MGE_XE_INDIRECT=0`: one draw call for each retained draw, no indirect runs: it rules the
   indirect runs out when a picture is wrong, and goes around a driver's fault in them.
 - `MGE_XE_SAMPLES=<n>`: the samples for each pixel of the targets of the frame (1, 2, 4 or 8),

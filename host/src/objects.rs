@@ -7,7 +7,8 @@
 //! The code makes its objects through [`Create`] (on the device) and [`CreateView`] (on a
 //! texture): `counted_*` in place of `create_*`. Each call counts its kind and its line
 //! (`#[track_caller]`). [`end_frame`] closes a frame: in a steady frame that made objects, it
-//! gives a warning line with the kinds and the lines, the first 10 times and then each 600th.
+//! gives a warning line with the kinds and the lines, the first 10 times and then each 600th
+//! (each time with `NIRENDER_OBJECTS_WARN_ALL=1`).
 //! The report ([`report_lines`]) gives the totals, and the gate fails a replay whose steady
 //! frames made objects. `tools/checks.py` refuses a `create_*` call of the device or a
 //! texture outside this file.
@@ -93,6 +94,9 @@ pub struct Ledger {
     /// The surface views of the steady frames, and the most in one steady frame.
     steady_surface_views: u64,
     most_surface_views: u64,
+    /// Each steady frame that makes objects gives its warning line
+    /// (`NIRENDER_OBJECTS_WARN_ALL=1`), not only the first ones and each `WARN_EVERY`th.
+    warn_all: bool,
 }
 
 fn add(list: &mut Vec<(Site, u64)>, site: Site, count: u64) {
@@ -137,6 +141,7 @@ impl Ledger {
             surface_views: 0,
             steady_surface_views: 0,
             most_surface_views: 0,
+            warn_all: false,
         }
     }
 
@@ -164,9 +169,16 @@ impl Ledger {
         self.noted_change.get_or_insert(change);
     }
 
+    /// Each steady frame that makes objects gives its warning line, or (false) only the first
+    /// ones and each `WARN_EVERY`th.
+    pub fn set_warn_all(&mut self, warn_all: bool) {
+        self.warn_all = warn_all;
+    }
+
     /// The end of a frame. `change`: the first change of the frame (new content, a load, a
     /// change of a setting), or [`None`] for a steady frame. A steady frame that made objects
-    /// gives its warning line, when it is one of the first 10 such frames or one of each 600th.
+    /// gives its warning line, when it is one of the first 10 such frames or one of each 600th,
+    /// or always with [`Ledger::set_warn_all`].
     pub fn end_frame(&mut self, change: Option<&'static str>) -> Option<String> {
         self.frames += 1;
         let frame = std::mem::take(&mut self.frame);
@@ -190,7 +202,7 @@ impl Ledger {
             add(&mut self.steady, site, n);
         }
         let n = self.steady_frames_made;
-        (n <= WARN_FIRST || n.is_multiple_of(WARN_EVERY)).then(|| {
+        (self.warn_all || n <= WARN_FIRST || n.is_multiple_of(WARN_EVERY)).then(|| {
             let total: u64 = frame.iter().map(|(_, n)| n).sum();
             format!(
                 "gpu objects: warning: frame {} is steady and made {total} GPU objects (steady frame {n} that made objects): {}",
@@ -271,7 +283,10 @@ pub fn changed(change: &'static str) {
 
 /// The end of a frame of the program ([`Ledger::end_frame`]).
 pub fn end_frame(change: Option<&'static str>) -> Option<String> {
-    LEDGER.lock().ok().and_then(|mut ledger| ledger.end_frame(change))
+    LEDGER.lock().ok().and_then(|mut ledger| {
+        ledger.set_warn_all(crate::switches().objects_warn_all);
+        ledger.end_frame(change)
+    })
 }
 
 /// The report of the program ([`Ledger::report_lines`]).
@@ -530,6 +545,26 @@ mod tests {
             report[1],
             "gpu objects: the frames that were not steady, by their first change: a picture 1"
         );
+    }
+
+    /// Steady frames that make objects, past the first `WARN_FIRST`: with `warn_all` each gives
+    /// its line; without it (the null) the 11th and the 12th give none.
+    #[test]
+    fn with_warn_all_each_steady_frame_that_makes_objects_gives_its_line() {
+        let at = here();
+        let lines = |warn_all: bool| {
+            let mut ledger = Ledger::new();
+            ledger.set_warn_all(warn_all);
+            (0..WARN_FIRST + 2)
+                .map(|_| {
+                    ledger.note(Kind::Buffer, at);
+                    ledger.end_frame(None)
+                })
+                .filter(Option::is_some)
+                .count() as u64
+        };
+        assert_eq!(lines(true), WARN_FIRST + 2);
+        assert_eq!(lines(false), WARN_FIRST);
     }
 
     #[test]
