@@ -138,7 +138,7 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deploy_rest import REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, git_env, local  # noqa: E402
+from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, docs_place, git_env, local  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
@@ -153,6 +153,11 @@ LOG_FOLDER = "E:\\nirender-keep\\merge-step"
 # The closing lines of the items (D180): the Archivist reads this file in its batch. A pass of the merge appends one line for
 # each item that its merge subject names.
 CLOSES_FILE = os.path.join(LOG_FOLDER, "closes.tsv")
+# The cite check of the Frame Map (check_cites.py of the docs, D362), report only, after the round: a merge that changes a
+# cited range names the claims in the log. It never fails the round. The repo name of the page for each kind of tree.
+CITE_REPOS = {"plugin": "nirender", "mge": "render-link"}
+CITE_TOOL_PARTS = ("docs", "Numidium Project", "scripts", "frame-map", "check_cites.py")
+CITE_TIMEOUT_SECONDS = 300
 CLOSES_HEADER = "time\titem\trepo\tcommit\tstages\tlog\tsubject"
 # The item of a merge subject: the subject ends with "(W<n>)" or "(W<n> <part>)", the form of the Coordinator's merge
 # subjects ("(W96)", "(W341 step A)"). The item is the text in the parentheses, the part with it: a row with parts
@@ -377,6 +382,28 @@ def verdict(log, text):
     say(text)
     log.write("== %s\n" % text)
     log.flush()
+
+
+def cite_lines(kind, base, commit, tool=None, run=subprocess.run):
+    """The lines of the cite check of the merge from `base` to `commit` (check_cites.py --merge, report only), each with
+    "cites: " first. It never raises: a missing tool, a failing run or a timeout gives one line that says why the cites
+    were not checked. A tree of no kind gives none."""
+    repo_name = CITE_REPOS.get(kind)
+    if not repo_name:
+        return []
+    tool = tool or docs_place(*CITE_TOOL_PARTS)
+    if not os.path.isfile(tool):
+        return ["cites: not checked: no %s" % tool]
+    try:
+        done = run([sys.executable, "-I", tool, "--merge", base, commit, "--repo", repo_name], capture_output=True, text=True,
+                   timeout=CITE_TIMEOUT_SECONDS, env=git_env())
+    except (OSError, subprocess.SubprocessError) as error:
+        return ["cites: not checked: %s" % error]
+    lines = [line for line in done.stdout.splitlines() if line.strip()]
+    if done.returncode != 0:
+        why = (lines or done.stderr.strip().splitlines() or ["no output"])[-1]
+        return ["cites: not checked (exit %d): %s" % (done.returncode, why)]
+    return ["cites: %s" % line for line in lines]
 
 
 # The start of the refusal of slot.py's `refuse_build_tool`, which replay.py calls for each replay of the gate.
@@ -2022,6 +2049,31 @@ def self_test():
         else:
             raise AssertionError("a round with no game stage ran a stage that writes to E:")
         assert holders() == [], holders()
+        # W399: the cite check of a merge, report only. A tree of no kind runs none; a missing tool, a failing run and a
+        # timeout each give one "not checked" line and no exception; a run that works gives its lines with "cites: ".
+        assert cite_lines(None, "a", "b") == []
+        missing = os.path.join(root, "no-check-cites.py")
+        assert cite_lines("plugin", "a", "b", missing) == ["cites: not checked: no %s" % missing]
+        tool = os.path.join(root, "check_cites.py")
+        open(tool, "w").close()
+        calls = []
+
+        def ran(code, stdout, stderr=""):
+            def run(command, **options):
+                calls.append(command)
+                return types.SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+            return run
+
+        said = cite_lines("mge", "1111111", "2222222", tool, ran(0, "cite changed by the merge (OK -> RECHECK): x\ncites of render-link: 9 checked, 1 changed\n"))
+        assert said == ["cites: cite changed by the merge (OK -> RECHECK): x", "cites: cites of render-link: 9 checked, 1 changed"], said
+        assert calls[-1][1:] == ["-I", tool, "--merge", "1111111", "2222222", "--repo", "render-link"], calls[-1]
+        assert cite_lines("plugin", "a", "b", tool, ran(2, "check_cites: no commit a\n")) == ["cites: not checked (exit 2): check_cites: no commit a"]
+        assert calls[-1][-1] == "nirender", calls[-1]
+
+        def slow(command, **options):
+            raise subprocess.TimeoutExpired(command, options["timeout"])
+
+        assert cite_lines("plugin", "a", "b", tool, slow)[0].startswith("cites: not checked: Command"), "a timeout is a line"
     print("merge_step self-test: ok")
 
 
@@ -2104,6 +2156,11 @@ def main():
     say(summary)
     for line in NOT_DEPLOYED:
         say(line)
+    # The cites of the Frame Map that the merge changes (D362): in the log too, and never a failure of the round.
+    with open(log_path, "a", encoding="utf-8") as log:
+        for line in cite_lines(kind, base, commit):
+            say(line)
+            log.write(line + "\n")
     # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
     # of merges with one check closes the item of each merge on the first-parent path (D183).
     when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
