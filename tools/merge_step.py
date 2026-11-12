@@ -782,14 +782,19 @@ def release_slot(slots, slot, what):
 
 
 @contextlib.contextmanager
-def game_hold_noted(slots, seconds=GAME_NOTE_SECONDS):
+def game_hold_noted(slots, seconds=GAME_NOTE_SECONDS, build_who=None):
     """Notes the work of the game slot every `seconds` while the stages run: its hold lapses after 15 minutes with no game
-    seen, and the stages start none. A run that dies stops the notes, and its hold lapses by itself."""
+    seen, and the stages start none. With `build_who`, the label of a take, it also notes the build work of the places of
+    that take (make_play_set.py, W405: a live run compiles nothing, and its hold of the build side would lapse). A run that
+    dies stops the notes, and its hold lapses by itself."""
     stop = threading.Event()
 
     def note():
         while True:
-            slots.note_active("game", time.time())
+            now = time.time()
+            slots.note_active("game", now)
+            if build_who is not None:
+                slots.note_holder_build(slots.owner_of(slots.session_id(), build_who), now)
             if stop.wait(seconds):
                 return
 
@@ -820,15 +825,15 @@ def places_held(slots, slot, who):
 
 
 def keep_holds(slots, what, slot, log):
-    """Before a stage: the run still holds the slots of its take (`round_slot`), and takes again one that lapsed when it
-    is free at once. A wait for it while the run holds the other slot is a hold and wait (D208): slot.py refuses it, and
+    """Before a stage: the run still holds the slots of its take (`round_slot`; "game" for the last stages of a play set,
+    make_play_set.py), and takes again one that lapsed when it is free at once. A wait for it while the run holds the other slot is a hold and wait (D208): slot.py refuses it, and
     the stage is then NOT RUN. The notes of the work (`game_hold_noted`, and here the build work) keep the holds while the
     stages run. False when a hold is lost."""
     owner = slots.owner_of(slots.session_id(), what)
     # The build work of the places of this run, as the hook and the tool checks of slot.py note it: a hold of another run
     # gets no note.
     slots.note_holder_build(owner, time.time())
-    wanted = [("game", 1), ("build", len(slots.units_of("build")))] if slot == "both" else [("build", 1)]
+    wanted = {"both": [("game", 1), ("build", len(slots.units_of("build")))], "game": [("game", 1)]}.get(slot, [("build", 1)])
     for part, needed in wanted:
         held = places_held(slots, part, what)
         if held is None or held >= needed:
@@ -1819,7 +1824,21 @@ def self_test():
         as_session(other_session)
         assert slots.release("build", "other: build").code == slots.DONE
         as_session(own_session)
+        # A hold of the game alone (the last stages of a play set, W405): kept while it stands, NOT RUN when another
+        # session took it, as a wait would give the game away between two stages.
+        alone = io.StringIO()
+        assert keep_holds(slots, what, "game", alone) is True and alone.getvalue() == "", alone.getvalue()
         assert slots.release("game", what).code == slots.DONE
+        as_session(other_session)
+        assert slots.take("game", "other: a game", minutes=5).code == slots.DONE
+        as_session(own_session)
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert keep_holds(slots, what, "game", io.StringIO()) is False, "the run waited for the game"
+        assert "NOT RUN" in said.getvalue(), said.getvalue()
+        assert not any(ticket.session == own_session for ticket in slots.read_tickets("game")), "the run waits in the game queue"
+        as_session(other_session)
+        assert slots.release("game", "other: a game").code == slots.DONE
+        as_session(own_session)
         assert holders() == [], holders()
         with open(os.path.join(root, "stopped.log"), "w+", encoding="utf-8") as stopped:
             assert run_stages([("a", root, good), ("b", root, good)], stopped, lambda: False) == [False, False]
@@ -1871,6 +1890,14 @@ def self_test():
         after = len(noted)
         time.sleep(0.1)
         assert after >= 3 and set(noted) == {"game"} and len(noted) == after, noted
+        # With the label of a take, the notes count the build work of that take's places too (W405).
+        noted.clear()
+        counting.session_id = lambda: "s"
+        counting.owner_of = lambda session, who: "%s/%s" % (session, who)
+        counting.note_holder_build = lambda owner, now: noted.append("build " + owner)
+        with game_hold_noted(counting, 0.01, build_who="make_play_set: x"):
+            time.sleep(0.1)
+        assert noted[:2] == ["game", "build s/make_play_set: x"] and noted.count("game") == noted.count("build s/make_play_set: x"), noted
 
         # The log keeps its name, and its folder is made.
         logs = os.path.join(root, "new", "logs")
