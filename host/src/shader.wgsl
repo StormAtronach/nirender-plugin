@@ -73,9 +73,11 @@ struct Draw {
     // bit 4, the draw is the sky dome and the extension gives its shape and its colour; bit
     // 8, the extension gives the colour and the draw keeps its alpha (the shadow of a moon);
     // bit 128, the extension makes the light for each pixel: the vertex stage makes no light
-    // and the colour is not kept between 0 and 1 between the stages; bit 32768, this crate's
-    // NO_LIGHTS_BIT: a draw lit for each pixel with no lights; bit 2 and the bits from 16
-    // (but 128 and 32768) are for the extension.
+    // and the colour is not kept between 0 and 1 between the stages; bit 16384, this crate's
+    // CORNER_LIGHT_BIT: a particle takes its lights at its corners (`extension_corner_shade`
+    // in the vertex stage); bit 32768, this crate's NO_LIGHTS_BIT: a draw lit for each pixel
+    // with no lights; bit 2 and the bits from 16 (but 128, 16384 and 32768) are for the
+    // extension.
     counts: vec4u,
     // The lights of the draw in `lights`: the first and the number.
     light_range: vec4u,
@@ -340,6 +342,16 @@ struct VertexOut {
     // (D3DSHADE_FLAT). The same values as `color` and `world_normal`, not blended.
     @location(12) @interpolate(flat, first) color_flat: vec4f,
     @location(13) @interpolate(flat, first) world_normal_flat: vec3f,
+    // A particle lit at its corners (CORNER_LIGHT_BIT): the light its corners take, for the
+    // lights view; 0 for any other draw.
+    @location(14) corner_light: vec3f,
+}
+
+// The colour of a particle's corner after its lights (`extension_corner_shade` of the
+// extension), and the light that the corner takes.
+struct CornerShade {
+    color: vec4f,
+    light: vec3f,
 }
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
@@ -557,6 +569,14 @@ fn vs(in: VertexIn) -> VertexOut {
             sum += strength * (ambient * light.ambient.rgb + diffuse.rgb * light.diffuse.rgb * max(dot(normal, direction), 0.0));
         }
         out.color = vec4f(clamp(sum, vec3f(0.0), vec3f(1.0)), diffuse.a);
+    }
+    // A particle lit at its corners (CORNER_LIGHT_BIT, set only with the light for each
+    // pixel): the extension lights the corner here, and the fragment stage takes the colour.
+    out.corner_light = vec3f(0.0);
+    if (draw_counts_w() & 16384u) != 0u {
+        let corner = extension_corner_shade(world_position.xyz, world_normal, vertex_color, out.color);
+        out.color = corner.color;
+        out.corner_light = corner.light;
     }
 
     out.color_flat = out.color;

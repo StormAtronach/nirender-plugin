@@ -380,6 +380,13 @@ pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
 /// the clusters and the lights of the world for such a draw. The colour does not change.
 pub const NO_LIGHTS_BIT: u32 = 1 << 15;
 
+/// Bit 16384 of `counts.w`, set by this crate: a particle draw lit for each pixel takes its
+/// lights at the corners of its quads, in the vertex stage, when the frame asks for it
+/// ([`FrameParameters::particle_corners`], the setting `per_pixel_particles` off). A fact of
+/// the stage key: the shader of the extension has no light loop for such a draw, and takes
+/// the colour that the vertex stage made (`extension_corner_shade`). The picture changes.
+pub const CORNER_LIGHT_BIT: u32 = 1 << 14;
+
 /// The lines `early world draws: ...` of a run: one for each scene whose world draws reached the
 /// target before its world began, for the first ones only.
 pub(crate) const EARLY_DRAW_LINES: u64 = 16;

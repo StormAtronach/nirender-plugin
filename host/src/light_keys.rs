@@ -13,6 +13,12 @@
 //! The switches `NIRENDER_BLIND_LIGHT_KEY=0` and `NIRENDER_ZERO_LIGHT_KEY=0` turn the keys
 //! off. The draws of the retained table that the GPU makes (`retained`, by kind) do not take
 //! them.
+//!
+//! The corner light of a particle ([`lights_at_corners`], [`crate::CORNER_LIGHT_BIT`]) comes
+//! after the two keys: blind first, then zero, then the corners, so a draw takes at most one
+//! of zero and corner. It is a look the user chooses (the setting `per_pixel_particles` off,
+//! [`crate::FrameParameters::particle_corners`]), not a key that removes invisible work: it
+//! stays while a debug view is on.
 
 use crate::data::DrawData;
 
@@ -49,6 +55,15 @@ fn black(colour: [f32; 4]) -> bool {
 pub(crate) fn has_no_lights(data: &DrawData) -> bool {
     let from_elsewhere = data.light_range[3] & (1 | crate::WORLD_LIGHTS_BIT) != 0;
     lit_for_each_pixel(data) && data.light_range[1] == 0 && !from_elsewhere
+}
+
+/// A particle draw lit for each pixel that has lights the vertex stage can take: its own lights
+/// (with clusters on, a corner takes every light of the draw: the vertex stage cannot read the
+/// clusters). Not with the lights of the world ([`crate::WORLD_LIGHTS_BIT`]): only a pixel's
+/// cluster has them. Not a draw with no lights: the zero key takes it.
+pub(crate) fn lights_at_corners(data: &DrawData, particles: bool) -> bool {
+    let world = data.light_range[3] & crate::WORLD_LIGHTS_BIT != 0;
+    particles && lit_for_each_pixel(data) && !world && !has_no_lights(data)
 }
 
 #[cfg(test)]
@@ -110,6 +125,28 @@ mod tests {
         frame_2.material_diffuse = [1.0, 1.0, 1.0, 1.0];
         assert!(colour_takes_no_light(&frame_1));
         assert!(!colour_takes_no_light(&frame_2));
+    }
+
+    #[test]
+    fn a_particle_with_lights_takes_them_at_its_corners() {
+        let particle = blind();
+        assert!(lights_at_corners(&particle, true));
+        assert!(!lights_at_corners(&particle, false), "not the quads of a particle system");
+        let cases: [(&str, fn(&mut DrawData)); 4] = [
+            ("no lights: the zero key takes it", |d| d.light_range[1] = 0),
+            ("the lights of the world", |d| d.light_range[3] |= crate::WORLD_LIGHTS_BIT),
+            ("unlit", |d| d.flags[0] = 0),
+            ("lit for each vertex", |d| d.counts[3] &= !128),
+        ];
+        for (name, change) in cases {
+            let mut other = particle;
+            change(&mut other);
+            assert!(!lights_at_corners(&other, true), "{name}");
+        }
+        // With clusters on, a corner takes every light of the draw.
+        let mut clustered = particle;
+        clustered.light_range[3] |= 1;
+        assert!(lights_at_corners(&clustered, true));
     }
 
     #[test]

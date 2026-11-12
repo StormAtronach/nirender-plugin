@@ -163,8 +163,13 @@ pub fn tier_c_shader_source(source: &str) -> String {
 /// the record of the draw read as `draws[record]` and sent through the functions of the shader.
 pub fn world_shader_source(extension_text: &str) -> String {
     let extension = retained::rewrite_extension_text(&extension_text.replace("draw.", "draws[record]."));
+    let corner = if extension.contains("fn extension_corner_shade(") {
+        ""
+    } else {
+        NO_CORNER_SHADE
+    };
     format!(
-        "{}\n{}\n{}\n{extension}",
+        "{}\n{}\n{}\n{extension}\n{corner}",
         include_str!("shader.wgsl"),
         depth::wgsl(),
         crate::spot::WGSL
@@ -183,6 +188,10 @@ pub fn world_variant_source(source: &str, variant: u32) -> Option<String> {
     }
     Some(source.replacen(DEBUG_VIEW_LINE, &format!("const DEBUG_VIEW: u32 = {variant}u;"), 1))
 }
+
+/// `extension_corner_shade` of an extension that lights no particle at its corners: the vertex
+/// stage's colour stays ([`crate::CORNER_LIGHT_BIT`]).
+const NO_CORNER_SHADE: &str = "fn extension_corner_shade(world_position: vec3f, world_normal: vec3f, vertex_color: vec4f, color: vec4f) -> CornerShade { return CornerShade(color, vec3f(0.0)); }\n";
 
 fn array_features() -> wgpu::Features {
     wgpu::Features::TEXTURE_BINDING_ARRAY
@@ -1408,5 +1417,21 @@ mod tests {
         assert!(
             own.contains("spot_cone(light, direction)") && !own.contains("fn spot_cone") && !own.contains("light.cone.x")
         );
+    }
+
+    /// The vertex stage calls `extension_corner_shade` for a particle lit at its corners: the
+    /// world shader has one, the extension's own or the one that keeps the vertex stage's colour.
+    #[test]
+    fn the_world_shader_has_one_corner_shade() {
+        let plain = world_shader_source("fn extension_shade(in: VertexOut) -> vec4f { return draw.fog_color; }\n");
+        assert_eq!(plain.matches("fn extension_corner_shade(").count(), 1);
+        assert!(plain.contains(NO_CORNER_SHADE));
+        let own = "fn extension_corner_shade(world_position: vec3f, world_normal: vec3f, vertex_color: vec4f, color: vec4f) -> CornerShade { return CornerShade(vertex_color, vec3f(1.0)); }\n";
+        let with_own = world_shader_source(&format!(
+            "fn extension_shade(in: VertexOut) -> vec4f {{ return draw.fog_color; }}\n{own}"
+        ));
+        assert_eq!(with_own.matches("fn extension_corner_shade(").count(), 1);
+        assert!(!with_own.contains(NO_CORNER_SHADE));
+        crate::assert_wgsl("shader.wgsl with a corner shade", &with_own);
     }
 }

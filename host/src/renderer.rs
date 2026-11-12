@@ -1833,6 +1833,7 @@ impl Renderer {
             unique: Some(word(data, 4)),
             uv: None,
             drawn_in: 0,
+            particles: false,
         };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
@@ -2034,6 +2035,7 @@ impl Renderer {
             bones_needed: 0,
             uv: None,
             drawn_in: 0,
+            particles: true,
         };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
