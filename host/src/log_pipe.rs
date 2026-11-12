@@ -696,6 +696,7 @@ mod tests {
             backend: wgpu::Backends::DX12,
             adapter: Some("a test adapter".into()),
             reason: "a test refusal".into(),
+            update_driver: false,
         };
         crate::request::refuse_live(&[refusal]);
     }

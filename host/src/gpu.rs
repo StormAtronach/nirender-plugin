@@ -412,6 +412,12 @@ pub fn refuse(code: u32, reasons: &str, text: &str) -> ! {
     for reason in reasons.lines() {
         lines.line(reason);
     }
+    // A refusal during the request: the count line of the request's end does not come.
+    if crate::wgpu_log::requesting() {
+        if let Some(line) = crate::wgpu_log::dropped_line() {
+            lines.line(&line);
+        }
+    }
     lines.line(&format!("refusal: the exit code {code} is announced; the box, then the end"));
     for line in text.lines() {
         lines.line(&format!("box: {line}"));

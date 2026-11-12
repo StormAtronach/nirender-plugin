@@ -52,6 +52,9 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
     let log = option(&args, "--log");
     let (log_file, extension) = open_log_then(log.as_deref(), || {
         crate::crash::install(crate::crash::dump_path(log.as_deref()));
+        // Before the extension: the helper of MGE XE asks for the `log` slot on a thread of
+        // its own (`wgpu_log`).
+        crate::wgpu_log::install();
         make_extension()
     });
     println!("{}", live::reader_build(extension.as_deref()));
@@ -69,6 +72,9 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
             crate::log_pipe::start(file);
         }
         live::run(&name, backends, &args, extension);
+        if let Some(line) = crate::wgpu_log::dropped_line() {
+            println!("{line}");
+        }
         crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
         return;
     }

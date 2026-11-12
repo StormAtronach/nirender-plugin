@@ -52,6 +52,7 @@ mod crash;
 pub use crash::{hold_next_dump, rotate_log};
 mod log_pipe;
 mod watchdog;
+mod wgpu_log;
 pub use watchdog::LongStep;
 mod tag;
 // The one home of the stream format number, shared with the plugin crate (see the file).
