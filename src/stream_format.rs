@@ -250,9 +250,8 @@ pub const MESSAGES_HEAD: usize = 32;
 pub const EXIT_STREAM_FORMAT: u32 = 10;
 pub const EXIT_EXTENSION_FORMAT: u32 = 11;
 /// The GPU or the window cannot be used: no adapter on any backend, no binding arrays with
-/// their room, no BC compression, too few sampled textures, no surface. The live start and
-/// `--probe` exit with it; d3d8.dll reads it from the probe as `MGE_PROBE_EXIT_GPU` of
-/// `mgeversion.h` (a unit test of mgeHost64 compares the two).
+/// their room, no BC compression, too few sampled textures, no surface. The live start exits
+/// with it, after its own box.
 pub const EXIT_GPU: u32 = 20;
 
 /// The watchdog of the helper found its frame thread stalled and ended the program.

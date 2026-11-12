@@ -596,7 +596,7 @@ def run_runner(tree, label, folder, plugin_dll, budget, *args):
     log = os.path.join(tree, "results", label + ".txt")
     say("smoke: %s" % label)
     began = time.time()
-    # With the renderer's probe on, as the owner's start has it: a probe that says no is a fault of the set.
+    # As the owner's start has it: a start that the renderer refuses is a fault of the set.
     done = subprocess.run([sys.executable, "tools/run_own_device.py", "--label", label, "--plugin-dll", plugin_dll, "--mge-build", folder,
                            "--no-build", "--budget", str(budget), *args, "--log", log],
                           cwd=tree, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

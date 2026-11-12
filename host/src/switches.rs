@@ -49,8 +49,8 @@ pub(crate) struct Switches {
     pub(crate) indirect: bool,
     /// `MGE_XE_ARRAY_CAP=<n>`: the room of the texture arrays at most n, for the test of a
     /// full room; below 256 the adapter goes to texture tier C, or is refused with
-    /// `MGE_XE_TEXTURE_TIER=a`, for the test of the probe and of the live start with a GPU the
-    /// renderer cannot use.
+    /// `MGE_XE_TEXTURE_TIER=a`, for the test of the live start with a GPU the renderer cannot
+    /// use.
     pub(crate) array_cap: Option<u32>,
     /// `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
     /// guard of the device's limit.
@@ -100,7 +100,7 @@ pub(crate) struct Switches {
     /// else tier C.
     pub(crate) texture_tier: Option<crate::request::TextureTier>,
     /// `MGE_XE_OLD_GPU=least|downlevel`: the adapter taken as an old graphics card in the
-    /// request and the probe ([`crate::request::OldGpu`]); unset, the adapter as it is.
+    /// request ([`crate::request::OldGpu`]); unset, the adapter as it is.
     pub(crate) old_gpu: Option<crate::request::OldGpu>,
     /// `MGE_XE_MEMORY_MINUTES=<n>`: in the live mode the log gets the memory report
     /// ([`crate::gpu::memory_lines`]) at the first frame and then every n minutes; 0 or unset:

@@ -1,21 +1,17 @@
-//! The request of the graphics adapter and the device, with its reason when it fails; the
-//! probe that asks the same without a window; and what a check of a shader without a GPU
-//! takes from the request.
+//! The request of the graphics adapter and the device, with its reason when it fails; and
+//! what a check of a shader without a GPU takes from the request.
 //!
-//! The live start, a replay and `numidium.exe --probe` call one function, [`request`], so
-//! that the probe cannot say yes where the live start says no. The needs are what the
+//! The live start and a replay call one function, [`request`]. The needs are what the
 //! renderer cannot do without: an adapter, the binding arrays of textures with their room,
 //! the BC compression and the sampled textures of a stage ([`required_features`],
 //! [`ARRAY_TEXTURES`], [`ARRAY_SAMPLERS`], [`SAMPLED_TEXTURES`]). The rest of the request
 //! takes what the adapter has, with a fallback (the float depth, the samples, the line mode,
 //! the indirect draws). A refusal names the backend, the adapter and the lack with its
 //! number. The backends are tried in an order: with `auto`, Vulkan then Direct3D 12; a named
-//! backend first, then the other, with a line. The exit code of a refusal is `EXIT_GPU` of
-//! `stream_format.rs` in
-//! the live mode and in the probe (the failure-path page of the project, section 4).
+//! backend first, then the other, with a line. The exit code of a refusal in the live mode
+//! is `EXIT_GPU` of `stream_format.rs` (the failure-path page of the project, section 4).
 
 use crate::data::{AUTO_TEXTURE_SLOTS, DEPTH_FORMAT, MIN_TEXTURE_SLOTS, SAMPLER_CAP, STAGES};
-use crate::stream_format::EXIT_GPU;
 use crate::switches::switches;
 use crate::{depth, gpu, retained, WindowTarget};
 
@@ -56,8 +52,8 @@ pub fn fixed_limits() -> wgpu::Limits {
 }
 
 /// `MGE_XE_OLD_GPU=least|downlevel`: the adapter taken as an old graphics card, for a test of
-/// the path of old hardware on any machine. The request and the probe see the features and the
-/// limits of the profile in the place of the adapter's (each limit at most the adapter's), and
+/// the path of old hardware on any machine. The request sees the features and the limits of
+/// the profile in the place of the adapter's (each limit at most the adapter's), and
 /// the device gets them, so that wgpu's validation refuses anything above them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OldGpu {
@@ -610,9 +606,8 @@ fn samples_reason(asked: u32, chosen: u32, adapter_formats: bool) -> String {
 /// The most samples for each pixel that the renderer takes.
 const MOST_SAMPLES: u32 = 8;
 
-/// The lacks that the refusal names: the first [`LACKS_NAMED`], then their count. The probe's
-/// lines and the box of d3d8.dll have a limit of length; all the lacks go into a line of their
-/// own, which does not start with `probe: ` (d3d8.dll leaves such lines out of mgeXE.log).
+/// The lacks that the refusal names: the first [`LACKS_NAMED`], then their count, so that the
+/// box stays short; all the lacks go into a log line of their own.
 fn lacks_text(backend: wgpu::Backends, lacks: &[String]) -> String {
     if lacks.len() <= LACKS_NAMED {
         return format!("lacks {}", lacks.join("; "));
@@ -627,58 +622,6 @@ fn lacks_text(backend: wgpu::Backends, lacks: &[String]) -> String {
 
 /// The lacks that a refusal names before their count ([`lacks_text`]).
 const LACKS_NAMED: usize = 3;
-
-/// `numidium.exe --probe`: asks the backends in their order, without a window, up to the
-/// first that serves, as the live start does, and prints one line for each asked, the
-/// answer, and the time it took. The last line before the exit is `probe: use <backend>`
-/// or `probe: none: <the refusals>`; the exit code is 0 or `EXIT_GPU`. The lines go to
-/// the standard output, which d3d8.dll reads through a pipe. One backend takes about 0.3 s
-/// on the owner's machine, both about 0.6 s: the first that serves ends the probe.
-pub fn probe(backends: wgpu::Backends, texture_slots: u32) -> i32 {
-    use std::io::Write;
-    let started = std::time::Instant::now();
-    let mut usable = None;
-    let mut refusals = Vec::new();
-    for backend in order(backends) {
-        match try_backend(backend, None, wgpu::TextureFormat::Bgra8Unorm, texture_slots, 1) {
-            Ok(request) => {
-                println!(
-                    "probe: {}: {}: ok; texture tier: {}{}; binding arrays {} textures and {} samplers (tier a needs {ARRAY_TEXTURES} and {ARRAY_SAMPLERS}), BC yes, sampled textures {} (needs {SAMPLED_TEXTURES}), depth {:?}",
-                    backend_name(backend),
-                    adapter_line(&request.info),
-                    request.tier.name(),
-                    switches().old_gpu.map(|old| format!(" (MGE_XE_OLD_GPU={})", old.name())).unwrap_or_default(),
-                    request.array_cap,
-                    request.sampler_cap,
-                    request.limits.max_sampled_textures_per_shader_stage,
-                    request.depth_format
-                );
-                usable = Some(backend);
-                break;
-            }
-            Err(refusal) => {
-                println!("probe: {refusal}");
-                refusals.push(refusal);
-            }
-        }
-    }
-    let code = match usable {
-        Some(backend) => {
-            println!("probe: use {}", backend_name(backend));
-            0
-        }
-        None => {
-            println!(
-                "probe: none: {}",
-                refusals.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
-            );
-            EXIT_GPU as i32
-        }
-    };
-    println!("probe: {:.2} s", started.elapsed().as_secs_f64());
-    let _ = std::io::stdout().flush();
-    code
-}
 
 /// The box of the live start when no backend serves (the failure-path page, section 5, the
 /// code 20), and the log lines of the refusals; then the program ends with the code.
