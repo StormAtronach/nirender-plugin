@@ -434,6 +434,9 @@ unsafe fn build_partition_pass(
 
 /// The 8 bytes at 0x6ACF1F in `RenderShape`, after the test for a skin. They are the
 /// instruction that selects hardware or software skinning, and the opcode of the jump after it.
+/// No port reads them: `render_shape` always does the test of MWSE's bytes. The probe of MWSE's
+/// features (a test) looks for this address in MWSE.dll.
+#[cfg(test)]
 pub(crate) const RS_SKINNING_CHECK: usize = 0x6ACF1F;
 /// The bytes in the database: `cmp dword ptr [edi+3E0h], 4` and `jb`. The game uses software
 /// skinning when the device has fewer than 4 hardware bones.
@@ -444,42 +447,20 @@ const SKINNING_CHECK_DATABASE: [u8; 8] = [0x83, 0xBF, 0xE0, 0x03, 0x00, 0x00, 0x
 /// hardware skinning is used through TriShape flags". The game uses software skinning when
 /// the geometry data (ESI) has bit 0x200 in its flags. The jump has the same target as in the
 /// database.
+#[cfg(test)]
 const SKINNING_CHECK_MWSE: [u8; 8] = [0x90, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75];
 /// The flags the MWSE patch reads, in the padding of `NiTriBasedGeomData`.
 const GEOM_DATA_PATCH_RENDER_FLAGS: usize = crate::gen::layouts::NiTriBasedGeomData::patchRenderFlags;
 const PATCH_RENDER_FLAG_SOFTWARE_SKINNING: u16 = 0x200;
 
-/// The condition in `RenderShape` that stops hardware skinning for a skinned shape.
+/// The condition that stops hardware skinning for a skinned shape.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum SkinningCheck {
-    /// The game: the count of hardware bones of the device.
+    /// `RenderTriStrips`, which MWSE does not patch: the count of hardware bones of the device.
     HardwareBones,
-    /// MWSE: a flag of the geometry data.
+    /// `RenderShape`, always: a flag of the geometry data, as with MWSE's patch of the bytes at
+    /// 0x6ACF1F. MWSE writes the flag outside the ports.
     GeometryFlag,
-}
-
-/// Returns the check that the bytes at [`RS_SKINNING_CHECK`] are. Bytes that are not the
-/// database bytes and not the MWSE bytes count as the database. The port does not run with
-/// such bytes: `ports::FOLLOWED` lists exactly the MWSE bytes for this place, and
-/// `install::census` locks the port when the memory has other bytes.
-fn skinning_check(bytes: &[u8; 8]) -> SkinningCheck {
-    if *bytes == SKINNING_CHECK_MWSE {
-        SkinningCheck::GeometryFlag
-    } else {
-        SkinningCheck::HardwareBones
-    }
-}
-
-/// The bytes of the check as they are in memory now.
-#[cfg(not(test))]
-#[inline(always)]
-unsafe fn skinning_check_bytes() -> [u8; 8] {
-    rd(RS_SKINNING_CHECK, 0)
-}
-
-#[cfg(test)]
-unsafe fn skinning_check_bytes() -> [u8; 8] {
-    tests::SKINNING_CHECK_BYTES.with(|bytes| bytes.get())
 }
 
 /// True when the game takes the jump at 0x6ACF26. Then the game draws a shape that has a
@@ -508,7 +489,7 @@ pub(crate) unsafe fn skinned_in_software(strips: bool, geom_data: usize) -> bool
     let check = if strips {
         SkinningCheck::HardwareBones
     } else {
-        skinning_check(&skinning_check_bytes())
+        SkinningCheck::GeometryFlag
     };
     software_skinning(check, renderer, geom_data)
 }
@@ -610,8 +591,7 @@ pub unsafe fn render_shape(
     if skin != 0 {
         // A shape that the game skins in software takes the record too: the helper skins each
         // shape, and the draw of the device does not reach the helper.
-        let check = skinning_check(&skinning_check_bytes());
-        let software = software_skinning(check, this, geom_data);
+        let software = software_skinning(SkinningCheck::GeometryFlag, this, geom_data);
         if shape_record(t, this, skin, software, transform, world_bound) {
             return;
         }
@@ -619,13 +599,7 @@ pub unsafe fn render_shape(
             site_thiscall!(RS_DRAW_SKINNED_PRIMITIVE, this, geom_data, skin, transform, world_bound);
             return;
         }
-        crate::shape_stream::software_skinned(
-            t,
-            match check {
-                SkinningCheck::HardwareBones => "less than 4 bones of the device",
-                SkinningCheck::GeometryFlag => "the flag of MWSE on the geometry",
-            },
-        );
+        crate::shape_stream::software_skinned(t, "the flag of MWSE on the geometry");
     }
     if skin == 0 && shape_record(t, this, 0, false, transform, world_bound) {
         return;
@@ -1889,11 +1863,6 @@ mod tests {
 
     pub static VERTEX_BLEND_TABLE: [u32; 5] = [0, 0, 1, 2, 3];
 
-    thread_local! {
-        /// The bytes the tests have at 0x6ACF1F.
-        pub static SKINNING_CHECK_BYTES: std::cell::Cell<[u8; 8]> = const { std::cell::Cell::new(SKINNING_CHECK_DATABASE) };
-    }
-
     #[test]
     fn the_skinning_check_of_render_shape_is_recognised() {
         // The database has the bytes of the game at the place of the check.
@@ -1901,14 +1870,14 @@ mod tests {
         let at = RS_SKINNING_CHECK - func.ea;
         assert_eq!(at, 0x2F);
         assert_eq!(&census::expected(func)[at..at + 8], &SKINNING_CHECK_DATABASE);
-        assert_eq!(skinning_check(&SKINNING_CHECK_DATABASE), SkinningCheck::HardwareBones);
-        assert_eq!(skinning_check(&SKINNING_CHECK_MWSE), SkinningCheck::GeometryFlag);
-        // All other bytes count as the database. Examples are bytes with one byte different,
-        // and the form of MGE XE, which this code does not know.
-        let mut other = SKINNING_CHECK_MWSE;
-        other[7] = 0x72;
-        assert_eq!(skinning_check(&other), SkinningCheck::HardwareBones);
-        assert_eq!(skinning_check(&[0x90; 8]), SkinningCheck::HardwareBones);
+        // The census accepts MWSE's bytes there as a known change.
+        let mut patched = census::expected(func).to_vec();
+        patched[at..at + 8].copy_from_slice(&SKINNING_CHECK_MWSE);
+        let read = |addr: usize| patched[addr - func.ea];
+        let module_of = |_: usize| String::new();
+        assert!((at..at + 8)
+            .filter(|&i| patched[i] != census::expected(func)[i])
+            .all(|i| crate::ports::follows(func.ea + i, &read, &module_of)));
 
         let mut renderer = vec![0u8; R::SIZE];
         let r = renderer.as_mut_ptr() as usize;
@@ -2336,9 +2305,9 @@ mod tests {
             poke(RS_CREATE_GEOMETRY_BUFFER_DATA, 1, gb as u32);
             returns(GEOM_TRIANGLE_COUNT, &[0xABCD_0007]);
             returns(GEOM_TRI_LIST, &[0x4444]);
-            // A skin, and a device without hardware bones: the port does not use the skinned
+            // A skin with MWSE's flag for software skinning: the port does not use the skinned
             // path.
-            wr::<u32>(r, R::countHWBones, 3);
+            wr::<u16>(g, GEOM_DATA_PATCH_RENDER_FLAGS, 0x200);
             render_shape(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
             let log = calls();
             assert_eq!(log[0].0, GEOM_VERTEX_COUNT);
@@ -2369,7 +2338,8 @@ mod tests {
                 (RS_DRAW_PRIMITIVE, vec![r as u32, g as u32, 0, 0x10, 0x20, 0x8888, 0])
             );
 
-            // A skin and hardware bones.
+            // A skin without the flag: hardware skinning.
+            wr::<u16>(g, GEOM_DATA_PATCH_RENDER_FLAGS, 0);
             wr::<u32>(r, R::countHWBones, 4);
             returns(GEOM_VERTEX_COUNT, &[9]);
             render_shape(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
@@ -2378,10 +2348,8 @@ mod tests {
                 (RS_DRAW_SKINNED_PRIMITIVE, vec![r as u32, g as u32, 0x30, 0x10, 0x20])
             );
 
-            // With the check of MWSE in memory, the port reads the flag of the geometry data
-            // and not the device. Without the flag, the port uses hardware skinning, also with
-            // 3 hardware bones.
-            SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_MWSE));
+            // The port reads the flag of the geometry data and not the device. Without the flag,
+            // the port uses hardware skinning, also with 3 hardware bones.
             wr::<u32>(r, R::countHWBones, 3);
             returns(GEOM_VERTEX_COUNT, &[9]);
             render_shape(&MainThread::for_test(), r, g, 0x30, 0x10, 0x20);
@@ -2393,7 +2361,6 @@ mod tests {
             let log = calls();
             assert_eq!(log[1].0, RS_CREATE_GEOMETRY_BUFFER_DATA);
             assert_eq!(log[2].0, RS_DRAW_PRIMITIVE);
-            SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_DATABASE));
         }
     }
 
@@ -2422,7 +2389,6 @@ mod tests {
             let before = count();
 
             // The flag of MWSE on the geometry data.
-            SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_MWSE));
             wr::<u16>(g, GEOM_DATA_PATCH_RENDER_FLAGS, 0x200);
             returns(GEOM_VERTEX_COUNT, &[9]);
             returns(RS_CREATE_GEOMETRY_BUFFER_DATA, &[0]);
@@ -2441,7 +2407,6 @@ mod tests {
             assert!(calls().iter().any(|call| call.0 == RT_DRAW_PRIMITIVE));
 
             crate::capture::test_record_deletes(false);
-            SKINNING_CHECK_BYTES.with(|bytes| bytes.set(SKINNING_CHECK_DATABASE));
         }
     }
 

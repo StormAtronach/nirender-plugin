@@ -37,18 +37,18 @@ use crate::gen::layouts::{
 use crate::mem::{rd, wr};
 use crate::ports::{hash_map, light_manager, ni, render_state, texture_pipeline};
 use crate::shadow::Regions;
-// The macros of `site` call `target` for the address of the callee.
-use crate::site::{call_target as target, site_thiscall};
 
 /// `NiDX8Renderer::deleting_dtor`.
+#[cfg(test)]
 const DELETING_DTOR: usize = 0x6A9D80;
 
 /// The call of `NiDX8Renderer::dtor` (0x6A9E10) in `NiDX8Renderer::deleting_dtor`. MWSE
 /// e2b957c25d sends it to `NI::DX8Renderer::destruct`. It is inside the bytes that the detour
-/// steals: the port reads the target from the trampoline.
+/// steals. No port calls it: [`deleting_dtor`] calls [`dtor`] itself.
 const DTOR_SITE: usize = 0x6A9D83;
 
-/// The call sites whose target the ports of this module read from memory.
+/// The call sites of this module whose changed target the census accepts. [`DTOR_SITE`] is a
+/// known change that is harmless: no port reads it.
 pub static SITES: &[usize] = &[DTOR_SITE];
 
 // ---------------------------------------------------------------------------------------
@@ -107,7 +107,6 @@ const RENDERER_DATA_NEXT: usize = layouts::NiTexture_RendererData::linkedData;
 /// device buffer.
 const GEOM_BUFFER_VERTEX_BUFFER: usize = layouts::NiGeometryBufferData::d3dVertexBuffer;
 const GEOM_BUFFER_INDEX_BUFFER: usize = layouts::NiGeometryBufferData::indexBuffer;
-const PARTITION_GEOM_BUFFER: usize = layouts::NiSkinPartition_Partition::bufferData;
 /// The value of a node of the `std::map` of `TES3Game` (`map_74`): the `NiDX8AdapterDesc` of
 /// an adapter description.
 const STD_MAP_NODE_VALUE: usize = layouts::TES3Game_AdapterMapNode::adapterDesc;
@@ -311,11 +310,6 @@ unsafe fn clear_listed_renderer_data(renderer: usize) {
     cdecl1(0x6B68A0, renderer as u32);
 }
 
-/// 0x6B1140 `sub_6B1140`: takes the node with `key` out of a hash map and frees it.
-unsafe fn hash_map_remove(map: usize, key: usize) {
-    thiscall1(0x6B1140, map, key as u32);
-}
-
 /// 0x6B12B0 `sub_6B12B0`: gives the key and the value at the position `*position` of a
 /// hash map. Then it moves the position to the next node.
 unsafe fn hash_map_get_next(map: usize, position: usize, key: usize, value: usize) {
@@ -383,6 +377,11 @@ unsafe fn selected_device_desc(this: usize) -> usize {
 
 /// Releases the two device buffers of a geometry buffer and frees it.
 unsafe fn free_geom_buffer(buffer: usize) {
+    free_geom_buffer_with(buffer, |block| operator_delete(block));
+}
+
+/// [`free_geom_buffer`], with `delete` in place of the engine's `operator delete`.
+unsafe fn free_geom_buffer_with(buffer: usize, delete: impl FnOnce(usize)) {
     let vertex_buffer: usize = rd(buffer, GEOM_BUFFER_VERTEX_BUFFER);
     if vertex_buffer != 0 {
         com_release(vertex_buffer);
@@ -391,7 +390,7 @@ unsafe fn free_geom_buffer(buffer: usize) {
     if index_buffer != 0 {
         com_release(index_buffer);
     }
-    operator_delete(buffer);
+    delete(buffer);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1734,23 +1733,10 @@ pub unsafe fn dtor(this: usize) {
         }
     }
 
-    // The geometry buffers of the skin partitions. The port removes a partition that has a
-    // buffer from the map.
+    // The geometry buffers of the skin partitions, from the values of the map.
     let skin_partitions = this + R::hashmap_skinPartitionsToGeomBuffers;
-    let mut node = hash_map::first(skin_partitions);
-    while node != 0 {
-        let partition: usize = rd(node, Node::key);
-        node = rd(node, Node::nextNode);
-        if node == 0 {
-            node = hash_map::next_bucket(skin_partitions, partition as u32);
-        }
-        let buffer: usize = rd(partition, PARTITION_GEOM_BUFFER);
-        if buffer != 0 {
-            free_geom_buffer(buffer);
-            wr::<u32>(partition, PARTITION_GEOM_BUFFER, 0);
-            hash_map_remove(skin_partitions, partition);
-        }
-    }
+    let (entries, freed) = release_skin_partition_buffers(skin_partitions, |block| operator_delete(block));
+    crate::log!("renderer: destroyed; the skin partition map had {entries} entries, {freed} geometry buffers freed");
 
     delete_member(this, R::configurableTexturePipeline);
 
@@ -1837,6 +1823,41 @@ pub unsafe fn dtor(this: usize) {
     ni_renderer_dtor(this);
 }
 
+/// Frees the geometry buffer of each node of the skin partition map, and the node, with no read
+/// of a key: at the exit a key can point at a freed partition. The map is empty after the call.
+/// It is the work of `DX8Renderer::releaseSkinPartitionBufferData` of MWSE
+/// (SharedSE/NIDX8Renderer.cpp). Returns the count of the map before the call and the number of
+/// buffers freed. `operator_delete` frees a buffer or a node: the engine's `operator delete`
+/// in the game, a record in a test.
+///
+/// # Safety
+///
+/// `map` points at the live skin partition map of the renderer, whose values are 0 or live
+/// geometry buffers and whose nodes come from the allocation that `operator_delete` frees;
+/// nothing uses the nodes or the buffers after the call.
+unsafe fn release_skin_partition_buffers(map: usize, mut operator_delete: impl FnMut(usize)) -> (u32, u32) {
+    let entries: u32 = rd(map, Map::count);
+    let mut freed = 0;
+    for bucket in 0..rd::<u32>(map, Map::bucketCount) as usize {
+        loop {
+            let node = hash_map::bucket_head(map, bucket);
+            if node == 0 {
+                break;
+            }
+            wr::<usize>(rd::<usize>(map, Map::arrayBuckets), bucket * 4, rd(node, Node::nextNode));
+            let buffer: usize = rd(node, Node::data);
+            if buffer != 0 {
+                free_geom_buffer_with(buffer, &mut operator_delete);
+                freed += 1;
+            }
+            hash_map::dtor_key_value_pair(map, node);
+            operator_delete(node);
+        }
+    }
+    wr::<u32>(map, Map::count, 0);
+    (entries, freed)
+}
+
 /// 0x6A9D80 `NiDX8Renderer::deleting_dtor`. Bit 0 of `flags` means "free the memory".
 ///
 /// # Safety
@@ -1845,12 +1866,7 @@ pub unsafe fn dtor(this: usize) {
 /// `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&deleting_dtor_port::STATE);
-    // The game's `dtor`, which is the port `dtor_port`, or the function of a mod that calls it.
-    // The call lies in the bytes that the detour steals, so the jump of the detour is at
-    // DTOR_SITE now. The copy of the call in the trampoline has the target that was in memory at
-    // the install (`hook::install_raw` sets it again).
-    let trampoline = deleting_dtor_port::STATE.orig.load(core::sync::atomic::Ordering::Relaxed);
-    site_thiscall!(trampoline + (DTOR_SITE - DELETING_DTOR), this);
+    dtor(this);
     if flags & 1 != 0 {
         operator_delete(this);
     }
@@ -2158,6 +2174,165 @@ mod tests {
 
     fn renderer() -> Vec<u8> {
         vec![0u8; R::SIZE]
+    }
+
+    /// The calls that the release of the skin partition buffers makes, in their order.
+    #[derive(Debug, PartialEq, Clone, Copy)]
+    enum Release {
+        Com(usize),
+        DtorKeyValuePair(usize),
+        Delete(usize),
+    }
+
+    thread_local! {
+        static RELEASES: RefCell<Vec<Release>> = const { RefCell::new(Vec::new()) };
+        /// The bucket of each key of the made-up map, as (key, bucket).
+        static KEY_BUCKETS: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "system" fn com_release_recorded(object: usize) -> u32 {
+        RELEASES.with(|calls| calls.borrow_mut().push(Release::Com(object)));
+        0
+    }
+
+    unsafe extern "thiscall" fn dtor_key_value_pair_recorded(_map: usize, node: u32) -> u32 {
+        RELEASES.with(|calls| calls.borrow_mut().push(Release::DtorKeyValuePair(node as usize)));
+        0
+    }
+
+    /// The hash of the made-up map: the bucket that [`MadeUpMap::new`] put the key in. A key
+    /// that the map does not hold stops the test.
+    unsafe extern "thiscall" fn hash_key_by_made_up_bucket(_map: usize, key: u32) -> u32 {
+        let bucket = KEY_BUCKETS.with(|buckets| {
+            buckets
+                .borrow()
+                .iter()
+                .find(|(held, _)| *held == key)
+                .map(|(_, bucket)| *bucket)
+        });
+        bucket.expect("the made-up map holds the key")
+    }
+
+    /// A made-up skin partition map of 4 buckets: two nodes in bucket 0, one in bucket 2, none
+    /// in buckets 1 and 3. Each value is a geometry buffer with a vertex buffer and an index
+    /// buffer; each key is a partition whose buffer field holds 0, as at the exit. Every block is
+    /// boxed, so its address stays put.
+    struct MadeUpMap {
+        map: Vec<u32>,
+        _vtable: Vec<usize>,
+        _buckets: Vec<u32>,
+        nodes: Vec<Vec<u32>>,
+        partitions: Vec<Vec<u8>>,
+        buffers: Vec<Vec<u8>>,
+        devices: Vec<[usize; 1]>,
+        _device_vtable: Vec<usize>,
+    }
+
+    impl MadeUpMap {
+        fn new() -> MadeUpMap {
+            const BUCKETS: usize = 4;
+            let mut vtable = vec![0usize; 16];
+            vtable[crate::ports::hash_map::SLOT_DTOR_KEY_VALUE_PAIR / 4] =
+                dtor_key_value_pair_recorded as *const () as usize;
+            vtable[crate::ports::hash_map::SLOT_HASH_KEY / 4] = hash_key_by_made_up_bucket as *const () as usize;
+            let mut device_vtable = vec![0usize; 4];
+            device_vtable[crate::d3d::COM_RELEASE / 4] = com_release_recorded as *const () as usize;
+
+            let partitions: Vec<Vec<u8>> = (0..3).map(|_| vec![0u8; layouts::NiSkinPartition_Partition::SIZE]).collect();
+            let devices: Vec<[usize; 1]> = (0..6).map(|_| [device_vtable.as_ptr() as usize]).collect();
+            let mut buffers: Vec<Vec<u8>> = (0..3).map(|_| vec![0u8; layouts::NiGeometryBufferData::SIZE]).collect();
+            for (index, buffer) in buffers.iter_mut().enumerate() {
+                let at = buffer.as_mut_ptr() as usize;
+                unsafe {
+                    wr(at, GEOM_BUFFER_VERTEX_BUFFER, devices[index * 2].as_ptr() as usize);
+                    wr(at, GEOM_BUFFER_INDEX_BUFFER, devices[index * 2 + 1].as_ptr() as usize);
+                }
+            }
+            let mut nodes: Vec<Vec<u32>> = (0..3).map(|_| vec![0u32; Node::SIZE / 4]).collect();
+            for index in 0..3 {
+                let node = nodes[index].as_mut_ptr() as usize;
+                unsafe {
+                    wr(node, Node::key, partitions[index].as_ptr() as usize);
+                    wr(node, Node::data, buffers[index].as_ptr() as usize);
+                }
+            }
+            // Bucket 0: node 0, then node 1. Bucket 2: node 2.
+            KEY_BUCKETS.with(|buckets| {
+                *buckets.borrow_mut() = [0, 0, 2]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, bucket)| (partitions[index].as_ptr() as u32, *bucket))
+                    .collect();
+            });
+            let second = nodes[1].as_ptr() as usize;
+            unsafe { wr(nodes[0].as_mut_ptr() as usize, Node::nextNode, second) };
+            let mut buckets = vec![0u32; BUCKETS];
+            buckets[0] = nodes[0].as_ptr() as u32;
+            buckets[2] = nodes[2].as_ptr() as u32;
+
+            let mut map = vec![0u32; Map::SIZE / 4];
+            let at = map.as_mut_ptr() as usize;
+            unsafe {
+                wr(at, Map::vtbl, vtable.as_ptr() as usize);
+                wr::<u32>(at, Map::count, 3);
+                wr::<u32>(at, Map::bucketCount, BUCKETS as u32);
+                wr(at, Map::arrayBuckets, buckets.as_ptr() as usize);
+            }
+            MadeUpMap {
+                map,
+                _vtable: vtable,
+                _buckets: buckets,
+                nodes,
+                partitions,
+                buffers,
+                devices,
+                _device_vtable: device_vtable,
+            }
+        }
+
+        fn at(&self) -> usize {
+            self.map.as_ptr() as usize
+        }
+    }
+
+    /// W408 test 3a: each value is freed one time (its vertex buffer and its index buffer are
+    /// released before the buffer is deleted), each node is deleted one time after its key-value
+    /// destructor, the map is empty after, and no key is read: the partitions do not change.
+    #[test]
+    fn the_skin_partition_buffers_are_freed_from_the_values() {
+        let made_up = MadeUpMap::new();
+        let partitions_before = made_up.partitions.clone();
+        RELEASES.with(|calls| calls.borrow_mut().clear());
+        let (entries, freed) = unsafe {
+            release_skin_partition_buffers(made_up.at(), |block| {
+                RELEASES.with(|calls| calls.borrow_mut().push(Release::Delete(block)))
+            })
+        };
+        assert_eq!((entries, freed), (3, 3));
+
+        let device = |index: usize| made_up.devices[index].as_ptr() as usize;
+        let buffer = |index: usize| made_up.buffers[index].as_ptr() as usize;
+        let node = |index: usize| made_up.nodes[index].as_ptr() as usize;
+        let mut expected = Vec::new();
+        for index in 0..3 {
+            expected.extend([
+                Release::Com(device(index * 2)),
+                Release::Com(device(index * 2 + 1)),
+                Release::Delete(buffer(index)),
+                Release::DtorKeyValuePair(node(index)),
+                Release::Delete(node(index)),
+            ]);
+        }
+        assert_eq!(RELEASES.with(|calls| calls.borrow().clone()), expected);
+
+        let map = made_up.at();
+        unsafe {
+            assert_eq!(rd::<u32>(map, Map::count), 0);
+            for bucket in 0..4 {
+                assert_eq!(crate::ports::hash_map::bucket_head(map, bucket), 0);
+            }
+        }
+        assert_eq!(made_up.partitions, partitions_before);
     }
 
     #[test]

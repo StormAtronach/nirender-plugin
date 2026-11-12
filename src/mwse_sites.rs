@@ -963,16 +963,18 @@ pub const MWSE_FEATURES: [Feature; 3] = [
     Feature {
         name: "skinning flag",
         what: "patch addresses",
-        // The port of `RenderShape` reads both forms of the skinning check (draw.rs).
-        required: false,
+        // The port of `RenderShape` always does MWSE's test of the flag (draw.rs, W408 and D381):
+        // the plugin goes only beside an MWSE.dll that does the same.
+        required: true,
         forms: CODE,
         values: skinning_flag_values,
     },
     Feature {
         name: "base map texture coordinates",
         what: "patch addresses",
-        // The port of `setCTPipelineState` tests for the patch's call (ct_pipeline_state.rs).
-        required: false,
+        // The port of `setCTPipelineState` always does the fix of MWSE's call (ct_pipeline_state.rs,
+        // W408 and D381): the plugin goes only beside an MWSE.dll that does the same.
+        required: true,
         forms: CODE,
         values: base_texcoord_values,
     },
@@ -1668,10 +1670,10 @@ mod tests {
         // `mov eax, [skinning]` is a displacement; the push after the `ret` is in no block.
         let text = code(&[&[0xA1], &le(skinning), &[0xC3, 0x68], &le(texcoord)]);
         let probes = patches_of(&made_up_pe(&text, &data_of(&[skinning, texcoord]), &[]));
-        assert!(probes.iter().all(|probe| !probe.present() && !probe.blocks()), "{probes:?}");
+        assert!(probes.iter().all(|probe| !probe.present() && probe.blocks()), "{probes:?}");
         assert_eq!(
             probes[0].line(),
-            "absent: skinning flag: 0 of 1 patch addresses in the code of MWSE.dll, missing 0x6acf1f: the plugin runs without it"
+            "MISSING: skinning flag: 0 of 1 patch addresses in the code of MWSE.dll, missing 0x6acf1f: the plugin needs it"
         );
     }
 
