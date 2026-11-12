@@ -1353,9 +1353,9 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(tag, super::tag::HEADER, "the first record is not the head of the stream");
-    // The window of the game owns the boxes of this program, the one of a refused stream too.
+    // The window of the game gets WM_CLOSE after the box of a refusal, a refused stream too.
     let game_window = super::word(&data, HEADER_WINDOW_AT) as isize;
-    super::gpu::set_owner_window(game_window);
+    super::gpu::set_game_window(game_window);
     // The stream format of the plugin against this build's, before any record is read. A
     // difference ends this program: the plugin reads the exit code and shows no second box.
     let reader = format!("{} ({})", program_name(), reader_build(extension.as_deref()));

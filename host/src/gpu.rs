@@ -375,27 +375,26 @@ pub fn work() -> [u64; 4] {
     ]
 }
 
-/// The window that owns the boxes of this program: the game's window in the live mode, so
-/// that a box stays above it (an owned window is above its owner; the owner saw the box come
-/// to the front in run 2b of records entry 192); 0 for a replay and for the program on its
-/// own. An owner in another process joins the input of the two threads: the box answers only
-/// while the game's thread takes its messages; the game's thread still runs its frames after
-/// a refusal (the plugin waits for the ring with a time limit), so it does \[I\].
-static OWNER_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+/// The game's window in the live mode, which gets WM_CLOSE after a refusal's box ([`refuse`]);
+/// 0 for a replay and for the program on its own. It owns no box: a box owned by it, on the
+/// thread of the helper's window (a child of it), did not close at its time limit, while the
+/// plugin's box, on a thread of its own with no owner, did (W412, the runs hob-w412-a6 and
+/// hob-w412-d; which of the two parts was needed is \[I\]).
+static GAME_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
-/// Names the window that owns the boxes ([`message_box`]).
-pub fn set_owner_window(window: isize) {
-    OWNER_WINDOW.store(window, Ordering::Relaxed);
+/// Names the game's window, which gets WM_CLOSE after a refusal ([`refuse`]).
+pub fn set_game_window(window: isize) {
+    GAME_WINDOW.store(window, Ordering::Relaxed);
 }
 
-/// Shows `text` to the player in a box with the caption "MGE XE", owned by the game's window,
-/// and waits until it is closed. For what ends the drawing: a lost device, a stream of another
-/// build. Public for the extension's own refusals. The rule of every box of the three parts
-/// (the failure-path design of the Numidium docs, sections 5 and 5.1; the plugin's and
-/// d3d8.dll's boxes follow it too): each line goes to the log first as "box: "; with
-/// `MGE_XE_BOX_SECONDS=<n>` the box closes itself after n seconds, through MessageBoxTimeoutW
-/// of user32 (not in the documented API, so taken by GetProcAddress; without it the box is
-/// only logged); without the switch it waits for the click.
+/// Shows `text` to the player in a box with the caption "MGE XE", on a thread of its own with
+/// no owner window, and waits until it is closed. For what ends the drawing: a lost device, a
+/// stream of another build. Public for the extension's own refusals. The rule of every box of
+/// the three parts (the failure-path design of the Numidium docs, sections 5 and 5.1; the
+/// plugin's and d3d8.dll's boxes follow it too): each line goes to the log first as "box: ";
+/// with `MGE_XE_BOX_SECONDS=<n>` the box closes itself after n seconds, through
+/// MessageBoxTimeoutW of user32 (not in the documented API, so taken by GetProcAddress; without
+/// it the box is only logged); without the switch it waits for the click.
 #[cfg(windows)]
 pub fn message_box(text: &str) {
     let mut lines = ExitLines::new();
@@ -435,25 +434,44 @@ fn show_box(text: &str, lines: &mut ExitLines) {
     let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let text = wide(text);
     let caption = wide("MGE XE");
-    let owner = OWNER_WINDOW.load(Ordering::Relaxed);
+    // No owner window: MB_TOPMOST keeps the box above the game's window.
     let flags = MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
     let seconds = crate::switches().box_seconds;
-    let started = Instant::now();
-    // SAFETY: the strings are zero-ended UTF-16 that live until the call returns; the
-    // function taken from user32 has the signature of MessageBoxTimeoutW.
-    unsafe {
-        if seconds == 0 {
-            MessageBoxW(owner, text.as_ptr(), caption.as_ptr(), flags);
-        } else {
+    let timed = if seconds == 0 {
+        None
+    } else {
+        // SAFETY: the name is a zero-ended UTF-16 string, and the function that user32 gives
+        // for this name has the signature of MessageBoxTimeoutW.
+        let timed = unsafe {
             let user32 = GetModuleHandleW(wide("user32.dll").as_ptr());
-            let timed = GetProcAddress(user32, c"MessageBoxTimeoutW".as_ptr().cast());
-            if timed.is_null() {
-                lines.line("box: not shown: this Windows has no MessageBoxTimeoutW");
-                return;
-            }
-            let timed: MessageBoxTimeout = std::mem::transmute(timed);
-            timed(owner, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000);
+            let function = GetProcAddress(user32, c"MessageBoxTimeoutW".as_ptr().cast());
+            (!function.is_null()).then(|| std::mem::transmute::<*const core::ffi::c_void, MessageBoxTimeout>(function))
+        };
+        if timed.is_none() {
+            lines.line("box: not shown: this Windows has no MessageBoxTimeoutW");
+            return;
         }
+        timed
+    };
+    let started = Instant::now();
+    // The rule of the start without the probe (section 6.2): a box on a thread of its own, with
+    // no owner window. The calling thread waits for it and keeps taking its messages.
+    let shown = std::thread::Builder::new().name("box".into()).spawn(move || {
+        // SAFETY: the strings are zero-ended UTF-16 that the thread owns until the call returns.
+        unsafe {
+            match timed {
+                None => MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags),
+                Some(timed) => timed(0, text.as_ptr(), caption.as_ptr(), flags, 0, seconds * 1000),
+            }
+        }
+    });
+    let ended_well = shown.is_ok_and(|thread| {
+        wait_taking_messages(&thread);
+        thread.join().is_ok()
+    });
+    if !ended_well {
+        lines.line("box: not shown: its thread did not start, or it panicked");
+        return;
     }
     // The elapsed time tells a timeout from a click: MessageBoxTimeoutW answers IDOK on the
     // timeout on this machine, not the documented 32000 [V Rob's run, 2026-10-27].
@@ -461,6 +479,51 @@ fn show_box(text: &str, lines: &mut ExitLines) {
         lines.line(&format!("box: closed after {seconds} s, no click"));
     } else {
         lines.line("box: closed by a click");
+    }
+}
+
+/// Waits until the box's `thread` has ended, and takes the messages of this thread's windows in
+/// that time, as the box's own loop did when it ran here: the main thread owns the helper's
+/// window, a child of the game's window, and a message that the game sends to it holds the
+/// game's thread until it is taken. A WM_QUIT is posted again after the wait.
+#[cfg(windows)]
+fn wait_taking_messages<T>(thread: &std::thread::JoinHandle<T>) {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "user32")]
+    extern "system" {
+        fn MsgWaitForMultipleObjects(count: u32, handles: *const isize, all: i32, milliseconds: u32, wake: u32) -> u32;
+        fn PeekMessageW(message: *mut [usize; 7], window: isize, first: u32, last: u32, remove: u32) -> i32;
+        fn TranslateMessage(message: *const [usize; 7]) -> i32;
+        fn DispatchMessageW(message: *const [usize; 7]) -> isize;
+        fn PostQuitMessage(code: i32);
+    }
+    const QS_ALLINPUT: u32 = 0x04FF;
+    const PM_REMOVE: u32 = 1;
+    const WM_QUIT: u32 = 0x12;
+    const WAIT_OBJECT_0: u32 = 0;
+    const INFINITE: u32 = u32::MAX;
+    let handle = thread.as_raw_handle() as isize;
+    let mut quit = None;
+    // MSG: the window, the message, wParam, lParam, the time, the point and a private word; one
+    // word each up to lParam on x86 and x64 (the message has padding on x64). Seven words hold
+    // the 48 bytes of x64 and the 28 of x86.
+    let mut message = [0usize; 7];
+    // SAFETY: the handle is the thread's, open while `thread` lives; the message buffer has the
+    // size and the alignment of MSG.
+    unsafe {
+        while MsgWaitForMultipleObjects(1, &handle, 0, INFINITE, QS_ALLINPUT) != WAIT_OBJECT_0 {
+            while PeekMessageW(&mut message, 0, 0, 0, PM_REMOVE) != 0 {
+                if message[1] as u32 == WM_QUIT {
+                    quit = Some(message[2] as i32);
+                    continue;
+                }
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        if let Some(code) = quit {
+            PostQuitMessage(code);
+        }
     }
 }
 
@@ -497,9 +560,9 @@ pub fn refuse(code: u32, reasons: &str, text: &str) -> ! {
     }
     lines.line(&format!("refusal: the exit code {code} is announced; the box, then the end"));
     show_box(text, &mut lines);
-    let owner = OWNER_WINDOW.load(Ordering::Relaxed);
-    if owner != 0 {
-        close_window(owner, &mut lines);
+    let game_window = GAME_WINDOW.load(Ordering::Relaxed);
+    if game_window != 0 {
+        close_window(game_window, &mut lines);
     }
     lines.write_dropped_count();
     exit_now(code)
