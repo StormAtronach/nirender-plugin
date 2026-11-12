@@ -18,6 +18,12 @@ const HISTORY: usize = 600;
 const LONG: f32 = 2.0;
 /// The sign that the game sends no frames: a line that turns.
 const SIGN: [&str; 4] = ["|", "/", "-", "\\"];
+/// The colour of the frame rate in the plain status view. It marks the renderer: on wgpu the
+/// number is green, on Direct3D 9 MGE XE draws it white, so the owner sees the renderer at a
+/// glance (the owner's choice, W400). A shadow of 1 pixel keeps it legible on a bright sky.
+const RATE_COLOUR: egui::Color32 = egui::Color32::from_rgb(64, 232, 96);
+/// The shadow of the text of the plain status view, 1 pixel down and to the right.
+const TEXT_SHADOW: egui::Color32 = egui::Color32::from_black_alpha(192);
 
 /// What the game process says about itself, from the `OVERLAY` record of the plugin.
 #[derive(Clone, Copy, Default)]
@@ -327,15 +333,17 @@ impl Overlay {
             let message_colour = |warning: bool| if warning { egui::Color32::from_rgb(255, 34, 34) } else { egui::Color32::WHITE };
             if !on {
                 // As MGE XE on Direct3D 9 draws it: the message with a shadow, the frame
-                // rate under it.
+                // rate under it. The frame rate has the renderer's colour (`RATE_COLOUR`).
                 let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("nirender status")));
                 let font = egui::FontId::monospace(14.0);
                 if let Some((text, warning)) = &status.message {
-                    painter.text(egui::pos2(9.0, 11.0), egui::Align2::LEFT_TOP, text, font.clone(), egui::Color32::from_black_alpha(192));
+                    painter.text(egui::pos2(9.0, 11.0), egui::Align2::LEFT_TOP, text, font.clone(), TEXT_SHADOW);
                     painter.text(egui::pos2(8.0, 10.0), egui::Align2::LEFT_TOP, text, font.clone(), message_colour(*warning));
                 }
                 if status.frame_rate {
-                    painter.text(egui::pos2(8.0, 35.0), egui::Align2::LEFT_TOP, format!("{:4.0}", shown.rate), font, egui::Color32::WHITE);
+                    let rate = format!("{:4.0}", shown.rate);
+                    painter.text(egui::pos2(9.0, 36.0), egui::Align2::LEFT_TOP, &rate, font.clone(), TEXT_SHADOW);
+                    painter.text(egui::pos2(8.0, 35.0), egui::Align2::LEFT_TOP, rate, font, RATE_COLOUR);
                 }
                 return;
             }
