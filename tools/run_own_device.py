@@ -1321,6 +1321,67 @@ def self_test_mge_log_problems():
     assert problems(">> Using the wgpu renderer: no Direct3D device\nx failed to load/compile\n") == ["MGE XE could not compile 1 shaders"]
 
 
+def self_test_probe_guard():
+    """The probe guard (D328, verdict 314): a cached none refuses a wgpu run before the start (check 1); MGE XE's real
+    fall-back lines stop a wgpu run and not a reference run (check 2); "own device: false" fails a wgpu run with exit
+    code 4, also with DONE (check 3)."""
+    with tempfile.TemporaryDirectory() as root:
+        game = os.path.join(root, "game")
+        cache = os.path.join(root, "overwrite", "Root", session.PROBE_CACHE)
+        os.makedirs(os.path.dirname(cache))
+        os.makedirs(game)
+        assert session.probe_cache_problem(root, game) is None, "no cache file"
+        for word, refused in (("usable", False), ("no answer", False), ("none", True)):
+            with open(cache, "w", encoding="utf-8") as file:
+                file.write("key-1\t%s\tthe probe timed out twice\n" % word)
+            problem = session.probe_cache_problem(root, game)
+            assert bool(problem) == refused, (word, problem)
+        assert cache in problem and "(the probe timed out twice)" in problem and "Delete the file" in problem, problem
+        os.remove(cache)
+        with open(os.path.join(game, session.PROBE_CACHE), "w", encoding="utf-8") as file:
+            file.write("key-1\tnone\n")
+        assert "(no reason)" in session.probe_cache_problem(root, game), "the cache in the game folder counts too"
+        assert session.probe_cache_lines(root, game) == [os.path.join(game, session.PROBE_CACHE) + ": key-1 | none"]
+
+    # The real lines of render-link d3d8/cpp/main.cpp: wgpuPathOff (each fall-back) and the probe's two "stays" lines.
+    off = ("!! wgpu renderer: not in use, the last probe said none (mgeXE-renderer-probe.txt): no answer twice; the probe runs again "
+           "when the graphics card, its driver or numidium.exe change. MGE XE continues with Direct3D 9")
+    stays = "-- wgpu renderer: this start stays on Direct3D 9; the next start asks the probe again"
+    back = "-- wgpu renderer: usable again on this machine; this start stays on Direct3D 9, the next uses the wgpu renderer"
+    for line in (off, stays, back):
+        reason = session.fallback_of(["-- wgpu renderer: the probe took 5003 ms", line])
+        assert reason and reason.startswith("MGE XE fell back to Direct3D 9: " + line) and "(probe cache: " in reason, reason
+    assert session.fallback_of(["-- wgpu renderer: the probe says usable (120 ms)", ">> Using the wgpu renderer"]) is None
+
+    # Run.refusal reads the live mgeXE.log: the fall-back stops a wgpu run and keeps its reason; a reference run goes on.
+    with tempfile.TemporaryDirectory() as folder:
+        saved = (session.MGE_LOGS, session.RESULTS)
+        session.RESULTS = folder
+        log = os.path.join(folder, "mgeXE.log")
+        session.MGE_LOGS = (log,)
+        try:
+            for wgpu in (False, True):
+                run = session.Run("guard-test-%d" % wgpu)
+                run.wgpu = wgpu
+                run.started = time.time() - 10
+                with open(log, "w", encoding="utf-8") as file:
+                    file.write("MGE-XE G7\n" + off + "\n")
+                reason = run.refusal()
+                assert bool(reason) == wgpu and run.fell_back == reason, (wgpu, reason, run.fell_back)
+        finally:
+            session.MGE_LOGS, session.RESULTS = saved
+
+    # Check 3, and the exit code 4 before DONE's 0.
+    assert fallback_of_run(False, None, ["own device: false"]) is None, "a reference run is on Direct3D 9 by design"
+    assert fallback_of_run(True, None, ["own device: true", "step sh-start: true"]) is None
+    late = fallback_of_run(True, None, ["steps: shaders (2)", "own device: false"])
+    assert late.startswith("a wgpu run on Direct3D 9: the progress says \"own device: false\" (probe cache: "), late
+    assert fallback_of_run(True, "MGE XE fell back to Direct3D 9: x", []) == "a wgpu run on Direct3D 9: MGE XE fell back to Direct3D 9: x"
+    assert run_exit_code(False, False, True, ENDED_DONE, True) == EXIT_FELL_BACK == 4
+    assert run_exit_code(False, False, False, ENDED_OTHER, True) == 4, "a run that check 2 stopped"
+    assert run_exit_code(False, False, True, ENDED_DONE) == 0
+
+
 def self_test_refusal():
     """A refusal line of the plugin stops the run, with the lines of its cause; other lines do not."""
     refusal_of = session.refusal_of
@@ -1906,6 +1967,7 @@ def self_test():
     self_test_add_symbols()
     self_test_mge_log_problems()
     self_test_refusal()
+    self_test_probe_guard()
     self_test_ring_problem()
     self_test_weather()
     self_test_shadows()
@@ -2107,6 +2169,8 @@ def main():
         problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
         if not problem and (args.reference or args.engine_reference) and not args.reference_plugin:
             problem = overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
+        if not problem and not (args.reference or args.engine_reference):
+            problem = session.probe_cache_problem()
         session.harness.refuse_stale_backups()
         enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
         if not problem and enable_faults:
@@ -2179,6 +2243,8 @@ def main():
         for folder in (HOST_DIR, D3D8_DIR):
             subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
     problem = no_plugin and overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
+    if not problem and not args.reference:
+        problem = session.probe_cache_problem()
     if problem:
         raise SystemExit("run_own_device: " + problem)
     session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin,
@@ -2189,6 +2255,7 @@ def main():
                 args.disable_mod.append(name)
                 print("  mod of the instance with akulakhan.dll, off for the run: %s" % name, flush=True)
     run = session.Run(args.label)
+    run.wgpu = not args.reference
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
                     position=args.position, yaw=args.yaw, findWater=args.find_water, findDry=args.find_dry, hour=args.hour, weather=args.weather,
@@ -2277,6 +2344,9 @@ def main():
     failed = no_plugin and loaded
     if failed:
         print("ERROR: the game loaded akulakhan.dll in a reference run without the plugin: the run is no reference")
+    fell_back = fallback_of_run(run.wgpu, run.fell_back, progress)
+    if fell_back:
+        print("ERROR: " + fell_back)
     ending = report_ending(run, done, progress)
     print("pictures in " + run.dir)
     # The size of the run and of every run kept (the owner, 2026-10-18: the results folder
@@ -2284,7 +2354,7 @@ def main():
     # it is time to.
     print("size: this run %s; all runs in %s %s" % (folder_size(run.dir), os.path.dirname(run.dir), folder_size(os.path.dirname(run.dir))))
     print_disk_limits()
-    return run_exit_code(no_plugin, loaded, done, ending)
+    return run_exit_code(no_plugin, loaded, done, ending, bool(fell_back))
 
 
 # The endings of a run (W372): DONE came; the game closed by itself without DONE, after a step started, with exit code
@@ -2293,7 +2363,25 @@ def main():
 # them. A code 0 before the first step stays on the old path: MWSE's check of MGE XE exits with 0 at the start.
 ENDED_DONE, ENDED_BY_HAND, ENDED_OTHER = "done", "by hand", "other"
 EXIT_ENDED_BY_HAND = 3
+# A wgpu run on Direct3D 9: MGE XE fell back (the probe guard, D328, verdict 314).
+EXIT_FELL_BACK = 4
+# The line of the nirender mod (owndevice.lua) in a run whose game has no device of the plugin.
+NO_OWN_DEVICE = "own device: false"
 STEP_LINE = re.compile(r"^step (\S+?):")
+
+
+def fallback_of_run(wgpu, stopped, progress):
+    """Check 3 of the probe guard: why a wgpu run failed on Direct3D 9, or None. `stopped` is the fall-back that stopped
+    the run (check 2, `session.Run.fell_back`); without it, the progress line "own device: false" shows a fall-back
+    that check 2 did not know. The text names MGE XE's probe cache. A reference run is on Direct3D 9 by design."""
+    if not wgpu:
+        return None
+    if stopped:
+        return "a wgpu run on Direct3D 9: " + stopped
+    if any(line.startswith(NO_OWN_DEVICE) for line in progress):
+        cache = "; ".join(session.probe_cache_lines()) or "no file %s" % " or ".join(session.probe_cache_files())
+        return "a wgpu run on Direct3D 9: the progress says \"%s\" (probe cache: %s)" % (NO_OWN_DEVICE, cache)
+    return None
 SHADER_SET_LINE = re.compile(r"^shader batch: (\S+?): ")
 
 
@@ -2335,11 +2423,15 @@ def last_step(progress):
     return found
 
 
-def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER):
-    """2 for a run without the plugin that loaded it (no reference), else 0 when the steps were
-    done in the budget, 3 for a run ended by hand (W372), 1 for any other end."""
+def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False):
+    """2 for a run without the plugin that loaded it (no reference), 4 (EXIT_FELL_BACK) for a wgpu
+    run that MGE XE took to Direct3D 9, also with DONE, else 0 when the steps were done in the
+    budget, 3 for a run ended by hand (W372), 1 for any other end. The 4 of check_mwse_sites.py and
+    deploy_rest.py (a missing MWSE feature) is another tool's code: nothing reads both."""
     if no_plugin and loaded:
         return 2
+    if fell_back:
+        return EXIT_FELL_BACK
     if done:
         return 0
     return EXIT_ENDED_BY_HAND if ending == ENDED_BY_HAND else 1

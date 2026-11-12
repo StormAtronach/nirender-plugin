@@ -234,6 +234,56 @@ def refusal_of(lines):
     return None
 
 
+# The guard of a wgpu run against MGE XE's fall-back to Direct3D 9 (D328, verdict 314). Its checks 1 and 2 (the cached
+# none, the fall-back lines) go with W412: the owner's D386 removes the probe, its cache and the fall-back.
+#
+# MGE XE's cache of its probe of numidium.exe (render-link d3d8/crates/probe): one line of the key, the word and the
+# reason, separated by tabs, beside mgeXE.log. A cached none takes every start of the instance to Direct3D 9.
+PROBE_CACHE = "mgeXE-renderer-probe.txt"
+# The lines of MGE XE's d3d8.dll when the wgpu path falls back to Direct3D 9 (render-link d3d8/cpp/main.cpp):
+# wgpuPathOff writes the first for every fall-back, the probe writes the second.
+FALLBACK_MARKS = ("!! wgpu renderer: not in use,", "this start stays on Direct3D 9")
+
+
+def probe_cache_files(root=None, game=None):
+    """The places of MGE XE's probe cache: the overwrite folder of the instance (Root Builder) and the game folder."""
+    return [os.path.join(root or harness.MO2_ROOT, "overwrite", "Root", PROBE_CACHE), os.path.join(game or harness.GAME_DIR, PROBE_CACHE)]
+
+
+def probe_cache_lines(root=None, game=None):
+    """Each probe cache file that exists, as "<path>: <its first line>"."""
+    lines = []
+    for path in probe_cache_files(root, game):
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8", errors="replace") as file:
+                lines.append("%s: %s" % (path, file.readline().rstrip("\r\n").replace("\t", " | ")))
+    return lines
+
+
+def probe_cache_problem(root=None, game=None):
+    """Check 1: why a wgpu run must not start because MGE XE's probe cache says none, or None. The runner never deletes
+    the file: it belongs to the instance."""
+    for path in probe_cache_files(root, game):
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8", errors="replace") as file:
+            fields = file.readline().rstrip("\r\n").split("\t", 2)
+        if len(fields) >= 2 and fields[1] == "none":
+            reason = fields[2] if len(fields) == 3 else "no reason"
+            return "MGE XE's probe cache %s says none (%s): a wgpu run would take Direct3D 9. Delete the file to ask the probe again" % (path, reason)
+    return None
+
+
+def fallback_of(lines):
+    """Check 2: the reason for a wgpu run to stop when `lines` hold MGE XE's fall-back to Direct3D 9, with the probe
+    cache named; else None."""
+    for line in lines:
+        if any(mark in line for mark in FALLBACK_MARKS):
+            cache = "; ".join(probe_cache_lines()) or "no file %s" % " or ".join(probe_cache_files())
+            return "MGE XE fell back to Direct3D 9: %s (probe cache: %s)" % (line.strip(), cache)
+    return None
+
+
 class Run:
     """The folder and the files of one run of the game."""
 
@@ -244,6 +294,9 @@ class Run:
         self.report = self.path("report.tsv")
         self.log = self.path("nirender.log")
         self.started = None
+        # A wgpu run: MGE XE's fall-back to Direct3D 9 stops it (fallback_of), and the reason is kept here.
+        self.wgpu = False
+        self.fell_back = None
 
     def path(self, name):
         return os.path.join(self.dir, name)
@@ -317,9 +370,11 @@ class Run:
         """The plugin's refusal of the renderer in this run so far, with its cause (`refusal_of`),
         or None: from the live mgeXE.log of the game (fresh since the start), the plugin's own log
         and the progress file. For `launch(stop=...)`, every 2 s: each call reads only the whole
-        lines that each file got since the call before."""
+        lines that each file got since the call before. In a wgpu run (`self.wgpu`), MGE XE's
+        fall-back to Direct3D 9 stops the run too (`fallback_of`), and `self.fell_back` keeps it."""
         if not hasattr(self, "_seen"):
             self._seen = {}
+        marks = REFUSAL_MARKS + CAUSE_MARKS + (FALLBACK_MARKS if self.wgpu else ())
         fresh = [path for path in MGE_LOGS if os.path.isfile(path) and self.started and os.path.getmtime(path) > self.started]
         for path in fresh[:1] + [self.log, self.progress]:
             if not os.path.isfile(path):
@@ -333,9 +388,14 @@ class Run:
             text = whole.decode("utf-8", errors="replace").splitlines()
             # Only the lines of a refusal and of its cause are kept.
             text = [line[len(common.PLUGIN_PREFIX):] if line.startswith(common.PLUGIN_PREFIX) else line for line in text]
-            lines = lines + [line for line in text if any(mark in line for mark in REFUSAL_MARKS + CAUSE_MARKS)]
+            lines = lines + [line for line in text if any(mark in line for mark in marks)]
             self._seen[path] = (offset + len(whole), lines)
-        return refusal_of([line for _, lines in self._seen.values() for line in lines])
+        kept = [line for _, lines in self._seen.values() for line in lines]
+        refused = refusal_of(kept)
+        if refused or not self.wgpu:
+            return refused
+        self.fell_back = fallback_of(kept)
+        return self.fell_back
 
     def plugin_lines(self):
         """The plugin's lines of this run (`common.plugin_lines`)."""
