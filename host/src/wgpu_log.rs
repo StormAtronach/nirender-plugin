@@ -7,7 +7,7 @@
 //! requested ([`RequestLog`]): the reason why a backend did not load is only in wgpu's debug
 //! lines ([`backend_failure`]). Outside the request the level of the `log` crate is "warn", so
 //! that a debug line in a frame path of wgpu costs one compare. The lines go to stdout, as
-//! "wgpu: <level> <target>: <message>". The request keeps [`REQUEST_LINES_KEPT`] lines and the
+//! `wgpu: <level> <target>: <message>`. The request keeps [`REQUEST_LINES_KEPT`] lines and the
 //! time after it [`WARNINGS_KEPT`]; the rest are counted, and [`dropped_line`] gives the count
 //! (at the end of the request, at the end of the stream and in a refusal).
 

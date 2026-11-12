@@ -452,7 +452,7 @@ fn wait_behind(line: &str) -> ! {
 ///
 /// One refusal for each process: the first caller takes it, before anything else, so that no
 /// later caller can announce another code than the box shows. A later caller (the main thread
-/// when the driver returns after the watchdog refused a hang) waits behind it ([`wait_behind`]).
+/// when the driver returns after the watchdog refused a hang) waits behind it (`wait_behind`).
 pub fn refuse(code: u32, reasons: &str, text: &str) -> ! {
     let in_progress = REFUSING
         .compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire)
