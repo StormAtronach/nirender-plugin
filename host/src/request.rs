@@ -419,14 +419,30 @@ fn no_adapter_words(backend: wgpu::Backends, error: &wgpu::RequestAdapterError) 
             false,
         )
     } else if !active_backends.contains(backend) {
-        let what = if backend == wgpu::Backends::VULKAN {
-            ": no Vulkan driver is installed, or it is broken"
-        } else {
-            ""
-        };
-        (format!("did not load{what}"), true)
+        (did_not_load_words(backend), true)
     } else {
         wgpu_words
+    }
+}
+
+/// The words of a backend that did not load.
+fn did_not_load_words(backend: wgpu::Backends) -> String {
+    let what = if backend == wgpu::Backends::VULKAN {
+        ": no Vulkan driver is installed, or it is broken"
+    } else {
+        ""
+    };
+    format!("did not load{what}")
+}
+
+/// The words of a surface that the backend did not make (`what`), and whether a new graphics
+/// driver can help. A backend that did not load makes no surface either, and that comes first
+/// (the request makes the surface before it asks for the adapter): wgpu's words for the load
+/// say why, `failure` ([`crate::wgpu_log::take_backend_failure`]).
+fn no_surface_words(backend: wgpu::Backends, what: String, failure: Option<&str>) -> (String, bool) {
+    match failure {
+        Some(failure) => (with_wgpu_words(did_not_load_words(backend), Some(failure)), true),
+        None => (what, false),
     }
 }
 
@@ -494,13 +510,20 @@ fn try_backend(
     // wgpu's own words when the backend did not load: only its debug line has them.
     let load_failure = crate::wgpu_log::take_backend_failure();
 
+    let no_surface = |what: String| {
+        let (words, update_driver) = no_surface_words(backend, what, load_failure.as_deref());
+        Refusal {
+            update_driver,
+            ..refuse(None, words)
+        }
+    };
     let step = step_begins(backend, RequestStep::Surface);
     let surface = match window {
         None => Ok(None),
         Some(WindowTarget::Own(window)) => instance
             .create_surface(window.clone())
             .map(Some)
-            .map_err(|error| refuse(None, format!("made no surface on the window: {error}"))),
+            .map_err(|error| no_surface(format!("made no surface on the window: {error}"))),
         // The game's window lives until the game ends, and this program ends with it.
         Some(WindowTarget::Game(handle)) => {
             use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
@@ -520,7 +543,7 @@ fn try_backend(
             };
             surface
                 .map(Some)
-                .map_err(|error| refuse(None, format!("made no surface on the window of the game: {error}")))
+                .map_err(|error| no_surface(format!("made no surface on the window of the game: {error}")))
         }
     };
     step.end();
@@ -1141,6 +1164,22 @@ mod tests {
         let lines = dx12_card_lines();
         println!("{lines:#?}");
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn a_backend_that_did_not_load_says_so_at_the_surface_too() {
+        // Run hob-d388-a (Vulkan's drivers off): the surface failed first, with wgpu's empty map.
+        let what = "made no surface on the window: Failed to create surface for any enabled backend: {}".to_string();
+        let failure = "failed to create Vulkan backend: InstanceError { source: Some(ERROR_INCOMPATIBLE_DRIVER) }";
+        assert_eq!(
+            no_surface_words(wgpu::Backends::VULKAN, what.clone(), Some(failure)),
+            (
+                format!("did not load: no Vulkan driver is installed, or it is broken (wgpu: {failure})"),
+                true
+            )
+        );
+        // A backend that loaded keeps the surface's own words.
+        assert_eq!(no_surface_words(wgpu::Backends::VULKAN, what.clone(), None), (what, false));
     }
 
     #[test]
