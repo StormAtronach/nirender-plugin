@@ -3,10 +3,12 @@
 //!
 //! MWSE's `NI::RefCountLocks` (MWSE `NIRefCountLocks.cpp`) writes a jump to a locked stub over the
 //! first 5 bytes of each site and fills the rest of the site with `nop`. The plugin locks no count
-//! itself. Two of the sites' functions have ports (`NiRenderer::BeginBatch` and
-//! `NiGeometry::UpdatePropertiesDownward`), and the census locks a port whose function another mod
-//! changed. So the census asks [`covers`]: a run of changed bytes wholly inside one site that holds
-//! a jump and then `nop` to its end is MWSE's count lock, not another mod's change.
+//! itself. Four of the sites' functions have ports (`NiGeometry::pushStateToRenderer`,
+//! `NiRenderer::BeginBatch`, `NiDX8Renderer::dtor` and `NiGeometry::UpdatePropertiesDownward`),
+//! and the census locks a port whose function another mod changed. So the census asks [`covers`]:
+//! a run of changed bytes wholly inside one site that holds a jump and then `nop` to its end is
+//! MWSE's count lock, not another mod's change. The check of an MWSE.dll before a deploy
+//! (`mwse_sites`) asks [`is_site`] for the same reason.
 //!
 //! The list `SITES` is a copy of the addresses and lengths of MWSE's table. MWSE's install line in
 //! MWSE.log names every address it locked; a test compares that line with this list in both
@@ -77,6 +79,11 @@ const NOP: u8 = 0x90;
 /// True when the bytes of `site`, read by `read`, are a jump and then `nop` to its end.
 fn holds_lock(site: &Site, read: &impl Fn(usize) -> u8) -> bool {
     read(site.at) == JMP && (site.at + 5..site.at + site.len).all(|address| read(address) == NOP)
+}
+
+/// True when `at` is the address of one of MWSE's count lock sites.
+pub fn is_site(at: usize) -> bool {
+    SITES.iter().any(|site| site.at == at)
 }
 
 /// Writes one line on the state of the sites: all locked by MWSE, none, or some.

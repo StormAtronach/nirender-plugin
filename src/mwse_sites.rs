@@ -26,7 +26,9 @@
 //!    32-bit target that the head compare lets change (`hook::head_matches`), when a port serves
 //!    the site or a known patch covers it.
 //! 4. BODY, past the stolen bytes: it passes when a known patch, a served site or a port that
-//!    runs the whole engine function covers it; else it fails unless the baseline has it.
+//!    runs the whole engine function covers it, or when it is an aligned value (`data`) that is
+//!    the address of one of MWSE's count lock sites (`count_locks::is_site`: MWSE's table of
+//!    those sites, which the census covers); else it fails unless the baseline has it.
 //!
 //! A baseline line is the value, the instruction form and its count: a new form or a higher
 //! count of a value fails until it is reviewed.
@@ -803,6 +805,14 @@ pub fn followed(value: u32) -> bool {
     ports::followed_range(value as usize) || ports::serves_site(value as usize)
 }
 
+/// True when `value`, held as `form`, is an entry of MWSE's table of count lock sites: an aligned
+/// value that is the address of a site. The census does not count MWSE's lock at that site as a
+/// change of another mod ([`crate::count_locks::covers`]). The same address in another form is a
+/// patch of another kind and is not covered.
+fn count_lock_site(value: u32, form: Form) -> bool {
+    form == Form::Data && crate::count_locks::is_site(value as usize)
+}
+
 /// True when the head compare lets the 32-bit target of the `call` or `jmp` at `value` change.
 fn head_target(func: &Func, value: u32) -> bool {
     let opcode = value as usize - func.ea;
@@ -864,6 +874,7 @@ pub fn check(pe: &[u8], baseline: &[Reviewed], followed: impl Fn(u32) -> bool) -
         let reviewed = baseline
             .iter()
             .any(|line| line.value == value && line.form == form && count <= line.count);
+        let lock_site = count_lock_site(value, form);
         let site = format!(
             "{value:#x}, {}+{:#x}, {} x{count}",
             func.name,
@@ -882,7 +893,7 @@ pub fn check(pe: &[u8], baseline: &[Reviewed], followed: impl Fn(u32) -> bool) -
                 "in the stolen bytes of {}: the detour will refuse the renderer",
                 port.unwrap_or("?")
             )),
-            Place::Body if followed(value) || ports::wraps_engine(func.ea) || reviewed => None,
+            Place::Body if followed(value) || ports::wraps_engine(func.ea) || lock_site || reviewed => None,
             Place::Body => Some(format!(
                 "in the body of {}: no port follows a patch there, and the baseline does not have it",
                 port.unwrap_or("?")
@@ -1270,6 +1281,27 @@ mod tests {
         assert_eq!(check(&pe, &[mov], followed).failures.len(), 1);
         let twice = made_up_pe(&code(&[push, push, &[0xC3]]), &[], &[]);
         assert_eq!(check(&twice, &[reviewed], followed).failures.len(), 1);
+    }
+
+    #[test]
+    fn a_count_lock_site_in_mwses_table_passes_and_other_values_fail() {
+        // 0x6F3F5E: a count lock site in the body of the port of NiGeometry::pushStateToRenderer.
+        const SITE: u32 = 0x6F3F5E;
+        let func = function_of(SITE).unwrap();
+        assert_eq!(func.name, "NiGeometry::pushStateToRenderer");
+        assert_eq!(place(func, SITE).0, Place::Body);
+        assert!(!followed(SITE) && !ports::wraps_engine(func.ea));
+
+        let table = made_up_pe(&[0xC3], &le(SITE), &[]);
+        let report = check(&table, &[], followed);
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+
+        // The null: a value of the same body that is no site fails as before.
+        let other = made_up_pe(&[0xC3], &le(SITE + 2), &[]);
+        assert_eq!(check(&other, &[], followed).failures.len(), 1);
+        // The site's address as an operand of code is another patch: it fails.
+        let push = made_up_pe(&code(&[&[0x68], &le(SITE), &[0xC3]]), &[], &[]);
+        assert_eq!(check(&push, &[], followed).failures.len(), 1);
     }
 
     #[test]

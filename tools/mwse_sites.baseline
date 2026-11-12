@@ -49,7 +49,7 @@
 0x6c0066 data 2 NiDX8SourceTextureData::Update+0x16: text in data (bytes "f.l."), not a site list
 0x6c0067 data 18 NiDX8SourceTextureData::Update+0x17: text in data (bytes "g.l."), not a site list
 0x6c0069 data 5 NiDX8SourceTextureData::Update+0x19: text in data (bytes "i.l."), not a site list
-0x6c006c data 4 NiDX8SourceTextureData::Update+0x1c: text in data (bytes "l.l."), not a site list
+0x6c006c data 6 NiDX8SourceTextureData::Update+0x1c: text in data (bytes "l.l."), not a site list; 6 since MWSE 4cf29c27d7 (L"msvcrt.dll", L"ucrtbase.dll" in Game::endProcessAtQuit)
 0x6c006d data 2 NiDX8SourceTextureData::Update+0x1d: text in data (bytes "m.l."), not a site list
 0x6c006e data 6 NiDX8SourceTextureData::Update+0x1e: text in data (bytes "n.l."), not a site list
 0x6c006f data 1 NiDX8SourceTextureData::Update+0x1f: text in data (bytes "o.l."), not a site list
