@@ -91,7 +91,8 @@ commit writes merge-step-<commit>-2.log, then -3, and so on: it never overwrites
 A pass of the merge (every stage passed, against the accepted folder) closes the items that the merge subjects name (D180):
 a subject that ends with "(W<n>)" or "(W<n> <part>)", e.g. "(W96)" or "(W341 step A)". The item of a part keeps its part
 ("W341 step A"): it closes that part, not the row, which can hold other parts that are still open (W357). Only a subject
-without a part closes the whole row. The subjects are those of each merge
+without a part closes the whole row. A tail of decisions ", D<n>" or ", D<n>/D<m>/..." before the closing parenthesis is
+no part: "(W363, D325)" closes W363 and "(W341 step B, D300)" closes "W341 step B" (W365). The subjects are those of each merge
 commit on the first-parent path from <tip> to <commit> and of <commit> itself, so one check of a batch of merges closes
 each of them (D183). A path with no merge commit with such a subject, to a <commit> that is no merge, gets a WARNING line
 before the round: a fast-forward closes only the item of <commit>. Each item appends one line to
@@ -145,10 +146,13 @@ LOG_FOLDER = "E:\\nirender-keep\\merge-step"
 CLOSES_FILE = os.path.join(LOG_FOLDER, "closes.tsv")
 CLOSES_HEADER = "time\titem\trepo\tcommit\tstages\tlog\tsubject"
 # The item of a merge subject: the subject ends with "(W<n>)" or "(W<n> <part>)", the form of the Coordinator's merge
-# subjects ("(W96)", "(W341 step A)"). The item is the whole text in the parentheses, the part with it: a row with parts
-# closes one part at a time (W357). Any other subject names no item and closes nothing. A part that starts with "dropped"
-# is no part: master has "Merge: log pipe follow-ups W219 and W221 (W220 dropped)".
-ITEM = re.compile(r"\((W\d+(?: (?!dropped\b)[^()]+)?)\)$")
+# subjects ("(W96)", "(W341 step A)"). The item is the text in the parentheses, the part with it: a row with parts
+# closes one part at a time (W357). The decisions of the merge can follow as a tail ", D<n>" or ", D<n>/D<m>/...", which
+# the item drops: "(W363, D325)" is W363, "(W340, D288/D289/D310)" is W340 (W365). The part is lazy, so that the tail
+# is not taken into it; any other comma stays in the part ("(W341 step B, commit 1)"). Any other subject names no item
+# and closes nothing. A part that starts with "dropped" is no part: master has "Merge: log pipe follow-ups W219 and W221
+# (W220 dropped)".
+ITEM = re.compile(r"\((W\d+(?: (?!dropped\b)[^()]+?)?)(?:, D\d+(?:/D\d+)*)?\)$")
 # The tries of an append to the closes file while a reader holds it, and the wait between them.
 CLOSE_TRIES = 5
 CLOSE_WAIT_SECONDS = 0.5
@@ -524,7 +528,8 @@ def base_older_than_capture(names, results, reasons):
 
 def items_of(subject):
     """The item that a merge subject names at its end, as a list of one, or no item. The item of a part keeps the part
-    ("W341 step A"); a row closes whole only from a subject without a part ("W341")."""
+    ("W341 step A"); a row closes whole only from a subject without a part ("W341"). A tail of decisions is dropped
+    ("(W363, D325)" is W363)."""
     match = ITEM.search(subject.strip())
     return [" ".join(match.group(1).split())] if match else []
 
@@ -1664,12 +1669,21 @@ def self_test():
         assert items_of("Merge: the pass report (W341 step A)") == ["W341 step A"]
         assert items_of("Merge: the pass report, all steps (W341)") == ["W341"]
         assert items_of("Merge: a part with two spaces (W341  step  A)") == ["W341 step A"]
+        # W365: a tail of decisions after the item is dropped; any other comma stays in the part.
+        assert items_of("Merge: the cleaners keep the game free for their run (W363, D325)") == ["W363"]
+        assert items_of("Merge: GPU objects are counted, and a steady frame makes none (W340, D288/D289/D310)") == ["W340"]
+        assert items_of("Merge: the state once in frame() (W341 step B, D300)") == ["W341 step B"]
+        assert items_of("Merge: the view model has no part REFLECTION (W341 step B, commit 1)") == ["W341 step B, commit 1"]
+        assert items_of("Merge: a part and two decisions (W341 step B, D300/D301)") == ["W341 step B"]
         for no_item in ("Merge: W96 in the middle of the subject", "Merge: W96 in the middle (D161)", "Merge: dropped W220",
                         "Merge: log pipe follow-ups W219 and W221 (W220 dropped) and more", "Merge: lower case (w96)",
                         "Merge: log pipe follow-ups W219 and W221 (W220 dropped)", "Merge: a nested part (W234 (a))",
                         "Merge: a dropped item (W96 dropped)", "Merge: the item (W96) is not at the end",
                         "Merge: no parentheses W96", "Merge: two items (W222, W226)", "Merge: the plan (D161)",
-                        "Merge: say which views draw the table", "Merge: a letter on the number (W234a)", "Merge: empty ()"):
+                        "Merge: say which views draw the table", "Merge: a letter on the number (W234a)", "Merge: empty ()",
+                        "Merge: a dropped item with a decision (W96 dropped, D5)", "Merge: a tail only (D325)",
+                        "Merge: a tail with lower case (W363, d325)", "Merge: a tail without a number (W363, D)",
+                        "Merge: a tail with no space (W363,D325)"):
             assert items_of(no_item) == [], no_item
 
         closes = os.path.join(root, "closes", "closes.tsv")
