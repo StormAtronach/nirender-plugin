@@ -413,9 +413,17 @@ def self_test():
             new = os.path.join(repo, "results", time.strftime(RUN_TIME) + "-v-test")
             run_code = a_new_run
             assert game("v-test", [], "build") == new
-            # The clusters stage reads the capture of an earlier stage, so without a time the newest
-            # run counts.
             assert newest("v-test") == new and newest("v-test", "99991231-000000") is None
+            # The clusters stage takes only a capture of this validate run (W383). The null: an
+            # older capture of the place alone is the newest of its label, and it is refused.
+            older = os.path.join(repo, "results", "20200101-000000-v-capture-seyda")
+            os.makedirs(older)
+            open(os.path.join(older, "exterior.nircap"), "wb").close()
+            assert newest("v-capture-seyda") == older
+            run_code = lambda args, env=None: (0, "")
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                assert not stage_clusters("seyda", "build", time.strftime(RUN_TIME))
+            assert "FAIL no capture of this run at seyda: run the capture stage in this run" in printed.getvalue(), printed.getvalue()
     finally:
         REPO, run_code = real_repo, real_run_code
     # The weather: pinned clear by default, `any` for the game's; a run whose weather line does not
@@ -732,12 +740,15 @@ def stage_only(place, mge_build):
     return ok
 
 
-def stage_clusters(place, mge_build):
+def stage_clusters(place, mge_build, started):
+    """The replays of the capture that this validate run made at the place (`started`, in RUN_TIME's
+    form, is the start of this run). An older capture of the place is not used: it can be of another
+    build or of another session."""
     print("clusters at %s" % place, flush=True)
-    folder = newest("v-capture-" + place)
+    folder = newest("v-capture-" + place, started)
     capture = folder and os.path.join(folder, "exterior.nircap")
     if not capture or not os.path.isfile(capture):
-        return check(False, "no capture of the place: run the capture stage first")
+        return check(False, "no capture of this run at %s: run the capture stage in this run" % place)
     a, b = os.path.join(folder, "replay-clusters.png"), os.path.join(folder, "replay-draw-lights.png")
     # The replays read the mgeXE.toml of the run (the fade of the lights is on in it).
     # The replays use the build under test: the default of replay.py is the folder of
@@ -856,6 +867,7 @@ def main():
     if args.gpu_time:
         GPU_TIME["MGE_XE_GPU_TIME"] = "1"
     places = args.places.split(",")
+    started = time.strftime(RUN_TIME)
     for stage in args.stages:
         if stage == "capture":
             for place in places:
@@ -873,7 +885,7 @@ def main():
                 return 1
         elif stage == "clusters":
             for place in places:
-                if not stage_clusters(place, args.mge_build):
+                if not stage_clusters(place, args.mge_build, started):
                     return 1
         elif stage == "weathers":
             for place in places:
