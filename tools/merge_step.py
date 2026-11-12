@@ -64,7 +64,10 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
 - after a pass that moves refs/merge-step/<branch>, the sibling's own refs/merge-step/<branch> moves to the sibling's
   HEAD of the round only when this round ran and passed every stage that the sibling's own check of its diff since
   that ref would run, matched by folder and command (W370). Else it stays, and one line names the stages that did not
-  run or pass, or why the sibling's stages cannot be known. A ref never moves past a diff whose stages did not run. A
+  run or pass, or why the sibling's stages cannot be known. It also stays while the sibling has tracked changes, at
+  the start of the round or at the move, as the docs and contract stages read its working tree, not its HEAD; and
+  when git refuses the update, as another check moved the ref meanwhile. A ref never moves past a diff whose
+  stages did not run. A
   round of one repo does not run the fixed stages of the other (its tests and its checks), so a pair merge gets one
   check for each repo;
 - the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
@@ -926,11 +929,12 @@ def missing_stages(needed, ran, results):
     return [name for name, folder, command in needed if stage_key((name, folder, command)) not in passed]
 
 
-def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits):
+def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits, sibling_changed=False):
     """After a pass of the repo of `kind`: moves the sibling's refs/merge-step/<branch> to `sibling_head`, the
     sibling's HEAD at the start of the round, only when the round ran and passed every stage that the sibling's own
-    check of its diff since that ref would run (W370). Else the ref stays, and one line says why. The move names the
-    old value, so that a ref that another check moved meanwhile stays as it is. True when the ref moved."""
+    check of its diff since that ref would run (W370). Else the ref stays, and one line says why. `sibling_changed`:
+    the sibling had tracked changes at the start of the round. The move names the old value, so that a ref that
+    another check moved meanwhile stays as it is, with a line. True when the ref moved."""
     other = "mge" if kind == "plugin" else "plugin"
     name = os.path.basename(sibling)
     branch = branch_of(sibling)
@@ -945,6 +949,12 @@ def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, com
         return False
     if sibling_head is None or head != sibling_head:
         say("%s: %s stays at %s: the HEAD of the sibling moved during the round" % (name, ref, last[:10]))
+        return False
+    changed_now = bool(git(sibling, "status", "--porcelain", "--untracked-files=no"))
+    if sibling_changed or changed_now:
+        when = "at the start of the round" if sibling_changed else "now"
+        say("%s: %s stays at %s: the sibling has tracked changes %s, and the docs and contract stages read its working "
+            "tree, not its HEAD" % (name, ref, last[:10], when))
         return False
     if last == head:
         say("%s: %s is at its HEAD %s: nothing to move" % (name, ref, head[:10]))
@@ -962,7 +972,13 @@ def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, com
         say("%s: %s stays at %s: its diff to %s needs %s, which did not run and pass in this round; check it on its own"
             % (name, ref, last[:10], head[:10], ", ".join(missing)))
         return False
-    git(sibling, "update-ref", ref, head, last)
+    # A plain run, not git(): its SystemExit would end a round that passed with exit code 1.
+    update = subprocess.run(["git", "-C", sibling, "update-ref", ref, head, last], capture_output=True, text=True, env=git_env())
+    if update.returncode != 0:
+        now = resolve(sibling, ref)
+        say("%s: %s stays at %s: git update-ref refused the move from %s to %s (%s)"
+            % (name, ref, now[:10] if now else "nothing", last[:10], head[:10], update.stderr.strip()))
+        return False
     say("%s: %s moves from %s to %s: this round ran and passed every stage of that diff" % (name, ref, last[:10], head[:10]))
     return True
 
@@ -1305,9 +1321,9 @@ def self_test():
         mge_round = stages_for("mge", cover_mge, ["mgeHost64/src/x.rs"], BASELINE, commits=cover_commits)
         plugin_round = stages_for("plugin", cover_plugin, ["tools/x.py"], BASELINE, commits=cover_commits)
 
-        def sibling_move(stages, results, sibling_head=c2):
+        def sibling_move(stages, results, sibling_head=c2, changed=False):
             with contextlib.redirect_stdout(io.StringIO()) as said:
-                moved = move_sibling_ref("plugin", cover_mge, sibling_head, stages, results, BASELINE, cover_commits)
+                moved = move_sibling_ref("plugin", cover_mge, sibling_head, stages, results, BASELINE, cover_commits, changed)
             return moved, said.getvalue()
 
         moved, said = sibling_move(plugin_round, [True] * len(plugin_round))
@@ -1321,8 +1337,35 @@ def self_test():
         assert not moved and resolve(cover_mge, cover_ref) == c1 and said.rstrip().endswith("check it on its own"), "a failed stage of the diff"
         moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c1)
         assert not moved and "moved during the round" in said and resolve(cover_mge, cover_ref) == c1, said
+        both_round, all_passed = plugin_round + mge_round, [True] * (len(plugin_round) + len(mge_round))
+        # Verdict 227: tracked changes of the sibling, at the start of the round or now, keep the ref.
+        moved, said = sibling_move(both_round, all_passed, changed=True)
+        assert not moved and "tracked changes at the start of the round" in said and resolve(cover_mge, cover_ref) == c1, said
+        tracked = os.path.join(cover_mge, "mgeHost64", "src", "x.rs")
+        with open(tracked, "w", encoding="ascii") as changed_file:
+            changed_file.write("changed\n")
+        moved, said = sibling_move(both_round, all_passed)
+        assert not moved and "tracked changes now" in said and resolve(cover_mge, cover_ref) == c1, said
+        with open(tracked, "w", encoding="ascii") as changed_file:
+            changed_file.write("x\n")
+        # Verdict 227: another check moves the ref between the read and the update. git refuses the update, and the
+        # tool gives one line and keeps the other check's value; before, git() ended the round with SystemExit.
+        real_planned = planned_stages
+
+        def planned_with_a_race(*args, **kwargs):
+            subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c2], check=True, env=git_env())
+            return real_planned(*args, **kwargs)
+
+        globals()["planned_stages"] = planned_with_a_race
+        try:
+            moved, said = sibling_move(both_round, all_passed)
+        finally:
+            globals()["planned_stages"] = real_planned
+        assert not moved and "git update-ref refused the move from %s to %s" % (c1[:10], c2[:10]) in said, said
+        assert resolve(cover_mge, cover_ref) == c2 and "stays at %s" % c2[:10] in said, said
+        subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c1], check=True, env=git_env())
         # The stages of the sibling's diff all ran and passed: the ref moves to the HEAD of the round.
-        moved, said = sibling_move(plugin_round + mge_round, [True] * (len(plugin_round) + len(mge_round)))
+        moved, said = sibling_move(both_round, all_passed)
         assert moved and resolve(cover_mge, cover_ref) == c2 and "moves from %s to %s" % (c1[:10], c2[:10]) in said, said
         moved, said = sibling_move(mge_round, [True] * len(mge_round))
         assert not moved and "nothing to move" in said, said
@@ -2066,7 +2109,7 @@ def main():
     if moves_the_ref(baseline):
         keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
         if has_sibling:
-            move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits)
+            move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits, sibling_changed)
     else:
         say("%s stays: this pass is against %s, not the accepted folder" % (passed_ref, baseline))
     return 0
