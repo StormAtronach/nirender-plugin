@@ -314,7 +314,8 @@ impl Callee {
 
 static FOLLOWED: &[Followed] = &[
     // `NiDX8Renderer::RenderShape`: the software skinning flag of MWSE
-    // (PatchNIDX8Renderer_RenderShape). `draw::render_shape` reads the bytes.
+    // (PatchNIDX8Renderer_RenderShape). A known change that is harmless: no port reads these
+    // bytes, and `draw::render_shape` always tests the flag.
     Followed::Patch {
         at: 0x6ACF1F,
         bytes: &[0x90, 0x66, 0xF7, 0x46, 0x36, 0x00, 0x02, 0x75],
