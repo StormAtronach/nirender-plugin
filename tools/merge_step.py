@@ -7,7 +7,7 @@
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
 waits in the queue of that slot; with --no-wait it stops with exit code 3. --dry-run prints the stages and takes nothing.
 
-When a stage needs the game slot (the replay gate, the instance A/B: GAME_STAGES), the check takes the game slot and the whole
+When a stage needs the game slot (the replay gate, the instance A/B, deploy rest: GAME_STAGES), the check takes the game slot and the whole
 build side in one take, slot.py's `take both` (a lease of 4 hours), for the whole check (the owner's D161, D183). It never
 holds one of them while it waits for the other (the owner's D208, after the deadlock of 14:37 on 2026-11-10): it waits in
 both queues and holds nothing until both are free. A check with no such stage leaves the game slot free, so a game can run
@@ -45,6 +45,14 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
 - for nirender-plugin, "mwse sites <instance>": tools/check_mwse_sites.py on the MWSE.dll deployed in each test install
   (Morrowind75testing, Outlander-test), when the change touches the ports, the hooks, the install, the function table,
   the call sites or the baseline of the check (Brief 22): a new port over an MWSE patch that is already deployed fails;
+- in every round that deploys (the gate's paths, or DEPLOY_PATHS of the plugin), "mwse features <instance>":
+  tools/check_mwse_sites.py --features in the plugin's tree on the same MWSE.dll of each test install, before the build
+  (W406). It asks whether that MWSE has what this plugin needs (MWSE_FEATURES of src/mwse_sites.rs), not whether a
+  port meets an MWSE patch. A failure of the probe (exit code 1) fails the round, and nothing is deployed. A missing
+  required feature (exit code 4) passes the stage: the code under test is right, and the deployed MWSE is too old for
+  it. The build still runs, `deploy rest` then deploys nothing, and the round prints one "NOT DEPLOYED" line (in the log,
+  and again after the summary) with each install's MWSE.dll and what it lacks, and the command that deploys the build
+  with an MWSE.dll that has it (deploy_rest.py --mwse-dll). The installs keep the pair that they hold;
 - a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
 - the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
   helper's renderer, the shaders of the assets (the source of the shaders in a build), or a manifest or a lock of the
@@ -70,10 +78,14 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
   stages did not run. A
   round of one repo does not run the fixed stages of the other (its tests and its checks), so a pair merge gets one
   check for each repo;
-- the build of the dist alone, `cargo xtask dist`, when the change touches the mod's Lua (xtask checks it against the list
-  of the files it ships) or xtask, and not the paths of the gate: the replay cannot see these;
-- with the gate, `deploy rest` (tools/deploy_rest.py, the owner's D193: the test installs hold the latest build): after
-  the build and before the replay gate it puts the dist-staging folder into both test installs as their resting build, and
+- `build for the deploy`, `cargo xtask dist` in render-link, and then `deploy rest`, when a plugin change touches
+  DEPLOY_PATHS (the plugin DLL's src/, build.rs, build_support/, the mod's Lua, contract/) and not the paths of the gate
+  (W406). The replay gate cannot see these, as it never runs the plugin, so the round has no gate and no A/B. The dist
+  builds the plugin of ../nirender-plugin, so the tree must have its own name, as for the gate;
+- the build of the dist alone, `cargo xtask dist`, when a render-link change touches xtask and not the paths of the gate:
+  the replay cannot see it;
+- with the gate or the build for the deploy, `deploy rest` (tools/deploy_rest.py, the owner's D193: the test installs
+  hold the latest build): after the build and before the replay gate it puts the dist-staging folder into both test installs as their resting build, and
   keeps a copy as the next E:\\nirender-keep\\mgebuilds\\f<N> with a WHAT.txt. It runs only when every stage before it
   passed, and the gate's result does not stop it: a build that the gate rejects is deployed too. It never copies a pdb, an
   esp, mgeXE.toml or d3d9.dll, backs up each replaced file once for each tag, compares each copy by MD5, and prints the MD5
@@ -82,8 +94,8 @@ stages of render-link: the tests of the helper, mge-config and mge-probe; the he
   (in the log, and again after the summary). That refusal does not fail the round: the stage counts as passed, so a
   merge whose other stages passed still moves refs/merge-step. Any other failure of the tool is a FAIL. The stage
   runs also when the replay gate or the A/B stages fail: only the stages before it decide (the gate is red until the owner
-  accepts a new baseline, and the owner tests the latest build, D193). The round holds the game slot (the gate is one of its stages), so that the write
-  to E: is allowed (evidence_problem);
+  accepts a new baseline, and the owner tests the latest build, D193). The round holds the game slot (deploy rest is one
+  of GAME_STAGES), so that the write to E: is allowed (evidence_problem);
 
 These stages also need a sibling with no tracked change. The first line gives the hash of the sibling.
 
@@ -136,9 +148,10 @@ import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from deploy_rest import REFUSED_EXIT  # noqa: E402
+from check_mwse_sites import MD5, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
+from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, docs_place, git_env, local  # noqa: E402
+from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, docs_place, git_env  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
@@ -182,6 +195,9 @@ DEPLOY_STAGE = "deploy rest"
 DEPLOY_REFUSED_CODE = REFUSED_EXIT
 # The "NOT DEPLOYED" lines of the last run_stages.
 NOT_DEPLOYED = []
+# The installs of the last run_stages whose MWSE.dll lacks a feature that the plugin needs, as (install, md5 of the
+# MWSE.dll, the MISSING texts of the probe): the round deploys nothing then (W406).
+WITHHELD = []
 # The reasons of the NOT RUN lines of each stage of the last run_stages that ended NOT RUN, by the stage's name.
 NOT_RUN_REASONS = {}
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
@@ -195,19 +211,20 @@ GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.to
               "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "assets/Data Files/shaders/", "Cargo.toml", "Cargo.lock",
                       "mgeHost64/Cargo.toml", "mge-config/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml")}
 D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
-# What a change must touch for the build of the dist alone: what the dist ships or checks and the replay cannot see (the
-# mod's Lua, which xtask checks against its list of shipped files; xtask itself).
-DIST_PATHS = {"plugin": ("mod/MWSE/mods/nirender/",), "mge": ("xtask/",)}
+# What a change must touch for a build and a deploy without the gate (W406): the plugin DLL and the mod's Lua, which the
+# replay gate cannot see (it replays old captures with the helper and never runs the plugin), and the contract between
+# the plugin and d3d8.dll. A render-link change deploys only with the gate.
+DEPLOY_PATHS = {"plugin": ("src/", "build.rs", "build_support/", "mod/MWSE/mods/nirender/", "contract/"), "mge": ()}
+# What a change must touch for the build of the dist alone, with no deploy: xtask itself, which the replay cannot see.
+DIST_PATHS = {"plugin": (), "mge": ("xtask/",)}
 # What a plugin change must touch for the check of MWSE's patch sites against the ports (check_mwse_sites.py, Brief 22):
 # a new port, hook or follow rule can meet an MWSE patch that is already deployed.
 MWSE_SITES_PATHS = ("src/ports/", "src/hook.rs", "src/install.rs", "src/gen/", "src/site.rs", "tools/mwse_sites.baseline")
-# The MWSE.dll that each test install has deployed (the line build), by install: the stage checks these. Never a
-# `Harness - *` mod: a live run puts its own MWSE.dll there for its game hold, and the stage takes no game slot.
-# The key "mwse_deploys" of local.json changes the places.
-MWSE_DEPLOYS = local("mwse_deploys", {
-    "Morrowind75testing": "D:/Modlists/Morrowind75testing/mods/MWSE/Root/MWSE.dll",
-    "Outlander-test": "D:/Modlists/Outlander-test/mods/MWSE-Update for Nightly Builds/Root/MWSE.dll",
-})
+# The stages of the probe of the MWSE features that the plugin needs, one for each install (check_mwse_sites.py
+# --features, W406): in every round that deploys, plugin or render-link, before its build. A missing required feature
+# (exit code 4) passes the stage and keeps the deploy back, with one "NOT DEPLOYED" line for the round.
+FEATURES_STAGE = "mwse features "
+BUILD_FOR_DEPLOY = "build for the deploy"
 HARNESS_MOD = re.compile(r"[/\\]mods[/\\]Harness - [^/\\]*[/\\]", re.IGNORECASE)
 # These move a build out of its tree. Cargo then returns 0, and the gate replays the old file of the build folder.
 BUILD_MOVERS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "NIRENDER_PLUGIN_DIR")
@@ -284,16 +301,25 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     if touches(paths, D3D8_PATHS[kind]):
         stages.append(("d3d8 build", mge, ["cargo", "build", "--quiet", "-p", "d3d8", "--profile", "release-dll"]))
         stages.append(("contract", plugin, tool("check_contract.py", "--mge", mge)))
-    if touches(paths, GATE_PATHS[kind]):
+    gate = touches(paths, GATE_PATHS[kind])
+    deploys = gate or touches(paths, DEPLOY_PATHS[kind])
+    staging = os.path.join(mge, "target", "dist-staging")
+    # The commits under test, not the HEADs at the time of the stage: a merge can move a HEAD during the round.
+    commit_args = ["--plugin-commit", commits["plugin"], "--mge-commit", commits["mge"]] if commits else []
+    deploy = (DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--build", staging, *commit_args))
+    if deploys:
+        for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
+            stages.append((FEATURES_STAGE + instance, plugin, tool("check_mwse_sites.py", "--features", dll)))
+    if gate:
         stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
-        staging = os.path.join(mge, "target", "dist-staging")
-        # The commits under test, not the HEADs at the time of the stage: a merge can move a HEAD during the round.
-        commit_args = ["--plugin-commit", commits["plugin"], "--mge-commit", commits["mge"]] if commits else []
-        stages.append((DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--build", staging, *commit_args)))
+        stages.append(deploy)
         stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", staging, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
         if tips and base_folder:
             stages.append((BASE_STAGE, plugin, tool("instance_ab.py", "base-build", "--plugin-repo", plugin, "--mge-repo", mge, "--plugin-tip", tips["plugin"], "--mge-tip", tips["mge"], "--out", base_folder)))
             stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", os.path.join(base_folder, "build"), "--now-build", staging, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
+    elif deploys:
+        stages.append((BUILD_FOR_DEPLOY, mge, ["cargo", "xtask", "dist"]))
+        stages.append(deploy)
     elif touches(paths, DIST_PATHS[kind]):
         stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
@@ -326,7 +352,7 @@ def require_tests(command):
 
 
 def needs_clean_sibling(stages):
-    return any(name in ("replay gate", "d3d8 build", "build of the dist") for name, _, _ in stages)
+    return any(name in ("replay gate", "d3d8 build", "build of the dist", BUILD_FOR_DEPLOY) for name, _, _ in stages)
 
 
 def baseline_problem(stages, baseline):
@@ -348,6 +374,9 @@ def tree_problem(kind, repo, stages, head, commit, changed, sibling_changed=Fals
     gate = any(name == "replay gate" for name, _, _ in stages)
     if gate and os.path.basename(repo) != {"plugin": PLUGIN_NAME, "mge": MGE_NAME}[kind]:
         return "the gate needs the tree under its own name beside its sibling: the helper's Cargo.toml names ../../%s/host" % PLUGIN_NAME
+    # The dist of the sibling builds and collects the plugin of ../nirender-plugin: another tree's plugin would be deployed.
+    if any(name == BUILD_FOR_DEPLOY for name, _, _ in stages) and os.path.basename(repo) != {"plugin": PLUGIN_NAME, "mge": MGE_NAME}[kind]:
+        return "the deploy needs the tree under its own name beside its sibling: the sibling's dist collects the plugin of ../%s" % PLUGIN_NAME
     missing = [folder for _, folder, _ in stages if not os.path.isdir(folder)]
     if missing:
         return "no folder %s: the stages need the sibling" % missing[0]
@@ -453,6 +482,27 @@ def not_run_reason(output):
     return (not_run_reasons(output) or ["the stage could not judge"])[-1]
 
 
+def missing_features_in(output):
+    """(md5 of the MWSE.dll, [the MISSING texts]) of the output of check_mwse_sites.py --features, or None when it names
+    no missing feature."""
+    lines = output.splitlines()
+    missing = [line[len(MISSING):] for line in lines if line.startswith(MISSING)]
+    if not missing:
+        return None
+    md5 = next((line[len(MD5):].split()[0] for line in lines if line.startswith(MD5) and line[len(MD5):].split()), "unknown")
+    return md5, missing
+
+
+def withheld_line(withheld, folder, command):
+    """The one "NOT DEPLOYED" line of a round whose installs lack MWSE features that the plugin needs: each install with
+    its MWSE.dll and what it lacks, and the command that deploys the build of the round with an MWSE.dll that has them."""
+    names = sorted({text.split(": ", 1)[0] for _, _, missing in withheld for text in missing})
+    lacks = "; ".join("%s (MWSE.dll %s): %s" % (install, md5, "; ".join(missing)) for install, md5, missing in withheld)
+    return "NOT DEPLOYED: the plugin needs the MWSE features %s, which the deployed MWSE.dll lacks: %s. Deploy both together, run in %s: %s" % (
+        ", ".join("'%s'" % name for name in names), lacks, subprocess.list2cmdline([folder]),
+        subprocess.list2cmdline(command + ["--mwse-dll", "<an MWSE.dll with %s>" % " and ".join(names)]))
+
+
 def run_stage(name, folder, command, log):
     began = time.time()
     log.write("\n== %s: %s in %s\n" % (name, " ".join(command), folder))
@@ -468,6 +518,13 @@ def run_stage(name, folder, command, log):
         return False
     if code != 0:
         output = output_since(log, start)
+        missing = missing_features_in(output) if name.startswith(FEATURES_STAGE) and code == MISSING_FEATURE_EXIT else None
+        if missing:
+            # The code under test is right; the MWSE.dll of the install is too old for it. The stage passes, and the deploy of
+            # the round is kept back until the plugin and an MWSE.dll with the feature go together.
+            WITHHELD.append((name[len(FEATURES_STAGE):], missing[0], missing[1]))
+            verdict(log, "PASS %s (%d s): MISSING %s; the round deploys nothing" % (name, time.time() - began, "; ".join(missing[1])))
+            return True
         refusal, deploy_refusal = slot_refusal_in(output), deploy_refusal_in(output)
         if name == DEPLOY_STAGE and code == DEPLOY_REFUSED_CODE and deploy_refusal:
             # A game or Mod Organizer runs: nothing was written. The merge is no worse for it, so the stage does not fail the
@@ -513,6 +570,7 @@ def run_stages(stages, log, note_stage=lambda: None):
     not be taken again: the stage is then NOT RUN, and counts as not passed."""
     results = {}
     del NOT_DEPLOYED[:]
+    del WITHHELD[:]
     NOT_RUN_REASONS.clear()
     for name, folder, command in stages:
         if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
@@ -526,6 +584,12 @@ def run_stages(stages, log, note_stage=lambda: None):
         if name == DEPLOY_STAGE and not all(results.values()):
             verdict(log, "NOT RUN %s: %s did not pass, and a build is put into the test installs only when every stage before it passed" % (name, next(stage for stage, passed in results.items() if not passed)))
             results[name] = False
+            continue
+        if name == DEPLOY_STAGE and WITHHELD:
+            not_deployed = withheld_line(WITHHELD, folder, command)
+            verdict(log, not_deployed)
+            NOT_DEPLOYED.append(not_deployed)
+            results[name] = True
             continue
         if name == "replay gate":
             clear_pictures(command[command.index("--now") + 1])
@@ -673,9 +737,10 @@ def is_ancestor(repo, older, newer):
 
 
 # The stages that need the game slot (the owner's D183): the replay gate replays on the GPU, and the instance A/B replays
-# a capture of the game with three builds. A new stage that starts the game or times the GPU belongs here. A check with
+# a capture of the game with three builds, and the deploy writes its set f<N> to E: and refuses while a game runs (W406:
+# a round can deploy with no gate). A new stage that starts the game or times the GPU belongs here. A check with
 # none of them leaves the game slot to the game runs; before D183 every check held it (D161), and the workers waited.
-GAME_STAGES = ("replay gate", INSTANCE_STAGE)
+GAME_STAGES = ("replay gate", INSTANCE_STAGE, DEPLOY_STAGE)
 
 
 def needs_game(stages):
@@ -1052,20 +1117,43 @@ def self_test():
             return [name for name, _, _ in stages_for(kind, repo, paths)]
 
         base = ["plugin tests", "host tests", HOST_GPU_STAGE, "clippy baseline", "checks", "docs"]
-        assert names("plugin", plugin, "tools/x.py", "src/lib.rs") == base
-        assert names("plugin", plugin, "host/src/shader.wgsl") == base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
-        assert names("plugin", plugin, "host/src/material.rs") == base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
-        assert names("plugin", plugin, "host/src/retained.rs") == base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        # W406: every round that deploys probes the MWSE.dll of each install for the features that the plugin needs, before
+        # its build. A round of the plugin DLL or the mod's Lua builds the dist and deploys it without the gate.
+        features = [FEATURES_STAGE + name for name in MWSE_DEPLOYS]
+        gate_tail = features + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        deploy_tail = features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
+        assert len(features) == 2
+        assert names("plugin", plugin, "tools/x.py") == base and names("plugin", plugin, "README.md") == base, "a change of no deployed part deployed"
+        assert names("plugin", plugin, "src/lib.rs") == base + deploy_tail
+        assert names("plugin", plugin, "build.rs") == names("plugin", plugin, "build_support/build_id.rs") == base + deploy_tail
+        assert names("plugin", plugin, "tools/x.py", "src/lib.rs") == base + deploy_tail
+        assert names("plugin", plugin, "host/src/shader.wgsl") == base + gate_tail
+        assert names("plugin", plugin, "host/src/material.rs") == base + gate_tail
+        assert names("plugin", plugin, "host/src/retained.rs") == base + gate_tail
+        assert names("plugin", plugin, "host/src/retained.rs", "src/lib.rs") == base + gate_tail, "the gate round deploys once"
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
-        assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"]
+        assert names("plugin", plugin, "srcx/lib.rs") == base, "a name that only starts the same deployed"
+        assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"] + deploy_tail
+        # The probe runs in the plugin's tree, on the deployed DLL of each install.
+        probe = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[FEATURES_STAGE + "Outlander-test"]
+        assert probe[0] == plugin and probe[1][-3:] == [os.path.join("tools", "check_mwse_sites.py"), "--features", MWSE_DEPLOYS["Outlander-test"]], probe
+        build_stage = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[BUILD_FOR_DEPLOY]
+        assert build_stage == (mge, ["cargo", "xtask", "dist"]), build_stage
         # A change of the ports, the hooks, the install or the table: the MWSE.dll of each test install against the ports.
+        # The sites stage is where it was before W406, and in no more rounds.
         dlls = [("Morrowind75testing", "D:/m75/MWSE.dll"), ("Outlander-test", "D:/o/MWSE.dll")]
+        sites = ["mwse sites Morrowind75testing", "mwse sites Outlander-test"]
+        dll_features = [FEATURES_STAGE + "Morrowind75testing", FEATURES_STAGE + "Outlander-test"]
         for path in ("src/ports/device_setup.rs", "src/hook.rs", "src/install.rs", "src/gen/funcs.rs", "src/site.rs", "tools/mwse_sites.baseline"):
             stages = stages_for("plugin", plugin, [path], mwse_dlls=dlls)
-            assert [name for name, _, _ in stages] == base + ["mwse sites Morrowind75testing", "mwse sites Outlander-test"], path
-            assert stages[-1][2][-2:] == [os.path.join("tools", "check_mwse_sites.py"), "D:/o/MWSE.dll"] and stages[-1][1] == plugin
-        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], mwse_dlls=dlls)] == base
+            tail = [] if path.startswith("tools/") else dll_features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
+            assert [name for name, _, _ in stages] == base + sites + tail, path
+            last_site = stages[len(base) + 1]
+            assert last_site[2][-2:] == [os.path.join("tools", "check_mwse_sites.py"), "D:/o/MWSE.dll"] and last_site[1] == plugin
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], mwse_dlls=dlls)] == base + dll_features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
         assert [name for name, _, _ in stages_for("mge", mge, ["src/hook.rs"], mwse_dlls=dlls)] == ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
+        assert not any(name.startswith("mwse sites") for kind, repo, path in (("mge", mge, "mgeHost64/src/renderer.rs"), ("plugin", plugin, "src/lib.rs"),
+                                                                              ("plugin", plugin, "host/src/retained.rs")) for name in names(kind, repo, path))
         # The deployed DLL, never the copy of a live run in a Harness mod (2026-11-10: the stage read Ryker's Brief 6 DLL,
         # which sorts before mods/MWSE).
         assert not any(HARNESS_MOD.search(path) for path in MWSE_DEPLOYS.values()), MWSE_DEPLOYS
@@ -1079,17 +1167,21 @@ def self_test():
                 assert "Harness mod" in str(error), error
             else:
                 raise AssertionError("a Harness copy was read: " + harness)
-        # The mod's Lua: xtask dist checks it against its list of shipped files (7b7b72d broke the dist that way).
-        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + ["build of the dist"]
-        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        # The mod's Lua: xtask dist checks it against its list of shipped files (7b7b72d broke the dist that way), and since
+        # W406 the build is deployed.
+        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + deploy_tail
+        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == base + gate_tail
         assert needs_clean_sibling(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/noplugin.lua"]))
         for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
-            assert names("plugin", plugin, path) == base + ["build for the gate", DEPLOY_STAGE, "replay gate"], path
+            assert names("plugin", plugin, path) == base + gate_tail, path
         mge_base = ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("mge", mge, "xtask/src/main.rs") == mge_base + ["build of the dist"]
+        # A render-link round deploys the sibling's plugin with its build: the probe stands before the build there too.
         for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
-            assert names("mge", mge, path) == mge_base + ["build for the gate", DEPLOY_STAGE, "replay gate"], path
-        assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract", "build for the gate", DEPLOY_STAGE, "replay gate"]
+            assert names("mge", mge, path) == mge_base + gate_tail, path
+        assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract"] + gate_tail
+        mge_probe = {name: (folder, command) for name, folder, command in stages_for("mge", mge, ["mgeHost64/src/renderer.rs"])}[FEATURES_STAGE + "Morrowind75testing"]
+        assert mge_probe[0] == plugin and "--features" in mge_probe[1], mge_probe
         assert "mge-probe" in stages_for("mge", mge, [])[0][2]
         # The GPU tests run the ignored tests of the helper in its tree, through the wrapper that fails on 0 tests, and the
         # plugin's tests do not run them.
@@ -1105,9 +1197,9 @@ def self_test():
         assert all(name != HOST_GPU_STAGE for name, _, _ in stages_for("mge", mge, []))
         assert stages_for("mge", mge, [])[2][2][-2:] == ["--mge", mge]
         assert names("mge", mge, "mge-config/src/lib.rs") == mge_base + ["d3d8 build", "contract"]
-        assert names("mge", mge, "mgeHost64/src/renderer/water.rs") == mge_base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
-        assert names("mge", mge, "mgeHost64/src/renderer.rs") == mge_base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
-        assert names("mge", mge, "assets/Data Files/shaders/core/x.fx") == mge_base + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        assert names("mge", mge, "mgeHost64/src/renderer/water.rs") == mge_base + gate_tail
+        assert names("mge", mge, "mgeHost64/src/renderer.rs") == mge_base + gate_tail
+        assert names("mge", mge, "assets/Data Files/shaders/core/x.fx") == mge_base + gate_tail
         assert names("mge", mge, "assets/Data Files/other.txt") == mge_base
         assert names("mge", mge, "mgeHost64/src/other.rs") == mge_base
         assert names("mge", mge, "d3d8/cpp/mge/x.cpp") == mge_base + ["d3d8 build", "contract"]
@@ -1125,7 +1217,7 @@ def self_test():
             assert not command[command.index("--now") + 1].startswith(folder + os.sep), folder
 
         # The state of the tree.
-        plain = stages_for("plugin", plugin, ["src/lib.rs"])
+        plain = stages_for("plugin", plugin, ["tools/x.py"])
         gate = stages_for("plugin", plugin, ["host/src/shader.wgsl"])
         os.makedirs(os.path.join(mge, "target"))
         assert tree_problem("plugin", plugin, plain, "abc", "abc", False) is None
@@ -1135,6 +1227,10 @@ def self_test():
         assert tree_problem("plugin", plugin, gate, "abc", "abc", False) is None
         worktree = os.path.join(root, PLUGIN_NAME + "-x")
         assert "own name" in tree_problem("plugin", worktree, stages_for("plugin", worktree, ["host/src/shader.wgsl"]), "abc", "abc", False)
+        # A deploy with no gate too: the sibling's dist collects the plugin of ../nirender-plugin, not of this tree.
+        assert "own name" in tree_problem("plugin", worktree, stages_for("plugin", worktree, ["src/lib.rs"]), "abc", "abc", False)
+        assert tree_problem("plugin", plugin, stages_for("plugin", plugin, ["src/lib.rs"]), "abc", "abc", False) is None
+        assert "tracked changes" in tree_problem("plugin", plugin, stages_for("plugin", plugin, ["src/lib.rs"]), "abc", "abc", False, True)
         # Without the gate, a worktree of another name passes; a missing sibling does not.
         assert tree_problem("plugin", worktree, [("a", plugin, [])], "abc", "abc", False) is None
         assert "sibling" in tree_problem("plugin", plugin, [("a", os.path.join(root, "gone"), [])], "abc", "abc", False)
@@ -1253,8 +1349,54 @@ def self_test():
 
         gate_names = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"])]
         assert gate_names.index("build for the gate") + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index("replay gate") - 1
-        assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/main.lua"])], "a build of the dist alone is not deployed"
-        assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"])]
+        assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("mge", mge, ["xtask/src/main.rs"])], "a build of the dist alone is not deployed"
+        assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["tools/x.py"])]
+
+        # W406: the probe of the features stands before the build, and the deploy after it, in both kinds of rounds.
+        for kind, repo, path in (("plugin", plugin, "src/lib.rs"), ("plugin", plugin, "host/src/retained.rs"), ("mge", mge, "mgeHost64/src/renderer.rs")):
+            order = [name for name, _, _ in stages_for(kind, repo, [path])]
+            build_at = order.index("build for the gate" if "build for the gate" in order else BUILD_FOR_DEPLOY)
+            assert all(order.index(name) < build_at for name in features) and order.index(DEPLOY_STAGE) > build_at, order
+        # A probe that fails (exit code 1: no file, a build error) fails the round and stops the deploy, with no NOT DEPLOYED
+        # line. A missing required feature (exit code 4 with a MISSING line) passes the stage; the build runs, the deploy
+        # does not, the round passes, and one NOT DEPLOYED line names the features, each install and the joint command.
+        def probe_missing(md5):
+            return [sys.executable, "-c", "print('MISSING: count locks: 0 of 40 count lock sites in the data of MWSE.dll, missing 0x6fe39f, ...: the plugin needs it');"
+                    "print('md5: %s D:/x/MWSE.dll'); raise SystemExit(%d)" % (md5, MISSING_FEATURE_EXIT)]
+        probe_fail = [sys.executable, "-c", "print('mwse features: FAILED'); raise SystemExit(1)"]
+        never = [sys.executable, "-c", "raise SystemExit(9)"]
+        with open(os.path.join(root, "log8.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([("a", root, good), (FEATURES_STAGE + "A", root, probe_fail), (BUILD_FOR_DEPLOY, root, good), (DEPLOY_STAGE, root, never)], log) == [True, False, True, False]
+            assert NOT_DEPLOYED == [] and WITHHELD == []
+            stages = [("a", root, good), (FEATURES_STAGE + "A", root, probe_missing("a" * 32)), (FEATURES_STAGE + "B", root, probe_missing("b" * 32)),
+                      (BUILD_FOR_DEPLOY, root, good), (DEPLOY_STAGE, root, never)]
+            assert run_stages(stages, log) == [True] * 5
+            assert len(NOT_DEPLOYED) == 1, NOT_DEPLOYED
+            line = NOT_DEPLOYED[0]
+            assert line.startswith("NOT DEPLOYED: the plugin needs the MWSE features 'count locks', which the deployed MWSE.dll lacks: A (MWSE.dll %s): count locks: 0 of 40" % ("a" * 32)), line
+            assert "; B (MWSE.dll %s): count locks" % ("b" * 32) in line and "Deploy both together, run in %s: " % root in line, line
+            assert subprocess.list2cmdline(never + ["--mwse-dll", "<an MWSE.dll with count locks>"]) in line, line
+            # One install that lacks the feature keeps the deploy of both back.
+            assert run_stages([(FEATURES_STAGE + "A", root, good), (FEATURES_STAGE + "B", root, probe_missing("b" * 32)), (DEPLOY_STAGE, root, never)], log) == [True] * 3
+            assert len(NOT_DEPLOYED) == 1 and "B (MWSE.dll" in NOT_DEPLOYED[0] and "A (MWSE.dll" not in NOT_DEPLOYED[0], NOT_DEPLOYED
+            # Exit code 4 with no MISSING line is a fault, and a MISSING line excuses no other stage.
+            assert run_stages([(FEATURES_STAGE + "A", root, [sys.executable, "-c", "raise SystemExit(%d)" % MISSING_FEATURE_EXIT]), (DEPLOY_STAGE, root, never)], log) == [False, False]
+            assert run_stages([("docs", root, probe_missing("c" * 32)), (DEPLOY_STAGE, root, never)], log) == [False, False]
+            assert NOT_DEPLOYED == [] and WITHHELD == []
+            # A round with the gate: the gate's build and the gate run; only the deploy is kept back.
+            assert run_stages([(FEATURES_STAGE + "A", root, probe_missing("d" * 32)), ("build for the gate", root, good), (DEPLOY_STAGE, root, never), gate_stage], log) == [True] * 4
+            assert len(NOT_DEPLOYED) == 1
+        with open(os.path.join(root, "log8.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert "== %s: " % DEPLOY_STAGE not in text, "a deploy ran beside a missing feature or a failed probe"
+        assert "== PASS mwse features A (" in text and "MISSING count locks: 0 of 40" in text and "the round deploys nothing" in text, text
+        assert "== FAIL mwse features A (" in text and "== NOT RUN deploy rest: mwse features A did not pass" in text, text
+        assert missing_features_in("feature: x: present\nmd5: abc D:/x\n") is None
+        assert missing_features_in("MISSING: x: 0 of 1\n") == ("unknown", ["x: 0 of 1"])
+        # The deploy of the round: deploy rest needs the game slot (its set on E:, its refusal while a game runs).
+        assert needs_game(stages_for("plugin", plugin, ["src/lib.rs"])) and needs_game(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/main.lua"]))
+        assert not needs_game(stages_for("plugin", plugin, ["tools/x.py"])) and not needs_game(stages_for("mge", mge, ["d3d8/x.cpp"]))
+        assert evidence_problem(stages_for("plugin", plugin, ["src/lib.rs"])) is None
         deploy = next(stage for stage in stages_for("plugin", plugin, ["host/src/retained.rs"]) if stage[0] == DEPLOY_STAGE)
         assert deploy[1] == plugin and "--build" in deploy[2] and "dist-staging" in deploy[2][deploy[2].index("--build") + 1], deploy
         assert not any(EVIDENCE_PATH.search(str(text)) for text in deploy[2]), "the stage names no path on E: (the tool keeps its set folder itself)"
@@ -1278,7 +1420,7 @@ def self_test():
         run = by_name[INSTANCE_STAGE][1]
         assert run[run.index("--base-build") + 1] == os.path.join(kept, "build") and run[run.index("--now-build") + 1] == os.path.join(mge, "target", "dist-staging")
         assert run[run.index("--baseline") + 1] == BASELINE and not run[run.index("--out") + 1].startswith(BASELINE)
-        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, kept)] == base, "no gate, no A/B stage"
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, kept)] == base + deploy_tail, "no gate, no A/B stage"
         # deploy rest gets the commits under test (the tree's and the sibling's at the start of the round), not HEADs.
         assert under_test("plugin", "a" * 40, "b" * 40) == {"plugin": "a" * 40, "mge": "b" * 40}
         assert under_test("mge", "b" * 40, "a" * 40) == {"plugin": "a" * 40, "mge": "b" * 40}
@@ -1847,7 +1989,7 @@ def self_test():
         globals()["needs_game"] = real_needs_game
 
         # D183: the game slot only for a stage that needs it. The stage lists of the tool first.
-        assert not needs_game(stages_for("plugin", plugin, ["tools/x.py", "src/lib.rs"])), "the checks of a tools change took the game"
+        assert not needs_game(stages_for("plugin", plugin, ["tools/x.py", "host/src_old/x.rs"])), "the checks of a tools change took the game"
         assert needs_game(stages_for("plugin", plugin, ["host/src/retained.rs"])), "the replay gate did not take the game"
         assert not needs_game(stages_for("mge", mge, ["xtask/src/main.rs"]))
         assert needs_game([(INSTANCE_STAGE, root, good)]) and not needs_game([("checks", root, good)])
