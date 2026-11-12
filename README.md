@@ -62,6 +62,17 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
   the property paths, and the Rust ports change counts atomically (`src/atomic_count.rs`,
   risk 56). The plugin's log names them: `atomic count: N of N sites locked (...)`; when the
   bytes of a site are not the game's, all sites are refused and the line says so.
+- The pass report (`host/src/pass_report.rs`, W341 step A): the helper's log says which parts
+  of a frame ran, and which did not run and why. It is always on, and no draw reads it. At the
+  end of a frame, a set of parts that was not seen before prints one block, "pass report,
+  frame F: a set of parts not seen before (N distinct sets)", then one line for each change
+  against the frame before (`-` for an entry that went, `+` for a new one): that set is set N. A change to a set seen before prints one line, "pass report, frame F:
+  back to set N (first printed at frame G)", the first time that the frame goes from that set
+  before to set N (W373). The same change again is only counted, as a menu over the world goes
+  back and forth each frame. A part that an earlier frame noted, with no note in this frame, is
+  "not run, reason unknown". At the exit one line gives the totals: the frames, the distinct
+  sets, the changes not printed, the parts with the reason unknown, and "N changes printed as
+  back to a set"; then one line for each part and outcome with its frames.
 - The comparison rig (the cargo feature `rig`, not in a player's build): a port can also
   run in the mode shadow, which runs the Rust and the engine function both and compares
   them call by call (`src/shadow.rs`), and the frame comparison compares the device calls
