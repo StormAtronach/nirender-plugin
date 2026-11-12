@@ -37,18 +37,18 @@ use crate::gen::layouts::{
 use crate::mem::{rd, wr};
 use crate::ports::{hash_map, light_manager, ni, render_state, texture_pipeline};
 use crate::shadow::Regions;
-// The macros of `site` call `target` for the address of the callee.
-use crate::site::{call_target as target, site_thiscall};
 
 /// `NiDX8Renderer::deleting_dtor`.
+#[cfg(test)]
 const DELETING_DTOR: usize = 0x6A9D80;
 
 /// The call of `NiDX8Renderer::dtor` (0x6A9E10) in `NiDX8Renderer::deleting_dtor`. MWSE
 /// e2b957c25d sends it to `NI::DX8Renderer::destruct`. It is inside the bytes that the detour
-/// steals: the port reads the target from the trampoline.
+/// steals. No port calls it: [`deleting_dtor`] calls [`dtor`] itself.
 const DTOR_SITE: usize = 0x6A9D83;
 
-/// The call sites whose target the ports of this module read from memory.
+/// The call sites of this module whose changed target the census accepts. [`DTOR_SITE`] is a
+/// known change that is harmless: no port reads it.
 pub static SITES: &[usize] = &[DTOR_SITE];
 
 // ---------------------------------------------------------------------------------------
@@ -107,7 +107,6 @@ const RENDERER_DATA_NEXT: usize = layouts::NiTexture_RendererData::linkedData;
 /// device buffer.
 const GEOM_BUFFER_VERTEX_BUFFER: usize = layouts::NiGeometryBufferData::d3dVertexBuffer;
 const GEOM_BUFFER_INDEX_BUFFER: usize = layouts::NiGeometryBufferData::indexBuffer;
-const PARTITION_GEOM_BUFFER: usize = layouts::NiSkinPartition_Partition::bufferData;
 /// The value of a node of the `std::map` of `TES3Game` (`map_74`): the `NiDX8AdapterDesc` of
 /// an adapter description.
 const STD_MAP_NODE_VALUE: usize = layouts::TES3Game_AdapterMapNode::adapterDesc;
@@ -309,11 +308,6 @@ unsafe fn clear_texture_data(renderer: usize) {
 /// list at 0x7DE11C.
 unsafe fn clear_listed_renderer_data(renderer: usize) {
     cdecl1(0x6B68A0, renderer as u32);
-}
-
-/// 0x6B1140 `sub_6B1140`: takes the node with `key` out of a hash map and frees it.
-unsafe fn hash_map_remove(map: usize, key: usize) {
-    thiscall1(0x6B1140, map, key as u32);
 }
 
 /// 0x6B12B0 `sub_6B12B0`: gives the key and the value at the position `*position` of a
@@ -1734,23 +1728,10 @@ pub unsafe fn dtor(this: usize) {
         }
     }
 
-    // The geometry buffers of the skin partitions. The port removes a partition that has a
-    // buffer from the map.
+    // The geometry buffers of the skin partitions, from the values of the map.
     let skin_partitions = this + R::hashmap_skinPartitionsToGeomBuffers;
-    let mut node = hash_map::first(skin_partitions);
-    while node != 0 {
-        let partition: usize = rd(node, Node::key);
-        node = rd(node, Node::nextNode);
-        if node == 0 {
-            node = hash_map::next_bucket(skin_partitions, partition as u32);
-        }
-        let buffer: usize = rd(partition, PARTITION_GEOM_BUFFER);
-        if buffer != 0 {
-            free_geom_buffer(buffer);
-            wr::<u32>(partition, PARTITION_GEOM_BUFFER, 0);
-            hash_map_remove(skin_partitions, partition);
-        }
-    }
+    let (entries, freed) = release_skin_partition_buffers(skin_partitions);
+    crate::log!("renderer: destroyed; the skin partition map had {entries} entries, {freed} geometry buffers freed");
 
     delete_member(this, R::configurableTexturePipeline);
 
@@ -1837,6 +1818,40 @@ pub unsafe fn dtor(this: usize) {
     ni_renderer_dtor(this);
 }
 
+/// Frees the geometry buffer of each node of the skin partition map, and the node, with no read
+/// of a key: at the exit a key can point at a freed partition. The map is empty after the call.
+/// It is the work of `DX8Renderer::releaseSkinPartitionBufferData` of MWSE
+/// (SharedSE/NIDX8Renderer.cpp). Returns the count of the map before the call and the number of
+/// buffers freed.
+///
+/// # Safety
+///
+/// `map` points at the live skin partition map of the renderer, whose values are 0 or live
+/// geometry buffers and whose nodes come from the engine's `operator new`; nothing uses the
+/// nodes or the buffers after the call.
+unsafe fn release_skin_partition_buffers(map: usize) -> (u32, u32) {
+    let entries: u32 = rd(map, Map::count);
+    let mut freed = 0;
+    for bucket in 0..rd::<u32>(map, Map::bucketCount) as usize {
+        loop {
+            let node = hash_map::bucket_head(map, bucket);
+            if node == 0 {
+                break;
+            }
+            wr::<usize>(rd::<usize>(map, Map::arrayBuckets), bucket * 4, rd(node, Node::nextNode));
+            let buffer: usize = rd(node, Node::data);
+            if buffer != 0 {
+                free_geom_buffer(buffer);
+                freed += 1;
+            }
+            hash_map::dtor_key_value_pair(map, node);
+            operator_delete(node);
+        }
+    }
+    wr::<u32>(map, Map::count, 0);
+    (entries, freed)
+}
+
 /// 0x6A9D80 `NiDX8Renderer::deleting_dtor`. Bit 0 of `flags` means "free the memory".
 ///
 /// # Safety
@@ -1845,12 +1860,7 @@ pub unsafe fn dtor(this: usize) {
 /// `flags` it is a block of the engine's allocation, which the function frees.
 pub unsafe fn deleting_dtor(this: usize, flags: u8) -> usize {
     crate::shadow::touch(&deleting_dtor_port::STATE);
-    // The game's `dtor`, which is the port `dtor_port`, or the function of a mod that calls it.
-    // The call lies in the bytes that the detour steals, so the jump of the detour is at
-    // DTOR_SITE now. The copy of the call in the trampoline has the target that was in memory at
-    // the install (`hook::install_raw` sets it again).
-    let trampoline = deleting_dtor_port::STATE.orig.load(core::sync::atomic::Ordering::Relaxed);
-    site_thiscall!(trampoline + (DTOR_SITE - DELETING_DTOR), this);
+    dtor(this);
     if flags & 1 != 0 {
         operator_delete(this);
     }
