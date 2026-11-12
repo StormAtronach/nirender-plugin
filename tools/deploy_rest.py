@@ -47,7 +47,11 @@ beside the old MWSE.dll, and the replaced files are in the backups.
 
 A build without --mwse-dll (D328) goes beside the MWSE.dll that each install holds, so the same probe runs on each of
 those DLLs, with the same rule for the tree, before any write (and in the dry run): a missing required feature refuses
-with exit code 4. An install with no MWSE.dll at its place in MWSE_DEPLOYS refuses with exit code 1.
+with exit code 4. An install with no MWSE.dll at its place in MWSE_DEPLOYS refuses with exit code 1. The probe is a
+compile here too: take a build place first when you run it by hand. Every deploy of a build now needs a tree at that
+build's plugin commit with no change in src/: a rollback by hand to an older set runs in a worktree at that set's
+commit (its WHAT.txt names it), and the merge step's "deploy rest" runs in the plugin tree of the round, which must have
+no change in src/.
 """
 import argparse
 import dataclasses
