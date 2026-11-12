@@ -59,6 +59,7 @@ extern "system" {
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
     fn TerminateProcess(process: isize, code: u32) -> i32;
     fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
+    fn GetLastError() -> u32;
 }
 
 /// The process of the host program that `start_stream` started, or 0.
@@ -673,7 +674,9 @@ unsafe fn device_window(s: &State) -> u32 {
 
 /// Starts the stream and the host program that draws it in the window of the game. The
 /// host program is `nirender-host.exe`: the file that the environment variable
-/// NIRENDER_HOST_EXE names, or the one in the folder of this plugin.
+/// NIRENDER_HOST_EXE names, or the one in the folder of this plugin. When the start fails
+/// (no ring, no program, or `CreateProcessA` fails), the game would run with no picture: the
+/// failure path then shows its box and closes the game (`failure::Cause::NotStarted`).
 unsafe fn start_stream(s: &State) {
     crate::own_host::activate();
     GAME_WINDOW.store(device_window(s) as usize, Ordering::Relaxed);
@@ -693,6 +696,7 @@ unsafe fn start_stream(s: &State) {
     });
     if let Err(problem) = started {
         crate::log!("own device: no stream: {problem}");
+        crate::failure::found(crate::failure::Cause::NotStarted(crate::failure::NotStarted::NoRing));
         return;
     }
     let program = crate::switches::text("NIRENDER_HOST_EXE")
@@ -709,7 +713,8 @@ unsafe fn start_stream(s: &State) {
             folder.is_file().then(|| folder.to_string_lossy().into_owned())
         });
     let Some(program) = program else {
-        crate::log!("own device: no nirender-host.exe; the stream {name} waits for a host program");
+        crate::log!("own device: no nirender-host.exe; the stream {name} has no host program");
+        crate::failure::found(crate::failure::Cause::NotStarted(crate::failure::NotStarted::NoProgram));
         return;
     };
     let mut command = format!("\"{program}\" --live {name} --embed");
@@ -745,15 +750,19 @@ unsafe fn start_stream(s: &State) {
         startup.as_ptr(),
         information.as_mut_ptr(),
     );
-    if started != 0 {
-        // The process stays open: `check_host` asks it whether it has ended.
-        HOST_PROCESS.store(information[0] as isize, Ordering::Relaxed);
-        CloseHandle(information[1] as isize);
+    if started == 0 {
+        // Read before any other call of Windows can change it.
+        let error = GetLastError();
+        crate::log!("own device: host program NOT started (Windows error {error}): {command}");
+        crate::failure::found(crate::failure::Cause::NotStarted(crate::failure::NotStarted::NotCreated(
+            error,
+        )));
+        return;
     }
-    crate::log!(
-        "own device: host program {}: {command}",
-        if started != 0 { "started" } else { "NOT started" }
-    );
+    // The process stays open: `check_host` asks it whether it has ended.
+    HOST_PROCESS.store(information[0] as isize, Ordering::Relaxed);
+    CloseHandle(information[1] as isize);
+    crate::log!("own device: host program started: {command}");
 }
 
 /// Puts data of another program into the stream, for its part in the renderer: `id` is a
