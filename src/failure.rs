@@ -1,6 +1,7 @@
 //! The failure of the helper after the game has its Direct3D 8 (the failure-path design,
 //! sections 3 to 6): the helper died (a crash, its own watchdog, the plugin's end of it after
-//! 10 s without a read), or it lost its graphics device. No Direct3D 9 device exists then,
+//! 10 s without a read), it lost its graphics device, or the plugin could not start it (the
+//! start-without-probe design, section 3.2). No Direct3D 9 device exists then,
 //! so the game runs on without a picture: the game is saved first, then one message box says
 //! what happened, and the player quits.
 //!
@@ -65,6 +66,82 @@ pub enum Cause {
     TooOld,
     /// The helper lost its graphics device and said so (`MESSAGE_LOST_DEVICE`); it lives on.
     LostDevice,
+    /// The plugin could not start the helper (`own_device::start_stream`): the game would run
+    /// with no picture and no box (W412, D386).
+    NotStarted(NotStarted),
+}
+
+/// Why the plugin could not start the helper: one of the three ends of
+/// `own_device::start_stream`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotStarted {
+    /// Windows gave no shared memory for the ring of the stream.
+    NoRing,
+    /// No helper program: no file that `NIRENDER_HOST_EXE` names, and no nirender-host.exe
+    /// beside the plugin.
+    NoProgram,
+    /// `CreateProcessA` failed with this error number of Windows.
+    NotCreated(u32),
+}
+
+impl NotStarted {
+    /// The WHY line of the box: the reason, then what can cause it. `windows_text` gives the
+    /// text of an error number of Windows.
+    fn why(self, windows_text: impl Fn(u32) -> String) -> String {
+        match self {
+            NotStarted::NoRing => {
+                "Windows gave no shared memory for its stream. Other programs can use too much memory.".to_string()
+            }
+            NotStarted::NoProgram => {
+                "The program is not there. Another program can take the file away, a virus scanner for example."
+                    .to_string()
+            }
+            NotStarted::NotCreated(error) => format!(
+                "Windows could not start it: {} (error {error}). Another program can hold the file, a virus scanner for example.",
+                windows_text(error)
+            ),
+        }
+    }
+}
+
+/// The text that Windows gives for an error number (`FormatMessageW`), without its end of
+/// line and its full stop; "no text" when Windows has none. The insert `%1` of a text (the
+/// file, as in error 193, "%1 is not a valid Win32 application") becomes "the file".
+fn windows_error_text(error: u32) -> String {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn FormatMessageW(
+            flags: u32,
+            source: *const u8,
+            id: u32,
+            language: u32,
+            buffer: *mut u16,
+            size: u32,
+            arguments: *const u8,
+        ) -> u32;
+    }
+    const FORMAT_MESSAGE_IGNORE_INSERTS: u32 = 0x200;
+    const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 0x1000;
+    let mut buffer = [0u16; 512];
+    // SAFETY: the buffer has 512 wide characters, and the call writes at most that many.
+    let length = unsafe {
+        FormatMessageW(
+            FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            core::ptr::null(),
+            error,
+            0,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            core::ptr::null(),
+        )
+    } as usize;
+    let text = String::from_utf16_lossy(&buffer[..length.min(buffer.len())]).replace("%1", "the file");
+    let text = text.trim_end().trim_end_matches('.');
+    if text.is_empty() {
+        "no text".to_string()
+    } else {
+        text.to_string()
+    }
 }
 
 impl Cause {
@@ -80,14 +157,15 @@ impl Cause {
         }
     }
 
-    /// The exit code for the Lua side: 0 for a lost device, whose helper lives on.
+    /// The exit code for the Lua side: 0 for a lost device, whose helper lives on, and for a
+    /// helper that never ran.
     pub fn code(self) -> u32 {
         match self {
             Cause::Crashed(code) => code,
             Cause::Stalled(_) => EXIT_STALLED,
             Cause::NotAnswering(_) => EXIT_NOT_ANSWERING,
             Cause::TooOld => EXIT_HELPER_TOO_OLD,
-            Cause::LostDevice => 0,
+            Cause::LostDevice | Cause::NotStarted(_) => 0,
         }
     }
 
@@ -102,6 +180,7 @@ impl Cause {
             Cause::NotAnswering(seconds) => format!("did not answer for {seconds} s (exit code {EXIT_NOT_ANSWERING})"),
             Cause::TooOld => format!("is an older build than the plugin: install akulakhan.dll, numidium.exe and d3d8.dll from one archive (exit code {EXIT_HELPER_TOO_OLD})"),
             Cause::LostDevice => "lost its graphics device".to_string(),
+            Cause::NotStarted(kind) => format!("did not start: {}", kind.why(windows_error_text)),
         }
     }
 }
@@ -302,6 +381,9 @@ fn now_line(save: Option<&str>, why: Option<&str>) -> String {
 
 /// The text of the box: WHAT, WHY, NOW, WHERE (the failure-path design, section 5).
 fn box_text(cause: Cause, now: &str) -> String {
+    if let Cause::NotStarted(kind) = cause {
+        return not_started_box_text(kind, now, windows_error_text);
+    }
     format!(
         "The wgpu renderer of MGE XE (numidium.exe) has stopped.\n\
          It {}.\n\n\
@@ -313,9 +395,49 @@ fn box_text(cause: Cause, now: &str) -> String {
     )
 }
 
+/// The box of a helper that did not start (the start-without-probe design, section 3.2): no
+/// helper ran, so its logs and its minidump do not exist; the plugin's lines are in mgeXE.log.
+fn not_started_box_text(kind: NotStarted, now: &str, windows_text: impl Fn(u32) -> String) -> String {
+    format!(
+        "The wgpu renderer of MGE XE (numidium.exe) did not start.\n\
+         {}\n\n\
+         {now}\n\n\
+         mgeXE.log in the folder of the game has the details (its lines that start with \"nirender: \").",
+        kind.why(windows_text)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The words of the three ends of the start, with a made-up text of Windows; and the text of
+    /// a real error number, without its end of line.
+    #[test]
+    fn a_helper_that_did_not_start_has_its_reason_in_the_box() {
+        let windows = |error: u32| format!("text of {error}");
+        let now = now_line(None, Some("with no game loaded"));
+        assert_eq!(
+            not_started_box_text(NotStarted::NotCreated(32), &now, windows),
+            "The wgpu renderer of MGE XE (numidium.exe) did not start.\n\
+             Windows could not start it: text of 32 (error 32). Another program can hold the file, a virus scanner for example.\n\n\
+             No save was possible with no game loaded. Close this box: the game closes. Start it again.\n\n\
+             mgeXE.log in the folder of the game has the details (its lines that start with \"nirender: \")."
+        );
+        assert!(NotStarted::NoProgram.why(windows).starts_with("The program is not there."));
+        assert!(NotStarted::NoRing.why(windows).starts_with("Windows gave no shared memory"));
+        assert_eq!(Cause::NotStarted(NotStarted::NoProgram).code(), 0);
+        assert!(Cause::NotStarted(NotStarted::NoRing)
+            .word()
+            .starts_with("did not start: Windows gave no shared memory"));
+
+        // ERROR_FILE_NOT_FOUND: a text in the language of Windows, one line, no full stop at the end.
+        let text = windows_error_text(2);
+        assert!(text != "no text" && !text.ends_with('.') && !text.contains('\n'), "{text:?}");
+        assert_eq!(windows_error_text(0xFFFF_FFF0), "no text");
+        // ERROR_BAD_EXE_FORMAT, the case of a numidium.exe that is no program: its insert goes.
+        assert!(!windows_error_text(193).contains("%1"), "{}", windows_error_text(193));
+    }
 
     #[test]
     fn the_words_name_the_cause_and_the_code() {
