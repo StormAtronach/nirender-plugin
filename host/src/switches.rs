@@ -73,6 +73,11 @@ pub(crate) struct Switches {
     /// ring's event when no record waits (256 without it); 0 blocks at once, also while the
     /// game writes its frame. For the A/B of the helper's CPU in the wait.
     pub(crate) wait_yields: Option<u32>,
+    /// `NIRENDER_WAKE_BATCH=<bytes>` ([`crate::stream_format::WAKE_BATCH_BYTES`]): the wake
+    /// for a batch. The game wakes this program at a batch of records, and this program
+    /// sleeps as soon as it has no record, except while a tile read is in progress. For the
+    /// A/B against the wait of today (W415).
+    pub(crate) wake_batch: Option<u64>,
     /// `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
     /// the setting of the extension ([`crate::Extension::vsync`]), for a test.
     pub(crate) present: Option<wgpu::PresentMode>,
@@ -142,6 +147,11 @@ impl Switches {
             one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
             wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),
+            wake_batch: read.parsed(
+                "NIRENDER_WAKE_BATCH",
+                &crate::stream_format::wake_batch_expected(),
+                crate::stream_format::wake_batch,
+            ),
             present: read
                 .choice("MGE_XE_PRESENT", &["immediate", "mailbox", "fifo", "auto"])
                 .map(|mode| match mode {

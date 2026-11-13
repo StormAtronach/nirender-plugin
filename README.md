@@ -269,6 +269,13 @@ replays.
 - `MGE_XE_WAIT_YIELDS=<n>`: the looks with a yield before the helper blocks on the ring's event
   when no record waits (256 without it); 0 blocks at once, also while the game writes its
   frame. For the A/B of the helper's CPU in its wait for the game.
+- `NIRENDER_WAKE_BATCH=<bytes>` (4096 to 1073741824): the wake for a batch, read by the plugin
+  and the helper. The game wakes a sleeping helper when the records since the last wake reach
+  this many bytes (each record counts up to 16 KiB), after the records of a frame's end, at a
+  full ring, and after a pixel or tile request. The helper sleeps as soon as it has no record,
+  except while a tile read is in progress. Without it, the game wakes the helper after every
+  record and the helper waits awake while the game writes its frame. For the A/B of W415; the
+  plugin's log names the wakes a frame at the end of the stream.
 - `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over the vsync
   setting of the extension (`graphics.vsync` of mgeXE.toml: FIFO with vsync on, else
   `AutoNoVsync`).

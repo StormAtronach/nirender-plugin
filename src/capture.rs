@@ -447,10 +447,14 @@ struct Ring {
     mapping: isize,
     base: *mut u8,
     capacity: u64,
-    /// The event the helper waits on for a record: `<name>-records`, set after a write
-    /// while the helper says it waits ([`RING_WAITING`]); the times it was set.
+    /// The event the helper waits on for a record: `<name>-records`, set while the helper says
+    /// it waits ([`RING_WAITING`]); the times it was set, by [`Wake`].
     event: isize,
-    wakes: u64,
+    wakes: [u64; WAKE_KINDS],
+    /// The bytes of a batch ([`WAKE_BATCH_SWITCH`]), or [`None`] for a wake after every record;
+    /// the bytes counted since the last wake.
+    wake_batch: Option<u64>,
+    unwoken: u64,
     /// The event the game waits on for a read of the helper: `<name>-read`, set by the helper
     /// after a read while the game says it waits ([`RING_GAME_WAITING`]); the waits of the
     /// game on it, and those that the event ended (the others ended by the time limit of a
@@ -479,6 +483,28 @@ struct Ring {
     largest_dropped: usize,
     split_textures: u32,
 }
+
+/// Why the game woke the helper: the slots of [`Ring::wakes`].
+#[derive(Clone, Copy)]
+enum Wake {
+    /// After a record, without the wake for a batch.
+    Record,
+    /// The batch is full ([`crate::stream_format::batch_step`]).
+    Batch,
+    /// After the records of a frame's end, the retirements included.
+    FrameEnd,
+    /// After a record for which the game then waits: pixels or a tile.
+    Waited,
+    /// At a full ring, before the wait for room.
+    FullRing,
+}
+
+/// The slots of [`Ring::wakes`].
+const WAKE_KINDS: usize = 5;
+
+/// The switch of the wake for a batch: its values are
+/// [`WAKE_BATCH_BYTES`](crate::stream_format::WAKE_BATCH_BYTES).
+const WAKE_BATCH_SWITCH: &str = "NIRENDER_WAKE_BATCH";
 
 /// The times of the one limit of the plugin on a host program that reads no record while
 /// records wait (the failure-path design, section 6.0), at the end of a frame and in the wait
@@ -576,7 +602,13 @@ impl Ring {
             base,
             capacity,
             event,
-            wakes: 0,
+            wakes: [0; WAKE_KINDS],
+            wake_batch: crate::switches::parsed(
+                WAKE_BATCH_SWITCH,
+                &crate::stream_format::wake_batch_expected(),
+                crate::stream_format::wake_batch,
+            ),
+            unwoken: 0,
             read_event,
             read_waits: 0,
             read_wakes: 0,
@@ -646,6 +678,8 @@ impl Ring {
         }
         let written = self.counter(RING_WRITTEN).load(Ordering::Relaxed);
         if self.capacity - (written - self.counter(RING_READ).load(Ordering::Acquire)) < total {
+            // A sleeping helper must read to make room.
+            self.wake_for_batch(Wake::FullRing);
             let start = ticks();
             loop {
                 let read = self.counter(RING_READ).load(Ordering::Acquire);
@@ -672,16 +706,49 @@ impl Ring {
             at += part.len() as u64;
         }
         self.counter(RING_WRITTEN).store(at, Ordering::SeqCst);
-        // The helper waits for a record: wake it. The store above and this load are
-        // SeqCst, as the helper's store of the word and its load of the count are, so
-        // that one of the two sides sees the other's store.
+        let why = match self.wake_batch {
+            None => Some(Wake::Record),
+            Some(_) if tag == tag::READ_PIXELS || tag == tag::COPY_TILE => Some(Wake::Waited),
+            Some(batch) => {
+                let (unwoken, full) = crate::stream_format::batch_step(self.unwoken, total, batch);
+                self.unwoken = unwoken;
+                full.then_some(Wake::Batch)
+            }
+        };
+        if let Some(why) = why {
+            self.wake(why);
+        }
+        true
+    }
+
+    /// Wakes the helper if it waits for a record, for the reason `why`, and starts the count of
+    /// the batch again. The store of the write count before it and the load of the word here
+    /// are SeqCst, as the helper's store of the word and its load of the count are, so that
+    /// one of the two sides sees the other's store.
+    ///
+    /// # Safety
+    ///
+    /// The ring is open (`base` maps the shared memory).
+    unsafe fn wake(&mut self, why: Wake) {
+        self.unwoken = 0;
         if self.event != 0
             && (*(self.base.add(RING_WAITING) as *const core::sync::atomic::AtomicU32)).load(Ordering::SeqCst) != 0
         {
             SetEvent(self.event);
-            self.wakes += 1;
+            self.wakes[why as usize] += 1;
         }
-        true
+    }
+
+    /// A wake that only the wake for a batch makes: without it, the wake after every record
+    /// has woken the helper already.
+    ///
+    /// # Safety
+    ///
+    /// As [`Ring::wake`].
+    unsafe fn wake_for_batch(&mut self, why: Wake) {
+        if self.wake_batch.is_some() {
+            self.wake(why);
+        }
     }
 
     /// The end of a frame. The game waits here until the host program has read the frame
@@ -1703,10 +1770,23 @@ pub unsafe fn stop() {
                 "stream: the game waited {:.1} ms in all for room in the ring, and {:.1} ms in all for the host program at the ends of the frames; it woke the host program {} times; its {} waits for a read of the host program ended by the host program's event {} times",
                 ring.waited as f64 * 1000.0 / ticks_per_second() as f64,
                 ring.paced as f64 * 1000.0 / ticks_per_second() as f64,
-                ring.wakes,
+                ring.wakes.iter().sum::<u64>(),
                 ring.read_waits,
                 ring.read_wakes
             );
+            if let Some(batch) = ring.wake_batch {
+                let wakes = ring.wakes;
+                crate::log!(
+                    "stream: the wake for a batch of {batch} bytes ({}): {:.2} wakes a frame in {} frames; {} at a full batch, {} after a frame's end, {} at a record that the game waits for, {} at a full ring",
+                    WAKE_BATCH_SWITCH,
+                    wakes.iter().sum::<u64>() as f64 / s.frames_done.max(1) as f64,
+                    s.frames_done,
+                    wakes[Wake::Batch as usize],
+                    wakes[Wake::FrameEnd as usize],
+                    wakes[Wake::Waited as usize],
+                    wakes[Wake::FullRing as usize]
+                );
+            }
             crate::log!("stream: {}", crate::sync::lock_wait_report());
             if ring.split_textures > 0 || ring.dropped > 0 {
                 crate::log!(
@@ -3108,6 +3188,8 @@ unsafe fn frame_end(lock: &DeviceLock) {
                     }
                 }
                 if let Some(Sink::Ring(ring)) = s.out.as_mut() {
+                    // The records of the frame's end, the retirements included, are written.
+                    ring.wake_for_batch(Wake::FrameEnd);
                     ring.pace();
                     // The next frame reads its input after the wait: it starts now, or after
                     // the wait of the pacing at its start.

@@ -29,6 +29,9 @@ extern "system" {
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
 }
 
+/// The result of [`WaitForSingleObject`] when the event ended the wait.
+const WAIT_OBJECT_0: u32 = 0;
+
 // The layout of the HEADER record and of the shared memories of a stream: their one home,
 // shared with the plugin.
 use super::stream_format::{
@@ -64,6 +67,18 @@ enum LookAction {
     Again,
     /// A block on the ring's event.
     Block,
+}
+
+/// The looks with a yield before a block: `today` (`MGE_XE_WAIT_YIELDS`, 256) for the wait of
+/// today; 0 with the wake for a batch (`NIRENDER_WAKE_BATCH`), as the game then wakes this
+/// program for its batches. While a tile read is in progress the wait of today stays, because
+/// this program gives the game the tile's pixels only between its looks.
+fn look_yields(today: u32, wake_batch: bool, tile_reads_open: bool) -> u32 {
+    if wake_batch && !tile_reads_open {
+        0
+    } else {
+        today
+    }
 }
 
 /// The action after the `looks`-th look with no record (from 1), with `yields` looks that
@@ -209,18 +224,21 @@ impl Ring {
     /// waits on the event, which the plugin sets after a write while the word is set.
     /// The store of the word and the load of the count are SeqCst, as the plugin's
     /// store of the count and load of the word are. Without the event it yields.
-    fn wait_for_record(&self) {
+    ///
+    /// Gives `Some(woken)` after a wait on the event, with `woken` true when the game's event
+    /// ended it and false at the time limit; [`None`] when it did not wait.
+    fn wait_for_record(&self) -> Option<bool> {
         if self.event == 0 {
             std::thread::yield_now();
-            return;
+            return None;
         }
         let waiting = unsafe { &*(self.base.add(RING_WAITING) as *const std::sync::atomic::AtomicU32) };
         waiting.store(1, Ordering::SeqCst);
         let read = self.counter(RING_READ).load(Ordering::Relaxed);
-        if self.counter(RING_WRITTEN).load(Ordering::SeqCst) - read < 8 {
-            unsafe { WaitForSingleObject(self.event, 1) };
-        }
+        let woken = (self.counter(RING_WRITTEN).load(Ordering::SeqCst) - read < 8)
+            .then(|| unsafe { WaitForSingleObject(self.event, 1) } == WAIT_OBJECT_0);
         waiting.store(0, Ordering::SeqCst);
+        woken
     }
 
     fn copy_out(&self, at: u64, to: &mut [u8]) {
@@ -496,6 +514,8 @@ struct App {
     busy_mean_us: f64,
     /// The waits for a record that slept, by the phase of the game ([`GamePhase`]).
     blocks: [u64; 5],
+    /// The waits and sleeps over the frames, for the lines of each mark.
+    spread: WaitSpread,
 }
 
 /// The time without a record after which the window shows the sign that the game sends no
@@ -522,6 +542,211 @@ fn tag_line(counts: &[(u64, u64)]) -> String {
         })
         .collect();
     parts.join("; ")
+}
+
+/// A record over this size is "large" for [`WaitSpread`]: where in the frame the large records
+/// fall decides where a wake for a batch of bytes falls.
+const LARGE_RECORD: usize = 16 * 1024;
+
+/// The sleeps of one kind: their count, how many the game's event ended, and their lengths
+/// in ticks.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct Sleeps {
+    count: u64,
+    woken: u64,
+    ticks: u64,
+    shortest: u64,
+    longest: u64,
+}
+
+impl Sleeps {
+    fn add(&mut self, woken: bool, ticks: u64) {
+        self.shortest = if self.count == 0 { ticks } else { self.shortest.min(ticks) };
+        self.longest = self.longest.max(ticks);
+        self.count += 1;
+        self.woken += u64::from(woken);
+        self.ticks += ticks;
+    }
+
+    /// "N a frame, P % ended by the game's event, length mean M ms (shortest S, longest L)".
+    fn line(&self, frames: u64, ms: impl Fn(u64) -> f64) -> String {
+        if self.count == 0 {
+            return "none".to_string();
+        }
+        format!(
+            "{:.2} a frame, {:.0} % ended by the game's event, length mean {:.3} ms (shortest {:.3}, longest {:.3})",
+            self.count as f64 / frames.max(1) as f64,
+            self.woken as f64 * 100.0 / self.count as f64,
+            ms(self.ticks) / self.count as f64,
+            ms(self.shortest),
+            ms(self.longest)
+        )
+    }
+}
+
+/// The counts of [`WaitSpread`] since the last mark.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct SpreadCounts {
+    /// The frames that ended (a FRAME_END record), and their records.
+    frames: u64,
+    records: u64,
+    /// The waits for the next record inside a frame over 0.1 ms and over 1 ms, with their
+    /// sum in ticks (a wait over 1 ms counts in both).
+    short_waits: u64,
+    short_ticks: u64,
+    long_waits: u64,
+    long_ticks: u64,
+    /// The sum of all the waits inside a frame, of any length.
+    wait_ticks: u64,
+    /// The sum of the spans from a frame's first record to its FRAME_END record.
+    span_ticks: u64,
+    /// The sleeps between a frame's first record and its end, and the other sleeps.
+    in_frame: Sleeps,
+    outside: Sleeps,
+    /// Where in the frame's span the sleeps in a frame ended, and where the large records
+    /// came, by tenths of the span.
+    sleep_tenths: [u64; 10],
+    large_tenths: [u64; 10],
+}
+
+/// How the game's records reach this program over a frame, for the lines of each mark: the
+/// waits between the records of a frame, the span of a frame's records, and the sleeps of
+/// this program with their real length (the sleep of 1 ms is a tick of the timer of Windows).
+/// A frame of records starts at the first record after a FRAME_END and ends at the next
+/// FRAME_END; the retirements just after a FRAME_END belong to the frame before. A wait is
+/// the time from the first look that found no record to the next record, so the time that
+/// this program spends on a record is not in it. All times are ticks of [`super::ticks`].
+#[derive(Default)]
+struct WaitSpread {
+    /// The ticks of 0.1 ms and of 1 ms.
+    limits: (u64, u64),
+    /// The time of the first look that found no record since the last record.
+    idle_from: Option<u64>,
+    /// The time of the first record of the frame, or [`None`] between two frames.
+    frame_first: Option<u64>,
+    /// The times in this frame of the ends of the sleeps and of the large records.
+    sleep_ends: Vec<u64>,
+    large_at: Vec<u64>,
+    counts: SpreadCounts,
+}
+
+impl WaitSpread {
+    /// A spread with the limits read now. The first read of the ticks' rate waits until 20
+    /// ms after the clock's first read (`ticks::duration`), so it is made before the first
+    /// record, not at it.
+    fn new() -> WaitSpread {
+        let ticks_per_ms = 1.0 / ms_per_tick();
+        WaitSpread {
+            limits: ((ticks_per_ms / 10.0) as u64, ticks_per_ms as u64),
+            ..WaitSpread::default()
+        }
+    }
+
+    /// A look found no record.
+    fn empty_look(&mut self) {
+        self.idle_from.get_or_insert_with(super::ticks::now);
+    }
+
+    /// A sleep from `start` to `end`.
+    fn slept(&mut self, woken: bool, start: u64, end: u64) {
+        let ticks = end.saturating_sub(start);
+        if self.frame_first.is_some() {
+            self.counts.in_frame.add(woken, ticks);
+            self.sleep_ends.push(end);
+        } else {
+            self.counts.outside.add(woken, ticks);
+        }
+    }
+
+    /// A record `tag` with `data`, read at `seen`.
+    fn record(&mut self, seen: u64, tag: u32, data: &[u8]) {
+        let (short, long) = self.limits;
+        let wait = self.idle_from.take().map_or(0, |from| seen.saturating_sub(from));
+        let retirement = tag == super::tag::FRAME_EVENT
+            && data.len() >= 4
+            && u32::from_le_bytes(data[0..4].try_into().unwrap()) == crate::data::EVENT_VIEW_RETIRE;
+        let counts = &mut self.counts;
+        let first = match self.frame_first {
+            // The wait before a frame's first record is the time between two frames.
+            None if retirement => return,
+            None => *self.frame_first.insert(seen),
+            Some(first) => {
+                counts.wait_ticks += wait;
+                if wait > short {
+                    counts.short_waits += 1;
+                    counts.short_ticks += wait;
+                }
+                if wait > long {
+                    counts.long_waits += 1;
+                    counts.long_ticks += wait;
+                }
+                first
+            }
+        };
+        counts.records += 1;
+        if data.len() > LARGE_RECORD {
+            self.large_at.push(seen);
+        }
+        if tag == super::tag::FRAME_END {
+            let span = seen.saturating_sub(first);
+            counts.frames += 1;
+            counts.span_ticks += span;
+            let tenth = |at: u64| ((at.saturating_sub(first) * 10) / span.max(1)).min(9) as usize;
+            for &end in &self.sleep_ends {
+                counts.sleep_tenths[tenth(end)] += 1;
+            }
+            for &at in &self.large_at {
+                counts.large_tenths[tenth(at)] += 1;
+            }
+            self.sleep_ends.clear();
+            self.large_at.clear();
+            self.frame_first = None;
+        }
+    }
+
+    /// The lines since the last mark; the counts start again.
+    fn take_lines(&mut self) -> [String; 4] {
+        let counts = std::mem::take(&mut self.counts);
+        let rate = ms_per_tick();
+        spread_lines(&counts, |ticks| ticks as f64 * rate)
+    }
+}
+
+/// The milliseconds of one tick of [`super::ticks`].
+fn ms_per_tick() -> f64 {
+    const TICKS: u64 = 1_000_000_000;
+    super::ticks::duration(TICKS).as_secs_f64() * 1000.0 / TICKS as f64
+}
+
+/// The lines of [`WaitSpread`] for `counts`, with `ms` the milliseconds of a count of ticks.
+fn spread_lines(counts: &SpreadCounts, ms: impl Fn(u64) -> f64 + Copy) -> [String; 4] {
+    let frames = counts.frames.max(1) as f64;
+    let tenths = |values: &[u64; 10]| values.iter().map(u64::to_string).collect::<Vec<_>>().join(" ");
+    [
+        format!(
+            "records in a frame since the mark before: {} frames, {:.1} records a frame; waits for the next record {:.3} ms in all, over 0.1 ms {:.2} a frame ({:.3} ms), over 1 ms {:.2} a frame ({:.3} ms); span from the first record to the frame's end {:.3} ms, busy in it (the span without the waits) {:.3} ms",
+            counts.frames,
+            counts.records as f64 / frames,
+            ms(counts.wait_ticks) / frames,
+            counts.short_waits as f64 / frames,
+            ms(counts.short_ticks) / frames,
+            counts.long_waits as f64 / frames,
+            ms(counts.long_ticks) / frames,
+            ms(counts.span_ticks) / frames,
+            ms(counts.span_ticks.saturating_sub(counts.wait_ticks)) / frames
+        ),
+        format!(
+            "sleeps since the mark before: in a frame {}; outside a frame {}",
+            counts.in_frame.line(counts.frames, ms),
+            counts.outside.line(counts.frames, ms)
+        ),
+        format!("sleeps in a frame by the tenth of the frame where they ended: {}", tenths(&counts.sleep_tenths)),
+        format!(
+            "records over {} KiB by the tenth of the frame where they came: {}",
+            LARGE_RECORD / 1024,
+            tenths(&counts.large_tenths)
+        ),
+    ]
 }
 
 /// The present mode for the setting of the extension ([`crate::Extension::vsync`]): with
@@ -959,7 +1184,8 @@ impl ApplicationHandler for App {
         // (between the frames), not after every record.
         let mut spins: u32 = 0;
         let mut looks: u32 = 0;
-        let yields = switches().wait_yields.unwrap_or(256);
+        let today_yields = switches().wait_yields.unwrap_or(256);
+        let wake_batch = switches().wake_batch.is_some();
         loop {
             // The device is lost: nothing draws any more. The records are read and dropped,
             // so that the game does not wait for this program. A request that the game waits
@@ -1018,6 +1244,7 @@ impl ApplicationHandler for App {
                 if self.ring.closed() {
                     return self.finish(event_loop, "the game closed the stream");
                 }
+                self.spread.empty_look();
                 // The tile reads that the GPU finished go to the game between the records.
                 self.player.as_mut().unwrap().deliver_tiles();
                 let since = *idle_since.get_or_insert_with(|| {
@@ -1026,7 +1253,9 @@ impl ApplicationHandler for App {
                     self.last_record
                 });
                 spins = spins.wrapping_add(1);
-                if spins % 256 == 0 && waiting.elapsed() > Duration::from_millis(20) {
+                // With the wake for a batch a look can sleep for a tick of the timer of
+                // Windows, so the way back to the window goes by the time alone.
+                if (wake_batch || spins % 256 == 0) && waiting.elapsed() > Duration::from_millis(20) {
                     // Back to the events of the window.
                     self.waited += waiting.elapsed();
                     self.idle += since.elapsed();
@@ -1038,6 +1267,8 @@ impl ApplicationHandler for App {
                 looks += 1;
                 // While the game writes the frame, the next record comes soon: the wait
                 // stays awake and looks at the phase again after the same yields.
+                let tile_reads_open = self.player.as_ref().unwrap().tile_reads_open();
+                let yields = look_yields(today_yields, wake_batch, tile_reads_open);
                 let game_writes = || self.ring.game_phase() == GamePhase::Writes;
                 match look_action(looks, yields, game_writes) {
                     LookAction::Yield => std::thread::yield_now(),
@@ -1045,12 +1276,16 @@ impl ApplicationHandler for App {
                     LookAction::Block => {
                         let phase = self.ring.game_phase();
                         self.blocks[phase as usize] += 1;
-                        self.ring.wait_for_record();
+                        let start = super::ticks::now();
+                        if let Some(woken) = self.ring.wait_for_record() {
+                            self.spread.slept(woken, start, super::ticks::now());
+                        }
                     }
                 }
                 continue;
             };
             looks = 0;
+            self.spread.record(super::ticks::now(), tag, &self.data);
             if let Some(since) = idle_since.take() {
                 self.idle += since.elapsed();
             }
@@ -1093,6 +1328,9 @@ impl ApplicationHandler for App {
                     .collect();
                 println!("  records by tag since the mark before: {}", tag_line(&since));
                 self.by_tag_at_mark = self.by_tag;
+                for line in self.spread.take_lines() {
+                    println!("  {line}");
+                }
             }
             if !frame_end {
                 continue;
@@ -1437,6 +1675,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         busy_before: 0,
         busy_mean_us: 0.0,
         blocks: [0; 5],
+        spread: WaitSpread::new(),
     };
     EventLoop::new()
         .expect("an event loop")
@@ -1598,5 +1837,140 @@ mod tests {
             UnmapViewOfFile(larger);
             CloseHandle(mapping);
         }
+    }
+
+    #[test]
+    fn the_wake_for_a_batch_blocks_at_once_except_while_a_tile_read_is_open() {
+        use super::look_yields;
+        // The wait of today, with or without a tile read.
+        assert_eq!(look_yields(256, false, false), 256);
+        assert_eq!(look_yields(256, false, true), 256);
+        // The wake for a batch: the first look blocks, also while the game writes.
+        assert_eq!(look_yields(256, true, false), 0);
+        assert_eq!(look_action(1, look_yields(256, true, false), || true), LookAction::Block);
+        // A tile read in progress keeps the wait of today.
+        assert_eq!(look_yields(256, true, true), 256);
+        assert_eq!(look_action(1, look_yields(256, true, true), || true), LookAction::Yield);
+    }
+
+    /// A spread with 0.1 ms as 10 ticks and 1 ms as 100 ticks.
+    fn spread() -> super::WaitSpread {
+        super::WaitSpread {
+            limits: (10, 100),
+            ..Default::default()
+        }
+    }
+
+    fn retirement() -> Vec<u8> {
+        [crate::data::EVENT_VIEW_RETIRE, 3, 0]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn the_spread_counts_the_waits_inside_a_frame_only() {
+        use crate::tag::{FRAME_END, FRAME_EVENT, MARK};
+        let mut spread = spread();
+        // The frame's first record after a wait between two frames: not a wait in a frame.
+        spread.idle_from = Some(0);
+        spread.record(500, MARK, &[]);
+        // A record at once, a wait of 20 ticks (over 0.1 ms), a wait of 150 (over 1 ms too).
+        spread.record(510, MARK, &[]);
+        spread.idle_from = Some(510);
+        spread.record(530, MARK, &[]);
+        spread.idle_from = Some(530);
+        spread.record(680, FRAME_END, &[]);
+        // The retirement after the frame's end belongs to that frame and starts no frame.
+        spread.idle_from = Some(680);
+        spread.record(690, FRAME_EVENT, &retirement());
+        assert_eq!(spread.frame_first, None);
+        let counts = spread.counts;
+        assert_eq!((counts.frames, counts.records), (1, 4));
+        assert_eq!((counts.short_waits, counts.short_ticks), (2, 170));
+        assert_eq!((counts.long_waits, counts.long_ticks), (1, 150));
+        assert_eq!(counts.span_ticks, 180);
+        // All the waits in the frame (0, 20 and 150), and the busy time is the span without them.
+        assert_eq!(counts.wait_ticks, 170);
+        let line = &super::spread_lines(&counts, |ticks| ticks as f64)[0];
+        assert!(
+            line.ends_with("waits for the next record 170.000 ms in all, over 0.1 ms 2.00 a frame (170.000 ms), over 1 ms 1.00 a frame (150.000 ms); span from the first record to the frame's end 180.000 ms, busy in it (the span without the waits) 10.000 ms"),
+            "{line}"
+        );
+        // Another frame event starts a frame, and a frame of its end alone ends at once.
+        spread.record(900, FRAME_EVENT, &[0; 12]);
+        assert_eq!(spread.frame_first, Some(900));
+        spread.record(950, FRAME_END, &[]);
+        spread.record(1000, FRAME_END, &[]);
+        assert_eq!((spread.counts.frames, spread.frame_first), (3, None));
+    }
+
+    #[test]
+    fn the_spread_puts_the_sleeps_and_the_large_records_into_tenths_of_the_frame() {
+        use crate::tag::{FRAME_END, GEOMETRY, MARK};
+        let mut spread = spread();
+        // A sleep outside a frame, then a frame from 1000 to 2000.
+        spread.slept(false, 0, 40);
+        spread.record(1000, MARK, &[]);
+        spread.slept(true, 1100, 1150);
+        spread.slept(false, 1800, 1990);
+        spread.record(1250, GEOMETRY, &[0; super::LARGE_RECORD + 1]);
+        spread.record(1300, GEOMETRY, &[0; super::LARGE_RECORD]);
+        spread.record(2000, FRAME_END, &[]);
+        let counts = spread.counts;
+        let mut sleeps = [0; 10];
+        sleeps[1] = 1;
+        sleeps[9] = 1;
+        assert_eq!(counts.sleep_tenths, sleeps);
+        let mut large = [0; 10];
+        large[2] = 1;
+        assert_eq!(counts.large_tenths, large);
+        assert_eq!(
+            counts.in_frame,
+            super::Sleeps {
+                count: 2,
+                woken: 1,
+                ticks: 240,
+                shortest: 50,
+                longest: 190
+            }
+        );
+        assert_eq!(
+            counts.outside,
+            super::Sleeps {
+                count: 1,
+                woken: 0,
+                ticks: 40,
+                shortest: 40,
+                longest: 40
+            }
+        );
+        let lines = super::spread_lines(&counts, |ticks| ticks as f64);
+        assert_eq!(
+            lines[1],
+            "sleeps since the mark before: in a frame 2.00 a frame, 50 % ended by the game's event, length mean 120.000 ms (shortest 50.000, longest 190.000); outside a frame 1.00 a frame, 0 % ended by the game's event, length mean 40.000 ms (shortest 40.000, longest 40.000)"
+        );
+        assert_eq!(
+            lines[2],
+            "sleeps in a frame by the tenth of the frame where they ended: 0 1 0 0 0 0 0 0 0 1"
+        );
+        assert_eq!(
+            lines[3],
+            "records over 16 KiB by the tenth of the frame where they came: 0 0 1 0 0 0 0 0 0 0"
+        );
+    }
+
+    #[test]
+    fn the_spread_lines_say_none_without_sleeps() {
+        let lines = super::spread_lines(&super::SpreadCounts::default(), |ticks| ticks as f64);
+        assert_eq!(
+            lines[1],
+            "sleeps since the mark before: in a frame none; outside a frame none"
+        );
+        assert!(
+            lines[0].starts_with("records in a frame since the mark before: 0 frames, 0.0 records a frame"),
+            "{}",
+            lines[0]
+        );
     }
 }

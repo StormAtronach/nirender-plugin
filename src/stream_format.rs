@@ -424,6 +424,45 @@ pub fn accept_header(header: &[u8], reader: &str) -> Result<Writer, String> {
 /// version word 1). The plugin ends the stream on it and runs the failure path.
 pub const MESSAGE_LOST_DEVICE: u32 = 2;
 
+/// The values of the switch `NIRENDER_WAKE_BATCH` (W415), the bytes of a batch for the wake for
+/// a batch. Without the switch, the game wakes a sleeping helper after every record
+/// ([`RING_WAITING`]), and the helper stays awake while the game writes its frame. With it, the
+/// game wakes the helper when a batch is full, after the records of a frame's end, at a full
+/// ring and at a record for which it then waits; the helper sleeps as soon as it has no record.
+/// The plugin and the helper read the switch, each where it reads its other switches, and take
+/// its values here.
+pub const WAKE_BATCH_BYTES: core::ops::RangeInclusive<u64> = 4096..=1 << 30;
+/// A record counts in a batch with its bytes up to this, so that a few large records do not
+/// set every wake.
+pub const WAKE_RECORD_CAP: u64 = 16 * 1024;
+
+/// The values of [`WAKE_BATCH_BYTES`] in words, for the log line of a bad value.
+pub fn wake_batch_expected() -> String {
+    format!(
+        "a number of bytes from {} to {}",
+        WAKE_BATCH_BYTES.start(),
+        WAKE_BATCH_BYTES.end()
+    )
+}
+
+/// The bytes of a batch from the text of the switch, or [`None`] for a text that is not one of
+/// [`WAKE_BATCH_BYTES`].
+pub fn wake_batch(text: &str) -> Option<u64> {
+    text.trim().parse().ok().filter(|bytes| WAKE_BATCH_BYTES.contains(bytes))
+}
+
+/// The count of a batch after a record of `bytes` (with its head), from `unwoken` since the
+/// last wake: the new count, and whether the batch of `batch` bytes is full (the count is then
+/// 0 again).
+pub fn batch_step(unwoken: u64, bytes: u64, batch: u64) -> (u64, bool) {
+    let unwoken = unwoken + bytes.min(WAKE_RECORD_CAP);
+    if unwoken >= batch {
+        (0, true)
+    } else {
+        (unwoken, false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,5 +659,33 @@ mod tests {
         assert!(short[6..].iter().all(|&byte| byte == 0));
         assert_eq!(header_build_id(&header(STREAM_FORMAT, "v1 abc")), "v1 abc");
         assert_eq!(header(STREAM_FORMAT, "v1 abc").len(), HEADER_BYTES);
+    }
+
+    #[test]
+    fn the_wake_batch_switch_takes_bytes_in_its_range() {
+        assert_eq!(wake_batch("65536"), Some(65536));
+        assert_eq!(wake_batch(" 4096 "), Some(4096));
+        assert_eq!(wake_batch("4095"), None);
+        assert_eq!(wake_batch("1073741825"), None);
+        assert_eq!(wake_batch("64k"), None);
+        assert_eq!(wake_batch_expected(), "a number of bytes from 4096 to 1073741824");
+    }
+
+    #[test]
+    fn a_batch_counts_each_record_up_to_the_cap() {
+        // Small records add up; the record that fills the batch wakes, and the count starts again.
+        let (count, full) = batch_step(0, 1000, 4096);
+        assert_eq!((count, full), (1000, false));
+        let (count, full) = batch_step(count, 3096, 4096);
+        assert_eq!((count, full), (0, true));
+        // A record of 126 KB counts as 16 KiB: four of them fill a batch of 64 KiB.
+        let mut count = 0;
+        let mut wakes = 0;
+        for _ in 0..8 {
+            let (next, full) = batch_step(count, 126_000, 64 * 1024);
+            count = next;
+            wakes += u32::from(full);
+        }
+        assert_eq!((wakes, count), (2, 0));
     }
 }
