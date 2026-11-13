@@ -234,17 +234,17 @@ def refusal_of(lines):
     return None
 
 
-# The guard of a wgpu run against MGE XE's fall-back to Direct3D 9 (D328, verdict 314). The probe and its cache went
-# with W412 (D386). wgpuPathOff of MGE XE's d3d8.dll (render-link d3d8/cpp/main.cpp) still writes this line for the
-# starts that go to Direct3D 9: a part of the renderer is missing, or the plugin refuses the game's code.
+# The guard of a wgpu run against MGE XE's fall-back (D328, verdict 314). The probe and its cache went with W412
+# (D386). Session::toPlainGame of MGE XE's d3d8.dll (render-link d3d8/cpp/mge/session.cpp) writes this line for each
+# start that cannot use the renderer: the game then runs on its own Direct3D 8, without MGE XE (W462).
 FALLBACK_MARKS = ("!! wgpu renderer: not in use,",)
 
 
 def fallback_of(lines):
-    """The reason for a wgpu run to stop when `lines` hold MGE XE's fall-back to Direct3D 9; else None."""
+    """The reason for a wgpu run to stop when `lines` hold MGE XE's fall-back to the plain game; else None."""
     for line in lines:
         if any(mark in line for mark in FALLBACK_MARKS):
-            return "MGE XE fell back to Direct3D 9: %s" % line.strip()
+            return "MGE XE did not use the renderer: %s" % line.strip()
     return None
 
 
@@ -258,7 +258,7 @@ class Run:
         self.report = self.path("report.tsv")
         self.log = self.path("nirender.log")
         self.started = None
-        # A wgpu run: MGE XE's fall-back to Direct3D 9 stops it (fallback_of), and the reason is kept here.
+        # A wgpu run: MGE XE's fall-back stops it (fallback_of), and the reason is kept here.
         self.wgpu = False
         self.fell_back = None
 
@@ -335,7 +335,7 @@ class Run:
         or None: from the live mgeXE.log of the game (fresh since the start), the plugin's own log
         and the progress file. For `launch(stop=...)`, every 2 s: each call reads only the whole
         lines that each file got since the call before. In a wgpu run (`self.wgpu`), MGE XE's
-        fall-back to Direct3D 9 stops the run too (`fallback_of`), and `self.fell_back` keeps it."""
+        fall-back stops the run too (`fallback_of`), and `self.fell_back` keeps it."""
         if not hasattr(self, "_seen"):
             self._seen = {}
         marks = REFUSAL_MARKS + CAUSE_MARKS + (FALLBACK_MARKS if self.wgpu else ())
@@ -560,21 +560,21 @@ def ring_problem_of_instance():
 # The line of MGE XE (d3d8/cpp/main.cpp) when the wgpu renderer draws: MGE XE then runs as a
 # proxy only, with no Direct3D device and none of its engine hooks.
 WGPU_LINE = ">> Using the wgpu renderer"
-# The line of a late fall-back to Direct3D 9 (d3d8/cpp/main.cpp, at FakeDirect3DCreate): MGE XE
-# then needs its engine hooks again.
-WGPU_FALLBACK_LINE = "wgpu renderer: not in use"
+# The end of MGE XE's line for a game without it (d3d8/cpp/mge/session.cpp, Session::toPlainGame: a fall-back or
+# runtime.disabled, W462): the game runs on its own Direct3D 8, and MGE XE installs nothing.
+PLAIN_GAME_LINE = "runs on its own Direct3D 8"
 
 
 def mge_log_problems(text):
     """What the text of an mgeXE.log says went wrong. An empty list is good.
 
     On Direct3D 9, MGE XE must install engine hooks. "no engine hooks installed" (camera-relative
-    rendering off) does not count as one. On the wgpu renderer it installs none by design; after a
-    late fall-back to Direct3D 9 it must install them again."""
+    rendering off) does not count as one. On the wgpu renderer and in the plain game it installs
+    none by design."""
     problems = []
     hooks = [line for line in text.splitlines() if "hooks installed" in line and "no engine hooks installed" not in line]
-    wgpu = WGPU_LINE in text and WGPU_FALLBACK_LINE not in text
-    if not hooks and not wgpu:
+    no_hooks_by_design = WGPU_LINE in text or PLAIN_GAME_LINE in text
+    if not hooks and not no_hooks_by_design:
         problems.append("MGE XE installed none of its engine hooks")
     failed = text.count("failed to load/compile")
     if failed:

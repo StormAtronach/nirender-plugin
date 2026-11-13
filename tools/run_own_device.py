@@ -236,6 +236,8 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
     problems = []
     if args.reference_plugin and not (args.reference or args.engine_reference):
         problems.append("--reference-plugin is for a run with --reference or --engine-reference")
+    if getattr(args, "plain_case", False) and (args.reference or args.engine_reference or not args.mge_build):
+        problems.append("--plain-case needs --mge-build, and not --reference or --engine-reference")
     if args.position is not None:
         parts = args.position.split(",")
         try:
@@ -506,9 +508,11 @@ def weather_note(pinned, lines):
 def launch_run(run, spec, args, mods, facts=()):
     """Starts the run (`session.Run.launch`) with the options of the command line. A refusal of
     the renderer by the plugin ends the run at once, with its cause (`session.Run.refusal`), not at
-    the end of the budget. `facts` are more lines for the record of the run, after the commits."""
+    the end of the budget; not in a --plain-case run, which tests the game after that refusal. `facts` are more lines
+    for the record of the run, after the commits."""
+    stop = None if getattr(args, "plain_case", False) else run.refusal
     return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build), *facts], full_dump=args.full_dump,
-                      enable=args.enable_mod, plugins=args.enable_plugin, stop=run.refusal)
+                      enable=args.enable_mod, plugins=args.enable_plugin, stop=stop)
 
 
 def build_commits(mge_build):
@@ -963,10 +967,20 @@ def self_test_checks():
         namespace(add_file=["E:/none.dll=Root/x.dll"]),
         namespace(shader_batch="E:/none.lua"),
         namespace(mge_build="E:/c"),
+        namespace(plain_case=True),
+        namespace(plain_case=True, mge_build="E:/b", engine_reference=True),
     ]
     for args in bad:
         assert argument_problems(args, exists), args
     assert len(argument_problems(namespace(mge_build="E:/c", weather=10), exists)) == 3
+    assert argument_problems(namespace(plain_case=True, mge_build="E:/b", env=["MGE_XE_NATIVE_REFUSE_EVENT=3"]), exists) == []
+
+    # The line of the case of a --plain-case run (W462): the fall-back, or the close after a refusal; not the wgpu line.
+    fall_back = "!! wgpu renderer: not in use, MWSE refused the event 3. The game runs on its own Direct3D 8"
+    assert plain_case_line([">> Using the wgpu renderer: no Direct3D device", fall_back + "\n"]) == fall_back
+    close = "!! wgpu renderer: the plugin refused after it changed the game's code (x). MGE XE closes the game with the exit code 12"
+    assert plain_case_line([close]) == close
+    assert plain_case_line([">> Using the wgpu renderer: no Direct3D device", "-- runtime.disabled: the game runs on its own Direct3D 8"]) is None
 
     # A batch that walks: the budget must cover the walk and the start.
     walk = {"E:/batch.lua": 'local MINUTES = tonumber(os.getenv("NIRENDER_WALK_MINUTES") or "") or 60\n'}
@@ -1366,19 +1380,22 @@ def self_test_mge_log_problems():
     none = "MGE XE installed none of its engine hooks"
     assert problems("MGE-XE\nMWSE.dll injected.\n") == [none]
     assert problems("-- Camera-relative rendering off (render.camera_relative); no engine hooks installed.\n") == [none]
-    late = ">> Using the wgpu renderer: no Direct3D device\n!! wgpu renderer: not in use, no adapter. MGE XE continues with Direct3D 9\n"
-    assert problems(late) == [none]
-    assert problems(late + "-- Indexed skinning engine hooks installed\n") == []
+    # The plain game (W462): the fall-back and runtime.disabled install nothing by design.
+    plain = "!! wgpu renderer: not in use, MWSE's native ABI is missing. The game runs on its own Direct3D 8\n"
+    assert problems(plain) == []
+    assert problems(">> Using the wgpu renderer: no Direct3D device\n" + plain) == []
+    assert problems("-- runtime.disabled: the game runs on its own Direct3D 8\n") == []
     assert problems(">> Using the wgpu renderer: no Direct3D device\nx failed to load/compile\n") == ["MGE XE could not compile 1 shaders"]
 
 
 def self_test_fallback_guard():
     """The fall-back guard (D328, verdict 314; its probe parts went with W412): MGE XE's fall-back line stops a wgpu run
     and not a reference run; "own device: false" fails a wgpu run with exit code 4, also with DONE."""
-    # The real line of render-link d3d8/cpp/main.cpp: wgpuPathOff writes it for each start that goes to Direct3D 9.
-    off = "!! wgpu renderer: not in use, a part is missing: numidium.exe. MGE XE continues with Direct3D 9"
+    # The line of render-link d3d8/cpp/mge/session.cpp: Session::toPlainGame writes it for each start that cannot use
+    # the renderer.
+    off = "!! wgpu renderer: not in use, a part is missing: numidium.exe. The game runs on its own Direct3D 8"
     reason = session.fallback_of([">> MGE XE starts", off])
-    assert reason == "MGE XE fell back to Direct3D 9: " + off, reason
+    assert reason == "MGE XE did not use the renderer: " + off, reason
     assert session.fallback_of([">> Using the wgpu renderer: no Direct3D device"]) is None
 
     # Run.refusal reads the live mgeXE.log: the fall-back stops a wgpu run and keeps its reason; a reference run goes on.
@@ -1400,11 +1417,12 @@ def self_test_fallback_guard():
             session.MGE_LOGS, session.RESULTS = saved
 
     # The progress line "own device: false", and the exit code 4 before DONE's 0.
-    assert fallback_of_run(False, None, ["own device: false"]) is None, "a reference run is on Direct3D 9 by design"
+    assert fallback_of_run(False, None, ["own device: false"]) is None, "a reference run has no own device by design"
     assert fallback_of_run(True, None, ["own device: true", "step sh-start: true"]) is None
     late = fallback_of_run(True, None, ["steps: shaders (2)", "own device: false"])
-    assert late == "a wgpu run on Direct3D 9: the progress says \"own device: false\"", late
-    assert fallback_of_run(True, "MGE XE fell back to Direct3D 9: x", []) == "a wgpu run on Direct3D 9: MGE XE fell back to Direct3D 9: x"
+    assert late == "a wgpu run without the renderer: the progress says \"own device: false\"", late
+    stopped = fallback_of_run(True, "MGE XE did not use the renderer: x", [])
+    assert stopped == "a wgpu run without the renderer: MGE XE did not use the renderer: x", stopped
     assert run_exit_code(False, False, True, ENDED_DONE, True) == EXIT_FELL_BACK == 4
     assert run_exit_code(False, False, False, ENDED_OTHER, True) == 4, "a run that the fall-back line stopped"
     assert run_exit_code(False, False, True, ENDED_DONE) == 0
@@ -1547,6 +1565,8 @@ def self_test_ending():
     assert run_ending(False, by_hand, [], None) == ENDED_OTHER, "code 0 before the first step: MWSE's check of MGE XE"
     assert run_ending(False, {"reason": "exited", "codes": [0xC0000005]}, [], "a") == ENDED_OTHER, "a planted abnormal exit"
     assert run_ending(False, by_hand, ["MWSE_MiniDump.dmp"], "a") == ENDED_OTHER, "a dump with exit code 0"
+    assert "exit code 12" in plugin_refused_line({"reason": "exited", "codes": [12]})
+    assert plugin_refused_line(by_hand) is None and plugin_refused_line({"reason": "exited", "codes": [20]}) is None
     assert run_ending(False, {"reason": "exited", "codes": [None]}, [], "a") == ENDED_OTHER, "a code not read"
     assert run_ending(False, {"reason": "exited", "codes": []}, [], "a") == ENDED_OTHER, "no code"
     for reason in ("timeout", "stopped", "never started"):
@@ -2098,7 +2118,12 @@ def main():
                     "MGE XE of the instance, or of --mge-build")
     ap.add_argument("--engine-reference", action="store_true", help="run the same scenario on the engine's own renderer: `runtime.disabled` in "
                     "the run's mgeXE.toml, so the game has the system's Direct3D 8 and no MGE XE draws. The pictures are eng-<step>.png: the world with no interface, at 2048 x 1024. "
-                    "MGE XE still applies its early patches, and MWSE and the Code Patch their own: not the game of 2002")
+                    "MGE XE of W462 and later installs nothing then; MWSE and the Code Patch apply their own: not the game of 2002")
+    ap.add_argument("--plain-case", action="store_true", help="a run of a case where MGE XE cannot use the renderer (W462): the build of "
+                    "--mge-build with the switch renderer_wgpu on, and a switch of --env that makes the case. The game runs on its own Direct3D 8, "
+                    "and the scenario runs as with --engine-reference (nirender/noplugin.lua, eng-<step>.png). MGE XE's fall-back line and the "
+                    "plugin's refusal do not stop the run; the run fails with exit code 4 when mgeXE.log has neither the fall-back line nor "
+                    "the close after a refusal. Without --plugin-dll the run has no plugin, as a reference run")
     ap.add_argument("--reference-plugin", action="store_true", help="with --reference or --engine-reference: keep akulakhan.dll in the run, its ports "
                     "installed in mode off and its recorder on the device, as every reference run before 2026-11-03. Without this a reference "
                     "run has no plugin: the run's mod has no DLL, the mods of the instance with one are off, the scenario runs with "
@@ -2195,7 +2220,8 @@ def main():
         if args.instance:
             session.use_instance(args.instance, args.game_dir, args.profile)
         problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
-        if not problem and (args.reference or args.engine_reference) and not args.reference_plugin:
+        no_plugin_run = ((args.reference or args.engine_reference) and not args.reference_plugin) or (args.plain_case and not args.plugin_dll)
+        if not problem and no_plugin_run:
             problem = overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
         session.harness.refuse_stale_backups()
         enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
@@ -2224,8 +2250,9 @@ def main():
         return 0
     if args.engine_reference:
         args.reference = True
-    # A reference run has no code of the plugin in the game, unless --reference-plugin.
-    no_plugin = args.reference and not args.reference_plugin
+    # A reference run has no code of the plugin in the game, unless --reference-plugin. A --plain-case run has the
+    # plugin only when --plugin-dll names one (the cases of the plugin).
+    no_plugin = (args.reference and not args.reference_plugin) or (args.plain_case and not args.plugin_dll)
     # The game is started from this process: its variables go into the game's environment.
     apply_env(os.environ, args.env)
     if args.log:
@@ -2279,7 +2306,7 @@ def main():
                 args.disable_mod.append(name)
                 print("  mod of the instance with akulakhan.dll, off for the run: %s" % name, flush=True)
     run = session.Run(args.label)
-    run.wgpu = not args.reference
+    run.wgpu = not args.reference and not args.plain_case
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
                     position=args.position, yaw=args.yaw, findWater=args.find_water, findDry=args.find_dry, hour=args.hour, weather=args.weather,
@@ -2288,7 +2315,7 @@ def main():
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, tourExtra=args.tour_extra or None, captureMenu=args.capture_menu, settleSeconds=args.settle, portTimes=args.port_times or None,
                     overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None,
                     afterLoadPictures=args.after_load_pictures or None, keepFade=args.keep_fade or None, keepAI=args.keep_ai or None,
-                    engineReference=args.engine_reference or None, noPlugin=no_plugin or None)
+                    engineReference=(args.engine_reference or args.plain_case) or None, noPlugin=(no_plugin or args.plain_case) or None)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST
@@ -2354,7 +2381,7 @@ def main():
     for line in lines:
         if line.startswith(("own device", "stream:", "capture: end", "own host", "install:", "link:")):
             print("plugin: " + line.strip()[:240])
-    if args.engine_reference:
+    if args.engine_reference or args.plain_case:
         pngs_from_tgas(run.dir)
     # Which plugin the game loaded, from each proof. A run without the plugin that loaded it
     # is not a reference: it fails.
@@ -2371,6 +2398,14 @@ def main():
     fell_back = fallback_of_run(run.wgpu, run.fell_back, progress)
     if fell_back:
         print("ERROR: " + fell_back)
+    if args.plain_case:
+        mge_log = run.path("mgeXE.log")
+        case = plain_case_line(open(mge_log, encoding="utf-8", errors="replace").read().splitlines() if os.path.isfile(mge_log) else [])
+        if case:
+            print("plain case: " + case)
+        else:
+            fell_back = "a --plain-case run without MGE XE's line of the case in mgeXE.log: the renderer was in use"
+            print("ERROR: " + fell_back)
     ending = report_ending(run, done, progress)
     print("pictures in " + run.dir)
     # The size of the run and of every run kept (the owner, 2026-10-18: the results folder
@@ -2387,7 +2422,8 @@ def main():
 # them. A code 0 before the first step stays on the old path: MWSE's check of MGE XE exits with 0 at the start.
 ENDED_DONE, ENDED_BY_HAND, ENDED_OTHER = "done", "by hand", "other"
 EXIT_ENDED_BY_HAND = 3
-# A wgpu run on Direct3D 9: MGE XE fell back (the fall-back guard, D328, verdict 314).
+# A wgpu run without the renderer: MGE XE fell back to the plain game (the fall-back guard, D328, verdict 314; W462).
+# A --plain-case run without MGE XE's fall-back line fails with it too.
 EXIT_FELL_BACK = 4
 # The line of the nirender mod (owndevice.lua) in a run whose game has no device of the plugin.
 NO_OWN_DEVICE = "own device: false"
@@ -2395,16 +2431,26 @@ STEP_LINE = re.compile(r"^step (\S+?):")
 
 
 def fallback_of_run(wgpu, stopped, progress):
-    """Why a wgpu run failed on Direct3D 9, or None. `stopped` is the fall-back line that stopped the run
+    """Why a wgpu run failed without the renderer, or None. `stopped` is the fall-back line that stopped the run
     (`session.Run.fell_back`); without it, the progress line "own device: false" shows a fall-back that the line did
-    not show. A reference run is on Direct3D 9 by design."""
+    not show. A reference run and a --plain-case run (`wgpu` False) have no own device by design."""
     if not wgpu:
         return None
     if stopped:
-        return "a wgpu run on Direct3D 9: " + stopped
+        return "a wgpu run without the renderer: " + stopped
     if any(line.startswith(NO_OWN_DEVICE) for line in progress):
-        return "a wgpu run on Direct3D 9: the progress says \"%s\"" % NO_OWN_DEVICE
+        return "a wgpu run without the renderer: the progress says \"%s\"" % NO_OWN_DEVICE
     return None
+
+
+# The lines of MGE XE (render-link d3d8/cpp/mge/session.cpp) that a --plain-case run must show: the fall-back to the
+# plain game, or the close after the plugin's refusal with its detours in (the exit code 12, GAME_EXIT_PLUGIN_REFUSED).
+PLAIN_CASE_MARKS = ("!! wgpu renderer: not in use,", "!! wgpu renderer: the plugin refused after it changed the game's code")
+
+
+def plain_case_line(lines):
+    """MGE XE's line of the case of a --plain-case run (`PLAIN_CASE_MARKS`), stripped, or None."""
+    return next((line.strip() for line in lines if any(mark in line for mark in PLAIN_CASE_MARKS)), None)
 SHADER_SET_LINE = re.compile(r"^shader batch: (\S+?): ")
 
 
@@ -2421,14 +2467,32 @@ def run_ending(done, end, crash_files, step):
     return ENDED_OTHER
 
 
+# The game's exit code when MGE XE closes it after the plugin refused with its detours in (W462; src/stream_format.rs
+# EXIT_PLUGIN_REFUSED).
+GAME_EXIT_PLUGIN_REFUSED = 12
+
+
+def plugin_refused_line(end):
+    """The line for a game that MGE XE closed because the plugin refused after it changed the game's code, or None."""
+    if end.get("reason") == "exited" and GAME_EXIT_PLUGIN_REFUSED in (end.get("codes") or []):
+        return ("the game closed with exit code %d: the plugin refused the renderer after it changed the game's code, "
+                "and MGE XE closed the game (see the \"box:\" line of mgeXE.log)" % GAME_EXIT_PLUGIN_REFUSED)
+    return None
+
+
 def report_ending(run, done, progress):
     """The ending of `run` from the harness's LAST_END (absent in a harness from before W372: the crash path, as before)
-    and the dumps that the harness moved into the run folder; prints the line of a hand end. Returns the ending."""
+    and the dumps that the harness moved into the run folder; prints the line of a hand end or of the plugin's refusal
+    close. Returns the ending."""
     dumps = [path for path in (run.path("MWSE_MiniDump.dmp"), run.path(session.harness.DUMPS_FILE)) if os.path.isfile(path)]
     step = last_step(progress)
-    ending = run_ending(done, getattr(session.harness, "LAST_END", {}), dumps, step)
+    end = getattr(session.harness, "LAST_END", {})
+    ending = run_ending(done, end, dumps, step)
     if ending == ENDED_BY_HAND:
         print("ended without DONE after step %s, with exit code 0 (a close from outside, or the game's own exit)" % step)
+    refused = plugin_refused_line(end)
+    if refused:
+        print(refused)
     return ending
 
 
@@ -2448,7 +2512,7 @@ def last_step(progress):
 
 def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False):
     """2 for a run without the plugin that loaded it (no reference), 4 (EXIT_FELL_BACK) for a wgpu
-    run that MGE XE took to Direct3D 9, also with DONE, else 0 when the steps were done in the
+    run that MGE XE took to the plain game, also with DONE, else 0 when the steps were done in the
     budget, 3 for a run ended by hand (W372), 1 for any other end. The 4 of check_mwse_sites.py and
     deploy_rest.py (a missing MWSE feature) is another tool's code: nothing reads both."""
     if no_plugin and loaded:

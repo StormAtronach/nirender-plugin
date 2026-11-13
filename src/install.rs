@@ -134,8 +134,27 @@ pub unsafe fn census(hooked: bool) -> usize {
 }
 
 /// Set when the plugin is the Direct3D 8 of the game and a port cannot run as Rust: the game
-/// must not get the device of the plugin, and MGE XE goes on with Direct3D 9.
+/// must not get the device of the plugin. MGE XE then closes the game when the plugin changed
+/// the game's code ([`CODE_CHANGED`]), and else the game runs on its own Direct3D 8.
 static REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// Set before the plugin's first write into the game's code (the texture rule, then the
+/// detours). No path takes a write back, so it stays set for the session.
+static CODE_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// True when the plugin wrote into the game's code in this session.
+pub fn code_changed() -> bool {
+    CODE_CHANGED.load(Ordering::Relaxed)
+}
+
+/// What a refusal leaves to the game: the end of the sentence of the refusal's log line.
+fn refusal_outcome() -> &'static str {
+    if code_changed() {
+        "the plugin changed the game's code, so MGE XE closes the game"
+    } else {
+        "nothing of the plugin is in the game's code, so the game runs on its own Direct3D 8"
+    }
+}
 
 /// The features of the Morrowind Code Patch whose records hold a change that locked a port.
 static LOCKED_BY_OPTIONS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
@@ -153,9 +172,19 @@ fn note_cause(cause: String) {
 
 /// Refuses the renderer for the session with `cause`, and returns the message of the refusal.
 fn refuse(cause: String) -> String {
+    // The first cause, zero-ended, for the box of MGE XE ([`refusal_text`]).
+    let _ = REFUSAL_TEXT.set(std::ffi::CString::new(cause.replace('\0', " ")).unwrap_or_default());
     *REFUSAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = cause;
     REFUSED.store(true, Ordering::Relaxed);
     refused_message()
+}
+
+/// The first cause of a refusal as a zero-ended text, set once, alive for the session.
+static REFUSAL_TEXT: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+
+/// The first cause of the refusal, when the renderer is refused: for the box of MGE XE.
+pub fn refusal_text() -> Option<&'static std::ffi::CStr> {
+    REFUSAL_TEXT.get().map(|text| text.as_c_str())
 }
 
 /// The cause of the refusal, when the renderer is refused: for `nirender.refusalCause()`.
@@ -178,8 +207,12 @@ pub fn refused() -> bool {
 }
 
 /// The message of a later call of `install` after a refusal: the first message has the cause.
-const REFUSED_AGAIN: &str =
-    "the renderer is refused for this session (the cause is in the first install line); the game keeps MGE XE on Direct3D 9";
+fn refused_again() -> String {
+    format!(
+        "the renderer is refused for this session (the cause is in the first install line); {}",
+        refusal_outcome()
+    )
+}
 
 /// The message of a refusal: its cause, and the options of the Code Patch that caused it.
 fn refused_message() -> String {
@@ -188,7 +221,7 @@ fn refused_message() -> String {
         .iter()
         .map(|&feature| format!("\"{}\" (feature {feature})", ports::code_patch_option(feature)))
         .collect();
-    let mut message = format!("the renderer is refused for this session: {cause}; the game keeps MGE XE on Direct3D 9");
+    let mut message = format!("the renderer is refused for this session: {cause}; {}", refusal_outcome());
     if !options.is_empty() {
         message += &format!("; the cause is the Morrowind Code Patch option {}", options.join(", "));
     }
@@ -218,14 +251,14 @@ pub fn refuse_without_ports() -> bool {
 /// starts in mode off. A second call only puts the recorder on the device.
 pub unsafe fn install() -> Result<String, String> {
     if refused() {
-        return Err(REFUSED_AGAIN.to_string());
+        return Err(refused_again());
     }
     if ports::all().any(|p| p.installed()) {
         return Ok(attach_device()?.unwrap_or_else(|| "the game has no renderer yet".to_string()));
     }
     // The renderer takes engine events and overrides from MWSE's native ABI (`mwse_native`).
     // Without it the link to the host is not made and the game draws nothing: the renderer is
-    // refused before any port goes on, and the game keeps MGE XE on Direct3D 9.
+    // refused before any port goes on, and the game runs on its own Direct3D 8.
     // The caller (`nirender.install`) writes the message of a refusal to the log.
     if crate::link_client::own_d3d8() && crate::mwse_native::api().is_none() {
         return Err(refuse(crate::mwse_native::NO_TABLE.to_string()));
@@ -243,6 +276,7 @@ pub unsafe fn install() -> Result<String, String> {
     // The census runs before the detours, because the detours change the entry bytes.
     crate::count_locks::log_state();
     let changed = census(false);
+    CODE_CHANGED.store(true, Ordering::Relaxed);
     #[cfg(not(test))]
     if crate::link_client::own_d3d8() && !crate::ports::texture_link::install_format_rule() {
         crate::log!("textures: the CreateTexture call of the game function is not the game's code: a BC7 texture made on the cell worker can take the wrong format");
@@ -282,8 +316,14 @@ pub unsafe fn install() -> Result<String, String> {
     // With the plugin as the Direct3D 8 of the game, every port must run as Rust: a port
     // that stays game code would call a device that draws nothing. A function that another
     // mod changed in a way the port does not follow, or a detour that failed, refuses the
-    // renderer for the session, and MGE XE goes on with Direct3D 9.
+    // renderer for the session, and MGE XE closes the game: the detours stay.
     if crate::link_client::own_d3d8() {
+        // A test of that refusal: the same point and the same state as a real one.
+        if crate::switches::on("NIRENDER_REFUSE_AFTER_INSTALL") == Some(true) {
+            return Err(refuse(
+                "the switch NIRENDER_REFUSE_AFTER_INSTALL=1 refuses after the install (a test)".to_string(),
+            ));
+        }
         let cannot: Vec<&str> = ports::all()
             .filter(|p| (p.locked() || !p.installed()) && skipped.as_deref() != Some(p.name))
             .map(|p| p.name)

@@ -249,6 +249,11 @@ pub const MESSAGES_HEAD: usize = 32;
 /// [`helper_said_why`]: the helper showed its message, the plugin shows none.
 pub const EXIT_STREAM_FORMAT: u32 = 10;
 pub const EXIT_EXTENSION_FORMAT: u32 = 11;
+/// The exit code of the GAME, not of the helper: MGE XE's `d3d8.dll` closes the game with it
+/// after its box, when the plugin refused the renderer after it changed the game's code (the
+/// plugin's export `nirender_refusal` says so, or the plugin has no such export). No helper
+/// runs then. In this table so that no helper code takes the number.
+pub const EXIT_PLUGIN_REFUSED: u32 = 12;
 /// The GPU or the window cannot be used: no adapter on any backend, no binding arrays with
 /// their room, no BC compression, too few sampled textures, no surface. The live start exits
 /// with it, after its own box.
