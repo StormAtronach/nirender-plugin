@@ -566,9 +566,11 @@ def mod_problem(plugin_commit, git=git_out):
     if git("cat-file", "-e", plugin_commit + "^{commit}")[0] != 0:
         return "the plugin DLL's commit %s is not in %s: fetch it, or run the runner of the DLL's own tree" % (plugin_commit, REPO), True
     code, names = git("diff", "--name-only", plugin_commit, "--", "mod")
-    if code != 0:
+    # A new file that git does not track yet is not in the diff, and stage_mod copies it into the run too.
+    code_new, new = git("ls-files", "--others", "--exclude-standard", "--", "mod")
+    if code != 0 or code_new != 0:
         return "git diff of mod/ against the plugin DLL's commit %s failed" % plugin_commit, True
-    changed = names.split()
+    changed = names.split() + new.split()
     if changed:
         return ("the run's Lua mod (%s/mod) is not the mod of the plugin DLL's commit %s: %d files differ (%s). Run the runner "
                 "of the DLL's own tree, or build the DLL of this tree" % (REPO, plugin_commit, len(changed), ", ".join(changed[:5]))), True
@@ -585,11 +587,16 @@ def self_test_build_ids():
         assert dirty_warnings(None, "abc1234-dirty") == ["WARNING: the plugin DLL is abc1234-dirty: a build of a work tree with changes; its commit does not name its code"]
         assert dirty_warnings(None, "abc1234") == []
 
-    def git(*args):
+    def git(*args, untracked=""):
         if args[0] == "cat-file":
             return (0 if args[2].startswith("abc1234") else 1), ""
+        if args[0] == "ls-files":
+            return 0, untracked
         return 0, "" if args[2] == "abc1234" else "mod/MWSE/mods/nirender/main.lua\nmod/MWSE/mods/nirender/stream.lua\n"
     assert mod_problem("abc1234", git) is None
+    # An untracked new file of mod/ is in the run too (the Reviewer's verdict 392).
+    text, error = mod_problem("abc1234", lambda *args: git(*args, untracked="mod/MWSE/mods/nirender/extra.lua\n"))
+    assert error and "1 files differ" in text and "extra.lua" in text, text
     assert mod_problem("def5678", git)[1] and "not in" in mod_problem("def5678", git)[0]
     text, error = mod_problem("abc1234f", git)
     assert error and "2 files differ" in text and "main.lua" in text, text
