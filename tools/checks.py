@@ -37,6 +37,8 @@ The checks of each list:
 - `check_counted_objects.py`: the host crate makes its GPU objects through the counted calls of
   `host/src/objects.rs` (no `create_*` call of the device or a texture elsewhere, D288); with
   `--mge` (the MGE XE list): the helper too.
+- `check_plain_guards.py` (the MGE XE list): each MWScript instruction of `d3d8/cpp/mwse` and each
+  macro function has the `Session::plain()` guard of the plain game in its place (W462).
 
 The docs scripts come from the docs checkout beside the main checkout, or from the tree that
 the local.json key "docs" names (`common.docs_place`), never from beside a worktree. MWSE is
@@ -141,6 +143,9 @@ CHECKS = {
     # crate and in the helper.
     "counted objects": (PLUGIN / "tools" / "check_counted_objects.py", PLUGIN),
     "mge counted objects": (PLUGIN / "tools" / "check_counted_objects.py", REPOS / "MGE-XE-G7-render-link", ["--mge", str(REPOS / "MGE-XE-G7-render-link")]),
+    # MGE XE's MWScript instructions and macro functions do nothing in the plain game (W462).
+    "mge plain guards": (PLUGIN / "tools" / "check_plain_guards.py", REPOS / "MGE-XE-G7-render-link", ["--mge", str(REPOS / "MGE-XE-G7-render-link")]),
+    "plain guards self-test": (PLUGIN / "tools" / "check_plain_guards.py", PLUGIN, ["--self-test"]),
     "counted objects self-test": (PLUGIN / "tools" / "check_counted_objects.py", PLUGIN, ["--self-test"]),
     # The places of the docs and MWSE for a tree with no siblings.
     "check places": (PLUGIN / "tools" / "checks.py", PLUGIN, ["--self-test"]),
@@ -148,15 +153,15 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test"],
-    "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test"],
+    "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects", "mge plain guards"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 
 # The option that gives each check of the MGE XE tree another tree than the render-link sibling
 # (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
-MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge", "mge counted objects": "--mge"}
+MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge", "mge counted objects": "--mge", "mge plain guards": "--mge"}
 
 
 def self_test():
