@@ -129,8 +129,10 @@ if ownDevice and installed then
     mwse.log("[nirender] own device, textures through the link: %s, facts %s, kinds %s", tostring(nirender.linkTextures(true)),
         tostring(nirender.linkUseFacts(4261413630)), tostring(nirender.linkUseKinds(15)))
 elseif ownDevice then
-    -- The renderer is refused for this session (a port cannot run as Rust): the game runs
-    -- MGE XE on Direct3D 9. The player sees why. When an option of the Morrowind Code Patch
+    -- The renderer is refused for this session. When the plugin changed the game's code (a
+    -- port cannot run as Rust), MGE XE closes the game when it asks for its Direct3D 8, and
+    -- this message is not reached. Else the game runs on its own Direct3D 8, and the player
+    -- sees why. When an option of the Morrowind Code Patch
     -- is the cause, the message names it and says whether it is on (MWSE reads the options
     -- that the Code Patch installed).
     local causes = {}

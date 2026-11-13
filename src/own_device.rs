@@ -783,6 +783,28 @@ pub extern "C" fn nirender_build_id() -> *const u8 {
     crate::BUILD_ID_C.as_ptr()
 }
 
+/// The refusal of the renderer, for the box of MGE XE's `d3d8.dll`, which asks it when
+/// [`nirender_direct3d_create8`] gives no Direct3D 8. Null when the plugin did not refuse;
+/// else the cause, a zero-ended ASCII text alive for the session. `code_changed` (may be
+/// null) gets 1 when the plugin wrote into the game's code before its refusal (its texture
+/// rule or a detour), and MGE XE then closes the game; 0 when nothing of the plugin is in the
+/// game's code, and the game then runs on its own Direct3D 8. A plugin without this export
+/// counts as code changed.
+///
+/// # Safety
+/// `code_changed` is null or points to a writable `u32`.
+#[no_mangle]
+pub unsafe extern "C" fn nirender_refusal(code_changed: *mut u32) -> *const u8 {
+    if !crate::install::refused() {
+        return core::ptr::null();
+    }
+    if !code_changed.is_null() {
+        // SAFETY: the caller gives a writable u32 or null (checked above).
+        *code_changed = u32::from(crate::install::code_changed());
+    }
+    crate::install::refusal_text().map_or(c"not known".as_ptr().cast(), |text| text.as_ptr().cast())
+}
+
 /// The `Direct3DCreate8` of the plugin. The `d3d8.dll` of MGE XE calls it, once at the start
 /// and again each time the game makes its renderer again (a change of its resolution,
 /// `TES3Game::restartRenderer`): a second call gives the same `IDirect3D8`, whose second
@@ -790,7 +812,7 @@ pub extern "C" fn nirender_build_id() -> *const u8 {
 #[no_mangle]
 pub unsafe extern "C" fn nirender_direct3d_create8(_sdk_version: u32) -> usize {
     if crate::install::refuse_without_ports() {
-        crate::log!("own device: the game asked for a Direct3D 8; refused (see above): it gets the Direct3D 9 of MGE XE");
+        crate::log!("own device: the game asked for a Direct3D 8; refused (see above): it gets none from the plugin");
         return 0;
     }
     PRESENT.store(true, Ordering::Relaxed);

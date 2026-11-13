@@ -1547,6 +1547,8 @@ def self_test_ending():
     assert run_ending(False, by_hand, [], None) == ENDED_OTHER, "code 0 before the first step: MWSE's check of MGE XE"
     assert run_ending(False, {"reason": "exited", "codes": [0xC0000005]}, [], "a") == ENDED_OTHER, "a planted abnormal exit"
     assert run_ending(False, by_hand, ["MWSE_MiniDump.dmp"], "a") == ENDED_OTHER, "a dump with exit code 0"
+    assert "exit code 12" in plugin_refused_line({"reason": "exited", "codes": [12]})
+    assert plugin_refused_line(by_hand) is None and plugin_refused_line({"reason": "exited", "codes": [20]}) is None
     assert run_ending(False, {"reason": "exited", "codes": [None]}, [], "a") == ENDED_OTHER, "a code not read"
     assert run_ending(False, {"reason": "exited", "codes": []}, [], "a") == ENDED_OTHER, "no code"
     for reason in ("timeout", "stopped", "never started"):
@@ -2421,14 +2423,32 @@ def run_ending(done, end, crash_files, step):
     return ENDED_OTHER
 
 
+# The game's exit code when MGE XE closes it after the plugin refused with its detours in (W462; src/stream_format.rs
+# EXIT_PLUGIN_REFUSED).
+GAME_EXIT_PLUGIN_REFUSED = 12
+
+
+def plugin_refused_line(end):
+    """The line for a game that MGE XE closed because the plugin refused after it changed the game's code, or None."""
+    if end.get("reason") == "exited" and GAME_EXIT_PLUGIN_REFUSED in (end.get("codes") or []):
+        return ("the game closed with exit code %d: the plugin refused the renderer after it changed the game's code, "
+                "and MGE XE closed the game (see the \"box:\" line of mgeXE.log)" % GAME_EXIT_PLUGIN_REFUSED)
+    return None
+
+
 def report_ending(run, done, progress):
     """The ending of `run` from the harness's LAST_END (absent in a harness from before W372: the crash path, as before)
-    and the dumps that the harness moved into the run folder; prints the line of a hand end. Returns the ending."""
+    and the dumps that the harness moved into the run folder; prints the line of a hand end or of the plugin's refusal
+    close. Returns the ending."""
     dumps = [path for path in (run.path("MWSE_MiniDump.dmp"), run.path(session.harness.DUMPS_FILE)) if os.path.isfile(path)]
     step = last_step(progress)
-    ending = run_ending(done, getattr(session.harness, "LAST_END", {}), dumps, step)
+    end = getattr(session.harness, "LAST_END", {})
+    ending = run_ending(done, end, dumps, step)
     if ending == ENDED_BY_HAND:
         print("ended without DONE after step %s, with exit code 0 (a close from outside, or the game's own exit)" % step)
+    refused = plugin_refused_line(end)
+    if refused:
+        print(refused)
     return ending
 
 

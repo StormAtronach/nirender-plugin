@@ -219,6 +219,9 @@ The instruments and the tests:
   for each triple (`src/entry_trace.rs`; the re-entrancy map in the docs reads these lines).
 - `NIRENDER_FILL_FREED=1`: every block the engine frees is filled with a pattern first; a
   read of freed memory faults at the read (`src/freed_fill.rs`).
+- `NIRENDER_REFUSE_AFTER_INSTALL=1`: the plugin refuses the renderer after its detours are in,
+  at the point of a real refusal (`src/install.rs`). MGE XE's `d3d8.dll` then shows its box
+  and closes the game with the exit code 12. A test of that close; it can only refuse.
 - `NIRENDER_STATE_SUMMARY=1`: `nirender.stateSummary()` gives a summary of the state of the
   engine and of the plugin by part, for the test that a capture leaves the game as it found it
   (`src/state_summary.rs`).
