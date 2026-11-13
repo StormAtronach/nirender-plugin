@@ -30,6 +30,7 @@ import json
 import os
 import re
 import stat
+import threading
 import subprocess
 import sys
 import tempfile
@@ -660,10 +661,11 @@ def set_treatment(age_days, cited, kept, used, current_known=True):
     return "go"
 
 
-# The folder of slot.py (the docs checkout of the tools), and the hours of a cleaner's reservation of the game: the bound
-# when a run dies, as a run ends its reservation at once (W363).
+# The folder of slot.py (the docs checkout of the tools), and the lease of a cleaner's reservation of the game, which a
+# thread renews while the cleaner works (D437): the bound when a run dies, as a run ends its reservation at once (W363).
 HARNESS = common.docs_place("docs", "scripts", "test-harness-2026-10-03")
-RESERVE_HOURS = 3.0
+RESERVE_MINUTES = 10
+RENEW_SECONDS = 120
 
 
 class GameNotFree(Exception):
@@ -704,13 +706,16 @@ def game_kept_free(tool, slots=None):
         reservation = slots.live_reservation("game", time.time())
         if reservation is not None:
             raise GameNotFree("the game slot is reserved by %s" % slots.describe_reservation(reservation))
-        reply = slots.reserve("game", label, time.time() + RESERVE_HOURS * 3600, all_sessions=True)
+        reply = slots.reserve("game", label, time.time() + RESERVE_MINUTES * 60, all_sessions=True)
     except slots.StateError as error:
         raise GameNotFree("the state of the slots cannot be read now: %s" % error) from error
     if reply.code != slots.DONE:
         raise GameNotFree(reply.text.splitlines()[0])
-    log_line("the game slot is reserved for this run: %s" % label, True)
+    log_line("the game slot is reserved for this run: %s, for %d minutes, renewed every %d s" % (label, RESERVE_MINUTES, RENEW_SECONDS), True)
 
+    stop = threading.Event()
+    renewer = threading.Thread(target=renew_reservation, args=(slots, label, stop), name="reservation renewer", daemon=True)
+    renewer.start()
     try:
         try:
             holder = slots.read_record(slots.holder_path("game"), slots.Holder)
@@ -721,7 +726,27 @@ def game_kept_free(tool, slots=None):
             raise GameNotFree("the game slot is held by %s, and a holder may start a game" % slots.describe_holder(holder))
         yield label
     finally:
+        stop.set()
+        renewer.join()
         end_reservation(slots, label)
+
+
+def renew_reservation(slots, label, stop, every=RENEW_SECONDS):
+    """Renews the cleaner's reservation of the game every `every` seconds until `stop` is set: a reservation by the same
+    label for all sessions replaces its own. A renewal that fails is logged; the next one tries again. A reservation
+    that is no longer the cleaner's (another session ended it) is not made again: the renewals stop."""
+    while not stop.wait(every):
+        try:
+            live = slots.live_reservation("game", time.time())
+            if live is None or live.who != label:
+                log_line("the reservation of the game is no longer this run's; the renewals stop", True)
+                return
+            reply = slots.reserve("game", label, time.time() + RESERVE_MINUTES * 60, all_sessions=True)
+            failure = None if reply.code == slots.DONE else reply.text.splitlines()[0]
+        except (slots.StateError, OSError) as error:
+            failure = str(error)
+        if failure:
+            log_line("the renewal of the reservation failed: %s" % failure, True)
 
 
 def end_reservation(slots, label, tries=5):
@@ -735,7 +760,7 @@ def end_reservation(slots, label, tries=5):
             failure = error
             if attempt + 1 < tries:
                 time.sleep(1)
-    log_line("THE RESERVATION STAYS until its time (%g h): %s. To end it: slot.py unreserve game --all-sessions \"%s\"" % (RESERVE_HOURS, failure, label), True)
+    log_line("THE RESERVATION STAYS until its time (at most %d minutes): %s. To end it: slot.py unreserve game --all-sessions \"%s\"" % (RESERVE_MINUTES, failure, label), True)
 
 
 def self_test_game_kept_free(harness=None):
@@ -780,6 +805,28 @@ def self_test_game_kept_free(harness=None):
             assert slots.live_reservation("game", time.time()) is None
             assert slots.take("game", "X: game").code == slots.DONE
             slots.release("game", "X: game")
+
+            # The lease is short, and a renewal moves its end later while the run works (D437).
+            with game_kept_free("test.py", slots) as label:
+                first = slots.live_reservation("game", time.time()).until
+                assert first <= time.time() + RESERVE_MINUTES * 60 + 1, first
+                stop = threading.Event()
+                renewer = threading.Thread(target=renew_reservation, args=(slots, label, stop, 0.05), daemon=True)
+                renewer.start()
+                time.sleep(0.3)
+                stop.set()
+                renewer.join()
+                assert slots.live_reservation("game", time.time()).until > first
+                # Another session ends the reservation: the renewal does not make it again (the Reviewer's verdict 392).
+                slots.unreserve("game", all_sessions_label=label)
+                stop = threading.Event()
+                renewer = threading.Thread(target=renew_reservation, args=(slots, label, stop, 0.05), daemon=True)
+                renewer.start()
+                time.sleep(0.3)
+                assert not renewer.is_alive() and slots.live_reservation("game", time.time()) is None
+                stop.set()
+                renewer.join()
+            assert slots.live_reservation("game", time.time()) is None
 
             # A fault of the run ends the reservation too.
             try:

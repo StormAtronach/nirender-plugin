@@ -48,7 +48,8 @@ The tool refuses while a game or a helper runs. A removal never goes through a l
 E:\\nirender-keep\\clean-worktrees.log.
 
 With --apply and the enforcement of the slots on, the tool reserves the game slot for all sessions
-(slot.py's `reserve --all-sessions`, W363) for its run, and ends the reservation on every exit path: a game hold that
+(slot.py's `reserve --all-sessions`, W363) for its run, as a lease of 10 minutes that a thread renews every 2 minutes
+while it works (D437), so that a run that dies frees the game soon, and ends the reservation on every exit path: a game hold that
 runs no game lapses after 15 minutes, so a hold cannot keep the game free. It refuses when there is no slot.py, when a
 reservation of the game runs, and when a game hold stands (`clean_common.game_kept_free`).
 """
