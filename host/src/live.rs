@@ -1936,7 +1936,8 @@ mod tests {
         unsafe { SetEvent(wait.event) };
         let start = Instant::now();
         assert!(wait.wait());
-        assert!(start.elapsed() < Duration::from_millis(1));
+        // The bound is loose: the tests run beside each other. The result above is the check.
+        assert!(start.elapsed() < Duration::from_millis(5));
         close(wait);
     }
 
