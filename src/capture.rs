@@ -1749,6 +1749,98 @@ unsafe fn begin(lock: &DeviceLock, out: Sink, warmup: u32, frames: u32) {
 /// (`frame_end`).
 static STOP_ASKED: AtomicBool = AtomicBool::new(false);
 
+/// What a stop of a capture ends (`nirender.captureStop`, W452). It never ends the stream: the
+/// stream of the plugin's own device is the renderer, and `nirender.streamEnd` ends it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StopTarget {
+    /// No capture into a file is in progress; a stream goes on.
+    Nothing,
+    /// The capture file of a direct stream; the stream goes on.
+    Tee,
+    /// A capture into a file without a stream: all of it ends.
+    File,
+}
+
+/// The kind of the sink of a capture, for [`stop_target`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SinkKind {
+    File,
+    Ring,
+}
+
+/// What a stop of a capture ends, from the phase, the sink and the capture file of a stream.
+fn stop_target(phase_off: bool, sink: Option<SinkKind>, tee_open: bool) -> StopTarget {
+    if phase_off {
+        return StopTarget::Nothing;
+    }
+    match sink {
+        Some(SinkKind::File) => StopTarget::File,
+        Some(SinkKind::Ring) if tee_open => StopTarget::Tee,
+        Some(SinkKind::Ring) | None => StopTarget::Nothing,
+    }
+}
+
+/// Ends a capture into a file: the capture file of a stream (the stream goes on), or a capture
+/// without a stream. With no capture into a file in progress it writes one line and ends
+/// nothing.
+pub unsafe fn stop_capture() {
+    let target = {
+        let lock = crate::sync::device_lock();
+        let found = match state(&lock) {
+            None => StopTarget::Nothing,
+            Some(s) => {
+                let sink = s.out.as_ref().map(|out| match out {
+                    Sink::File(_) => SinkKind::File,
+                    Sink::Ring(_) => SinkKind::Ring,
+                });
+                stop_target(s.phase == Phase::Off, sink, s.tee.is_some())
+            }
+        };
+        found
+    };
+    match target {
+        StopTarget::Nothing => crate::log!("captureStop: no capture into a file is in progress; the stream goes on"),
+        StopTarget::Tee => tee_end(),
+        StopTarget::File => stop(),
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::{stop_target, SinkKind, StopTarget};
+
+    /// A stop with nothing to stop ends nothing: no capture started, or one that ended.
+    #[test]
+    fn a_stop_without_a_capture_ends_nothing() {
+        assert_eq!(stop_target(true, None, false), StopTarget::Nothing);
+        assert_eq!(stop_target(true, Some(SinkKind::File), false), StopTarget::Nothing);
+        assert_eq!(stop_target(true, Some(SinkKind::Ring), true), StopTarget::Nothing);
+    }
+
+    /// W452 (trap T111): a stream whose capture file has ended goes on after a stop.
+    #[test]
+    fn a_stop_never_ends_the_stream() {
+        assert_eq!(stop_target(false, Some(SinkKind::Ring), false), StopTarget::Nothing);
+        assert_eq!(stop_target(false, Some(SinkKind::Ring), true), StopTarget::Tee);
+    }
+
+    /// A capture into a file without a stream ends whole.
+    #[test]
+    fn a_stop_ends_a_capture_into_a_file() {
+        assert_eq!(stop_target(false, Some(SinkKind::File), false), StopTarget::File);
+    }
+
+    /// The second stop finds what the first left: the capture file of the stream gone, or the
+    /// phase off. It ends nothing.
+    #[test]
+    fn a_second_stop_ends_nothing() {
+        assert_eq!(stop_target(false, Some(SinkKind::Ring), true), StopTarget::Tee);
+        assert_eq!(stop_target(false, Some(SinkKind::Ring), false), StopTarget::Nothing);
+        assert_eq!(stop_target(false, Some(SinkKind::File), false), StopTarget::File);
+        assert_eq!(stop_target(true, None, false), StopTarget::Nothing);
+    }
+}
+
 /// Ends the capture or the stream.
 pub unsafe fn stop() {
     let lock = crate::sync::device_lock();

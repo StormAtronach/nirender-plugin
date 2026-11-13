@@ -18,6 +18,7 @@ function standIn.capture() return false, "no plugin in this run" end
 function standIn.captureFrames() return false end
 function standIn.captureEnd() end
 function standIn.captureStop() end
+function standIn.streamEnd() end
 function standIn.streamMark() end
 function standIn.streamShot() end
 function standIn.retained() end

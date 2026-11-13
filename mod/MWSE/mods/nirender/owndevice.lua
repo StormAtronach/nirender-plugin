@@ -732,7 +732,7 @@ return function(nirender, spec)
             say("steps done: %s", nirender.captureStatus())
             -- The end of the stream is the end of the picture. The host program then says
             -- what it drew.
-            nirender.captureStop()
+            nirender.streamEnd()
             return after(1, scenario.finish)
         end
         local ok, problem = pcall(this[3])
