@@ -1631,6 +1631,10 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     let ring = Ring::open(name);
     println!("ring: {} MB", ring.capacity >> 20);
     println!("the wait for a record: {}", ring.record.kind());
+    println!(
+        "the wake for a batch (NIRENDER_WAKE_BATCH): {}",
+        crate::stream_format::wake_batch_state(switches().wake_batch)
+    );
     // The first record has the size of the picture and the window of the game.
     let mut data = Vec::new();
     let start = Instant::now();

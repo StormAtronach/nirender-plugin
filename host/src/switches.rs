@@ -74,9 +74,10 @@ pub(crate) struct Switches {
     /// game writes its frame. For the A/B of the helper's CPU in the wait.
     pub(crate) wait_yields: Option<u32>,
     /// `NIRENDER_WAKE_BATCH=<bytes>` ([`crate::stream_format::WAKE_BATCH_BYTES`]): the wake
-    /// for a batch. The game wakes this program at a batch of records, and this program
-    /// sleeps as soon as it has no record, except while a tile read is in progress. For the
-    /// A/B against the wait of today (W415).
+    /// for a batch, on by default with [`crate::stream_format::WAKE_BATCH_DEFAULT`] (W467).
+    /// The game wakes this program at a batch of records, and this program sleeps as soon as
+    /// it has no record, except while a tile read is in progress. [`None`] when the switch is
+    /// [`crate::stream_format::WAKE_BATCH_OFF`]: the wait of before W467.
     pub(crate) wake_batch: Option<u64>,
     /// `MGE_XE_PRESENT=immediate|mailbox|fifo|auto`: the present mode of the window, over
     /// the setting of the extension ([`crate::Extension::vsync`]), for a test.
@@ -147,11 +148,12 @@ impl Switches {
             one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
             wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),
-            wake_batch: read.parsed(
+            wake_batch: crate::stream_format::wake_batch_of(read.parsed_or(
                 "NIRENDER_WAKE_BATCH",
                 &crate::stream_format::wake_batch_expected(),
+                &crate::stream_format::wake_batch_taken(),
                 crate::stream_format::wake_batch,
-            ),
+            )),
             present: read
                 .choice("MGE_XE_PRESENT", &["immediate", "mailbox", "fifo", "auto"])
                 .map(|mode| match mode {

@@ -502,8 +502,9 @@ enum Wake {
 /// The slots of [`Ring::wakes`].
 const WAKE_KINDS: usize = 5;
 
-/// The switch of the wake for a batch: its values are
-/// [`WAKE_BATCH_BYTES`](crate::stream_format::WAKE_BATCH_BYTES).
+/// The switch of the wake for a batch, on by default: its values are
+/// [`WAKE_BATCH_BYTES`](crate::stream_format::WAKE_BATCH_BYTES), and
+/// [`WAKE_BATCH_OFF`](crate::stream_format::WAKE_BATCH_OFF) turns it off.
 const WAKE_BATCH_SWITCH: &str = "NIRENDER_WAKE_BATCH";
 
 /// The times of the one limit of the plugin on a host program that reads no record while
@@ -603,11 +604,12 @@ impl Ring {
             capacity,
             event,
             wakes: [0; WAKE_KINDS],
-            wake_batch: crate::switches::parsed(
+            wake_batch: crate::stream_format::wake_batch_of(crate::switches::parsed_or(
                 WAKE_BATCH_SWITCH,
                 &crate::stream_format::wake_batch_expected(),
+                &crate::stream_format::wake_batch_taken(),
                 crate::stream_format::wake_batch,
-            ),
+            )),
             unwoken: 0,
             read_event,
             read_waits: 0,

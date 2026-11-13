@@ -59,8 +59,13 @@ pub fn choice<'a>(name: &str, allowed: &[&'a str]) -> Option<&'a str> {
 /// The value of a switch through `parse`; a value that `parse` refuses is named in the log
 /// with `expected`, the values that it takes.
 pub fn parsed<T>(name: &str, expected: &str, parse: impl FnOnce(&str) -> Option<T>) -> Option<T> {
+    parsed_or(name, expected, "not set", parse)
+}
+
+/// `parsed`, with `taken` as what the log line names in place of the bad value.
+pub fn parsed_or<T>(name: &str, expected: &str, taken: &str, parse: impl FnOnce(&str) -> Option<T>) -> Option<T> {
     let value = text(name)?;
-    report(name, &value, parse(&value), expected, "not set")
+    report(name, &value, parse(&value), expected, taken)
 }
 
 /// `1` is on and `0` is off.
