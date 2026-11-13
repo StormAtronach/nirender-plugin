@@ -75,19 +75,26 @@ return function(nirender, spec)
 
     -- The engine's own renderer (`--engine-reference`): MGE XE has `runtime.disabled`, so the game has
     -- the system's Direct3D 8 and MGE XE gives no Lua API. These stand in for what this scenario, the
-    -- batches and the cards ask of it. The picture is the engine's draw of the world camera into a
-    -- rendered texture, read back: the world with no interface, at 2048 x 1024, so wider than the
-    -- screen's shape. Two others give nothing here: `niRenderer:takeScreenshot` returns nil, and a
-    -- window capture is black, as the game has exclusive full screen.
+    -- batches and the cards ask of it. The picture is the engine's draw of the world camera and then
+    -- of the arm camera into a rendered texture, read back: the world and the first-person arms with
+    -- no interface, at 2048 x 1024, so wider than the screen's shape. The two draws keep the order of
+    -- the engine's frame (`renderMainScene` 0x41C400): the world camera's clear of all and its
+    -- Click, then the arm camera's clear of depth and stencil (0x41C6E4) and its Click (0x41C734).
+    -- The water and the shadows of that frame are not drawn here. Two others give nothing here:
+    -- `niRenderer:takeScreenshot` returns nil, and a window capture is black, as the game has
+    -- exclusive full screen.
     -- The runner turns the TGA files of the run folder into PNG files at the end.
     if spec.engineReference then
         mge = mge or {}
         mge.saveScreenshot = function(params)
             local world = tes3.worldController.worldCamera
+            local arms = tes3.worldController.armCamera
             local texture = niRenderedTexture.create(2048, 1024)
             world.renderer:setRenderTarget(texture)
             world.camera:clear()
             world.camera:click(false)
+            arms.camera:clear(ni.cameraClearFlags.zBuffer + ni.cameraClearFlags.stencil)
+            arms.camera:click(false)
             world.renderer:setRenderTarget(nil)
             local pixels = niPixelData.new(2048, 1024)
             texture:readback(pixels)
