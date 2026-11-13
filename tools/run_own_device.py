@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lua_checks  # noqa: E402
 import session  # noqa: E402
 import symbols  # noqa: E402
-from common import REPO  # noqa: E402
+from common import BUILD_ID_RE, REPO, part_ids  # noqa: E402
 from make_play_set import PDB_KEEP  # noqa: E402
 
 TAG = "[nirender.owndevice] "
@@ -529,6 +529,72 @@ def build_commits(mge_build):
     if not found:
         return "commits: %s does not say them" % mge_build
     return "commits: nirender %s, render-link %s, from %s" % (found.group(1), found.group(2), what)
+
+
+def plugin_build_id(path):
+    """The commit in the build id of the plugin DLL at `path`, with its "-dirty", or None when it has no single one."""
+    try:
+        with open(path, "rb") as file:
+            found = {m.group(2).decode() + (m.group(3) or b"").decode() for m in BUILD_ID_RE.finditer(file.read()) if m.group(1) == b"nirender"}
+    except OSError:
+        return None
+    return found.pop() if len(found) == 1 else None
+
+
+def dirty_warnings(mge_build, plugin_commit):
+    """A WARNING line for each build id of the run that ends in "-dirty": a build of a work tree with changes, whose
+    commit does not name its code. The parts of `mge_build` and the plugin DLL's commit `plugin_commit`."""
+    commits = dict(part_ids(mge_build)[0]) if mge_build else {}
+    if plugin_commit:
+        commits["the plugin DLL"] = plugin_commit
+    return ["WARNING: %s is %s: a build of a work tree with changes; its commit does not name its code" % (name, commit)
+            for name, commit in sorted(commits.items()) if commit.endswith("-dirty")]
+
+
+def git_out(*args):
+    """The return code and the output of git in this repository."""
+    done = subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=True)
+    return done.returncode, done.stdout
+
+
+def mod_problem(plugin_commit, git=git_out):
+    """Why the nirender Lua mod of the run (mod/ of this repository, as it is) is not the mod of the plugin DLL's commit,
+    and whether that is an error, as (text, error) or None. The DLL and the Lua must come from one commit: the Lua calls
+    the DLL's functions. A dirty or unknown commit cannot be checked: a warning."""
+    if not plugin_commit or plugin_commit == "unknown" or plugin_commit.endswith("-dirty"):
+        return "WARNING: the plugin DLL's commit is %s: the run's Lua mod cannot be checked against it" % (plugin_commit or "not in its build id"), False
+    if git("cat-file", "-e", plugin_commit + "^{commit}")[0] != 0:
+        return "the plugin DLL's commit %s is not in %s: fetch it, or run the runner of the DLL's own tree" % (plugin_commit, REPO), True
+    code, names = git("diff", "--name-only", plugin_commit, "--", "mod")
+    if code != 0:
+        return "git diff of mod/ against the plugin DLL's commit %s failed" % plugin_commit, True
+    changed = names.split()
+    if changed:
+        return ("the run's Lua mod (%s/mod) is not the mod of the plugin DLL's commit %s: %d files differ (%s). Run the runner "
+                "of the DLL's own tree, or build the DLL of this tree" % (REPO, plugin_commit, len(changed), ", ".join(changed[:5]))), True
+    return None
+
+
+def self_test_build_ids():
+    with tempfile.TemporaryDirectory() as root:
+        dll = os.path.join(root, "akulakhan.dll")
+        with open(dll, "wb") as file:
+            file.write(b"\0nirender v0.3.8 abc1234-dirty\0nirender-host v0.3.8 abc1234\0")
+        assert plugin_build_id(dll) == "abc1234-dirty"
+        assert plugin_build_id(os.path.join(root, "none.dll")) is None
+        assert dirty_warnings(None, "abc1234-dirty") == ["WARNING: the plugin DLL is abc1234-dirty: a build of a work tree with changes; its commit does not name its code"]
+        assert dirty_warnings(None, "abc1234") == []
+
+    def git(*args):
+        if args[0] == "cat-file":
+            return (0 if args[2].startswith("abc1234") else 1), ""
+        return 0, "" if args[2] == "abc1234" else "mod/MWSE/mods/nirender/main.lua\nmod/MWSE/mods/nirender/stream.lua\n"
+    assert mod_problem("abc1234", git) is None
+    assert mod_problem("def5678", git)[1] and "not in" in mod_problem("def5678", git)[0]
+    text, error = mod_problem("abc1234f", git)
+    assert error and "2 files differ" in text and "main.lua" in text, text
+    assert mod_problem("abc1234-dirty", git) == ("WARNING: the plugin DLL's commit is abc1234-dirty: the run's Lua mod cannot be checked against it", False)
+    assert mod_problem(None, git)[1] is False
 
 
 class ModuleEntry(ctypes.Structure):
@@ -2040,6 +2106,7 @@ def self_test():
     self_test_full_dump()
     self_test_ending()
     self_test_use_instance()
+    self_test_build_ids()
     build = os.path.join("target", "akulakhan.dll")
     assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
@@ -2275,6 +2342,15 @@ def main():
         print("plugin DLL: none, a reference run without the plugin (--reference-plugin keeps it)", flush=True)
     else:
         print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
+    plugin_commit = None if no_plugin else plugin_build_id(session.DLL)
+    for line in dirty_warnings(args.mge_build, plugin_commit):
+        print("run_own_device: " + line, flush=True)
+    if not no_plugin and not args.archive:
+        found = mod_problem(plugin_commit)
+        if found and found[1]:
+            raise SystemExit("run_own_device: " + found[0] + "; nothing started")
+        if found:
+            print("run_own_device: " + found[0], flush=True)
     if weather_warning(args):
         print("run_own_device: " + weather_warning(args), flush=True)
     if weather_pin_warning(args):
