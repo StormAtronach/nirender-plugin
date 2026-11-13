@@ -474,8 +474,17 @@ unsafe extern "C" fn thread_census(l: LuaState) -> i32 {
     1
 }
 
-/// `nirender.captureStop()` ends the capture or the stream.
+/// `nirender.captureStop()` ends a capture into a file. The stream goes on: with the plugin's
+/// own device it is the renderer. With no capture into a file in progress, it ends nothing and
+/// writes one line (W452).
 unsafe extern "C" fn capture_stop(_l: LuaState) -> i32 {
+    crate::capture::stop_capture();
+    0
+}
+
+/// `nirender.streamEnd()` ends the stream, and with it a capture in progress. With the
+/// plugin's own device the renderer ends too: the host program exits.
+unsafe extern "C" fn stream_end(_l: LuaState) -> i32 {
     crate::capture::stop();
     0
 }
@@ -914,6 +923,7 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "captureEnd", capture_end);
     set_fn(l, "stream", stream);
     set_fn(l, "captureStop", capture_stop);
+    set_fn(l, "streamEnd", stream_end);
     set_fn(l, "streamShot", stream_shot);
     set_fn(l, "streamMark", stream_mark);
     set_fn(l, "stateSummary", state_summary);

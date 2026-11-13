@@ -70,7 +70,7 @@ return function(nirender, spec)
         if not this then
             inventory(false)
             say("steps done: %s", nirender.captureStatus())
-            nirender.captureStop()
+            nirender.streamEnd()
             return after(2, scenario.finish)
         end
         local ok, problem = pcall(this[3])

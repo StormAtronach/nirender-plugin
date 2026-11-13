@@ -34,7 +34,7 @@ return function(nirender, spec)
         local function poll()
             local status = nirender.captureStatus()
             if status:sub(1, 4) ~= "done" and os.clock() < finish_at then return after(0.25, poll) end
-            nirender.captureStop()
+            nirender.streamEnd()
             say("stream ended %s %s: %s", name, backend, nirender.captureStatus())
             after(3, function() one_stream(index + 1) end)
         end
