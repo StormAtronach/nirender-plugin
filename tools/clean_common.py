@@ -733,9 +733,14 @@ def game_kept_free(tool, slots=None):
 
 def renew_reservation(slots, label, stop, every=RENEW_SECONDS):
     """Renews the cleaner's reservation of the game every `every` seconds until `stop` is set: a reservation by the same
-    label for all sessions replaces its own. A renewal that fails is logged; the next one tries again."""
+    label for all sessions replaces its own. A renewal that fails is logged; the next one tries again. A reservation
+    that is no longer the cleaner's (another session ended it) is not made again: the renewals stop."""
     while not stop.wait(every):
         try:
+            live = slots.live_reservation("game", time.time())
+            if live is None or live.who != label:
+                log_line("the reservation of the game is no longer this run's; the renewals stop", True)
+                return
             reply = slots.reserve("game", label, time.time() + RESERVE_MINUTES * 60, all_sessions=True)
             failure = None if reply.code == slots.DONE else reply.text.splitlines()[0]
         except (slots.StateError, OSError) as error:
@@ -812,6 +817,15 @@ def self_test_game_kept_free(harness=None):
                 stop.set()
                 renewer.join()
                 assert slots.live_reservation("game", time.time()).until > first
+                # Another session ends the reservation: the renewal does not make it again (the Reviewer's verdict 392).
+                slots.unreserve("game", all_sessions_label=label)
+                stop = threading.Event()
+                renewer = threading.Thread(target=renew_reservation, args=(slots, label, stop, 0.05), daemon=True)
+                renewer.start()
+                time.sleep(0.3)
+                assert not renewer.is_alive() and slots.live_reservation("game", time.time()) is None
+                stop.set()
+                renewer.join()
             assert slots.live_reservation("game", time.time()) is None
 
             # A fault of the run ends the reservation too.
