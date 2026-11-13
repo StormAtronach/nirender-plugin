@@ -982,6 +982,12 @@ def self_test_checks():
     assert plain_case_line([close]) == close
     assert plain_case_line([">> Using the wgpu renderer: no Direct3D device", "-- runtime.disabled: the game runs on its own Direct3D 8"]) is None
 
+    # The close case passes without DONE only with both facts: MGE XE's close line and the game's exit code 12.
+    assert plain_case_closed(close, {"reason": "exited", "codes": [12]})
+    assert not plain_case_closed(close, {"reason": "exited", "codes": [0]})
+    assert not plain_case_closed(fall_back, {"reason": "exited", "codes": [12]})
+    assert not plain_case_closed(None, {"reason": "exited", "codes": [12]})
+
     # A batch that walks: the budget must cover the walk and the start.
     walk = {"E:/batch.lua": 'local MINUTES = tonumber(os.getenv("NIRENDER_WALK_MINUTES") or "") or 60\n'}
     read = walk.get
@@ -1432,17 +1438,19 @@ def self_test_refusal():
     """A refusal line of the plugin stops the run, with the lines of its cause; other lines do not."""
     refusal_of = session.refusal_of
     assert refusal_of(["census: 8 of 348 functions differ from the database", "install: 313 ports installed, 0 failed"]) is None
-    # The lines of plugin 862873b on MWSE.dll bf6a3039 (run 20261110-003000).
+    # The lines of plugin 862873b on MWSE.dll bf6a3039 (run 20261110-003000), with the end of the refusal line as the
+    # plugin writes it since W462.
     old = [
         "census: 0x6a9d84 NiDX8Renderer::deleting_dtor+0x4 [4]: [38, e5, 50, 03] was [88, 00, 00, 00] -> call 0x3bb82c0 in MWSE.dll (PORT LOCKED: it stays game code here)",
         "no detour on NiDX8Renderer::deleting_dtor: entry bytes differ from the database",
         "1 of 313 ports cannot run as Rust: NiDX8Renderer::deleting_dtor",
-        "install: the renderer is refused for this session (see the census above); the game keeps MGE XE on Direct3D 9",
+        "install: the renderer is refused for this session (see the census above); "
+        "nothing of the plugin is in the game's code, so the game runs on its own Direct3D 8",
         "own device: the game asked for a Direct3D 8; refused (see above)",
     ]
     reason = refusal_of(old)
     assert reason.startswith("the plugin refused the renderer: census: 0x6a9d84"), reason
-    assert "no detour on NiDX8Renderer::deleting_dtor" in reason and reason.endswith("the game keeps MGE XE on Direct3D 9"), reason
+    assert "no detour on NiDX8Renderer::deleting_dtor" in reason and reason.endswith("the game runs on its own Direct3D 8"), reason
     # The progress line of main.lua.
     assert "REFUSED: 1 of 313" in refusal_of(["[nirender.owndevice] step sh-start: true", "[nirender] REFUSED: 1 of 313 ports cannot run as Rust"])
     # The live log of MGE XE, as Run.refusal reads it.
@@ -2123,7 +2131,8 @@ def main():
                     "--mge-build with the switch renderer_wgpu on, and a switch of --env that makes the case. The game runs on its own Direct3D 8, "
                     "and the scenario runs as with --engine-reference (nirender/noplugin.lua, eng-<step>.png). MGE XE's fall-back line and the "
                     "plugin's refusal do not stop the run; the run fails with exit code 4 when mgeXE.log has neither the fall-back line nor "
-                    "the close after a refusal. Without --plugin-dll the run has no plugin, as a reference run")
+                    "the close after a refusal. A run that ends in that close (the line and the game's exit code 12) has no DONE and exits with 0. "
+                    "Without --plugin-dll the run has no plugin, as a reference run")
     ap.add_argument("--reference-plugin", action="store_true", help="with --reference or --engine-reference: keep akulakhan.dll in the run, its ports "
                     "installed in mode off and its recorder on the device, as every reference run before 2026-11-03. Without this a reference "
                     "run has no plugin: the run's mod has no DLL, the mods of the instance with one are off, the scenario runs with "
@@ -2315,7 +2324,7 @@ def main():
                     tourCells=args.tour_cells, tour=args.tour, tourSeconds=args.tour_seconds, tourDual=args.tour_dual or None, tourExtra=args.tour_extra or None, captureMenu=args.capture_menu, settleSeconds=args.settle, portTimes=args.port_times or None,
                     overlay=args.overlay or None, earlyPicture=run.path("early.png").replace("\\", "/") if args.early_picture else None,
                     afterLoadPictures=args.after_load_pictures or None, keepFade=args.keep_fade or None, keepAI=args.keep_ai or None,
-                    engineReference=(args.engine_reference or args.plain_case) or None, noPlugin=(no_plugin or args.plain_case) or None)
+                    engineReference=(args.engine_reference or args.plain_case) or None, noPlugin=no_plugin or None)
     # The plugin starts the host program. It reads these from the environment of the game.
     if not args.mge_build:
         os.environ["NIRENDER_HOST_EXE"] = HOST
@@ -2398,9 +2407,11 @@ def main():
     fell_back = fallback_of_run(run.wgpu, run.fell_back, progress)
     if fell_back:
         print("ERROR: " + fell_back)
+    closed = False
     if args.plain_case:
         mge_log = run.path("mgeXE.log")
         case = plain_case_line(open(mge_log, encoding="utf-8", errors="replace").read().splitlines() if os.path.isfile(mge_log) else [])
+        closed = plain_case_closed(case, getattr(session.harness, "LAST_END", {}))
         if case:
             print("plain case: " + case)
         else:
@@ -2413,7 +2424,9 @@ def main():
     # it is time to.
     print("size: this run %s; all runs in %s %s" % (folder_size(run.dir), os.path.dirname(run.dir), folder_size(os.path.dirname(run.dir))))
     print_disk_limits()
-    return run_exit_code(no_plugin, loaded, done, ending, bool(fell_back))
+    if closed:
+        print("plain case: the close after the refusal, as designed; the run passes without DONE")
+    return run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back))
 
 
 # The endings of a run (W372): DONE came; the game closed by itself without DONE, after a step started, with exit code
@@ -2451,6 +2464,12 @@ PLAIN_CASE_MARKS = ("!! wgpu renderer: not in use,", "!! wgpu renderer: the plug
 def plain_case_line(lines):
     """MGE XE's line of the case of a --plain-case run (`PLAIN_CASE_MARKS`), stripped, or None."""
     return next((line.strip() for line in lines if any(mark in line for mark in PLAIN_CASE_MARKS)), None)
+
+
+def plain_case_closed(case, end):
+    """True when a --plain-case run ended in the close after the plugin's refusal: MGE XE's close line (`case`) and
+    the game's exit code 12 in the harness's `end`. The game closes before DONE; the run passes."""
+    return bool(case) and PLAIN_CASE_MARKS[1] in case and plugin_refused_line(end) is not None
 SHADER_SET_LINE = re.compile(r"^shader batch: (\S+?): ")
 
 
