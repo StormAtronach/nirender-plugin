@@ -82,6 +82,9 @@ def guard_problems(name, body):
         if GUARD in body:
             return None, ["%s: the condition of the guard is not exactly `if (%s)`" % (name, GUARD)]
         return None, ["%s: no `if (%s)` guard" % (name, GUARD)]
+    before = body[:guard.start()]
+    if before.count("{") - before.count("}") != 1:
+        return guard, ["%s: the guard is inside another block, so the body can run past it in the plain game" % name]
     branch, _ = plain_branch(body, guard)
     if not returns(branch):
         return guard, ["%s: the plain branch does not end in a return, so the rest of the body runs" % name]
@@ -186,6 +189,14 @@ def self_test():
     # (3) A condition that is not exactly the guard.
     negated = good.replace("if (Session::plain())", "if (!Session::plain())")
     assert execute_findings(negated)[1] == ["A: the condition of the guard is not exactly `if (Session::plain())`"]
+    # (5) A guard nested under another condition: with a <= 0 the HUD call runs in the plain game.
+    nested_guard = ("bool P5::execute(mwseInstruction* _this) {\n    VMLONG a;\n    if (!_this->vmPop(&a)) { return false; }\n"
+                    "    if (a > 0) {\n        if (Session::plain()) {\n            _this->vmPush(VMREGTYPE(0));\n            return true;\n        }\n    }\n"
+                    "    MGEhud::hide(a);\n    return _this->vmPush(VMREGTYPE(1));\n}\n")
+    assert execute_findings(nested_guard)[1] == ["P5: the guard is inside another block, so the body can run past it in the plain game"]
+    # (6) A statement after the return of the branch.
+    after_return = good.replace("        return true;\n    }\n", "        return true;\n        MGEhud::hide(a);\n    }\n")
+    assert execute_findings(after_return)[1] == ["A: the plain branch does not end in a return, so the rest of the body runs"]
     # (4) A macro whose guard has an empty branch.
     macro = "void MacroFunctions::A() {\n    // MWSE can call it.\n    if (Session::plain()) {\n        return;\n    }\n    go();\n}\n"
     assert macro_findings(macro) == (1, [])
