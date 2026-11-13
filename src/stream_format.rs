@@ -425,30 +425,58 @@ pub fn accept_header(header: &[u8], reader: &str) -> Result<Writer, String> {
 pub const MESSAGE_LOST_DEVICE: u32 = 2;
 
 /// The values of the switch `NIRENDER_WAKE_BATCH` (W415), the bytes of a batch for the wake for
-/// a batch. Without the switch, the game wakes a sleeping helper after every record
-/// ([`RING_WAITING`]), and the helper stays awake while the game writes its frame. With it, the
-/// game wakes the helper when a batch is full, after the records of a frame's end, at a full
-/// ring and at a record for which it then waits; the helper sleeps as soon as it has no record.
-/// The plugin and the helper read the switch, each where it reads its other switches, and take
-/// its values here.
+/// a batch. The wake for a batch is on by default (W467, the owner's D430): the game wakes the
+/// helper when a batch is full, after the records of a frame's end, at a full ring and at a
+/// record for which it then waits; the helper sleeps as soon as it has no record. With
+/// [`WAKE_BATCH_OFF`], the game wakes a sleeping helper after every record ([`RING_WAITING`]),
+/// and the helper stays awake while the game writes its frame. The plugin and the helper read
+/// the switch, each where it reads its other switches, and take its values here.
 pub const WAKE_BATCH_BYTES: core::ops::RangeInclusive<u64> = 4096..=1 << 30;
+/// The bytes of a batch when the switch is not set, or has a value that is not one of its
+/// values: the batch of the A/B of W415 (the Narsis market, build f298).
+pub const WAKE_BATCH_DEFAULT: u64 = 65536;
+/// The value of the switch that turns the wake for a batch off.
+pub const WAKE_BATCH_OFF: u64 = 0;
 /// A record counts in a batch with its bytes up to this, so that a few large records do not
 /// set every wake.
 pub const WAKE_RECORD_CAP: u64 = 16 * 1024;
 
-/// The values of [`WAKE_BATCH_BYTES`] in words, for the log line of a bad value.
+/// The values of the switch in words, for the log line of a bad value.
 pub fn wake_batch_expected() -> String {
     format!(
-        "a number of bytes from {} to {}",
+        "a number of bytes from {} to {}, or {} for off",
         WAKE_BATCH_BYTES.start(),
-        WAKE_BATCH_BYTES.end()
+        WAKE_BATCH_BYTES.end(),
+        WAKE_BATCH_OFF
     )
 }
 
-/// The bytes of a batch from the text of the switch, or [`None`] for a text that is not one of
-/// [`WAKE_BATCH_BYTES`].
-pub fn wake_batch(text: &str) -> Option<u64> {
-    text.trim().parse().ok().filter(|bytes| WAKE_BATCH_BYTES.contains(bytes))
+/// What a bad value of the switch gives, for its log line.
+pub fn wake_batch_taken() -> String {
+    format!("the default, a batch of {WAKE_BATCH_DEFAULT} bytes")
+}
+
+/// The text of the switch: `Some(Some(bytes))` for a batch of [`WAKE_BATCH_BYTES`],
+/// `Some(None)` for [`WAKE_BATCH_OFF`], or [`None`] for a text that is neither.
+pub fn wake_batch(text: &str) -> Option<Option<u64>> {
+    match text.trim().parse::<u64>().ok()? {
+        WAKE_BATCH_OFF => Some(None),
+        bytes => WAKE_BATCH_BYTES.contains(&bytes).then_some(Some(bytes)),
+    }
+}
+
+/// The bytes of a batch, or [`None`] for the wake after every record, from the switch as
+/// [`wake_batch`] read it: [`WAKE_BATCH_DEFAULT`] when the switch is not set or has a bad value.
+pub fn wake_batch_of(switch: Option<Option<u64>>) -> Option<u64> {
+    switch.unwrap_or(Some(WAKE_BATCH_DEFAULT))
+}
+
+/// The state of the wake for a batch in words, for the log of the start.
+pub fn wake_batch_state(batch: Option<u64>) -> String {
+    match batch {
+        Some(bytes) => format!("on, a batch of {bytes} bytes"),
+        None => "off: a wake after every record".to_string(),
+    }
 }
 
 /// The count of a batch after a record of `bytes` (with its head), from `unwoken` since the
@@ -662,13 +690,33 @@ mod tests {
     }
 
     #[test]
-    fn the_wake_batch_switch_takes_bytes_in_its_range() {
-        assert_eq!(wake_batch("65536"), Some(65536));
-        assert_eq!(wake_batch(" 4096 "), Some(4096));
+    fn the_wake_batch_switch_takes_bytes_in_its_range_or_off() {
+        assert_eq!(wake_batch("65536"), Some(Some(65536)));
+        assert_eq!(wake_batch(" 4096 "), Some(Some(4096)));
+        assert_eq!(wake_batch("0"), Some(None));
+        assert_eq!(wake_batch(" 0 "), Some(None));
         assert_eq!(wake_batch("4095"), None);
         assert_eq!(wake_batch("1073741825"), None);
         assert_eq!(wake_batch("64k"), None);
-        assert_eq!(wake_batch_expected(), "a number of bytes from 4096 to 1073741824");
+        assert_eq!(wake_batch(""), None);
+        assert_eq!(
+            wake_batch_expected(),
+            "a number of bytes from 4096 to 1073741824, or 0 for off"
+        );
+    }
+
+    #[test]
+    fn the_wake_batch_is_on_by_default_and_off_only_by_its_off_value() {
+        // Not set, or a bad value: the default batch.
+        assert_eq!(wake_batch_of(None), Some(WAKE_BATCH_DEFAULT));
+        assert_eq!(wake_batch_of(wake_batch("64k")), Some(65536));
+        assert_eq!(wake_batch_of(wake_batch("16384")), Some(16384));
+        assert_eq!(wake_batch_of(wake_batch(&WAKE_BATCH_OFF.to_string())), None);
+        assert_eq!(wake_batch_of(wake_batch("00")), None);
+        assert!(WAKE_BATCH_BYTES.contains(&WAKE_BATCH_DEFAULT));
+        assert_eq!(wake_batch_state(Some(65536)), "on, a batch of 65536 bytes");
+        assert_eq!(wake_batch_state(None), "off: a wake after every record");
+        assert_eq!(wake_batch_taken(), "the default, a batch of 65536 bytes");
     }
 
     #[test]
