@@ -27,10 +27,64 @@ extern "system" {
     fn OpenEventA(access: u32, inherit: i32, name: *const u8) -> isize;
     fn SetEvent(event: isize) -> i32;
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
+    fn WaitForMultipleObjects(count: u32, handles: *const isize, all: i32, milliseconds: u32) -> u32;
+    fn CreateWaitableTimerExW(security: *const u8, name: *const u16, flags: u32, access: u32) -> isize;
+    fn SetWaitableTimer(timer: isize, due: *const i64, period: i32, routine: usize, argument: usize, resume: i32) -> i32;
 }
 
 /// The result of [`WaitForSingleObject`] when the event ended the wait.
 const WAIT_OBJECT_0: u32 = 0;
+/// The time limit of a wait for a record, in the 100 ns units of [`SetWaitableTimer`]: 1 ms.
+const RECORD_WAIT_LIMIT: i64 = 10_000;
+
+/// The wait for a record on the ring's event, 1 ms at most ([`Ring::wait_for_record`]). The
+/// limit is a high-resolution waitable timer, waited together with the event. This program
+/// does not raise the timer resolution, so a plain 1 ms limit of [`WaitForSingleObject`] ends at
+/// the next tick of the system timer, up to 15.6 ms later. Where the system refuses the
+/// timer's flag, the wait is the plain one.
+struct RecordWait {
+    /// The event the plugin sets after a write while this program waits; 0 without one.
+    event: isize,
+    /// The timer of the limit; 0 when the system refused it (or with no event).
+    timer: isize,
+}
+
+impl RecordWait {
+    fn new(event: isize) -> RecordWait {
+        let timer = if event == 0 {
+            0
+        } else {
+            // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (2), TIMER_ALL_ACCESS. Not a manual-reset
+            // timer: a wait takes its signal.
+            // SAFETY: no name and no security attributes; a refusal gives 0.
+            unsafe { CreateWaitableTimerExW(std::ptr::null(), std::ptr::null(), 2, 0x1F_0003) }
+        };
+        RecordWait { event, timer }
+    }
+
+    /// What the wait is, for the log.
+    fn kind(&self) -> &'static str {
+        match (self.event, self.timer) {
+            (0, _) => "a yield (the plugin has no event)",
+            (_, 0) => "the plain wait (the system refused the high-resolution timer)",
+            _ => "a high-resolution timer",
+        }
+    }
+
+    /// Waits on the event, 1 ms at most. True when the event ended the wait, false at the limit.
+    fn wait(&self) -> bool {
+        // SAFETY: the event and the timer are handles that this program opened and never closes.
+        unsafe {
+            let due = -RECORD_WAIT_LIMIT;
+            if self.timer == 0 || SetWaitableTimer(self.timer, &due, 0, 0, 0, 0) == 0 {
+                return WaitForSingleObject(self.event, 1) == WAIT_OBJECT_0;
+            }
+            // The event is first: when both are signalled, the wait gives the lowest index.
+            let handles = [self.event, self.timer];
+            WaitForMultipleObjects(2, handles.as_ptr(), 0, u32::MAX) == WAIT_OBJECT_0
+        }
+    }
+}
 
 // The layout of the HEADER record and of the shared memories of a stream: their one home,
 // shared with the plugin.
@@ -107,9 +161,9 @@ enum GamePhase {
 struct Ring {
     base: *mut u8,
     capacity: u64,
-    /// The event the plugin sets when it writes while this program waits; 0 with a
-    /// plugin that has none (this program then yields instead).
-    event: isize,
+    /// The wait on the event the plugin sets when it writes while this program waits; its
+    /// event is 0 with a plugin that has none (this program then yields instead).
+    record: RecordWait,
     /// The event `<ring>-shown` of the pacing, set when this program has shown a frame; 0
     /// without the pacing.
     shown_event: isize,
@@ -156,7 +210,7 @@ impl Ring {
                 return Ring {
                     base,
                     capacity,
-                    event,
+                    record: RecordWait::new(event),
                     shown_event,
                     read_event,
                 };
@@ -228,15 +282,14 @@ impl Ring {
     /// Gives `Some(woken)` after a wait on the event, with `woken` true when the game's event
     /// ended it and false at the time limit; [`None`] when it did not wait.
     fn wait_for_record(&self) -> Option<bool> {
-        if self.event == 0 {
+        if self.record.event == 0 {
             std::thread::yield_now();
             return None;
         }
         let waiting = unsafe { &*(self.base.add(RING_WAITING) as *const std::sync::atomic::AtomicU32) };
         waiting.store(1, Ordering::SeqCst);
         let read = self.counter(RING_READ).load(Ordering::Relaxed);
-        let woken = (self.counter(RING_WRITTEN).load(Ordering::SeqCst) - read < 8)
-            .then(|| unsafe { WaitForSingleObject(self.event, 1) } == WAIT_OBJECT_0);
+        let woken = (self.counter(RING_WRITTEN).load(Ordering::SeqCst) - read < 8).then(|| self.record.wait());
         waiting.store(0, Ordering::SeqCst);
         woken
     }
@@ -1577,6 +1630,7 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     println!("{}", super::cores::prefer_performance_cores());
     let ring = Ring::open(name);
     println!("ring: {} MB", ring.capacity >> 20);
+    println!("the wait for a record: {}", ring.record.kind());
     // The first record has the size of the picture and the window of the game.
     let mut data = Vec::new();
     let start = Instant::now();
@@ -1851,6 +1905,87 @@ mod tests {
         // A tile read in progress keeps the wait of today.
         assert_eq!(look_yields(256, true, true), 256);
         assert_eq!(look_action(1, look_yields(256, true, true), || true), LookAction::Yield);
+    }
+
+    extern "system" {
+        fn CreateEventA(security: *const u8, manual: i32, initial: i32, name: *const u8) -> isize;
+    }
+
+    /// A wait on a new event of its own (one that resets itself), with the timer of a ring.
+    fn record_wait() -> super::RecordWait {
+        // SAFETY: no name and no security attributes.
+        let event = unsafe { CreateEventA(std::ptr::null(), 0, 0, std::ptr::null()) };
+        assert_ne!(event, 0);
+        let wait = super::RecordWait::new(event);
+        assert_ne!(wait.timer, 0, "the system refused the high-resolution timer");
+        wait
+    }
+
+    fn close(wait: super::RecordWait) {
+        // SAFETY: both handles were made by the test and are not used after this.
+        unsafe {
+            CloseHandle(wait.event);
+            CloseHandle(wait.timer);
+        }
+    }
+
+    #[test]
+    fn a_set_event_ends_the_wait_as_woken() {
+        let wait = record_wait();
+        // SAFETY: the event is a live handle of the test.
+        unsafe { SetEvent(wait.event) };
+        let start = Instant::now();
+        assert!(wait.wait());
+        assert!(start.elapsed() < Duration::from_millis(1));
+        close(wait);
+    }
+
+    #[test]
+    fn a_wait_with_no_set_ends_near_its_limit_not_at_the_next_tick() {
+        // The plain 1 ms limit ends at the system's tick, 15.6 ms on a machine where no program
+        // raised the timer resolution. The bound is loose: the tests run beside each other.
+        let wait = record_wait();
+        let mut longest = Duration::ZERO;
+        let start = Instant::now();
+        for _ in 0..20 {
+            let one = Instant::now();
+            assert!(!wait.wait());
+            longest = longest.max(one.elapsed());
+        }
+        let mean = start.elapsed() / 20;
+        assert!(mean < Duration::from_millis(5), "mean {mean:?}, longest {longest:?}");
+        close(wait);
+    }
+
+    #[test]
+    fn a_timer_that_fired_with_no_wait_does_not_end_the_next_wait_at_once() {
+        // The event wins a wait; the timer fires later with no one waiting, and stays signalled
+        // until a wait takes it. The next wait must still last its limit.
+        let wait = record_wait();
+        let due = -super::RECORD_WAIT_LIMIT;
+        // SAFETY: the timer is a live handle of the test.
+        unsafe { SetWaitableTimer(wait.timer, &due, 0, 0, 0, 0) };
+        std::thread::sleep(Duration::from_millis(20));
+        let start = Instant::now();
+        assert!(!wait.wait());
+        let waited = start.elapsed();
+        assert!(waited >= Duration::from_micros(500), "the wait ended after {waited:?}");
+        close(wait);
+    }
+
+    #[test]
+    fn without_a_timer_the_wait_is_the_plain_one() {
+        // SAFETY: no name and no security attributes.
+        let event = unsafe { CreateEventA(std::ptr::null(), 0, 0, std::ptr::null()) };
+        let wait = super::RecordWait { event, timer: 0 };
+        assert_eq!(wait.kind(), "the plain wait (the system refused the high-resolution timer)");
+        assert!(!wait.wait());
+        // SAFETY: the event is a live handle of the test.
+        unsafe { SetEvent(event) };
+        assert!(wait.wait());
+        // SAFETY: the test made the event and does not use it after this.
+        unsafe { CloseHandle(event) };
+        assert_eq!(super::RecordWait::new(0).kind(), "a yield (the plugin has no event)");
     }
 
     /// A spread with 0.1 ms as 10 ticks and 1 ms as 100 ticks.
