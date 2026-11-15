@@ -41,6 +41,36 @@ assert(sets[1].run() == "no MGE XE", "a set's run reads the view")
 assert(rawget(_G, "batchGlobal") == 7, "a global write of the batch goes to _G")
 assert(mge == plain and plain.shaders == nil, "the batch changed the global mge")
 
+-- 2b. Chunks that a batch loads itself (a batch that runs a base batch, as runs-batch-d410/batch-runs-a.lua
+-- does with loadfile) read the view too, also one level further down, and the global loaders stay as they were.
+local folder = os.getenv("TEMP") or os.getenv("TMP") or "."
+local inner = folder .. "/mgeview_check_inner.lua"
+local file = assert(io.open(inner, "w"))
+file:write("return mge, loadstring('return mge')()\n")
+file:close()
+local loaders = { loadstring = loadstring, load = load, loadfile = loadfile, dofile = dofile }
+local outer = assert(loadstring(string.format([[
+    local path = %q
+    local fromString = loadstring("return mge")()
+    local fromLoad = load("return mge")()
+    local fromFile, deeper = loadfile(path)()
+    local fromDo = dofile(path)
+    local broken, problem = loadstring("return (")
+    return fromString, fromLoad, fromFile, deeper, fromDo, broken, problem
+]], inner)))
+setfenv(outer, view.environment(spec))
+local fromString, fromLoad, fromFile, deeper, fromDo, broken, problem = outer()
+os.remove(inner)
+assert(fromString == harness, "a chunk of loadstring reads the global mge, not the view")
+assert(fromLoad == harness, "a chunk of load reads the global mge, not the view")
+assert(fromFile == harness and deeper == harness, "a chunk of loadfile reads the global mge, not the view")
+assert(fromDo == harness, "a chunk of dofile reads the global mge, not the view")
+assert(broken == nil and type(problem) == "string", "a chunk with an error gives nil and the message")
+for name, loader in pairs(loaders) do
+    assert(rawget(_G, name) == loader, "the global " .. name .. " changed")
+end
+assert(mge == plain and plain.shaders == nil, "an inner chunk changed the global mge")
+
 -- 3. A game with MGE XE's API: the global has its own shaders, and the view does not replace them
 -- in the global table.
 local real = { shaders = { find = function() return "real" end, load = function() return "real" end }, render = {} }

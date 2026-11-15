@@ -56,12 +56,36 @@ end
 -- The environment for the Lua of a batch or a card (`loadstring`) in a run of `spec`, or nil when
 -- the chunk keeps the global one: in an engine-reference run, `mge` is the view, every other name is
 -- the global one, and a write of a global goes to the global table. Functions that the chunk makes
--- (a set's `run`) get the same environment.
+-- (a set's `run`) get the same environment, and so do the chunks that it loads itself with
+-- `loadstring`, `load`, `loadfile` or `dofile` (a batch that runs a base batch).
 function mgeview.environment(spec)
     if not (spec and spec.engineReference) then
         return nil
     end
-    return setmetatable({ mge = mgeview.of(spec) }, { __index = _G, __newindex = _G })
+    local environment
+
+    local function inEnvironment(chunk, ...)
+        if chunk then
+            setfenv(chunk, environment)
+        end
+        return chunk, ...
+    end
+
+    -- The fields are in the table before its metatable: a later write would go to _G.
+    environment = {
+        mge = mgeview.of(spec),
+        loadstring = function(...) return inEnvironment(loadstring(...)) end,
+        load = function(...) return inEnvironment(load(...)) end,
+        loadfile = function(...) return inEnvironment(loadfile(...)) end,
+        dofile = function(path)
+            local chunk, problem = inEnvironment(loadfile(path))
+            if not chunk then
+                error(problem, 2)
+            end
+            return chunk()
+        end,
+    }
+    return setmetatable(environment, { __index = _G, __newindex = _G })
 end
 
 return mgeview
