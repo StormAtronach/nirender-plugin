@@ -1676,6 +1676,39 @@ def self_test_live_mge_log():
              session.RESULTS, session.stage_mwse_config, session.MGE_LOGS) = saved
 
 
+def self_test_refusal_guard():
+    """W490: a log that goes or that another program holds while Run.refusal reads it does not end the run. The call
+    gives no reason, and the next call reads the lines it missed. A log that is gone is not fresh."""
+    line = "nirender: install: the renderer is refused for this session (see the census above)\n"
+    with tempfile.TemporaryDirectory() as folder:
+        saved = (session.MGE_LOGS, session.RESULTS)
+        session.RESULTS = folder
+        log = os.path.join(folder, "mgeXE.log")
+        session.MGE_LOGS = (log,)
+        try:
+            run = session.Run("refusal-guard-test")
+            run.started = time.time() - 10
+            with open(log, "w", encoding="utf-8") as file:
+                file.write("MGE-XE\n" + line)
+            os.utime(log, (run.started + 1, run.started + 1))
+            for error in (PermissionError, FileNotFoundError):
+                # The plant: every open of session.py raises, as Windows does it while Root Builder reads the log or
+                # clears the game folder.
+                def failing_open(*a, **k):
+                    raise error(13, "held by another program")
+
+                session.open = failing_open
+                try:
+                    assert run.refusal() is None, error
+                finally:
+                    del session.open
+            reason = run.refusal()
+            assert reason == "the plugin refused the renderer: " + line.strip()[len("nirender: "):], reason
+            assert not session.modified_after(os.path.join(folder, "gone.log"), 0), "a log that is gone is fresh"
+        finally:
+            session.MGE_LOGS, session.RESULTS = saved
+
+
 def self_test_ring_problem():
     """A plugin and a helper with different ring marks are refused before the start; the same
     mark, no mark or no helper are not. The helper is the Root file that wins in the mod list."""
@@ -2223,6 +2256,7 @@ def self_test():
     self_test_mge_log_problems()
     self_test_refusal()
     self_test_live_mge_log()
+    self_test_refusal_guard()
     self_test_fallback_guard()
     self_test_ring_problem()
     self_test_weather()

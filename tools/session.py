@@ -276,6 +276,14 @@ def fallback_of(lines):
     return None
 
 
+def modified_after(path, started):
+    """True when the file `path` exists and changed after the time `started`; False when it is absent or gone."""
+    try:
+        return os.path.getmtime(path) > started
+    except OSError:
+        return False
+
+
 class Run:
     """The folder and the files of one run of the game."""
 
@@ -392,14 +400,19 @@ class Run:
         if not hasattr(self, "_seen"):
             self._seen = {}
         marks = REFUSAL_MARKS + CAUSE_MARKS + (FALLBACK_MARKS if self.wgpu else ())
-        fresh = [path for path in MGE_LOGS if os.path.isfile(path) and self.started and os.path.getmtime(path) > self.started]
+        fresh = [path for path in MGE_LOGS if self.started and modified_after(path, self.started)]
         for path in fresh[:1] + [self.log, self.progress]:
             if not os.path.isfile(path):
                 continue
             offset, lines = self._seen.get(path, (0, []))
-            with open(path, "rb") as file:
-                file.seek(offset)
-                new = file.read()
+            # A file that goes or that another program holds between the test and the read waits for the next call:
+            # an OSError here would leave harness.run_game's loop and end the run.
+            try:
+                with open(path, "rb") as file:
+                    file.seek(offset)
+                    new = file.read()
+            except OSError:
+                continue
             # A line without its end yet waits for the next call.
             whole = new[:new.rfind(b"\n") + 1]
             text = whole.decode("utf-8", errors="replace").splitlines()
