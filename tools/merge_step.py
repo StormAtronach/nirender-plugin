@@ -53,6 +53,10 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   it. The build still runs, `deploy rest` then deploys nothing, and the round prints one "NOT DEPLOYED" line (in the log,
   and again after the summary) with each install's MWSE.dll and what it lacks, and the command that deploys the build
   with an MWSE.dll that has it (deploy_rest.py --mwse-dll). The installs keep the pair that they hold;
+- in the same rounds, after those probes, "mwse core": deploy_rest.py --check-mwse-core (D442). It fails when an
+  install's MWSE core is not the core of the MWSE commit of its MWSE.dll, by the record that deploy_rest.py --mwse-dll
+  --mwse-commit writes in each install (mwse-deployed.json), or when there is no such record. A failure fails the round,
+  and nothing is deployed;
 - a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
 - the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
   helper's renderer, the shaders of the assets (the source of the shaders in a build), or a manifest or a lock of the
@@ -224,6 +228,9 @@ MWSE_SITES_PATHS = ("src/ports/", "src/hook.rs", "src/install.rs", "src/gen/", "
 # --features, W406): in every round that deploys, plugin or render-link, before its build. A missing required feature
 # (exit code 4) passes the stage and keeps the deploy back, with one "NOT DEPLOYED" line for the round.
 FEATURES_STAGE = "mwse features "
+# The check that each install's MWSE core is the core of the MWSE commit of its MWSE.dll (deploy_rest.py --check-mwse-core,
+# D442): in every round that deploys, after the probes. A failure fails the round, so nothing is deployed.
+MWSE_CORE_STAGE = "mwse core"
 BUILD_FOR_DEPLOY = "build for the deploy"
 HARNESS_MOD = re.compile(r"[/\\]mods[/\\]Harness - [^/\\]*[/\\]", re.IGNORECASE)
 # These move a build out of its tree. Cargo then returns 0, and the gate replays the old file of the build folder.
@@ -310,6 +317,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     if deploys:
         for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
             stages.append((FEATURES_STAGE + instance, plugin, tool("check_mwse_sites.py", "--features", dll)))
+        stages.append((MWSE_CORE_STAGE, plugin, tool("deploy_rest.py", "--check-mwse-core")))
     if gate:
         stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
         stages.append(deploy)
@@ -1118,11 +1126,12 @@ def self_test():
 
         base = ["plugin tests", "host tests", HOST_GPU_STAGE, "clippy baseline", "checks", "docs"]
         # W406: every round that deploys probes the MWSE.dll of each install for the features that the plugin needs, before
-        # its build. A round of the plugin DLL or the mod's Lua builds the dist and deploys it without the gate.
-        features = [FEATURES_STAGE + name for name in MWSE_DEPLOYS]
+        # its build, and then checks the MWSE core of each install (D442). A round of the plugin DLL or the mod's Lua builds
+        # the dist and deploys it without the gate.
+        features = [FEATURES_STAGE + name for name in MWSE_DEPLOYS] + [MWSE_CORE_STAGE]
         gate_tail = features + ["build for the gate", DEPLOY_STAGE, "replay gate"]
         deploy_tail = features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
-        assert len(features) == 2
+        assert len(features) == 3
         assert names("plugin", plugin, "tools/x.py") == base and names("plugin", plugin, "README.md") == base, "a change of no deployed part deployed"
         assert names("plugin", plugin, "src/lib.rs") == base + deploy_tail
         assert names("plugin", plugin, "build.rs") == names("plugin", plugin, "build_support/build_id.rs") == base + deploy_tail
@@ -1139,11 +1148,14 @@ def self_test():
         assert probe[0] == plugin and probe[1][-3:] == [os.path.join("tools", "check_mwse_sites.py"), "--features", MWSE_DEPLOYS["Outlander-test"]], probe
         build_stage = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[BUILD_FOR_DEPLOY]
         assert build_stage == (mge, ["cargo", "xtask", "dist"]), build_stage
+        # D442: the check of the MWSE core runs in the plugin's tree, before the build.
+        core_stage = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[MWSE_CORE_STAGE]
+        assert core_stage[0] == plugin and core_stage[1][-2:] == [os.path.join("tools", "deploy_rest.py"), "--check-mwse-core"], core_stage
         # A change of the ports, the hooks, the install or the table: the MWSE.dll of each test install against the ports.
         # The sites stage is where it was before W406, and in no more rounds.
         dlls = [("Morrowind75testing", "D:/m75/MWSE.dll"), ("Outlander-test", "D:/o/MWSE.dll")]
         sites = ["mwse sites Morrowind75testing", "mwse sites Outlander-test"]
-        dll_features = [FEATURES_STAGE + "Morrowind75testing", FEATURES_STAGE + "Outlander-test"]
+        dll_features = [FEATURES_STAGE + "Morrowind75testing", FEATURES_STAGE + "Outlander-test", MWSE_CORE_STAGE]
         for path in ("src/ports/device_setup.rs", "src/hook.rs", "src/install.rs", "src/gen/funcs.rs", "src/site.rs", "tools/mwse_sites.baseline"):
             stages = stages_for("plugin", plugin, [path], mwse_dlls=dlls)
             tail = [] if path.startswith("tools/") else dll_features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
