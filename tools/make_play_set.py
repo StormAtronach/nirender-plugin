@@ -1187,7 +1187,7 @@ def self_test():
     assert local_bat_values(text) == {"PYTHON": "C:\\p.exe", "MGE_BUILD": "E:\\a\\f185", "NIRENDER_PLUGIN_DLL": "E:\\a\\f185\\x.dll", "OUTLANDER_INSTANCE": "D:\\o"}
     current_set_test()
 
-    good ="\n".join(["[t] shader batch: at-%d: run true asked %d,0 grid %d,0" % (i, i, i) for i in range(1, 6)] + [
+    good = "\n".join(["[t] shader batch: at-%d: run true asked %d,0 grid %d,0" % (i, i, i) for i in range(1, 6)] + [
         "[t] shader batch: save: run true saved: true grid 1,0", "[t] shader batch: away: run true away at grid 2,0",
         "[t] shader batch: loaded: run true saved in grid 1,0, now grid 1,0, loads 1",
         "[t] shader batch: map: run true open: MenuMulti, MenuMap", "[t] shader batch: inventory: run true open: MenuInventory",
