@@ -70,6 +70,7 @@ that set's commit (its WHAT.txt names it), and the merge step's "deploy rest" ru
 must have no change in those files.
 """
 import argparse
+import contextlib
 import dataclasses
 import datetime
 import hashlib
@@ -84,7 +85,7 @@ import tempfile
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
+from check_mwse_sites import D3D8, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from common import BUILD_ID_RE, REPO, git_env, local, main_checkout, parts_problems, sibling  # noqa: E402
 from make_play_set import say  # noqa: E402
 from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
@@ -361,7 +362,7 @@ def require_features(dll, plugin_commit, probe):
     DeployError when it could not judge."""
     code, output = probe(dll)
     for line in output.splitlines():
-        if line.startswith(("feature: ", MISSING, "absent: ", "md5: ")):
+        if line.startswith(("feature: ", MISSING, "absent: ", "md5: ", D3D8)):
             say("  " + line)
     if code == MISSING_FEATURE_EXIT:
         missing = [line[len(MISSING):] for line in output.splitlines() if line.startswith(MISSING)]
@@ -975,10 +976,15 @@ def mwse_test(root, build, quiet):
     assert probe_command("D:/x/MWSE.dll", "C:/r")[2:] == [CHECK_MWSE, "--features", "--mge", "C:/r", "D:/x/MWSE.dll"]
     request = ("native request 7: D:/x/MWSE.dll (md5 %s) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the d3d8 of C:/r "
                "sends: MWSE too old; missing \"keeps MGE XE's API in use.\"" % ("e" * 32))
-    no_request = lambda dll: (MISSING_FEATURE_EXIT, "absent: mge api request: 0 of 2 answer texts\n%s%s\nmd5: %s %s\n" % (MISSING, request, "e" * 32, dll))  # noqa: E731
+    found = "d3d8: C:/r sends native request 7 (mwse/mwsenative.cpp)"
+    no_request = lambda dll: (MISSING_FEATURE_EXIT, "%s\nabsent: mge api request: 0 of 2 answer texts\n%s%s\nmd5: %s %s\n" % (found, MISSING, request, "e" * 32, dll))  # noqa: E731
     for dry in (False, True):
-        text = refused(MissingFeature, **joint, dry_run=dry, probe=no_request)
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            text = refused(MissingFeature, **joint, dry_run=dry, probe=no_request)
         assert text == "MISSING FEATURE: %s lacks MWSE features that the build with the plugin %s needs: %s" % (mwse, FAKE_HEADS["plugin"], request), text
+        # The line of the source check shows with the lines of the probe (verdict 412).
+        assert "  %s\n" % found in printed.getvalue(), printed.getvalue()
     # The probe is the code of the tree: a tree whose files of the probe differ from the plugin's commit, or a commit that
     # git does not know, refuses before the probe. The fake gets the plugin's commit.
     asked, compared = [], []
