@@ -36,9 +36,11 @@
 //! The probe of MWSE's features ([`probe`], [`MWSE_FEATURES`], W406) asks another question: does
 //! this MWSE.dll have what this plugin needs? Each feature names the values that a DLL with it
 //! holds, and the forms that count: aligned values in its data for a site list, the operands of
-//! decoded code for the address of a patch; a required feature that the DLL lacks keeps the
-//! plugin out of an install with that DLL. The check of the sites fails on a new MWSE patch in a
-//! ported function; the probe asks only whether the patches that the plugin uses are there.
+//! decoded code for the address of a patch, texts in its data for an answer that has no engine
+//! address (the native request 7 of MGE XE's API, W495); a required feature that the DLL lacks
+//! keeps the plugin out of an install with that DLL. The check of the sites fails on a new MWSE
+//! patch in a ported function; the probe asks only whether the patches that the plugin uses are
+//! there.
 //!
 //! Limits: an address that MWSE computes at run time is no operand (the census of the game
 //! start sees it); a patch that MWSE.json turns off still fails here (the safe side); a vtable
@@ -175,6 +177,15 @@ impl<'a> Pe<'a> {
             let offset = rva.checked_sub(section.rva)? as usize;
             section.bytes.get(offset..offset + len)
         })
+    }
+
+    /// True when a section that is not code holds the bytes of `text`.
+    fn holds_text(&self, text: &str) -> bool {
+        let needle = text.as_bytes();
+        self.sections
+            .iter()
+            .filter(|section| section.name != ".text")
+            .any(|section| section.bytes.windows(needle.len()).any(|window| window == needle))
     }
 
     fn dword_at(&self, rva: u32) -> Option<u32> {
@@ -940,6 +951,9 @@ pub struct Feature {
     /// that MWSE gives its patch helper.
     pub forms: &'static [Form],
     pub values: fn() -> Vec<u32>,
+    /// Texts that a section that is not code holds: the log lines of an MWSE answer that has no
+    /// engine address (W495).
+    pub texts: &'static [&'static str],
 }
 
 /// An aligned value in a section that is not code.
@@ -950,7 +964,7 @@ pub const CODE: &[Form] = &[Form::Push, Form::MovReg, Form::MovMem];
 
 /// The features of MWSE that the plugin uses (W406, D328). A feature is present only when the DLL
 /// holds every one of its values: a part of a table is no feature.
-pub const MWSE_FEATURES: [Feature; 3] = [
+pub const MWSE_FEATURES: [Feature; 4] = [
     Feature {
         name: "count locks",
         what: "count lock sites",
@@ -959,6 +973,7 @@ pub const MWSE_FEATURES: [Feature; 3] = [
         required: true,
         forms: DATA,
         values: count_lock_values,
+        texts: &[],
     },
     Feature {
         name: "skinning flag",
@@ -968,6 +983,7 @@ pub const MWSE_FEATURES: [Feature; 3] = [
         required: true,
         forms: CODE,
         values: skinning_flag_values,
+        texts: &[],
     },
     Feature {
         name: "base map texture coordinates",
@@ -977,8 +993,37 @@ pub const MWSE_FEATURES: [Feature; 3] = [
         required: true,
         forms: CODE,
         values: base_texcoord_values,
+        texts: &[],
+    },
+    Feature {
+        name: MGE_API_REQUEST,
+        what: "answer texts",
+        // The plugin does not send the request; the d3d8.dll of render-link 76918d5 and later does.
+        // `tools/check_mwse_sites.py --features --mge <tree>` makes the feature required when the
+        // d3d8 source of that tree sends it (W495).
+        required: false,
+        forms: DATA,
+        values: no_values,
+        texts: MGE_API_ANSWERS,
     },
 ];
+
+/// The name of the feature of MWSE's native request 7
+/// ([`NATIVE_REQUEST_MGE_API`](crate::mwse_native::NATIVE_REQUEST_MGE_API), W489).
+/// `tools/check_mwse_sites.py` reads its line by this name.
+pub const MGE_API_REQUEST: &str = "mge api request";
+
+/// The log texts of MWSE's answer to native request 7 (`MgeApiLink::request` of NativeApi.cpp, MWSE
+/// b343305464). An MWSE without the request holds neither of them.
+const MGE_API_ANSWERS: &[&str] = &[
+    "keeps MGE XE's API in use.",
+    "withdraws MGE XE's API: the mge calls do nothing from now on.",
+];
+
+/// The values of a feature that the DLL shows only by its texts.
+fn no_values() -> Vec<u32> {
+    Vec::new()
+}
 
 /// The entries of MWSE's table `NI::RefCountLocks::sites`: the addresses of the sites.
 fn count_lock_values() -> Vec<u32> {
@@ -1016,11 +1061,13 @@ pub struct Probe {
     pub wanted: usize,
     /// The values that the data of the DLL does not hold, in the order of the feature.
     pub missing: Vec<u32>,
+    /// The texts that the data of the DLL does not hold, in the order of the feature.
+    pub missing_texts: Vec<&'static str>,
 }
 
 impl Probe {
     pub fn present(&self) -> bool {
-        self.missing.is_empty()
+        self.missing.is_empty() && self.missing_texts.is_empty()
     }
 
     /// True when the DLL may not go beside this plugin.
@@ -1031,13 +1078,16 @@ impl Probe {
     /// The line of the probe: "feature: " when present, "MISSING: " when required and absent,
     /// else "absent: ". `tools/check_mwse_sites.py --features` reads these marks.
     pub fn line(&self) -> String {
-        let found = self.wanted - self.missing.len();
+        let absent = self.missing.len() + self.missing_texts.len();
+        let found = self.wanted - absent;
         let count = format!("{found} of {} {} {}", self.wanted, self.what, place_of(self.forms));
         if self.present() {
             return format!("feature: {}: present ({count})", self.name);
         }
-        let shown: Vec<String> = self.missing.iter().take(4).map(|value| format!("{value:#x}")).collect();
-        let more = if self.missing.len() > shown.len() { ", ..." } else { "" };
+        let values = self.missing.iter().map(|value| format!("{value:#x}"));
+        let texts = self.missing_texts.iter().map(|text| format!("\"{text}\""));
+        let shown: Vec<String> = values.chain(texts).take(4).collect();
+        let more = if absent > shown.len() { ", ..." } else { "" };
         let missing = format!("missing {}{more}", shown.join(", "));
         if self.required {
             format!("MISSING: {}: {count}, {missing}: the plugin needs it", self.name)
@@ -1051,7 +1101,7 @@ impl Probe {
 /// only in a form of its feature: the count lock table is data, and an operand of code with the
 /// same value is another patch, not the table.
 pub fn probe(pe: &[u8], features: &[Feature]) -> Option<Vec<Probe>> {
-    Pe::parse(pe)?;
+    let image = Pe::parse(pe)?;
     let wanted: HashSet<u32> = features.iter().flat_map(|feature| (feature.values)()).collect();
     let (found, _) = operands(pe, |value| wanted.contains(&value));
     let probes = features
@@ -1064,8 +1114,9 @@ pub fn probe(pe: &[u8], features: &[Feature]) -> Option<Vec<Probe>> {
                 what: feature.what,
                 required: feature.required,
                 forms: feature.forms,
-                wanted: values.len(),
+                wanted: values.len() + feature.texts.len(),
                 missing: values.into_iter().filter(|value| !held(value)).collect(),
+                missing_texts: feature.texts.iter().copied().filter(|text| !image.holds_text(text)).collect(),
             }
         })
         .collect();
@@ -1609,6 +1660,7 @@ mod tests {
                 required: true,
                 forms: DATA,
                 values,
+                texts: &[],
             },
             Feature {
                 name: "b",
@@ -1616,6 +1668,7 @@ mod tests {
                 required: false,
                 forms: DATA,
                 values,
+                texts: &[],
             },
         ];
         let empty = made_up_pe(&[0xC3], &[], &[]);
@@ -1636,7 +1689,45 @@ mod tests {
 
     /// The probes of the two patch features, in the order of [`MWSE_FEATURES`].
     fn patches_of(pe: &[u8]) -> Vec<Probe> {
-        probe(pe, &MWSE_FEATURES).unwrap().split_off(1)
+        probe(pe, &MWSE_FEATURES).unwrap().drain(1..3).collect()
+    }
+
+    fn mge_api_request_of(pe: &[u8]) -> Probe {
+        let probe = probe(pe, &MWSE_FEATURES).unwrap().remove(3);
+        assert_eq!(probe.name, MGE_API_REQUEST);
+        probe
+    }
+
+    /// Bytes that hold each of `texts` with its closing zero, as a compiler stores a string.
+    fn texts_of(texts: &[&str]) -> Vec<u8> {
+        texts.iter().flat_map(|text| text.bytes().chain([0])).collect()
+    }
+
+    #[test]
+    fn the_mge_api_request_is_present_when_the_data_holds_both_answers() {
+        let probe = mge_api_request_of(&made_up_pe(&[0xC3], &texts_of(MGE_API_ANSWERS), &[]));
+        assert!(probe.present() && !probe.blocks(), "{probe:?}");
+        assert_eq!(
+            probe.line(),
+            "feature: mge api request: present (2 of 2 answer texts in the data of MWSE.dll)"
+        );
+    }
+
+    #[test]
+    fn the_mge_api_request_is_absent_with_one_answer_or_with_the_answers_only_in_code() {
+        // An MWSE that rewords one answer: the line names the text that the data lacks.
+        let one = mge_api_request_of(&made_up_pe(&[0xC3], &texts_of(&MGE_API_ANSWERS[..1]), &[]));
+        assert!(!one.present() && !one.blocks(), "{one:?}");
+        assert_eq!(
+            one.line(),
+            "absent: mge api request: 1 of 2 answer texts in the data of MWSE.dll, missing \
+             \"withdraws MGE XE's API: the mge calls do nothing from now on.\": the plugin runs without it"
+        );
+        // The bytes of the texts in `.text` are no answer of MWSE.
+        let code_only = [&[0xC3][..], &texts_of(MGE_API_ANSWERS)].concat();
+        let in_code = mge_api_request_of(&made_up_pe(&code_only, &[], &[]));
+        assert_eq!(in_code.missing_texts, MGE_API_ANSWERS);
+        assert!(in_code.missing.is_empty() && in_code.wanted == 2, "{in_code:?}");
     }
 
     #[test]
