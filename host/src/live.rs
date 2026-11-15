@@ -1680,11 +1680,23 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
     } else {
         println!("watchdog: off (MGE_XE_WATCHDOG=0)");
     }
+    // The memories beside the ring. One that does not open leaves its answers out (W501, parked):
+    // the log says so at the start.
+    let (reply, tiles, messages) = (Reply::open(name), Tiles::open(name), Messages::open(name));
+    if reply.is_none() {
+        println!("no reply memory: the pixel reads of the game get no answer");
+    }
+    if tiles.is_none() {
+        println!("no tile memory: the tile reads of the game get no answer");
+    }
+    if messages.is_none() {
+        println!("no message memory: the messages of the extension do not reach the game");
+    }
     let mut app = App {
         ring,
-        reply: Reply::open(name),
-        tiles: Tiles::open(name),
-        messages: Messages::open(name),
+        reply,
+        tiles,
+        messages,
         extension,
         back_buffer: None,
         backends,
