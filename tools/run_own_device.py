@@ -1926,6 +1926,55 @@ def self_test_ending():
                 session.harness.LAST_END = saved
 
 
+# The end of the progress.log of run 20261115-224947-w421-null (W417's plant): DONE, then a crash in the harness's close,
+# and its two dumps. The progress lines as `Run.progress_lines` gives them (the mod's tag taken out; the start of the
+# repository's path shortened).
+CRASH_AT_CLOSE = [
+    "steps done: off: no plugin in this run",
+    "report written",
+    "DONE",
+    "[runner] game closed in 10 s, without /F, exit code 0xC0000005",
+    "[runner] crash dump kept: C:\\repos\\nirender-plugin\\results\\20261115-224947-w421-null\\MWSE_MiniDump.dmp, "
+    "3200250 bytes, from D:\\Modlists\\Morrowind75testing\\overwrite\\Root (MWSE)",
+    "[runner] crash dump kept: E:\\nirender-keep\\dumps\\20261115-224947-w421-null\\Morrowind.exe.40672.dmp, 1277339268 bytes, "
+    "from C:\\tmp\\mwdumps (Windows Error Reporting)",
+]
+CRASH_AT_CLOSE_POINTER = ("E:\\nirender-keep\\dumps\\20261115-224947-w421-null\\Morrowind.exe.40672.dmp\t1277339268\t"
+                          "C:\\tmp\\mwdumps (Windows Error Reporting)\n")
+
+
+def self_test_crash_after_done():
+    """W417: a run with DONE whose game crashed in its close gives EXIT_CRASHED_AFTER_DONE and a line with the exit code
+    and the dumps, from the files of a run folder. The nulls: a clean close after DONE gives 0; a crash before DONE keeps
+    its own ending (1); the exit code 4 and 2 win over 5."""
+    clean = CRASH_AT_CLOSE[:3] + ["[runner] game closed in 2 s, without /F, exit code 0x00000000"]
+    assert close_codes(CRASH_AT_CLOSE) == [0xC0000005] and close_codes(clean) == [0]
+    assert close_codes(CRASH_AT_CLOSE[:3]) == [], "the game closed by itself: no close line"
+    assert close_codes(["[runner] game closed in 1 s, without /F, exit code not read"]) == []
+    assert close_codes(["[runner] warning: the game did not close in 30 s; it is ended with /F"]) == [], "a hang: out of W417"
+    with tempfile.TemporaryDirectory() as folder:
+        assert kept_dumps(folder) == []
+        assert crash_after_done_line(True, close_codes(clean), kept_dumps(folder)) is None, "a clean close after DONE"
+        minidump = os.path.join(folder, "MWSE_MiniDump.dmp")
+        open(minidump, "wb").close()
+        with open(os.path.join(folder, session.harness.DUMPS_FILE), "w", encoding="utf-8") as pointer:
+            pointer.write(CRASH_AT_CLOSE_POINTER)
+        wer = "E:\\nirender-keep\\dumps\\20261115-224947-w421-null\\Morrowind.exe.40672.dmp"
+        assert kept_dumps(folder) == [minidump, wer], kept_dumps(folder)
+        line = crash_after_done_line(True, close_codes(CRASH_AT_CLOSE), kept_dumps(folder))
+        assert line.startswith("the game crashed after DONE: exit code 0xC0000005 at its close; dumps: ") and minidump in line and wer in line, line
+        # A dump with a clean exit code, and a crash code with no dump: each is a crash after DONE.
+        assert "exit code 0x00000000" in crash_after_done_line(True, [0], [minidump])
+        assert "dumps: none" in crash_after_done_line(True, [0xC0000005], [])
+        assert crash_after_done_line(False, close_codes(CRASH_AT_CLOSE), kept_dumps(folder)) is None, "no DONE: run_ending decides"
+    assert run_exit_code(False, False, True, ENDED_DONE, False, True) == EXIT_CRASHED_AFTER_DONE == 5
+    assert run_exit_code(False, False, True, ENDED_DONE, False, False) == 0
+    assert run_exit_code(False, False, False, ENDED_OTHER, False, False) == 1, "a crash before DONE (Rob's 20261115-224206-rob-w344-ref-exit)"
+    assert run_exit_code(False, False, True, ENDED_DONE, True, True) == EXIT_FELL_BACK
+    assert run_exit_code(True, True, True, ENDED_DONE, False, True) == 2
+    assert len({0, 1, 2, EXIT_ENDED_BY_HAND, EXIT_FELL_BACK, EXIT_CRASHED_AFTER_DONE}) == 6, "one code for each ending"
+
+
 def self_test_run_log():
     """W417: the --log stream goes on into RUN_LOG of the run folder from its start, with the lines before it; a second
     run with the same --log file overwrites that file and leaves the first run's copy. The null: the --log file alone
@@ -2391,6 +2440,7 @@ def self_test():
     self_test_plugin_evidence()
     self_test_full_dump()
     self_test_ending()
+    self_test_crash_after_done()
     self_test_run_log()
     self_test_use_instance()
     self_test_build_ids()
@@ -2796,6 +2846,9 @@ def main():
             fell_back = "a --plain-case run without MGE XE's line of the case in mgeXE.log: the renderer was in use"
             print("ERROR: " + fell_back)
     ending = report_ending(run, done, progress)
+    crashed = crash_after_done_line(done, close_codes(progress), kept_dumps(run.dir))
+    if crashed:
+        print("ERROR: " + crashed)
     print("pictures in " + run.dir)
     # The size of the run and of every run kept (the owner, 2026-10-18: the results folder
     # had grown to hundreds of GB unnoticed). The runner deletes nothing; the line says when
@@ -2804,7 +2857,7 @@ def main():
     print_disk_limits()
     if closed:
         print("plain case: the close after the refusal, as designed; the run passes without DONE")
-    return run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back))
+    return run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed))
 
 
 # The endings of a run (W372): DONE came; the game closed by itself without DONE, after a step started, with exit code
@@ -2816,6 +2869,11 @@ EXIT_ENDED_BY_HAND = 3
 # A wgpu run without the renderer: MGE XE fell back to the plain game (the fall-back guard, D328, verdict 314; W462).
 # A --plain-case run without MGE XE's fall-back line fails with it too.
 EXIT_FELL_BACK = 4
+# A run whose steps were done (DONE) and whose game then crashed in its close (W417): the close line of the harness
+# (`close_game`, "[runner] game closed ...") has an exit code that is not 0, or the run kept a dump. The pictures and
+# logs of the steps stay in the run folder; the run is not clean.
+EXIT_CRASHED_AFTER_DONE = 5
+CLOSE_LINE = re.compile(r"^\[runner\] game closed in \d+ s, without /F, exit code (.+)$")
 # The copy of the --log stream in the run folder, from the run folder's start on: a --log file of the same name in a
 # later run does not take it (W417).
 RUN_LOG = "runner-log.txt"
@@ -2896,6 +2954,41 @@ def report_ending(run, done, progress):
     return ending
 
 
+def close_codes(progress):
+    """The exit codes of the harness's close of the game, from its last close line in the progress lines. Empty when the
+    harness did not close a game (it closed by itself, or was ended with /F) or did not read a code."""
+    codes = []
+    for line in progress:
+        found = CLOSE_LINE.match(line)
+        if found:
+            codes = [int(code, 16) for code in found.group(1).split(", ") if code.startswith("0x")]
+    return codes
+
+
+def kept_dumps(run_dir):
+    """The dumps that the harness kept for the run: MWSE's MiniDump in the run folder, and each dump that the run's
+    pointer file names (the first field of each line)."""
+    dumps = []
+    minidump = os.path.join(run_dir, "MWSE_MiniDump.dmp")
+    if os.path.isfile(minidump):
+        dumps.append(minidump)
+    pointer = os.path.join(run_dir, session.harness.DUMPS_FILE)
+    if os.path.isfile(pointer):
+        with open(pointer, encoding="utf-8", errors="replace") as file:
+            dumps.extend(line.split("\t")[0] for line in file.read().splitlines() if line.strip())
+    return dumps
+
+
+def crash_after_done_line(done, codes, dumps):
+    """The line for a run whose game crashed after DONE (an exit code of the close that is not 0, or a kept dump), or
+    None. A run without DONE has its own ending (`run_ending`)."""
+    if not done or not (any(code != 0 for code in codes) or dumps):
+        return None
+    codes_text = ", ".join("0x%08X" % code for code in codes) or "not read"
+    return ("the game crashed after DONE: exit code %s at its close; dumps: %s. The steps were done: their pictures and "
+            "logs are in the run folder" % (codes_text, ", ".join(dumps) or "none"))
+
+
 def last_step(progress):
     """The last step that the progress lines show started: a "step <name>:" line, or the start of a set of a shader
     batch ("shader batch: <set>: ...", the step sh-<set>). None before the first."""
@@ -2910,15 +3003,18 @@ def last_step(progress):
     return found
 
 
-def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False):
+def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, crashed_after_done=False):
     """2 for a run without the plugin that loaded it (no reference), 4 (EXIT_FELL_BACK) for a wgpu
-    run that MGE XE took to the plain game, also with DONE, else 0 when the steps were done in the
+    run that MGE XE took to the plain game, also with DONE, 5 (EXIT_CRASHED_AFTER_DONE) for a run
+    whose game crashed in its close after DONE (W417), else 0 when the steps were done in the
     budget, 3 for a run ended by hand (W372), 1 for any other end. The 4 of check_mwse_sites.py and
     deploy_rest.py (a missing MWSE feature) is another tool's code: nothing reads both."""
     if no_plugin and loaded:
         return 2
     if fell_back:
         return EXIT_FELL_BACK
+    if done and crashed_after_done:
+        return EXIT_CRASHED_AFTER_DONE
     if done:
         return 0
     return EXIT_ENDED_BY_HAND if ending == ENDED_BY_HAND else 1

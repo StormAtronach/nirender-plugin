@@ -111,6 +111,11 @@ def newest(label, since=None):
 
 GPU_TIME = {}
 RUNNER_ARGS = []
+# The runner's exit code of a run whose steps were done and whose game then crashed in its close
+# (run_own_device.EXIT_CRASHED_AFTER_DONE, W417; the self-test checks the value). The gate judges the pictures of the
+# steps, so such a run counts as ran, with a line.
+RUNNER_CRASHED_AFTER_DONE = 5
+CRASH_AFTER_DONE_LINE = "ERROR: the game crashed after DONE"
 # The weather that the runs pin and hold (the runner's --weather), or None for --weather any.
 WEATHER = {"pin": 0}
 
@@ -161,12 +166,23 @@ def game(label, extra, mge_build, env=None):
     e = dict(GPU_TIME)
     e.update(env or {})
     started = time.strftime(RUN_TIME)
-    if not ran(run_code(args, e), "the runner of " + label):
+    if not ran(after_done(run_code(args, e), label), "the runner of " + label):
         return None
     folder = newest(label, started)
     if not folder:
         check(False, "the runner of %s made no folder since %s" % (label, started))
     return folder
+
+
+def after_done(result, label):
+    """The runner's `result` of `run_code`, with a crash after DONE (RUNNER_CRASHED_AFTER_DONE) as the code 0 and a line
+    with the runner's ERROR line: the steps and their pictures are there."""
+    code, output = result
+    if code != RUNNER_CRASHED_AFTER_DONE:
+        return result
+    crash = next((line for line in output.splitlines() if line.startswith(CRASH_AFTER_DONE_LINE)), CRASH_AFTER_DONE_LINE)
+    print("  the runner of %s: the steps were done; %s" % (label, crash), flush=True)
+    return 0, output
 
 
 def host_counts(folder):
@@ -526,6 +542,16 @@ def self_test():
         assert calls[0][1].get("MGE_XE_CORE_MODS") == "0", calls[0][1]
     finally:
         build_missing, run_code = real_build_missing, real_run_code
+    # W417: a crash after DONE counts as ran, with its line; the null: any other code stays as it was.
+    import run_own_device
+    assert RUNNER_CRASHED_AFTER_DONE == run_own_device.EXIT_CRASHED_AFTER_DONE
+    assert run_own_device.crash_after_done_line(True, [0xC0000005], []).startswith(CRASH_AFTER_DONE_LINE[len("ERROR: "):])
+    output = "pictures in x\nERROR: the game crashed after DONE: exit code 0xC0000005 at its close; dumps: none.\n"
+    with contextlib.redirect_stdout(io.StringIO()) as said:
+        assert after_done((RUNNER_CRASHED_AFTER_DONE, output), "a") == (0, output)
+    assert said.getvalue() == "  the runner of a: the steps were done; " + output.splitlines()[1] + "\n", said.getvalue()
+    for code in (0, 1, 3, 4):
+        assert after_done((code, output), "a") == (code, output), code
     print("validate_retained self-test: ok")
 
 
