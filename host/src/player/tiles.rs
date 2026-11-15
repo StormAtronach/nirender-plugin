@@ -28,6 +28,40 @@ pub(crate) struct TileRead {
     state: Arc<AtomicU8>,
 }
 
+/// Why a map tile was not copied. Its read gets the answer "no pixels".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TileLoss {
+    /// This program has no rendered texture for the target of the record.
+    NoTarget,
+    /// This program has no texture object for the texture of the tile.
+    NoTexture,
+    /// The texture of the tile has this D3D8 format, which is not 4 bytes of BGRA or RGBA.
+    Format(u32),
+}
+
+impl TileLoss {
+    /// The skip note of the pass report.
+    fn note(self) -> crate::pass_report::Skip {
+        match self {
+            TileLoss::NoTarget => "no target",
+            TileLoss::NoTexture => "no texture of the tile",
+            TileLoss::Format(_) => "a tile texture of another format",
+        }
+    }
+
+    /// The log line at the first loss of this kind.
+    fn line(self) -> String {
+        let why = match self {
+            TileLoss::NoTarget => "no rendered texture for its target".to_string(),
+            TileLoss::NoTexture => "no texture object for the texture of the tile".to_string(),
+            TileLoss::Format(format) => {
+                format!("the texture of the tile has the D3D8 format {format:#x}, not 4 bytes of BGRA or RGBA")
+            }
+        };
+        format!("map tile: not copied, {why}; the game gets no pixels for it (said once for this kind)")
+    }
+}
+
 const TILE_SHADER: &str = r#"
 @group(0) @binding(0) var source: texture_2d<f32>;
 
@@ -96,10 +130,14 @@ impl Player {
             block == 0 && bytes == 4 && matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm)
         });
         crate::pass_report::on_request(&[TILE_COPY]);
-        let (Some(source), Some(d3d_format), Some((format, _, _))) = (source, d3d_format, format) else {
-            crate::pass_report::note_skipped(TILE_COPY, "no target, or a texture of another format");
-            self.renderer.counts.tiles_lost += 1;
-            return;
+        let Some(source) = source else {
+            return self.lose_tile(ticket, TileLoss::NoTarget);
+        };
+        let Some(d3d_format) = d3d_format else {
+            return self.lose_tile(ticket, TileLoss::NoTexture);
+        };
+        let Some((format, _, _)) = format else {
+            return self.lose_tile(ticket, TileLoss::Format(d3d_format));
         };
         let (width, height) = (source.width(), source.height());
         let pipeline = self.tile_pipeline(format);
@@ -193,6 +231,23 @@ impl Player {
         self.renderer.counts.tile_copies += 1;
     }
 
+    /// A tile that is not copied: its skip note, one log line at the first loss of each kind,
+    /// and the answer "no pixels" for its ticket. Every record with a ticket gets one answer,
+    /// or the game keeps the tile open and later waits for it (W419).
+    fn lose_tile(&mut self, ticket: u32, loss: TileLoss) {
+        crate::pass_report::note_skipped(TILE_COPY, loss.note());
+        self.renderer.counts.tiles_lost += 1;
+        if !self.tile_losses_told.contains(&loss) {
+            self.tile_losses_told.push(loss);
+            println!("{}", loss.line());
+        }
+        if ticket != 0 {
+            if let Some(out) = self.tile_out.as_mut() {
+                out(ticket, 0, 0, &[]);
+            }
+        }
+    }
+
     /// The device is lost: each tile read in progress gets the answer "no pixels" (a width of
     /// 0), because its mapping can never finish, and the game must not wait for it.
     pub(crate) fn fail_tile_reads(&mut self) {
@@ -274,5 +329,54 @@ mod tests {
     #[test]
     fn the_tile_shader_is_valid_wgsl() {
         crate::assert_wgsl("map tile copy", &TILE_SHADER);
+    }
+
+    #[test]
+    fn each_tile_loss_has_its_note_and_its_line() {
+        let losses = [TileLoss::NoTarget, TileLoss::NoTexture, TileLoss::Format(0x15)];
+        let notes: Vec<_> = losses.iter().map(|loss| loss.note()).collect();
+        assert_eq!(
+            notes,
+            ["no target", "no texture of the tile", "a tile texture of another format"]
+        );
+        assert!(
+            losses[2].line().contains("the D3D8 format 0x15, not 4 bytes"),
+            "{}",
+            losses[2].line()
+        );
+        assert!(losses.iter().all(|loss| loss.line().starts_with("map tile: not copied, ")));
+    }
+
+    /// A `COPY_TILE` whose target this program does not know gets one answer, "no pixels", for
+    /// its ticket, and a record with the ticket 0 (no read asked) gets none. Without the answer
+    /// the game kept the tile open and waited 5 s for it at the next purge or `make_room`
+    /// (W419). Needs a GPU: `cargo test -- --ignored tile_that_is_not_copied` in `host`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_tile_that_is_not_copied_gets_the_answer_no_pixels() {
+        let (renderer, _) = Renderer::new(
+            wgpu::Backends::all(),
+            None,
+            wgpu::TextureFormat::Rgba8Unorm,
+            crate::extension::extension_shaders(None),
+            0,
+            1,
+        )
+        .expect("a device");
+        let mut player = Player::new(renderer);
+        let answers = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = answers.clone();
+        player.tile_out = Some(Box::new(move |ticket, width, height, pixels: &[u8]| {
+            seen.borrow_mut().push((ticket, width, height, pixels.len()))
+        }));
+        let (unknown_target, unknown_texture) = (0x7910_4000, 0x7910_5000);
+
+        player.copy_tile(7, unknown_target, unknown_texture);
+        assert_eq!(*answers.borrow(), [(7, 0, 0, 0)]);
+
+        player.copy_tile(0, unknown_target, unknown_texture);
+        assert_eq!(answers.borrow().len(), 1, "a record without a ticket asked for no read");
+        assert_eq!(player.renderer.counts.tiles_lost, 2);
+        assert_eq!(player.tile_losses_told, [TileLoss::NoTarget], "one log line for the kind");
     }
 }

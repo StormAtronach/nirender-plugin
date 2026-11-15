@@ -10,4 +10,4 @@ mod report;
 mod split;
 mod tiles;
 
-pub(crate) use tiles::TileRead;
+pub(crate) use tiles::{TileLoss, TileRead};

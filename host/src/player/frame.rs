@@ -72,6 +72,7 @@ impl Player {
             tile_out: None,
             tile_reads: Vec::new(),
             tile_pipelines: HashMap::new(),
+            tile_losses_told: Vec::new(),
             shots: Vec::new(),
             growth_test: (switches().force_growth, switches().growth_shots.clone()),
             growth_shot_next: None,
