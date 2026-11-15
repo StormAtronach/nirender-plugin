@@ -71,6 +71,17 @@ for name, loader in pairs(loaders) do
 end
 assert(mge == plain and plain.shaders == nil, "an inner chunk changed the global mge")
 
+-- 2c. The run's --lua-file stands for a mod's Lua (W494): its chunk reads the global mge, also in an
+-- engine-reference run, where the batch beside it reads the view. A copy of mgeview.lua whose
+-- luaFileChunk gives the chunk the view's environment fails here.
+local fileChunk = assert(view.luaFileChunk("fileGlobal = 9; return mge, mge.shaders"))
+local fileSees, fileShaders = fileChunk()
+assert(fileSees == plain and fileShaders == nil, "the --lua-file reads the view, not the global mge")
+assert(rawget(_G, "fileGlobal") == 9, "a global write of the --lua-file goes to _G")
+assert(select(2, view.luaFileChunk("return (")) ~= nil, "a --lua-file with an error gives nil and the message")
+setfenv(batch, view.environment(spec))
+assert(select(2, batch()) == harness, "the batch beside it reads the view")
+
 -- 3. A game with MGE XE's API: the global has its own shaders, and the view does not replace them
 -- in the global table.
 local real = { shaders = { find = function() return "real" end, load = function() return "real" end }, render = {} }

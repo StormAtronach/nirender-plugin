@@ -5,7 +5,8 @@
 -- need stand-ins for what they ask of it. The stand-ins live in this view only. The global `mge`
 -- stays as MWSE made it, so the game's mods see what a game without MGE XE shows them: a stand-in in
 -- the global table made mods take MGE XE as present and call what the stand-in lacked
--- (run 20261115-185101-w471-plain: 14,993 errors in event callbacks).
+-- (run 20261115-185101-w471-plain: 14,993 errors in event callbacks). The run's `--lua-file` reads
+-- the global `mge` too, as it stands for a mod's Lua (`mgeview.luaFileChunk`, W494).
 
 local mgeview = {}
 
@@ -86,6 +87,13 @@ function mgeview.environment(spec)
         end,
     }
     return setmetatable(environment, { __index = _G, __newindex = _G })
+end
+
+-- The chunk of the run's `--lua-file`: the Lua of "a state that a mod makes from Lua", so it reads
+-- what the game's mods read, the global `mge`, in every run (W494). The Lua of a batch and of a card
+-- reads the view (`mgeview.environment`).
+function mgeview.luaFileChunk(text)
+    return loadstring(text)
 end
 
 return mgeview

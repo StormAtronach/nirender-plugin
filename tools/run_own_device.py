@@ -309,6 +309,13 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
                 problems.append("%s: %s cannot be read as UTF-8 text" % (option, path))
             else:
                 problems.extend("%s %s: %s" % (option, path, finding) for finding in lua(path, text))
+                # W494: a --lua-file reads the game's mge. On the engine's renderer that mge takes no picture; the
+                # harness's view of it, which a step or a batch reads, does.
+                engine_run = args.engine_reference or getattr(args, "plain_case", False)
+                if option == "--lua-file" and engine_run and re.search(r"\bsaveScreenshot\b", text):
+                    problems.append("--lua-file %s: names saveScreenshot in a run on the engine's renderer (--engine-reference, "
+                                    "--plain-case), where it reads the game's mge, which takes no picture: a picture belongs "
+                                    "to a step or a batch" % path)
     if args.mge_build:
         for name in ("d3d8.dll", "numidium.exe"):
             if not exists(os.path.join(args.mge_build, name)):
@@ -1174,6 +1181,18 @@ def self_test_checks():
     assert seen == [("E:/batch.lua", "f()\nlocal function f() end\n"), ("E:/file.lua", "return 1\n")], seen
     assert argument_problems(namespace(shader_batch="E:/batch.lua"), exists, {}.get, quiet, no_lua) == [
         "--shader-batch: E:/batch.lua cannot be read as UTF-8 text"]
+    # W494: a --lua-file that names saveScreenshot is refused in a run on the engine's renderer only; a batch that
+    # names it is not (the batch reads the harness's view, which takes the engine's picture).
+    shots = {"E:/file.lua": "mge.saveScreenshot({ path = 'x.png' })\n", "E:/batch.lua": "mge.saveScreenshot({})\n"}.get
+    readable = (present | {"E:/file.lua"}).__contains__
+    def picture_lines(**changes):
+        return [line for line in argument_problems(namespace(**changes), readable, shots, quiet, no_lua) if "saveScreenshot" in line]
+    for engine in (dict(engine_reference=True), dict(plain_case=True, mge_build="E:/b")):
+        lines = picture_lines(lua_file="E:/file.lua", **engine)
+        assert len(lines) == 1 and "a picture belongs to a step or a batch" in lines[0], lines
+        assert picture_lines(shader_batch="E:/batch.lua", **engine) == []
+    assert picture_lines(lua_file="E:/file.lua", mge_build="E:/b") == []
+    assert picture_lines(lua_file="E:/file.lua", reference=True) == []
     # A missing file is the existence fault alone; the Lua checks do not run on it.
     seen.clear()
     assert argument_problems(namespace(shader_batch="E:/none.lua"), exists, texts, quiet, one_finding) == ["--shader-batch: no E:/none.lua"]
@@ -2451,7 +2470,8 @@ def main():
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north; "
                     "a negative heading as --yaw=-129 is the safe form")
     ap.add_argument("--lua-file", help="a file of Lua that the game runs a little after the player arrives at the interior and at the "
-                    "exterior: for a state that a mod makes from Lua (the variables of a post shader)")
+                    "exterior: for a state that a mod makes from Lua (the variables of a post shader). It reads the global mge, "
+                    "as the game's mods do, also where a batch reads the harness's view (--engine-reference, --plain-case)")
     ap.add_argument("--shader-batch", help="a file of Lua that gives a list of sets of post shaders, { name = \"lens\", { \"Lens Effects\", "
                     "variable = value } }: the step `shaders` takes one picture for each set (sh-<name>), with one start of the game")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
