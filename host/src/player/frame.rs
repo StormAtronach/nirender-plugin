@@ -73,6 +73,7 @@ impl Player {
             tile_reads: Vec::new(),
             tile_pipelines: HashMap::new(),
             tile_losses_told: Vec::new(),
+            first_world_frames: super::FirstWorldFrames::default(),
             shots: Vec::new(),
             growth_test: (switches().force_growth, switches().growth_shots.clone()),
             growth_shot_next: None,
@@ -369,6 +370,11 @@ impl Player {
     /// clears the target.
     pub(crate) fn begin_frame(&mut self, color: &wgpu::Texture, depth: Rc<wgpu::TextureView>, keep: bool) {
         self.frame_size = (color.width(), color.height());
+        // `parameters` still holds the frame before: it is cleared below.
+        let world_before = self.parameters.is_some();
+        if let Some(line) = self.first_world_frames.frame_start(std::time::Instant::now(), world_before) {
+            println!("{line}");
+        }
         self.renderer.begin_frame_stage_shaders();
         self.items.clear();
         self.frame_lights.clear();

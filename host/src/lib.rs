@@ -1013,6 +1013,8 @@ struct Player {
     tile_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     /// The kinds of tile losses that the log named already, one line each.
     tile_losses_told: Vec<player::TileLoss>,
+    /// The starts of the world frames and the time of the first frame after each (W369).
+    first_world_frames: player::FirstWorldFrames,
     /// The picture files that the game asked for: the frame in progress goes into them.
     shots: Vec<String>,
     /// A test of the growth of the buffers (`NIRENDER_FORCE_GROWTH=<frames>`,
