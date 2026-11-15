@@ -27,10 +27,12 @@ local function testPictures(spec, plugin)
     -- picture at the event "loaded", then one every 0.1 s, 20 of them, as after-load-NN.png in
     -- the folder of the run (NN in tenths of a second).
     if spec and spec.afterLoadPictures and spec.dir then
+        -- The harness's view of mge: in an engine-reference run, the engine's own picture (W486).
+        local view = require("nirender.mgeview").of(spec)
         event.register("loaded", function()
             local n = 0
             local function take()
-                mge.saveScreenshot({ path = string.format("%s/after-load-%02d.png", spec.dir, n) })
+                view.saveScreenshot({ path = string.format("%s/after-load-%02d.png", spec.dir, n) })
                 n = n + 1
             end
             take()

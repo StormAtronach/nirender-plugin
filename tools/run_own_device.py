@@ -2129,6 +2129,19 @@ def self_test_add_symbols():
         assert calls[0][0] == "build-90015098" and calls[0][2] == [os.path.join(PDB_KEEP, "build")], calls[0]
 
 
+def self_test_mgeview():
+    """W486: the harness's view of mge in an engine-reference run (mod nirender/mgeview.lua) has its stand-ins, and the
+    global mge of the game's mods stays as MWSE made it: tools/mgeview_check.lua with the LuaJIT of the Lua checks."""
+    luajit = lua_checks.luajit()
+    if not os.path.isfile(luajit):
+        print("run_own_device self-test: the mgeview check is skipped, no LuaJIT at %s" % luajit)
+        return
+    check = os.path.join(REPO, "tools", "mgeview_check.lua")
+    view = os.path.join(REPO, "mod", "MWSE", "mods", "nirender", "mgeview.lua")
+    done = subprocess.run([luajit, check, view], capture_output=True, text=True, errors="replace")
+    assert done.returncode == 0 and "mgeview check: ok" in done.stdout, done.stdout + done.stderr
+
+
 def self_test():
     """The tests of the argument handling: no game, no build."""
     self_test_add_symbols()
@@ -2152,6 +2165,7 @@ def self_test():
     self_test_ending()
     self_test_use_instance()
     self_test_build_ids()
+    self_test_mgeview()
     build = os.path.join("target", "akulakhan.dll")
     assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
     assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
