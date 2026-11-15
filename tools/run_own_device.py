@@ -1655,6 +1655,22 @@ def self_test_live_mge_log():
                     assert file.read() == expected, (stop, fresh_overwrite)
                 with open(kept, encoding="utf-8") as file:
                     assert plain_case_line(file.read().splitlines()), "the case line is lost"
+
+            # A copy that fails does not end the run, and the next call copies. The plant: a read-only file in the
+            # place of the run's mgeXE.log, so the copy raises a PermissionError.
+            run = session.Run("live-mge-log-test-locked")
+            run.started = time.time() - 10
+            with open(live, "w", encoding="utf-8", newline="") as file:
+                file.write(text)
+            os.utime(live, (run.started + 1, run.started + 1))
+            with open(run.path("mgeXE.log"), "w", encoding="utf-8") as file:
+                file.write("locked\n")
+            os.chmod(run.path("mgeXE.log"), 0o444)
+            run.keep_live_mge_log()
+            os.chmod(run.path("mgeXE.log"), 0o666)
+            run.keep_live_mge_log()
+            with open(run.path("mgeXE.log"), encoding="utf-8", newline="") as file:
+                assert file.read() == text, "the call after a failed copy did not copy"
         finally:
             (session.harness.Deployment, session.harness.run_game, session.harness.copy_logs, session.ring_problem_of_instance,
              session.RESULTS, session.stage_mwse_config, session.MGE_LOGS) = saved

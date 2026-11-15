@@ -370,14 +370,18 @@ class Run:
     def keep_live_mge_log(self):
         """Copies the live mgeXE.log of the game folder (`MGE_LOGS[0]`, fresh since the start) into the run folder when
         its size changed. Root Builder does not move back a log whose bytes equal the one in overwrite, and it clears
-        the game folder at the end; this copy is then the log of the run."""
+        the game folder at the end; this copy is then the log of the run. A copy that fails (the log goes, or a file
+        is locked) does not end the run: the next call tries again."""
         live = MGE_LOGS[0]
-        if not (self.started and os.path.isfile(live) and os.path.getmtime(live) > self.started):
-            return
-        size = os.path.getsize(live)
-        if size != self._live_mge_size:
-            shutil.copy2(live, self.path("mgeXE.log"))
-            self._live_mge_size = size
+        try:
+            if not (self.started and os.path.isfile(live) and os.path.getmtime(live) > self.started):
+                return
+            size = os.path.getsize(live)
+            if size != self._live_mge_size:
+                shutil.copy2(live, self.path("mgeXE.log"))
+                self._live_mge_size = size
+        except OSError:
+            pass
 
     def refusal(self):
         """The plugin's refusal of the renderer in this run so far, with its cause (`refusal_of`),
