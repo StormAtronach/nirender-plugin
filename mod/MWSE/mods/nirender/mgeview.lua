@@ -1,0 +1,67 @@
+---@diagnostic disable
+-- The mge table that the harness's own Lua reads (W486). A run on the engine's own renderer
+-- (`spec.engineReference`: `--engine-reference` and `--plain-case` of tools/run_own_device.py)
+-- has MGE XE with `runtime.disabled`: it draws nothing, so the scenario, the batches and the cards
+-- need stand-ins for what they ask of it. The stand-ins live in this view only. The global `mge`
+-- stays as MWSE made it, so the game's mods see what a game without MGE XE shows them: a stand-in in
+-- the global table made mods take MGE XE as present and call what the stand-in lacked
+-- (run 20261115-185101-w471-plain: 14,993 errors in event callbacks).
+
+local mgeview = {}
+
+-- The picture of an engine-reference run: the engine's draw of the world camera and then of the
+-- arm camera into a rendered texture, read back: the world and the first-person arms with no
+-- interface, at 2048 x 1024, so wider than the screen's shape. The two draws keep the order of the
+-- engine's frame (`renderMainScene` 0x41C400): the world camera's clear of all and its Click, then
+-- the arm camera's clear of depth and stencil (0x41C6E4) and its Click (0x41C734). The water and
+-- the shadows of that frame are not drawn here. Two others give nothing here:
+-- `niRenderer:takeScreenshot` returns nil, and a window capture is black, as the game has exclusive
+-- full screen. The runner turns the TGA files of the run folder into PNG files at the end.
+local function enginePicture(params)
+    local world = tes3.worldController.worldCamera
+    local arms = tes3.worldController.armCamera
+    local texture = niRenderedTexture.create(2048, 1024)
+    world.renderer:setRenderTarget(texture)
+    world.camera:clear()
+    world.camera:click(false)
+    arms.camera:clear(ni.cameraClearFlags.zBuffer + ni.cameraClearFlags.stencil)
+    arms.camera:click(false)
+    world.renderer:setRenderTarget(nil)
+    local pixels = niPixelData.new(2048, 1024)
+    texture:readback(pixels)
+    pixels:exportTGA((params.path:gsub("%.png$", ".tga")))
+end
+
+local engineView = nil
+
+-- The mge table for the harness's Lua in a run of `spec`: the global `mge` itself, or in an
+-- engine-reference run one table with the stand-ins, whose other fields read the global `mge`.
+function mgeview.of(spec)
+    if not (spec and spec.engineReference) then
+        return mge
+    end
+    if not engineView then
+        local standIns = {
+            saveScreenshot = enginePicture,
+            shaders = { list = {}, find = function() return nil end, load = function() return nil end },
+            lightingMode = { vertex = 0, perPixel = 1, perPixelInteriorOnly = 2 },
+            getLightingMode = function() return "no MGE XE" end,
+            setLightingMode = function() end,
+        }
+        engineView = setmetatable(standIns, { __index = function(_, key) return mge and mge[key] end })
+    end
+    return engineView
+end
+
+-- The environment for the Lua of a batch or a card (`loadstring`) in a run of `spec`, or nil when
+-- the chunk keeps the global one: in an engine-reference run, `mge` is the view, every other name is
+-- the global one, and a write of a global goes to the global table. Functions that the chunk makes
+-- (a set's `run`) get the same environment.
+function mgeview.environment(spec)
+    if not (spec and spec.engineReference) then
+        return nil
+    end
+    return setmetatable({ mge = mgeview.of(spec) }, { __index = _G, __newindex = _G })
+end
+
+return mgeview
