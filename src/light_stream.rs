@@ -2,6 +2,8 @@
 //! record for a light the first time a draw has it and when its values change, keyed by the
 //! index of the light, and the keys of the lights of a draw in its shape record.
 
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use crate::checked::Open;
 use crate::gen::layouts::{NiDX8LightManager as LM, NiDX8LightManager_LightEntry as LE, NiDX8Renderer as R, NiLight as L};
 use crate::main_thread::{MainCell, MainThread};
@@ -12,6 +14,68 @@ const ITEM_DATA: usize = 0;
 const ITEM_NEXT: usize = 4;
 /// The most lights of a draw, as the state packet has.
 pub const MAX_LIGHTS: usize = 64;
+
+/// The lists of lights that stop at a cap of their packet (64 each): a light past the cap is not
+/// in the draw (W450). Each place counts the lights that it dropped, and the log names the first
+/// drop at each place.
+#[derive(Debug, Clone, Copy)]
+pub enum Cap {
+    /// [`note`]: the light manager's lights of a draw.
+    DrawLights,
+    /// `instance_stream::state_lights`: the lights of a retained shape's effect state.
+    ShapeLights,
+    /// `link_client`: the light manager's lights that go on again after the host turned them off.
+    LightsOnAgain,
+    /// `link_client::collect_lights`: the lights of an effect state for a draw packet.
+    EffectLights,
+    /// `link_client`: the light manager's lights in the state of a draw packet.
+    PacketStateLights,
+    /// `link_client::state_lights`: the light manager's lights as `draw_state` reads them.
+    StateLights,
+}
+
+const CAP_PLACES: [&str; 6] = [
+    "the lights of a draw",
+    "the lights of a retained shape",
+    "the lights put on again",
+    "the effect lights of a draw packet",
+    "the state lights of a draw packet",
+    "the state lights of draw_state",
+];
+static DROPPED: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static TOLD: [AtomicBool; 6] = [const { AtomicBool::new(false) }; 6];
+
+/// Notes `dropped` lights past the cap `cap_of` at `place`. The first drop at each place gets a
+/// log line; the counts are in [`report`].
+pub fn note_dropped(place: Cap, dropped: u64, cap_of: usize) {
+    if dropped == 0 {
+        return;
+    }
+    let at = place as usize;
+    DROPPED[at].fetch_add(dropped, Ordering::Relaxed);
+    if !TOLD[at].swap(true, Ordering::Relaxed) {
+        crate::log!(
+            "lights: {}: {dropped} lights past the cap of {cap_of} are not in the draw (said once for this place; the count is in the lights report)",
+            CAP_PLACES[at]
+        );
+    }
+}
+
+/// The lights dropped at each cap, for the report: "none", or the places with their counts.
+fn dropped_text() -> String {
+    let counts: Vec<String> = CAP_PLACES
+        .iter()
+        .zip(&DROPPED)
+        .map(|(place, count)| (place, count.load(Ordering::Relaxed)))
+        .filter(|&(_, count)| count != 0)
+        .map(|(place, count)| format!("{place} {count}"))
+        .collect();
+    if counts.is_empty() {
+        "none".to_string()
+    } else {
+        counts.join(", ")
+    }
+}
 
 /// The values that were sent for each light, by its index: the indexes of the lights of
 /// the game are small numbers, and a draw looks up each of its lights. The device values,
@@ -91,10 +155,11 @@ pub unsafe fn reset(t: &MainThread) {
 /// thread.
 pub unsafe fn report(t: &MainThread) -> String {
     format!(
-        "lights: {} records, {} gone records, {} lights known",
+        "lights: {} records, {} gone records, {} lights known, dropped past a cap: {}",
         *RECORDS.get(t),
         *GONE.get(t),
-        versions(t).iter().filter(|v| v.is_some()).count()
+        versions(t).iter().filter(|v| v.is_some()).count(),
+        dropped_text()
     )
 }
 
@@ -168,7 +233,8 @@ pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> Open<'a, [u32]> {
     // them.
     let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
     let mut item: usize = rd(manager, LM::deviceLights_head);
-    while item != 0 && count < MAX_LIGHTS {
+    let mut dropped = 0;
+    while item != 0 {
         let light: usize = rd(item, ITEM_DATA);
         item = rd(item, ITEM_NEXT);
         if light == 0 {
@@ -179,18 +245,51 @@ pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> Open<'a, [u32]> {
         if entry == 0 || key as usize >= MOST_INDEX {
             continue;
         }
+        if count == MAX_LIGHTS {
+            dropped += 1;
+            continue;
+        }
         let values: [u32; 26] = rd(entry, LE::d3dLight);
         note_values(t, key, &values, crate::link_client::point_light_radius(light));
         keys[count] = key;
         count += 1;
     }
+    note_dropped(Cap::DrawLights, dropped, MAX_LIGHTS);
     keys.map(|keys| &mut keys[..count])
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{forget, versions, GONE, MOST_INDEX};
+    use super::{dropped_text, forget, note_dropped, versions, Cap, DROPPED, GONE, MOST_INDEX, TOLD};
     use crate::main_thread::MainThread;
+    use core::sync::atomic::Ordering;
+
+    /// A drop past a cap counts at its place, says so once, and shows in the report's text; no
+    /// drop changes nothing (W450).
+    #[test]
+    fn lights_past_a_cap_are_counted_by_place() {
+        // Only this test notes drops at these places.
+        let place = Cap::LightsOnAgain as usize;
+        let before = DROPPED[place].load(Ordering::Relaxed);
+        note_dropped(Cap::LightsOnAgain, 0, 64);
+        assert_eq!(DROPPED[place].load(Ordering::Relaxed), before);
+        assert!(!TOLD[place].load(Ordering::Relaxed), "no drop, no line");
+        note_dropped(Cap::LightsOnAgain, 3, 64);
+        note_dropped(Cap::LightsOnAgain, 2, 64);
+        assert_eq!(DROPPED[place].load(Ordering::Relaxed), before + 5);
+        assert!(TOLD[place].load(Ordering::Relaxed));
+        assert!(
+            dropped_text().contains(&format!("the lights put on again {}", before + 5)),
+            "{}",
+            dropped_text()
+        );
+        assert_eq!(DROPPED[Cap::PacketStateLights as usize].load(Ordering::Relaxed), 0);
+        assert!(
+            !dropped_text().contains("the state lights of a draw packet"),
+            "{}",
+            dropped_text()
+        );
+    }
 
     #[test]
     fn a_destroyed_light_sends_its_record_when_the_list_has_lost_the_key() {

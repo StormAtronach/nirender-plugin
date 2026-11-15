@@ -1040,7 +1040,8 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
         let mut count = 0;
         let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
         let mut item: usize = rd(manager, LM::deviceLights_head);
-        while item != 0 && count < MAX_STATE_LIGHTS {
+        let mut dropped = 0;
+        while item != 0 {
             let light: usize = rd(item, ITEM_DATA);
             item = rd(item, ITEM_NEXT);
             let entry = if light != 0 {
@@ -1048,11 +1049,17 @@ unsafe fn resync(t: &MainThread, kinds: u32) {
             } else {
                 0
             };
-            if entry != 0 {
-                entries[count] = entry;
-                count += 1;
+            if entry == 0 {
+                continue;
             }
+            if count == MAX_STATE_LIGHTS {
+                dropped += 1;
+                continue;
+            }
+            entries[count] = entry;
+            count += 1;
         }
+        crate::light_stream::note_dropped(crate::light_stream::Cap::LightsOnAgain, dropped, MAX_STATE_LIGHTS);
         for &entry in entries[..count].iter().rev() {
             let index: u32 = rd(entry, LE::lightIndex);
             crate::d3d::device_set_light(device, index, entry + LE::d3dLight);
@@ -1581,10 +1588,15 @@ unsafe fn collect_lights(t: &MainThread, effect_state: usize) -> usize {
     };
     let mut count = 0;
     let mut iter = ptr_at(effect_state, DES::lights);
-    while iter != 0 && count < MAX_LIGHTS {
+    let mut dropped = 0;
+    while iter != 0 {
         let light: usize = rd(iter, DL::effect);
         iter = rd(iter, DL::next);
         if light == 0 || rd::<u8>(light, L::enabled) == 0 || rd::<f32>(light, L::dimmer) < MIN_DIMMER {
+            continue;
+        }
+        if count == MAX_LIGHTS {
+            dropped += 1;
             continue;
         }
         let mut light_type = vcall0(light, LIGHT_VTBL_GET_TYPE);
@@ -1603,6 +1615,7 @@ unsafe fn collect_lights(t: &MainThread, effect_state: usize) -> usize {
         };
         count += 1;
     }
+    crate::light_stream::note_dropped(crate::light_stream::Cap::EffectLights, dropped, MAX_LIGHTS);
     count
 }
 
@@ -1800,7 +1813,8 @@ pub unsafe fn draw_state(
     let manager: usize = rd(renderer, R::lightManager);
     let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
     let mut item: usize = rd(manager, LM::deviceLights_head);
-    while item != 0 && light_count < MAX_STATE_LIGHTS {
+    let mut dropped = 0;
+    while item != 0 {
         let light: usize = rd(item, ITEM_DATA);
         item = rd(item, ITEM_NEXT);
         let entry = if light != 0 {
@@ -1811,6 +1825,10 @@ pub unsafe fn draw_state(
         if entry == 0 {
             continue;
         }
+        if light_count == MAX_STATE_LIGHTS {
+            dropped += 1;
+            continue;
+        }
         lights[light_count].device_index = rd(entry, LE::lightIndex);
         core::ptr::copy_nonoverlapping(
             (entry + LE::d3dLight) as *const u32,
@@ -1819,6 +1837,7 @@ pub unsafe fn draw_state(
         );
         light_count += 1;
     }
+    crate::light_stream::note_dropped(crate::light_stream::Cap::PacketStateLights, dropped, MAX_STATE_LIGHTS);
     let mut state = DrawStateV1 {
         light_count: light_count as u32,
         lights: s.state_lights.as_ptr(),
@@ -1878,7 +1897,8 @@ pub unsafe fn state_lights<'a>(t: &'a MainThread, renderer: usize) -> &'a [u8] {
     let manager: usize = rd(renderer, R::lightManager);
     let _lock = crate::sync::engine_lock(manager + LM::criticalSection);
     let mut item: usize = rd(manager, LM::deviceLights_head);
-    while item != 0 && light_count < MAX_STATE_LIGHTS {
+    let mut dropped = 0;
+    while item != 0 {
         let light: usize = rd(item, ITEM_DATA);
         item = rd(item, ITEM_NEXT);
         let entry = if light != 0 {
@@ -1889,6 +1909,10 @@ pub unsafe fn state_lights<'a>(t: &'a MainThread, renderer: usize) -> &'a [u8] {
         if entry == 0 {
             continue;
         }
+        if light_count == MAX_STATE_LIGHTS {
+            dropped += 1;
+            continue;
+        }
         lights[light_count].device_index = rd(entry, LE::lightIndex);
         core::ptr::copy_nonoverlapping(
             (entry + LE::d3dLight) as *const u32,
@@ -1897,6 +1921,7 @@ pub unsafe fn state_lights<'a>(t: &'a MainThread, renderer: usize) -> &'a [u8] {
         );
         light_count += 1;
     }
+    crate::light_stream::note_dropped(crate::light_stream::Cap::StateLights, dropped, MAX_STATE_LIGHTS);
     core::slice::from_raw_parts(state(t).state_lights.as_ptr() as *const u8, light_count * STATE_LIGHT_SIZE)
 }
 
