@@ -87,7 +87,7 @@ HEAVY_FILES = (".png", ".tga", ".bmp", ".jpg", ".jpeg", ".gif", ".nircap", ".mp4
 DUMP_FILES = (".dmp", ".mdmp")
 GENERIC_DUMPS = {"mwse_minidump", "numidium", "morrowind"}
 BUSY_DAYS = 1 / 24
-PICTURE_DAYS = 7
+PICTURE_DAYS = 2  # D442 (was 7)
 TEXT_DAYS = 30
 DUMP_DAYS = TEXT_DAYS
 SET_DAYS = 30
@@ -985,9 +985,9 @@ def self_test_common():
         assert is_heavy(name), name
     for name in ("host.txt", "MWSE.log", "a.DMP", "b.py", "c.sh", "d.ess", "e.ini", "f.xml", "g.wgsl", "h.dll", "none"):
         assert not is_heavy(name), name
-    # A citation keeps the text only: a cited run trims at 7 days and never expires. Only the keep list keeps a run whole.
-    for age, cited, kept, expected in [(0.01, False, False, "running"), (0.01, True, False, "running"), (6.9, True, False, "young"),
-                                       (6.9, False, False, "young"), (7.0, False, False, "trim"), (7.0, True, False, "trim"),
+    # A citation keeps the text only: a cited run trims at 2 days (D442) and never expires. Only the keep list keeps a run whole.
+    for age, cited, kept, expected in [(0.01, False, False, "running"), (0.01, True, False, "running"), (1.9, True, False, "young"),
+                                       (1.9, False, False, "young"), (2.0, False, False, "trim"), (2.0, True, False, "trim"),
                                        (29.9, False, False, "trim"), (30.0, False, False, "expired"), (400, True, False, "trim"),
                                        (400, False, True, "kept"), (0.01, False, True, "kept"), (400, True, True, "kept")]:
         assert run_treatment(age, cited, kept) == expected, (age, cited, kept)

@@ -64,8 +64,8 @@ Then, in this order, and any failure leaves the worktree as it is, apart from wh
 
 1. What a real `results` folder holds is copied to E:\\nirender-keep\\runs-<date>, unless a runs-*
    folder holds the same; the number and the size of the files must agree. By the expiry of
-   `clean_results.py`: a run on the keep list or younger than 7 days whole; a cited run of 7 days or
-   more and an uncited one of 7 to 30 days with no pictures; an older uncited one not at all. A folder that is no run and a loose file are copied whole.
+   `clean_results.py`: a run on the keep list or younger than 2 days whole (D442); a cited run of 2 days or
+   more and an uncited one of 2 to 30 days with no pictures; an older uncited one not at all. A folder that is no run and a loose file are copied whole.
 2. A new walk finds each reparse point in the tree, and each is removed as a link, which leaves its
    target. `git worktree remove` goes through a junction: on 2026-10-29 one deleted
    E:\\nirender-results that way. A folder that the walk cannot read, or a link that is still there
@@ -974,7 +974,7 @@ def self_test():
                 open(os.path.join(results2, name, file), "w").write("x" * 10)
             return name
 
-        young, trimmed, expired, cited, kept = run_folder(2), run_folder(10), run_folder(40), run_folder(50), run_folder(60)
+        young, trimmed, expired, cited, kept = run_folder(1), run_folder(10), run_folder(40), run_folder(50), run_folder(60)
         make_junction(os.path.join(results2, trimmed, "link"), outside)
         make_junction(os.path.join(results2, "run-link"), outside)
         keep2 = os.path.join(temp, "keep2")
