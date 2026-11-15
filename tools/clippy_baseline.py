@@ -15,7 +15,8 @@ Clippy compiles: ask for a build slot first. `--mge` names another render-link f
 whose folder is missing stops the tool before cargo runs, with the folder and, when the main
 checkout has a render-link beside it, the `--mge` and `--mge-host` to give: a worktree in a group
 in C:/tmp has no `MGE-XE-G7-render-link` beside it, and cargo then stopped with
-NotADirectoryError after the plugin place had compiled.
+NotADirectoryError after the plugin place had compiled. A plugin tree whose HEAD does not contain the branch master
+stops the tool before cargo too, with "merge master first" (W376).
 `--mge-host DIR` builds the render-link place against the host crate in DIR, through cargo's
 `--config paths=[...]` override, which leaves the render-link tree as it is: for a render-link
 branch whose code needs a host crate that the main checkout does not have yet. release.py runs
@@ -100,11 +101,27 @@ def count_warnings(folder, args):
     return counts
 
 
+def behind_master_text(repo, head="HEAD"):
+    """The text that stops the tool when `head` of the repository `repo` does not contain its branch master, else None
+    (W376). Such a tree is counted against a baseline of master, and the render-link place can need master's host crate:
+    on 2026-11-12 a tree without master gave 203 compile errors after the build slot was taken."""
+    def git(*args):
+        return subprocess.run(["git", "-C", repo, *args], env=common.git_env(), capture_output=True, text=True)
+
+    master = git("rev-parse", "--verify", "--quiet", "--short", "refs/heads/master").stdout.strip()
+    if not master:
+        return "clippy: %s has no branch master, so the tool cannot check that this tree contains it" % repo
+    if git("merge-base", "--is-ancestor", "refs/heads/master", head).returncode != 0:
+        mine = git("rev-parse", "--short", head).stdout.strip()
+        return "clippy: this tree (%s at %s) does not contain nirender master (%s): merge master first" % (repo, mine, master)
+    return None
+
+
 def scan(mge, host=None):
     """{(place, lint): count} of all places; None when a place does not compile. A missing folder stops the tool
-    before any cargo runs (`missing_text`)."""
+    before any cargo runs (`missing_text`), and so does a plugin tree without master (`behind_master_text`)."""
     places_of = places(mge, host)
-    text = missing_text(places_of, common.main_checkout())
+    text = missing_text(places_of, common.main_checkout()) or behind_master_text(PLUGIN)
     if text:
         raise SystemExit(text)
     found = {}
@@ -179,6 +196,25 @@ def self_test():
             assert group_mge in str(stop), stop
         else:
             raise AssertionError("scan ran with a missing place")
+
+    # W376: a tree without master stops before cargo; a tree at master or past it goes on. A scratch repository: a, then
+    # master at b, then c on another branch.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo:
+        def git(*args):
+            return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", *args], env=common.git_env(),
+                                  check=True, capture_output=True, text=True).stdout.strip()
+
+        git("init", "-q", "-b", "work")
+        git("commit", "-q", "--allow-empty", "-m", "a")
+        assert "has no branch master" in behind_master_text(repo), "no master: the tool cannot check"
+        a = git("rev-parse", "HEAD")
+        git("commit", "-q", "--allow-empty", "-m", "b")
+        git("branch", "master")
+        git("commit", "-q", "--allow-empty", "-m", "c")
+        assert behind_master_text(repo) is None, "a tree past master goes on"
+        assert behind_master_text(repo, "master") is None, "a tree at master goes on"
+        text = behind_master_text(repo, a)
+        assert text and text.endswith("merge master first") and a[:7] in text, text
     print("clippy_baseline self-test: ok")
 
 
