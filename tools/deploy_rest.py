@@ -39,7 +39,8 @@ The output prints the MD5 of d3d8.dll, numidium.exe and akulakhan.dll. --dry-run
 needs a new MWSE and that MWSE go together, under one backup tag. Without --build it puts only the MWSE.dll, beside the
 plugin that the installs hold. Before any write (and in the dry run) it probes the DLL for the MWSE features that the
 plugin needs (tools/check_mwse_sites.py --features, which runs the plugin's tests through cargo: a compile, so take a
-build place first when you run it by hand): a missing required feature refuses with exit code 4
+build place first when you run it by hand), with --mge <the render-link tree> (W495; the sibling of this tree by default, or
+--mge): the d3d8 source of that tree adds native request 7 when it sends it. A missing required feature refuses with exit code 4
 (MISSING_FEATURE_EXIT), any other failure of the probe is exit code 1, and nothing is written. The probe is the code of
 this tree, so the files that the probe compiles or reads (PROBE_PATHS: src/, the build files, the check tool and its
 baseline) must equal those of the commit of the plugin that goes beside the DLL, changes not yet committed included: the
@@ -84,7 +85,7 @@ import tempfile
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
-from common import BUILD_ID_RE, REPO, git_env, local, main_checkout, parts_problems  # noqa: E402
+from common import BUILD_ID_RE, REPO, git_env, local, main_checkout, parts_problems, sibling  # noqa: E402
 from make_play_set import say  # noqa: E402
 from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
 import symbols  # noqa: E402
@@ -107,6 +108,9 @@ MWSE_DEPLOYS = local("mwse_deploys", {
 MWSE_REPO = local("mwse_repo", os.path.join(os.path.dirname(main_checkout() or REPO), "MWSE", "MWSE"))
 CORE_PATH = "misc/package/Data Files/MWSE/core"
 CHECK_MWSE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_mwse_sites.py")
+# The render-link tree whose d3d8 source the probe reads (check_mwse_sites.py --mge, W495): the sibling of this tree, else of
+# its main checkout. --mge names another.
+MGE_TREE = sibling("MGE-XE-G7-render-link")
 # The files that the probe of the features compiles or reads (check_mwse_sites.py --features runs the plugin's lib tests):
 # a tree may run the probe for a plugin commit when these equal that commit's.
 PROBE_PATHS = ("src", "build.rs", "build_support", "contract", "Cargo.toml", "Cargo.lock", ".cargo", "rust-toolchain.toml",
@@ -319,10 +323,16 @@ def probe_tree_changes(plugin_commit, repo=REPO):
     return sorted(set(differ + new))
 
 
-def probe_features(dll):
-    """tools/check_mwse_sites.py --features on `dll`, in this tree: (exit code, output)."""
-    done = subprocess.run([sys.executable, "-I", CHECK_MWSE, "--features", dll], cwd=REPO, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
+def probe_command(dll, mge):
+    """The command of the probe of `dll`: tools/check_mwse_sites.py --features, with the render-link tree `mge` whose d3d8.dll
+    goes beside the DLL (W495: native request 7)."""
+    return [sys.executable, "-I", CHECK_MWSE, "--features", "--mge", mge, dll]
+
+
+def probe_features(dll, mge=MGE_TREE):
+    """The probe of `dll` in this tree: (exit code, output)."""
+    done = subprocess.run(probe_command(dll, mge), cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          stdin=subprocess.DEVNULL)
     return done.returncode, done.stdout + done.stderr
 
 
@@ -355,7 +365,7 @@ def require_features(dll, plugin_commit, probe):
             say("  " + line)
     if code == MISSING_FEATURE_EXIT:
         missing = [line[len(MISSING):] for line in output.splitlines() if line.startswith(MISSING)]
-        raise MissingFeature("MISSING FEATURE: %s lacks MWSE features that the plugin %s needs: %s" % (dll, plugin_commit, "; ".join(missing) or "see the probe"))
+        raise MissingFeature("MISSING FEATURE: %s lacks MWSE features that the build with the plugin %s needs: %s" % (dll, plugin_commit, "; ".join(missing) or "see the probe"))
     if code != 0:
         raise DeployError("the probe of the features of %s failed with exit code %d: %s" % (dll, code, (output.strip().splitlines() or ["no output"])[-1]))
 
@@ -960,6 +970,15 @@ def mwse_test(root, build, quiet):
         text = refused(MissingFeature, **joint, dry_run=dry, probe=missing)
         assert text.startswith("MISSING FEATURE: ") and "count locks: 0 of 40" in text and "the plugin %s needs" % FAKE_HEADS["plugin"] in text, text
         assert "exit code 1" in refused(DeployError, **joint, dry_run=dry, probe=broken)
+    # W495: the probe reads the d3d8 source of the render-link tree too, and an MWSE.dll without native request 7 beside a
+    # d3d8 that sends it refuses with the probe's MISSING line, before any write.
+    assert probe_command("D:/x/MWSE.dll", "C:/r")[2:] == [CHECK_MWSE, "--features", "--mge", "C:/r", "D:/x/MWSE.dll"]
+    request = ("native request 7: D:/x/MWSE.dll (md5 %s) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the d3d8 of C:/r "
+               "sends: MWSE too old; missing \"keeps MGE XE's API in use.\"" % ("e" * 32))
+    no_request = lambda dll: (MISSING_FEATURE_EXIT, "absent: mge api request: 0 of 2 answer texts\n%s%s\nmd5: %s %s\n" % (MISSING, request, "e" * 32, dll))  # noqa: E731
+    for dry in (False, True):
+        text = refused(MissingFeature, **joint, dry_run=dry, probe=no_request)
+        assert text == "MISSING FEATURE: %s lacks MWSE features that the build with the plugin %s needs: %s" % (mwse, FAKE_HEADS["plugin"], request), text
     # The probe is the code of the tree: a tree whose files of the probe differ from the plugin's commit, or a commit that
     # git does not know, refuses before the probe. The fake gets the plugin's commit.
     asked, compared = [], []
@@ -1159,6 +1178,8 @@ def main():
     parser.add_argument("--mwse-commit", help="the MWSE commit of --mwse-dll: its core Lua (%s) goes beside each DLL (W480)" % CORE_PATH)
     parser.add_argument("--check-mwse-core", action="store_true", help="only check that each install's MWSE core is the core of the MWSE commit "
                         "of its MWSE.dll, by its record %s (the merge step's stage); writes nothing" % MWSE_NOTE)
+    parser.add_argument("--mge", default=MGE_TREE, help="the render-link tree whose d3d8 source the probe of the MWSE features reads "
+                        "(default: %(default)s)")
     parser.add_argument("--self-test", action="store_true", help="the tests: scratch installs, no game")
     args = parser.parse_args()
     if args.self_test:
@@ -1171,7 +1192,7 @@ def main():
     try:
         return run(os.path.abspath(args.build) if args.build else None, REST_INSTALLS, args.plugin_commit, args.mge_commit, args.tag, not args.no_keep,
                    args.dry_run, args.sets, add_symbols=symbols.add, mwse_dll=os.path.abspath(args.mwse_dll) if args.mwse_dll else None,
-                   mwse_commit=args.mwse_commit)
+                   mwse_commit=args.mwse_commit, probe=lambda dll: probe_features(dll, os.path.abspath(args.mge)))
     except Refused as error:
         say(str(error))
         return REFUSED_EXIT
