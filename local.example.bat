@@ -12,6 +12,6 @@ set "OUTLANDER_INSTANCE=D:\path\to\Outlander-test"
 rem The livecoding file of the mark key; without this line, the one in the sibling repo moreFPS.
 rem set "LIVECODING=C:\path\to\livecoding-mark.lua"
 rem The current build of the test installs: deploy_rest.py writes current.bat in the sets folder at each
-rem kept deploy (W500). Its two lines replace MGE_BUILD and NIRENDER_PLUGIN_DLL above, so keep this line last;
+rem kept deploy, and make_play_set.py at a pass (W500). Its two lines replace MGE_BUILD and NIRENDER_PLUGIN_DLL above, so keep this line last;
 rem without the file, the values above stay.
 if exist "C:\path\to\mgebuilds\current.bat" call "C:\path\to\mgebuilds\current.bat"
