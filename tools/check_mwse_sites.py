@@ -3,6 +3,7 @@ MWSE features that the plugin needs.
 
     python -I tools/check_mwse_sites.py <MWSE.dll>              # exit code 0 when every site is followed
     python -I tools/check_mwse_sites.py --features <MWSE.dll>   # exit code 0 when the DLL has every required feature
+    python -I tools/check_mwse_sites.py --features --mge <render-link tree> <MWSE.dll>   # and what that tree's d3d8 needs
     python -I tools/check_mwse_sites.py --self-test             # the tests of the output filters: no cargo
 
 The check of the sites runs the unit test `mwse_sites::tests::every_mwse_site_in_a_port_is_followed` of the plugin
@@ -20,6 +21,15 @@ that the DLL lacks, "absent: <name>: ..." for one that the plugin can run withou
 (MISSING_FEATURE_EXIT) when a required feature is absent: the plugin must not go into an install with this DLL. Any other
 failure (a build error, no file, no PE file) is exit code 1.
 
+--mge <tree> adds what the d3d8.dll of a render-link tree needs (W495). The d3d8 of render-link 76918d5 and later sends
+MWSE's native request 7 (MWSE_NATIVE_REQUEST_MGE_API) at its start, and without it every start with the renderer on becomes
+the plain game. The plugin does not send it, so the probe's feature "mge api request" (the two log texts of MWSE's answer to
+the request in the DLL's data) is not required by the plugin. When a .cpp file under d3d8/cpp of the tree names
+MWSE_NATIVE_REQUEST_MGE_API and the DLL lacks the feature, the tool adds the line "MISSING: native request 7: <path> (md5
+<md5>) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the d3d8 of <tree> sends: MWSE too old; missing
+<texts>" and gives exit code 4. A tree with no d3d8/cpp folder is exit code 1. The check reads the tree's files, not a
+commit: the merge check runs it on a sibling with no tracked change.
+
 Both run the plugin's tests, which compile when they are not built: a compile, so ask for a build place first (slot.py
 take build).
 """
@@ -28,6 +38,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -42,6 +53,13 @@ MISSING = "MISSING: "
 MD5 = "md5: "
 # The exit code when the DLL lacks a feature that the plugin needs. merge_step.py and deploy_rest.py read it.
 MISSING_FEATURE_EXIT = 4
+# The feature of MWSE's native request 7 (MGE_API_REQUEST of src/mwse_sites.rs): the plugin runs without it, and a d3d8
+# source that sends the request makes it required (--mge, W495).
+MGE_API_FEATURE = "mge api request"
+MGE_API_CONSTANT = "MWSE_NATIVE_REQUEST_MGE_API"
+# The name of the MISSING line of the request. merge_step.py names it in the NOT DEPLOYED line.
+MGE_API_NEED = "native request 7"
+D3D8_SOURCE = ("d3d8", "cpp")
 
 
 def report_lines(output):
@@ -60,6 +78,34 @@ def features_exit(returncode, lines):
     if returncode == 0:
         return 0
     return MISSING_FEATURE_EXIT if any(line.startswith(MISSING) for line in lines) else 1
+
+
+def d3d8_sends_mge_api_request(mge):
+    """True when a .cpp file under d3d8/cpp of the render-link tree `mge` names MWSE_NATIVE_REQUEST_MGE_API, False when none
+    does, None when the tree has no d3d8 source. The headers are left out: d3d8 keeps a copy of MWSE's header, which defines
+    the constant and sends nothing."""
+    source = os.path.join(mge, *D3D8_SOURCE)
+    if not os.path.isdir(source):
+        return None
+    for folder, _, names in os.walk(source):
+        for name in names:
+            if not name.endswith(".cpp"):
+                continue
+            with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as file:
+                if MGE_API_CONSTANT in file.read():
+                    return True
+    return False
+
+
+def mge_api_request_line(lines, dll, md5, mge):
+    """The MISSING line of native request 7 when the probe's lines do not show the feature as present, else None. The texts
+    that the DLL's data lacks come from the probe's "absent: " line, so that an MWSE that rewords an answer is easy to see."""
+    if any(line.startswith("feature: %s: " % MGE_API_FEATURE) for line in lines):
+        return None
+    absent = next((line for line in lines if line.startswith("absent: %s: " % MGE_API_FEATURE)), None)
+    texts = absent.split(", missing ", 1)[1].rsplit(": the plugin runs without it", 1)[0] if absent and ", missing " in absent else "no probe line"
+    return "%s%s: %s (md5 %s) has no native request 7 (%s), which the d3d8 of %s sends: MWSE too old; missing %s" % (
+        MISSING, MGE_API_NEED, dll, md5, MGE_API_CONSTANT, mge, texts)
 
 
 def md5_of(path):
@@ -100,6 +146,32 @@ def self_test():
     assert len(optional) == 2 and features_exit(0, optional) == 0, optional
     assert features_exit(101, feature_lines("error[E0425]: cannot find value `x`\n")) == 1, "a build error is no missing feature"
     assert features_exit(101, []) == 1
+
+    # W495: native request 7. The present line gives no MISSING line; an absent line gives one that names the DLL, its md5,
+    # the request, the tree and the texts that the DLL lacks; no line of the feature at all is no pass either.
+    present = feature_lines("feature: mge api request: present (2 of 2 answer texts in the data of MWSE.dll)\n")
+    assert mge_api_request_line(present, "D:/x/MWSE.dll", "a" * 32, "C:/r") is None
+    absent = feature_lines("absent: mge api request: 0 of 2 answer texts in the data of MWSE.dll, missing \"keeps MGE XE's API in use.\", "
+                           "\"withdraws MGE XE's API: the mge calls do nothing from now on.\": the plugin runs without it\n")
+    line = mge_api_request_line(absent, "D:/x/MWSE.dll", "a" * 32, "C:/r")
+    assert line == ("MISSING: native request 7: D:/x/MWSE.dll (md5 %s) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the "
+                    "d3d8 of C:/r sends: MWSE too old; missing \"keeps MGE XE's API in use.\", \"withdraws MGE XE's API: the mge calls do "
+                    "nothing from now on.\"" % ("a" * 32)), line
+    assert mge_api_request_line([], "D:/x/MWSE.dll", "a" * 32, "C:/r").endswith("; missing no probe line")
+    # The source check: a .cpp that names the constant sends the request; the copy of MWSE's header does not; a tree with
+    # no d3d8/cpp folder is unknown.
+    with tempfile.TemporaryDirectory() as root:
+        assert d3d8_sends_mge_api_request(root) is None
+        source = os.path.join(root, *D3D8_SOURCE)
+        os.makedirs(os.path.join(source, "mwse"))
+        with open(os.path.join(source, "mwse", "MWSENativeApi.h"), "w", encoding="utf-8") as file:
+            file.write("#define MWSE_NATIVE_REQUEST_MGE_API 7u\n")
+        with open(os.path.join(source, "main.cpp"), "w", encoding="utf-8") as file:
+            file.write("int main() { return 0; }\n")
+        assert d3d8_sends_mge_api_request(root) is False
+        with open(os.path.join(source, "mwse", "mwsenative.cpp"), "w", encoding="utf-8") as file:
+            file.write("return request(MWSE_NATIVE_REQUEST_MGE_API, &packet, what);\n")
+        assert d3d8_sends_mge_api_request(root) is True
     print("check_mwse_sites self-test: ok")
 
 
@@ -122,13 +194,22 @@ def check_sites(dll):
     return 0 if code == 0 else 1
 
 
-def check_features(dll):
+def check_features(dll, mge=None):
+    needs_request = d3d8_sends_mge_api_request(mge) if mge else False
+    if needs_request is None:
+        print("no d3d8 source in %s: the needs of its d3d8.dll are unknown" % os.path.join(mge, *D3D8_SOURCE))
+        print("mwse features: FAILED")
+        return 1
     code, output = run_test(FEATURES_TEST, dll)
     lines = feature_lines(output)
-    for line in lines:
+    md5 = md5_of(dll)
+    request = mge_api_request_line(lines, dll, md5, mge) if needs_request else None
+    for line in lines + ([request] if request else []):
         print(line)
-    print("%s%s %s" % (MD5, md5_of(dll), dll))
+    print("%s%s %s" % (MD5, md5, dll))
     result = features_exit(code, lines)
+    if request and result == 0:
+        result = MISSING_FEATURE_EXIT
     if result == 1:
         # The test did not judge the features: a build error, or the DLL could not be read.
         print(output[-3000:])
@@ -140,6 +221,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dll", nargs="?", help="the MWSE.dll to check")
     ap.add_argument("--features", action="store_true", help="probe the MWSE features that the plugin needs, not the sites")
+    ap.add_argument("--mge", help="with --features: the render-link tree whose d3d8.dll goes beside the DLL; its needs count too")
     ap.add_argument("--self-test", action="store_true", help="the tests of the output filters: no cargo")
     args = ap.parse_args()
     if args.self_test:
@@ -151,7 +233,9 @@ def main():
     if not os.path.isfile(dll):
         print("no file %s" % dll)
         return 2
-    return check_features(dll) if args.features else check_sites(dll)
+    if args.mge and not args.features:
+        ap.error("--mge goes with --features")
+    return check_features(dll, args.mge and os.path.abspath(args.mge)) if args.features else check_sites(dll)
 
 
 if __name__ == "__main__":
