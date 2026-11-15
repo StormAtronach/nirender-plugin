@@ -88,14 +88,13 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import time
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import D3D8, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from common import BUILD_ID_RE, REPO, git_env, local, main_checkout, parts_problems, sibling  # noqa: E402
 from make_play_set import say  # noqa: E402
-from new_run_folder import CURRENT_BAT, SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
+from new_run_folder import CURRENT_BAT, CURRENT_BAT_TRIES, SETS, new_set_folder, write_current_bat  # noqa: E402  (W380, W500)
 import symbols  # noqa: E402
 
 # The test installs, by name: the folder of the install (MO2 instance) and the names of its two mods. The key
@@ -126,12 +125,6 @@ PROBE_PATHS = ("src", "build.rs", "build_support", "contract", "Cargo.toml", "Ca
 # The record of the MWSE commit of an install's MWSE.dll and core (D442), in the folder of the install: deploy_rest writes it
 # with --mwse-dll, and --check-mwse-core (a stage of the merge step) reads it.
 MWSE_NOTE = "mwse-deployed.json"
-# The batch file of the current build in SETS (CURRENT_BAT, W500, the owner's D461): after each deploy of a build that it
-# keeps, the tool writes the set folder and the plugin beside it there, and the owner's local.bat calls it. A deploy of an
-# MWSE.dll alone, a dry run and a deploy with --no-keep leave it as it is. The tries of its rename while a reader holds it,
-# and the wait.
-CURRENT_BAT_TRIES = 5
-CURRENT_BAT_WAIT_SECONDS = 0.5
 # The programs that stop a deploy, as a part of the name of the image (without the case).
 BUSY_PROGRAMS = ("morrowind", "numidium", "modorganizer")
 REFUSED_EXIT = 3
@@ -571,32 +564,6 @@ def what_line(name, plugin_commit, mge_commit, digests, installs, stamp=None, mw
     sums = ", ".join("%s %s" % (label, digest) for label, digest in digests)
     return "%s %s: the resting build of the merge step, nirender %s, render-link %s, MWSE commit %s, no pdb, deployed to %s (backups mge-backup-%s); md5 %s\n" % (
         name, stamp, plugin_commit, mge_commit, mwse, ", ".join(installs), name, sums)
-
-
-def current_bat_text(folder, plugin_commit):
-    """The two lines of current.bat (CRLF) for the kept set `folder`: the build and the plugin beside it."""
-    folder = os.path.normpath(os.path.abspath(folder))
-    plugin = os.path.join(folder, "akulakhan-%s.dll" % plugin_commit)
-    return 'set "MGE_BUILD=%s"\r\nset "NIRENDER_PLUGIN_DLL=%s"\r\n' % (folder, plugin)
-
-
-def write_current_bat(sets, name, plugin_commit):
-    """Writes CURRENT_BAT in `sets` for the kept set `name`. The text goes to a temporary name in the same folder first and
-    then takes the place of the old file in one rename, so a reader sees the old file or the new one, never a part. A reader
-    that holds the old file makes the rename try again a few times. Returns the path; raises OSError when it cannot."""
-    path = os.path.join(sets, CURRENT_BAT)
-    temporary = path + ".new"
-    with open(temporary, "w", encoding="ascii", newline="") as file:
-        file.write(current_bat_text(os.path.join(sets, name), plugin_commit))
-    for attempt in range(CURRENT_BAT_TRIES):
-        try:
-            os.replace(temporary, path)
-            return path
-        except PermissionError:
-            if attempt + 1 == CURRENT_BAT_TRIES:
-                raise
-            time.sleep(CURRENT_BAT_WAIT_SECONDS)
-    return path
 
 
 def keep_build(build, folder, plugin_commit):

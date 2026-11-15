@@ -407,7 +407,7 @@ def mge_build_of(path):
 
 def current_set(checkout=None, sets=None):
     """The name of the current set: the one that current.bat of SETS names (deploy_rest.py writes it after each deploy that
-    keeps a set, and the owner's local.bat calls it, W500), else the one that local.bat names, else None (then no set goes).
+    keeps a set, make_play_set.py after each set that passes, and the owner's local.bat calls it, W500), else the one that local.bat names, else None (then no set goes).
     A current.bat with no MGE_BUILD line, or that names no set folder of SETS, is passed over with a line, and local.bat
     decides as before."""
     sets = SETS if sets is None else sets

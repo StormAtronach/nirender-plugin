@@ -1,8 +1,8 @@
-"""Makes the owner's play set: a build of what is ready now, tested, and named in local.bat.
+"""Makes the owner's play set: a build of what is ready now, tested, and named in current.bat of the sets.
 
     python -I tools/make_play_set.py [--force] [--no-wait]
     python -I tools/make_play_set.py --build-only   # warms the cargo targets: no set, no slot of the game
-    python -I tools/make_play_set.py --bats-only    # the step of the owner's start alone, on local.bat's set
+    python -I tools/make_play_set.py --bats-only    # the step of the owner's start alone, on the current set
     python -I tools/make_play_set.py --self-test    # the tests of the pure parts: no build, no game
 
 It builds nirender-plugin `master` and render-link `feature/wgpu-renderer` at their local tips, in the
@@ -39,8 +39,10 @@ This is the smoke of f185 with two changes: a batch replaces the live bridge, as
 and the gate is added. A crash when the game closes, after the last step, fails nothing: it is the parked
 fault at exit, and the note says so. A new fault at exit reads the same.
 
-Only on a pass, it writes MGE_BUILD and NIRENDER_PLUGIN_DLL in local.bat of the main checkout. A failed
-smoke leaves local.bat on the last good set, says why, and exit code 1. Each set has a one-line WHAT.txt,
+Only on a pass, it writes current.bat in E:/nirender-keep/mgebuilds with the same writer as deploy_rest.py
+(`new_run_folder.write_current_bat`, W500, the owner's D461): MGE_BUILD and NIRENDER_PLUGIN_DLL of the set. The
+owner's local.bat calls current.bat, and the tool writes no local.bat. A failed smoke leaves current.bat on the
+last good set, says why, and exit code 1. Each set has a one-line WHAT.txt,
 which names the MD5 of the MWSE.dll that the smoke ran on, from the lines of the runner in progress.log.
 No set is deleted: older sets stay until the owner's cleanup, and a failed set stays with its reason. The
 only file it deletes is the smoke's own save. The smoke's runs are copied to E:/nirender-keep/runs-<date>.
@@ -48,7 +50,8 @@ only file it deletes is the smoke's own save. The smoke's runs are copied to E:/
 It reads the tips again when it holds the slot, and builds again if they moved, as the wait in the queue can
 be long. If they move during the smoke, the note says that the set is not at the tips.
 
-With the tips of the set in local.bat it does nothing, unless --force. The owner's checkout must be at the
+The current set is the one that current.bat names, else the one that local.bat names (`clean_common.current_set`).
+With the tips of the current set it does nothing, unless --force. The owner's checkout must be at the
 plugin's commit, as a game by the bat takes the Lua of mod/ from there: otherwise it stops, unless --force,
 and the note says so. A build waits while the slots refuse a build, and the smoke waits in the queue of the
 game slot: with --no-wait each stops with exit code 3. It needs the slot tool, and a session when
@@ -74,7 +77,8 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import SIBLINGS, docs_place, local, main_checkout  # noqa: E402
-from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
+from new_run_folder import CURRENT_BAT, SETS, new_set_folder, write_current_bat  # noqa: E402  (W380, W500)
+import clean_common  # noqa: E402  (the current set, W500)
 from validate_tour import NOT_RUN, NOT_RUN_CODE  # noqa: E402
 import symbols  # noqa: E402
 from symbols import codeview  # noqa: E402,F401  (the tests and keep_pdbs read CodeView records by it)
@@ -190,16 +194,6 @@ def tips_moved(built, now):
 def local_bat_values(text):
     """The values of the set lines in the text of local.bat, as a dict."""
     return dict(re.findall(r'^set "(\w+)=([^"\r\n]*)"', text, re.MULTILINE))
-
-
-def with_set_lines(text, set_folder, plugin_dll):
-    """The text of local.bat with the two lines of the set, and all else as it was. Each line must exist."""
-    for key, value in (("MGE_BUILD", set_folder), ("NIRENDER_PLUGIN_DLL", plugin_dll)):
-        # A function for the replacement: a backslash in the value is no escape.
-        text, count = re.subn(r'^set "%s=[^"\r\n]*"' % key, lambda _: 'set "%s=%s"' % (key, value), text, flags=re.MULTILINE)
-        if count != 1:
-            raise SmokeFailed("local.bat has %d lines of %s" % (count, key))
-    return text
 
 
 def run_mwse(progress):
@@ -757,22 +751,24 @@ def run_smoke(tree, folder, plugin_dll, owner_local_bat, notes, slots):
     return "passed (%s, %s, %s, %d of %d bats)" % (os.path.basename(live), gate, os.path.basename(tour), tested, len(OWNER_BATS))
 
 
-def write_local_bat(path, set_folder, plugin_dll):
-    """Replaces local.bat in one step. A game that starts now reads the old text or the new. The line ends stay."""
-    with open(path, encoding="utf-8", errors="replace", newline="") as file:
-        text = file.read()
-    updated = with_set_lines(text, set_folder.replace("/", "\\"), plugin_dll.replace("/", "\\"))
-    temporary = path + ".new"
-    with open(temporary, "w", encoding="ascii", newline="") as file:
-        file.write(updated)
-    os.replace(temporary, path)
+def current_set_folder(checkout=None, sets=SETS):
+    """The folder of the current set: the one that current.bat of `sets` names, else the one that local.bat of
+    `checkout` names (`clean_common.current_set`), or None."""
+    name = clean_common.current_set(checkout or PLUGIN_REPO, sets)
+    return os.path.join(sets, name) if name else None
 
 
-def current_set_commits(owner_local_bat):
-    """The commits in the note of the set that local.bat names, or None."""
-    if not os.path.isfile(owner_local_bat):
+def set_plugin_dll(folder):
+    """The plugin of the set `folder`: its one akulakhan-<commit>.dll (`copy_stage`), or None."""
+    found = glob.glob(os.path.join(folder, "akulakhan-*.dll"))
+    return found[0] if len(found) == 1 else None
+
+
+def current_set_commits(checkout=None, sets=SETS):
+    """The commits in the note of the current set, or None. A set whose note does not say passed has none."""
+    folder = current_set_folder(checkout, sets)
+    if folder is None:
         return None
-    folder = local_bat_values(read_text(owner_local_bat)).get("MGE_BUILD", "")
     note_path = os.path.join(folder, "WHAT.txt")
     if not os.path.isfile(note_path):
         return None
@@ -781,6 +777,56 @@ def current_set_commits(owner_local_bat):
 
 
 # --- the tests of the pure parts ------------------------------------------------------------
+
+def current_set_test():
+    """The current set with the two forms of the owner's local.bat (the Reviewer's verdict 416): the set lines and then
+    the call of current.bat, and the call alone. Each form is read by `current_set_commits` and run by cmd, on a scratch
+    sets folder and checkout. The null: with no current.bat, the first form gives the set of its lines and the second
+    gives none."""
+    import io
+    with tempfile.TemporaryDirectory(prefix="make-play-set-") as root:
+        sets = os.path.join(root, "mgebuilds")
+        checkout = os.path.join(root, "nirender-plugin")
+        for name, commits in (("f185", ("abc", "def")), ("f186", ("a1b2c3d", "e4f5a6b"))):
+            os.makedirs(os.path.join(sets, name))
+            with open(os.path.join(sets, name, "WHAT.txt"), "w", encoding="ascii") as file:
+                file.write(set_note(name, commits[0], commits[1], "passed (a, b, 2 of 2 bats)", {"aae6"}))
+            open(os.path.join(sets, name, "akulakhan-%s.dll" % commits[0]), "wb").close()
+        os.makedirs(checkout)
+        bat = os.path.join(sets, CURRENT_BAT)
+        call = 'if exist "%s" call "%s"\r\n' % (bat, bat)
+        old_lines = 'set "MGE_BUILD=%s"\r\nset "NIRENDER_PLUGIN_DLL=%s"\r\n' % (os.path.join(sets, "f185"), os.path.join(sets, "f185", "akulakhan-abc.dll"))
+        forms = {"lines and the call": "@echo off\r\n" + old_lines + call, "the call alone": "@echo off\r\n" + call}
+        probe = os.path.join(root, "probe.cmd")
+        with open(probe, "w", encoding="ascii", newline="") as file:
+            file.write('@call "%s"\r\n@echo %%MGE_BUILD%%^|%%NIRENDER_PLUGIN_DLL%%\r\n' % os.path.join(checkout, "local.bat"))
+
+        def form_gives(form):
+            """(the commits, the plugin of --bats-only, the two values in cmd) for the local.bat `form`."""
+            with open(os.path.join(checkout, "local.bat"), "w", encoding="ascii", newline="") as file:
+                file.write(forms[form])
+            folder = current_set_folder(checkout, sets)
+            plugin_dll = set_plugin_dll(folder) if folder else None
+            clean_env = {key: value for key, value in os.environ.items() if key.upper() not in ("MGE_BUILD", "NIRENDER_PLUGIN_DLL")}
+            shell = subprocess.run(["cmd", "/c", probe], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, env=clean_env)
+            return current_set_commits(checkout, sets), plugin_dll, shell.stdout.strip()
+
+        new_dll = os.path.join(sets, "f186", "akulakhan-a1b2c3d.dll")
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert form_gives("lines and the call") == (("abc", "def"), os.path.join(sets, "f185", "akulakhan-abc.dll"),
+                                                        "%s|%s" % (os.path.join(sets, "f185"), os.path.join(sets, "f185", "akulakhan-abc.dll")))
+            assert form_gives("the call alone")[:2] == (None, None), "no current.bat and no set lines: no current set"
+            write_current_bat(sets, "f186", "a1b2c3d")
+            for form in forms:
+                gives = form_gives(form)
+                assert gives == (("a1b2c3d", "e4f5a6b"), new_dll, "%s|%s" % (os.path.join(sets, "f186"), new_dll)), (form, gives)
+            # A set that did not pass is no current set; a set with two plugins gives --bats-only none.
+            with open(os.path.join(sets, "f186", "WHAT.txt"), "w", encoding="ascii") as file:
+                file.write(set_note("f186", "a1b2c3d", "e4f5a6b", "FAILED: a reason"))
+            assert form_gives("the call alone")[0] is None, "a failed set is no current set"
+            open(os.path.join(sets, "f186", "akulakhan-0000000.dll"), "wb").close()
+            assert form_gives("the call alone")[1] is None, "two plugins in a set"
+
 
 def smoke_wiring_test(fake_slots):
     """The wiring of the smoke (the f220 fault was there), with a fake runner, fake tools and fake slots: one take of
@@ -1138,26 +1184,10 @@ def self_test():
     assert MGE_BRANCH in tips_moved(("a", "b"), ("a", "d"))
 
     text = '@echo off\r\nset "PYTHON=C:\\p.exe"\r\nset "MGE_BUILD=E:\\a\\f185"\r\nset "NIRENDER_PLUGIN_DLL=E:\\a\\f185\\x.dll"\r\nset "OUTLANDER_INSTANCE=D:\\o"\r\n'
-    updated = with_set_lines(text, "E:\\a\\f186", "E:\\a\\f186\\y.dll")
-    assert local_bat_values(updated) == {"PYTHON": "C:\\p.exe", "MGE_BUILD": "E:\\a\\f186", "NIRENDER_PLUGIN_DLL": "E:\\a\\f186\\y.dll", "OUTLANDER_INSTANCE": "D:\\o"}
-    assert updated.count("\r\n") == text.count("\r\n")
-    try:
-        with_set_lines('set "MGE_BUILD=x"\r\n', "a", "b")
-    except SmokeFailed:
-        pass
-    else:
-        raise AssertionError("a missing line of local.bat was taken")
+    assert local_bat_values(text) == {"PYTHON": "C:\\p.exe", "MGE_BUILD": "E:\\a\\f185", "NIRENDER_PLUGIN_DLL": "E:\\a\\f185\\x.dll", "OUTLANDER_INSTANCE": "D:\\o"}
+    current_set_test()
 
-    with tempfile.TemporaryDirectory() as folder:
-        bat = os.path.join(folder, "local.bat")
-        with open(bat, "wb") as file:
-            file.write(text.encode("ascii"))
-        write_local_bat(bat, "E:/a/f186", "E:/a/f186/y.dll")
-        with open(bat, "rb") as file:
-            written = file.read()
-        assert written.count(b"\r\n") == text.count("\r\n") and b'set "MGE_BUILD=E:\\a\\f186"' in written, written
-
-    good = "\n".join(["[t] shader batch: at-%d: run true asked %d,0 grid %d,0" % (i, i, i) for i in range(1, 6)] + [
+    good ="\n".join(["[t] shader batch: at-%d: run true asked %d,0 grid %d,0" % (i, i, i) for i in range(1, 6)] + [
         "[t] shader batch: save: run true saved: true grid 1,0", "[t] shader batch: away: run true away at grid 2,0",
         "[t] shader batch: loaded: run true saved in grid 1,0, now grid 1,0, loads 1",
         "[t] shader batch: map: run true open: MenuMulti, MenuMap", "[t] shader batch: inventory: run true open: MenuInventory",
@@ -1190,16 +1220,6 @@ def self_test():
     assert "changed during the smoke: a1, b2" in mwse_text({"b2", "a1"})
     assert run_mwse("[runner] instance D:\\m, profile Default\n[runner] MWSE.dll aae6\n[t] MWSE.dll zz\n") == "aae6"
     assert run_mwse("[t] MWSE.dll zz\n") is None
-    with tempfile.TemporaryDirectory() as folder:
-        with open(os.path.join(folder, "WHAT.txt"), "w", encoding="ascii") as file:
-            file.write(note)
-        bat = os.path.join(folder, "local.bat")
-        with open(bat, "w", encoding="ascii") as file:
-            file.write('set "MGE_BUILD=%s"\n' % folder)
-        assert current_set_commits(bat) == ("abc", "def")
-        with open(os.path.join(folder, "WHAT.txt"), "w", encoding="ascii") as file:
-            file.write(set_note("f186", "abc", "def", "FAILED: a reason"))
-        assert current_set_commits(bat) is None, "a failed set is no current set"
 
     # A second run stops, in another process as the lock is per handle, and the lock goes with the first.
     with tempfile.TemporaryDirectory() as folder:
@@ -1301,11 +1321,11 @@ def self_test():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--force", action="store_true", help="make a set when local.bat's set has these tips already")
+    parser.add_argument("--force", action="store_true", help="make a set when the current set has these tips already")
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for a slot")
     parser.add_argument("--keep-slot", action="store_true", help="after a pass, keep the game slot for this session's next work, and release it yourself")
     parser.add_argument("--build-only", action="store_true", help="only the build in the trees: no set, no game")
-    parser.add_argument("--bats-only", action="store_true", help="the step of the owner's start alone, on the set that local.bat names")
+    parser.add_argument("--bats-only", action="store_true", help="the step of the owner's start alone, on the current set")
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     args = parser.parse_args()
     if inside(PDB_KEEP, SETS):
@@ -1317,8 +1337,8 @@ def main():
     owner_local_bat = os.path.join(PLUGIN_REPO, "local.bat")
     plugin_commit, mge_commit = current_tips()
     say("the tips: nirender %s %s, render-link %s %s" % (PLUGIN_BRANCH, plugin_commit, MGE_BRANCH, mge_commit))
-    if not args.force and not args.bats_only and current_set_commits(owner_local_bat) == (plugin_commit, mge_commit):
-        say("local.bat names a set of these tips, and nothing is made")
+    if not args.force and not args.bats_only and current_set_commits() == (plugin_commit, mge_commit):
+        say("the current set has these tips, and nothing is made")
         return 0
 
     slots = load_slots()
@@ -1334,11 +1354,15 @@ def main():
         json.dump({"harness": HARNESS}, file)
 
     if args.bats_only:
-        values = local_bat_values(read_text(owner_local_bat))
+        folder = current_set_folder()
+        plugin_dll = set_plugin_dll(folder) if folder else None
+        if plugin_dll is None:
+            say("no current set with one plugin: the current set is %s" % folder)
+            return 1
         take_game(slots, OWNER_START_GAME, args.no_wait)
         notes = []
         try:
-            tested = smoke_owner_bats(plugin_tree, values["MGE_BUILD"], values["NIRENDER_PLUGIN_DLL"], owner_local_bat, notes)
+            tested = smoke_owner_bats(plugin_tree, folder, plugin_dll, owner_local_bat, notes)
         except SmokeFailed as failure:
             say("FAILED: %s" % failure)
             return 1
@@ -1418,12 +1442,12 @@ def main():
     except SmokeFailed as failure:
         reason = "FAILED: %s" % failure
         write_note(reason)
-        say("%s: %s. local.bat stays on the last good set." % (name, reason))
+        say("%s: %s. %s stays on the last good set." % (name, reason, CURRENT_BAT))
         return 1
     except SmokeNotRun as stop:
         reason = "%s: %s" % (NOT_RUN, stop)
         write_note(reason)
-        say("%s: %s. No picture of it was checked; local.bat stays on the last good set." % (name, reason))
+        say("%s: %s. No picture of it was checked; %s stays on the last good set." % (name, reason, CURRENT_BAT))
         return 3
     except BaseException as failure:
         # A note must not stay on "pending" (a stop of a tool, an interrupt).
@@ -1438,11 +1462,16 @@ def main():
     if moved:
         notes.append("NOT THE TIPS: %s during the smoke" % moved)
 
-    # local.bat first: a note that says passed then always has a set that local.bat names.
-    write_local_bat(owner_local_bat, folder, plugin_dll)
+    # current.bat first: a note that says passed then always has a set that current.bat names.
+    try:
+        bat = write_current_bat(SETS, name, plugin_commit)
+    except (OSError, UnicodeEncodeError) as error:
+        write_note("FAILED: the smoke passed, but %s was not written: %s" % (CURRENT_BAT, error))
+        say("%s: the smoke passed, but %s was not written: %s" % (name, os.path.join(SETS, CURRENT_BAT), error))
+        return 1
     write_note(result + checkout_note + ("; " + "; ".join(notes) if notes else ""))
     say(read_text(os.path.join(folder, "WHAT.txt")).strip())
-    say("local.bat now names %s" % name)
+    say("current build: %s names %s" % (bat, name))
     return 0
 
 
