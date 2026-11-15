@@ -29,6 +29,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,19 +62,36 @@ BRIDGE_DIR = os.path.join(session.harness.MO2_ROOT, "mods", "mwseMCP")
 
 
 class Tee:
-    """A stream that writes to the console and to the log file of the run (`--log`)."""
+    """A stream that writes to the console and to the log files of the run (`--log`, and from the run folder's start
+    on its copy RUN_LOG there)."""
 
     def __init__(self, console, log):
         self.console = console
-        self.log = log
+        self.logs = [log]
 
     def write(self, text):
         self.console.write(text)
-        self.log.write(text)
+        for log in self.logs:
+            log.write(text)
 
     def flush(self):
         self.console.flush()
-        self.log.flush()
+        for log in self.logs:
+            log.flush()
+
+
+def keep_log_in_run(log_path, run_dir, streams):
+    """Copies the --log file so far to RUN_LOG in the run folder, and adds that copy to each Tee of `streams`: a later
+    run with the same --log then takes only its own file, and the run folder keeps its own log (W417). Returns the
+    copy's path."""
+    for stream in streams:
+        stream.flush()
+    copy_path = os.path.join(run_dir, RUN_LOG)
+    shutil.copyfile(log_path, copy_path)
+    copy = open(copy_path, "a", encoding="utf-8", buffering=1)
+    for stream in streams:
+        stream.logs.append(copy)
+    return copy_path
 
 
 def plugin_dll_of(argument, environment, default):
@@ -1908,6 +1926,33 @@ def self_test_ending():
                 session.harness.LAST_END = saved
 
 
+def self_test_run_log():
+    """W417: the --log stream goes on into RUN_LOG of the run folder from its start, with the lines before it; a second
+    run with the same --log file overwrites that file and leaves the first run's copy. The null: the --log file alone
+    keeps only the second run."""
+    with tempfile.TemporaryDirectory() as folder:
+        log_path = os.path.join(folder, "same-tag.txt")
+        copies = []
+        for run_index in (1, 2):
+            run_dir = os.path.join(folder, "run%d" % run_index)
+            os.mkdir(run_dir)
+            log = open(log_path, "w", encoding="utf-8", buffering=1)
+            console = io.StringIO()
+            out, err = Tee(console, log), Tee(console, log)
+            out.write("before the run folder %d\n" % run_index)
+            copies.append(keep_log_in_run(log_path, run_dir, (out, err)))
+            out.write("after %d\n" % run_index)
+            err.write("an error line %d\n" % run_index)
+            for stream in (out, err):
+                stream.flush()
+            for opened in {id(f): f for stream in (out, err) for f in stream.logs}.values():
+                opened.close()
+        texts = [open(path, encoding="utf-8").read() for path in copies]
+        assert texts == ["before the run folder %d\nafter %d\nan error line %d\n" % (n, n, n) for n in (1, 2)], texts
+        assert open(log_path, encoding="utf-8").read() == texts[1], "the --log file holds the last run only"
+        assert copies[0].endswith(os.path.join("run1", RUN_LOG))
+
+
 def self_test_full_dump():
     """--full-dump: the setting goes into the run's copy of MWSE.json only with the option, beside
     RunInBackground of a background run; --check names the size."""
@@ -2346,6 +2391,7 @@ def self_test():
     self_test_plugin_evidence()
     self_test_full_dump()
     self_test_ending()
+    self_test_run_log()
     self_test_use_instance()
     self_test_build_ids()
     self_test_mgeview()
@@ -2645,6 +2691,8 @@ def main():
                 args.disable_mod.append(name)
                 print("  mod of the instance with akulakhan.dll, off for the run: %s" % name, flush=True)
     run = session.Run(args.label)
+    if args.log:
+        print("runner log: also %s" % keep_log_in_run(args.log, run.dir, (sys.stdout, sys.stderr)), flush=True)
     run.wgpu = not args.reference and not args.plain_case
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
@@ -2768,6 +2816,9 @@ EXIT_ENDED_BY_HAND = 3
 # A wgpu run without the renderer: MGE XE fell back to the plain game (the fall-back guard, D328, verdict 314; W462).
 # A --plain-case run without MGE XE's fall-back line fails with it too.
 EXIT_FELL_BACK = 4
+# The copy of the --log stream in the run folder, from the run folder's start on: a --log file of the same name in a
+# later run does not take it (W417).
+RUN_LOG = "runner-log.txt"
 # The line of the nirender mod (owndevice.lua) in a run whose game has no device of the plugin.
 NO_OWN_DEVICE = "own device: false"
 STEP_LINE = re.compile(r"^step (\S+?):")
