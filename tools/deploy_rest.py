@@ -35,6 +35,12 @@ The tag of the backups is that name. The copy to E: is the stage's write on the 
 game slot in a round with this stage (its GAME_STAGES), and the stage refuses while a game runs.
 The output prints the MD5 of d3d8.dll, numidium.exe and akulakhan.dll. --dry-run reads the installs and writes nothing.
 
+After a deploy that kept its set, as the last step before DONE, it writes SETS\\current.bat (W500, the owner's D461): two
+lines, set "MGE_BUILD=<the set folder>" and set "NIRENDER_PLUGIN_DLL=<the set folder>\\akulakhan-<plugin>.dll", ASCII
+and CRLF. The text goes to current.bat.new and then replaces current.bat in one rename. The owner's local.bat calls it,
+and clean_common.current_set reads it first. A dry run, --no-keep and an MWSE.dll alone leave it as it is. A failed write
+fails the run after the deploy, with the set's name.
+
 --mwse-dll (W406) puts that MWSE.dll into each install too, at its place in MWSE_DEPLOYS, after the build: a plugin that
 needs a new MWSE and that MWSE go together, under one backup tag. Without --build it puts only the MWSE.dll, beside the
 plugin that the installs hold. Before any write (and in the dry run) it probes the DLL for the MWSE features that the
@@ -88,7 +94,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import D3D8, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from common import BUILD_ID_RE, REPO, git_env, local, main_checkout, parts_problems, sibling  # noqa: E402
 from make_play_set import say  # noqa: E402
-from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
+from new_run_folder import CURRENT_BAT, CURRENT_BAT_TRIES, SETS, new_set_folder, write_current_bat  # noqa: E402  (W380, W500)
 import symbols  # noqa: E402
 
 # The test installs, by name: the folder of the install (MO2 instance) and the names of its two mods. The key
@@ -691,6 +697,13 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
         mge_tree = os.path.dirname(os.path.dirname(build))
         say(add_symbols(name or tag, [os.path.join(build, *path.split("/")) for path in SYMBOL_BINARIES],
                         symbols.tree_pdb_dirs(mge_tree, REPO)))
+    if keep:
+        try:
+            say("current build: %s names %s" % (write_current_bat(sets, name, plugin_commit), name))
+        except (OSError, UnicodeEncodeError) as error:
+            raise DeployError("the build is deployed and kept as %s, but %s was not written: %s" % (name, os.path.join(sets, CURRENT_BAT), error))
+    elif build is not None:
+        say("current build: %s stays as it is (no kept set: --no-keep)" % os.path.join(sets, CURRENT_BAT))
     say("DONE: %d installs from %s with tag %s" % (len(installs), " and ".join(part for part in (build, mwse_dll) if part), tag))
     return 0
 
@@ -893,10 +906,46 @@ def self_test():
         assert len(added) == 1 and added[0][0] == "f1", added
         assert [os.path.relpath(path, build).replace(os.sep, "/") for path in added[0][1]] == ["d3d8.dll", "dinput8.dll", "numidium.exe", NIRENDER_PLUGIN], added
         assert os.path.join(os.path.dirname(os.path.dirname(build)), "target", "x86_64-pc-windows-msvc", "release") in added[0][2], added
-        assert sorted(os.listdir(whole_sets)) == ["f1"], os.listdir(whole_sets)
+        assert sorted(os.listdir(whole_sets)) == [CURRENT_BAT, "f1"], os.listdir(whole_sets)
         what = open(os.path.join(whole_sets, "f1", "WHAT.txt"), encoding="ascii").read()
         assert what.startswith("f1 ") and "nirender 79c752d, render-link c610f3b" in what and "deployed to E, F" in what, what
         assert os.path.isfile(os.path.join(whole_sets, "f1", "akulakhan-79c752d.dll"))
+        # W500: current.bat names the kept set and its plugin, two CRLF lines, and no temporary file stays.
+        set_folder = os.path.normpath(os.path.abspath(os.path.join(whole_sets, "f1")))
+        bat = open(os.path.join(whole_sets, CURRENT_BAT), "rb").read()
+        assert bat == ('set "MGE_BUILD=%s"\r\nset "NIRENDER_PLUGIN_DLL=%s\\akulakhan-79c752d.dll"\r\n' % (set_folder, set_folder)).encode("ascii"), bat
+        assert not os.path.exists(os.path.join(whole_sets, CURRENT_BAT + ".new"))
+        # The next kept set takes its place; a dry run and --no-keep leave it as it is.
+        assert run(build, two, keep=True, sets=whole_sets, tasklist=quiet, **installed_mwse(two)) == 0
+        bat = open(os.path.join(whole_sets, CURRENT_BAT), "rb").read()
+        assert b"\\f2\"\r\n" in bat and b"\\f2\\akulakhan-79c752d.dll\"\r\n" in bat, bat
+        for options in (dict(keep=True, dry_run=True), dict(keep=False)):
+            assert run(build, two, sets=whole_sets, tasklist=quiet, **options, **installed_mwse(two)) == 0
+            assert open(os.path.join(whole_sets, CURRENT_BAT), "rb").read() == bat, options
+        assert sorted(os.listdir(whole_sets)) == [CURRENT_BAT, "f1", "f2"], os.listdir(whole_sets)
+        # A reader that holds the file for a moment: the rename tries again. One that holds it longer: OSError, no part
+        # file in its place.
+        held = {"left": 2}
+        real_replace = os.replace
+
+        def busy_replace(source, target):
+            if held["left"]:
+                held["left"] -= 1
+                raise PermissionError(13, "held by a reader")
+            real_replace(source, target)
+
+        os.replace = busy_replace
+        try:
+            assert write_current_bat(whole_sets, "f9", "abc1234").endswith(CURRENT_BAT)
+            held["left"] = CURRENT_BAT_TRIES
+            try:
+                write_current_bat(whole_sets, "f10", "abc1234")
+                raise AssertionError("a held current.bat was replaced")
+            except PermissionError:
+                pass
+        finally:
+            os.replace = real_replace
+        assert b"\\f9\"\r\n" in open(os.path.join(whole_sets, CURRENT_BAT), "rb").read(), "the held file kept the last whole text"
 
         # The kept copy: the next number as a number, no pdb, the plugin beside it, one ASCII line.
         sets = os.path.join(root, "sets")
@@ -1037,6 +1086,8 @@ def mwse_test(root, build, quiet):
     newer = os.path.join(root, "newer-MWSE.dll")
     write(newer, "newer mwse")
     before = state()
+    current = open(os.path.join(sets, CURRENT_BAT), "rb").read()
+    assert b"\\f2\"\r\n" in current, current
     assert "MISSING FEATURE: " in refused(MissingFeature, **dict(alone, mwse_dll=newer), probe=missing)
     assert "differ from the plugin %s" % FAKE_HEADS["plugin"] in refused(DeployError, **dict(alone, mwse_dll=newer, tree_changes=lambda commit: ["Cargo.lock"]), probe=good)
     assert state() == before, "a refused MWSE deploy wrote"
@@ -1044,7 +1095,8 @@ def mwse_test(root, build, quiet):
     for name, install in pair.items():
         assert md5_of(deploys[name]) == md5_of(newer)
         assert open(os.path.join(install["root"], "mge-backup-m", "MWSE", "Root", "MWSE.dll")).read() == "new mwse", name
-    assert sorted(os.listdir(sets)) == ["f1", "f2"], "an MWSE.dll alone keeps no set"
+    assert sorted(os.listdir(sets)) == [CURRENT_BAT, "f1", "f2"], "an MWSE.dll alone keeps no set"
+    assert open(os.path.join(sets, CURRENT_BAT), "rb").read() == current, "an MWSE.dll alone changed current.bat"
     # Installs that hold plugins of two commits, or a plugin with no build id: refused.
     write(os.path.join(mod_folder(pair["H"], "nirender"), "MWSE", "lib", "akulakhan.dll"), "x nirender v0.3.6 87f7049")
     assert "plugins of different commits" in refused(DeployError, **alone, probe=good)

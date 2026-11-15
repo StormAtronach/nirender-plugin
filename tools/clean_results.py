@@ -40,9 +40,11 @@ A dump in C:\\tmp\\mwdumps or E:\\nirender-keep\\full-dumps-*:
 - It is removed at 30 days, unless the text names it, its process beside the word dump or pid, or its folder.
 - A dump in another folder of E:\\nirender-keep is only listed.
 
-A set of E:\\nirender-keep\\mgebuilds stays when local.bat names it or it is the one before, when a process
+A set of E:\\nirender-keep\\mgebuilds stays when it is the current set or the one before, when a process
 uses it, when the text or the name of a baseline-* or gate-* folder names it, or when the keep list names it.
-Others go 30 days after their newest write. When local.bat names no set that is here, no set goes.
+The current set is the one that mgebuilds\\current.bat names (deploy_rest.py writes it, W500), else the one that local.bat
+names (clean_common.current_set). Others go 30 days after their newest write. When neither names a set that is here, no
+set goes.
 
 The tool refuses while a game or a helper runs. A removal never goes through a link. Each act goes to
 E:\\nirender-keep\\clean-worktrees.log.
