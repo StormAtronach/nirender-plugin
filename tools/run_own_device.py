@@ -1588,6 +1588,127 @@ def self_test_refusal():
             session.MGE_LOGS, session.RESULTS = saved
 
 
+def self_test_live_mge_log():
+    """W490: the run keeps the live mgeXE.log of the game folder. Root Builder (hash on) does not move back a log
+    whose bytes equal the one in overwrite and clears the game folder: the overwrite log keeps its old time, and the run
+    folder must still get the log of the run, also without a `stop` (a --plain-case run). A fresh overwrite log wins."""
+    text = ("MGE-XE G7 Fork v0.21.0 64ba9f1\n"
+            "!! wgpu renderer: not in use, the plugin did not start: Data Files\\MWSE\\lib\\akulakhan.dll did not load. "
+            "The game runs on its own Direct3D 8\n")
+
+    class Deployment:
+        def write_spec(self, *a):
+            pass
+
+        def enable_mod(self, name):
+            pass
+
+        def use_mod(self, *a):
+            pass
+
+        def restore(self):
+            pass
+
+    saved = (session.harness.Deployment, session.harness.run_game, session.harness.copy_logs, session.ring_problem_of_instance,
+             session.RESULTS, session.stage_mwse_config, session.MGE_LOGS)
+    with tempfile.TemporaryDirectory() as folder:
+        live, overwrite = os.path.join(folder, "game", "mgeXE.log"), os.path.join(folder, "overwrite", "Root", "mgeXE.log")
+        session.harness.Deployment = Deployment
+        session.harness.copy_logs = lambda *a: None
+        session.ring_problem_of_instance = lambda: None
+        session.stage_mwse_config = lambda deployment, settings: None
+        session.RESULTS = os.path.join(folder, "results")
+        session.MGE_LOGS = (live, overwrite)
+        try:
+            for index, (stop, fresh_overwrite) in enumerate(((None, False), (lambda: None, False), (None, True))):
+                for path in (live, overwrite):
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                # The plant: the overwrite log of an earlier run, with the same bytes and an old time.
+                with open(overwrite, "w", encoding="utf-8", newline="") as file:
+                    file.write(text)
+                old = time.time() - 3600
+                os.utime(overwrite, (old, old))
+
+                def run_game(progress, timeout, tag, deployment, started, foreground, facts, stop):
+                    # The game writes the live log; the watch of the runner calls; then Root Builder clears the game
+                    # folder and, with a log that changed (`fresh_overwrite`), moves it back.
+                    # A time after the start: a file time can lag the clock of time.time().
+                    with open(live, "w", encoding="utf-8", newline="") as file:
+                        file.write(text)
+                    os.utime(live, (started + 1, started + 1))
+                    if stop:
+                        assert stop() is None
+                    os.remove(live)
+                    if fresh_overwrite:
+                        with open(overwrite, "w", encoding="utf-8", newline="") as file:
+                            file.write(text + "box: closed\n")
+                        os.utime(overwrite, (started + 2, started + 2))
+                    return True
+
+                session.harness.run_game = run_game
+                run = session.Run("live-mge-log-test-%d" % index)
+                assert run.launch({}, 10, "[t] ", stop=stop)
+                kept = run.path("mgeXE.log")
+                assert os.path.isfile(kept), "no mgeXE.log in the run folder (stop %s, fresh %s)" % (stop, fresh_overwrite)
+                with open(kept, encoding="utf-8", newline="") as file:
+                    expected = text + "box: closed\n" if fresh_overwrite else text
+                    assert file.read() == expected, (stop, fresh_overwrite)
+                with open(kept, encoding="utf-8") as file:
+                    assert plain_case_line(file.read().splitlines()), "the case line is lost"
+
+            # A copy that fails does not end the run, and the next call copies. The plant: a read-only file in the
+            # place of the run's mgeXE.log, so the copy raises a PermissionError.
+            run = session.Run("live-mge-log-test-locked")
+            run.started = time.time() - 10
+            with open(live, "w", encoding="utf-8", newline="") as file:
+                file.write(text)
+            os.utime(live, (run.started + 1, run.started + 1))
+            with open(run.path("mgeXE.log"), "w", encoding="utf-8") as file:
+                file.write("locked\n")
+            os.chmod(run.path("mgeXE.log"), 0o444)
+            run.keep_live_mge_log()
+            os.chmod(run.path("mgeXE.log"), 0o666)
+            run.keep_live_mge_log()
+            with open(run.path("mgeXE.log"), encoding="utf-8", newline="") as file:
+                assert file.read() == text, "the call after a failed copy did not copy"
+        finally:
+            (session.harness.Deployment, session.harness.run_game, session.harness.copy_logs, session.ring_problem_of_instance,
+             session.RESULTS, session.stage_mwse_config, session.MGE_LOGS) = saved
+
+
+def self_test_refusal_guard():
+    """W490: a log that goes or that another program holds while Run.refusal reads it does not end the run. The call
+    gives no reason, and the next call reads the lines it missed. A log that is gone is not fresh."""
+    line = "nirender: install: the renderer is refused for this session (see the census above)\n"
+    with tempfile.TemporaryDirectory() as folder:
+        saved = (session.MGE_LOGS, session.RESULTS)
+        session.RESULTS = folder
+        log = os.path.join(folder, "mgeXE.log")
+        session.MGE_LOGS = (log,)
+        try:
+            run = session.Run("refusal-guard-test")
+            run.started = time.time() - 10
+            with open(log, "w", encoding="utf-8") as file:
+                file.write("MGE-XE\n" + line)
+            os.utime(log, (run.started + 1, run.started + 1))
+            for error in (PermissionError, FileNotFoundError):
+                # The plant: every open of session.py raises, as Windows does it while Root Builder reads the log or
+                # clears the game folder.
+                def failing_open(*a, **k):
+                    raise error(13, "held by another program")
+
+                session.open = failing_open
+                try:
+                    assert run.refusal() is None, error
+                finally:
+                    del session.open
+            reason = run.refusal()
+            assert reason == "the plugin refused the renderer: " + line.strip()[len("nirender: "):], reason
+            assert not session.modified_after(os.path.join(folder, "gone.log"), 0), "a log that is gone is fresh"
+        finally:
+            session.MGE_LOGS, session.RESULTS = saved
+
+
 def self_test_ring_problem():
     """A plugin and a helper with different ring marks are refused before the start; the same
     mark, no mark or no helper are not. The helper is the Root file that wins in the mod list."""
@@ -2147,6 +2268,8 @@ def self_test():
     self_test_add_symbols()
     self_test_mge_log_problems()
     self_test_refusal()
+    self_test_live_mge_log()
+    self_test_refusal_guard()
     self_test_fallback_guard()
     self_test_ring_problem()
     self_test_weather()
