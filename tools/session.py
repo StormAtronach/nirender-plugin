@@ -37,7 +37,9 @@ RESULTS = os.path.join(REPO, "results")
 # The folders of the run's mod that `prepare` fills from a whole tree, and whose install the output counts in one line.
 EXTRA_TREE_FOLDERS = ("MWSE/core",)
 SPEC_NAME = "nirender_test"
-# MGE XE writes its log into the game folder. Mod Organizer moves it to overwrite at its exit.
+# MGE XE writes its log into the game folder. Mod Organizer moves it to overwrite at its exit. Root Builder (hash on)
+# moves only a file whose bytes changed: a log equal to the one in overwrite stays behind with its old time, so the run
+# keeps a copy of the live log as the game runs (`Run.keep_live_mge_log`).
 MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(harness.MO2_ROOT, "overwrite", "Root", "mgeXE.log"))
 
 
@@ -287,6 +289,8 @@ class Run:
         # A wgpu run: MGE XE's fall-back stops it (fallback_of), and the reason is kept here.
         self.wgpu = False
         self.fell_back = None
+        # The size of the live mgeXE.log at its last copy (`keep_live_mge_log`).
+        self._live_mge_size = None
 
     def path(self, name):
         return os.path.join(self.dir, name)
@@ -312,7 +316,8 @@ class Run:
         The mod list and the Morrowind.ini are as they were after the run. `facts` are more lines for the record
         of what the run ran (`harness.write_setup`). `full_dump`: MWSE writes a full-memory dump at a
         crash (`mwse_run_settings`). `stop`: a function that `harness.run_game` calls every 2 s; a
-        text it returns ends the run (`refusal`).
+        text it returns ends the run (`refusal`). With every call, and without `stop` too, the run
+        keeps a copy of the live mgeXE.log (`keep_live_mge_log`).
 
         A run is a background run unless NIRENDER_FOREGROUND=1 (the owner, 2026-10-20): the
         runner stages MWSE.json with RunInBackground = true (stage_mwse_config) and does
@@ -344,17 +349,35 @@ class Run:
             problem = ring_problem_of_instance()
             if problem:
                 raise SystemExit(problem)
-            done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground, facts=facts, stop=stop)
+
+            def watch():
+                self.keep_live_mge_log()
+                return stop() if stop else None
+
+            done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground, facts=facts, stop=watch)
         finally:
             # run_game also restores. This restore is for a failure before run_game gets to
             # that point.
             deployment.restore()
         harness.copy_logs(self.dir, self.started)
+        # A fresh log is the whole log. Without one, the live copy stays: it lacks only the lines after its last call.
         for path in MGE_LOGS:
             if os.path.isfile(path) and os.path.getmtime(path) > self.started:
                 shutil.copy2(path, self.path("mgeXE.log"))
                 break
         return done
+
+    def keep_live_mge_log(self):
+        """Copies the live mgeXE.log of the game folder (`MGE_LOGS[0]`, fresh since the start) into the run folder when
+        its size changed. Root Builder does not move back a log whose bytes equal the one in overwrite, and it clears
+        the game folder at the end; this copy is then the log of the run."""
+        live = MGE_LOGS[0]
+        if not (self.started and os.path.isfile(live) and os.path.getmtime(live) > self.started):
+            return
+        size = os.path.getsize(live)
+        if size != self._live_mge_size:
+            shutil.copy2(live, self.path("mgeXE.log"))
+            self._live_mge_size = size
 
     def refusal(self):
         """The plugin's refusal of the renderer in this run so far, with its cause (`refusal_of`),
