@@ -48,7 +48,9 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
 - in every round that deploys (the gate's paths, or DEPLOY_PATHS of the plugin), "mwse features <instance>":
   tools/check_mwse_sites.py --features in the plugin's tree on the same MWSE.dll of each test install, before the build
   (W406). It asks whether that MWSE has what this plugin needs (MWSE_FEATURES of src/mwse_sites.rs), not whether a
-  port meets an MWSE patch. A failure of the probe (exit code 1) fails the round, and nothing is deployed. A missing
+  port meets an MWSE patch. With --mge and the render-link sibling, it also asks for what that tree's d3d8.dll needs:
+  native request 7 (MWSE_NATIVE_REQUEST_MGE_API) when its d3d8 source sends it, as render-link 76918d5 and later do
+  (W495). A failure of the probe (exit code 1) fails the round, and nothing is deployed. A missing
   required feature (exit code 4) passes the stage: the code under test is right, and the deployed MWSE is too old for
   it. The build still runs, `deploy rest` then deploys nothing, and the round prints one "NOT DEPLOYED" line (in the log,
   and again after the summary) with each install's MWSE.dll and what it lacks, and the command that deploys the build
@@ -317,7 +319,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     deploy = (DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--build", staging, *commit_args))
     if deploys:
         for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
-            stages.append((FEATURES_STAGE + instance, plugin, tool("check_mwse_sites.py", "--features", dll)))
+            stages.append((FEATURES_STAGE + instance, plugin, tool("check_mwse_sites.py", "--features", "--mge", mge, dll)))
         stages.append((MWSE_CORE_STAGE, plugin, tool("deploy_rest.py", "--check-mwse-core")))
     if gate:
         stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
@@ -503,11 +505,12 @@ def missing_features_in(output):
 
 
 def withheld_line(withheld, folder, command):
-    """The one "NOT DEPLOYED" line of a round whose installs lack MWSE features that the plugin needs: each install with
-    its MWSE.dll and what it lacks, and the command that deploys the build of the round with an MWSE.dll that has them."""
+    """The one "NOT DEPLOYED" line of a round whose installs lack MWSE features that the build needs (the plugin, or the
+    d3d8.dll: native request 7, W495): each install with its MWSE.dll and what it lacks, and the command that deploys the
+    build of the round with an MWSE.dll that has them."""
     names = sorted({text.split(": ", 1)[0] for _, _, missing in withheld for text in missing})
     lacks = "; ".join("%s (MWSE.dll %s): %s" % (install, md5, "; ".join(missing)) for install, md5, missing in withheld)
-    return "NOT DEPLOYED: the plugin needs the MWSE features %s, which the deployed MWSE.dll lacks: %s. Deploy both together, run in %s: %s" % (
+    return "NOT DEPLOYED: the build needs the MWSE features %s, which the deployed MWSE.dll lacks: %s. Deploy both together, run in %s: %s" % (
         ", ".join("'%s'" % name for name in names), lacks, subprocess.list2cmdline([folder]),
         subprocess.list2cmdline(command + ["--mwse-dll", "<an MWSE.dll with %s>" % " and ".join(names)]))
 
@@ -1154,7 +1157,8 @@ def self_test():
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"] + deploy_tail
         # The probe runs in the plugin's tree, on the deployed DLL of each install.
         probe = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[FEATURES_STAGE + "Outlander-test"]
-        assert probe[0] == plugin and probe[1][-3:] == [os.path.join("tools", "check_mwse_sites.py"), "--features", MWSE_DEPLOYS["Outlander-test"]], probe
+        # W495: with the render-link sibling, whose d3d8.dll goes beside the same MWSE.dll.
+        assert probe[0] == plugin and probe[1][-5:] == [os.path.join("tools", "check_mwse_sites.py"), "--features", "--mge", mge, MWSE_DEPLOYS["Outlander-test"]], probe
         build_stage = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[BUILD_FOR_DEPLOY]
         assert build_stage == (mge, ["cargo", "xtask", "dist"]), build_stage
         # D442: the check of the MWSE core runs in the plugin's tree, before the build.
@@ -1202,7 +1206,7 @@ def self_test():
             assert names("mge", mge, path) == mge_base + gate_tail, path
         assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract"] + gate_tail
         mge_probe = {name: (folder, command) for name, folder, command in stages_for("mge", mge, ["mgeHost64/src/renderer.rs"])}[FEATURES_STAGE + "Morrowind75testing"]
-        assert mge_probe[0] == plugin and "--features" in mge_probe[1], mge_probe
+        assert mge_probe[0] == plugin and mge_probe[1][-4:-1] == ["--features", "--mge", mge], mge_probe
         assert stages_for("mge", mge, [])[0][2][-4:] == ["-p", "mgeHost64", "-p", "mge-config"], stages_for("mge", mge, [])[0][2]
         # The GPU tests run the ignored tests of the helper in its tree, through the wrapper that fails on 0 tests, and the
         # plugin's tests do not run them.
@@ -1406,7 +1410,7 @@ def self_test():
             assert run_stages(stages, log) == [True] * 5
             assert len(NOT_DEPLOYED) == 1, NOT_DEPLOYED
             line = NOT_DEPLOYED[0]
-            assert line.startswith("NOT DEPLOYED: the plugin needs the MWSE features 'count locks', which the deployed MWSE.dll lacks: A (MWSE.dll %s): count locks: 0 of 40" % ("a" * 32)), line
+            assert line.startswith("NOT DEPLOYED: the build needs the MWSE features 'count locks', which the deployed MWSE.dll lacks: A (MWSE.dll %s): count locks: 0 of 40" % ("a" * 32)), line
             assert "; B (MWSE.dll %s): count locks" % ("b" * 32) in line and "Deploy both together, run in %s: " % root in line, line
             assert subprocess.list2cmdline(never + ["--mwse-dll", "<an MWSE.dll with count locks>"]) in line, line
             # One install that lacks the feature keeps the deploy of both back.
@@ -1419,6 +1423,18 @@ def self_test():
             # A round with the gate: the gate's build and the gate run; only the deploy is kept back.
             assert run_stages([(FEATURES_STAGE + "A", root, probe_missing("d" * 32)), ("build for the gate", root, good), (DEPLOY_STAGE, root, never), gate_stage], log) == [True] * 4
             assert len(NOT_DEPLOYED) == 1
+            # W495: an MWSE.dll without native request 7 beside a d3d8 that sends it: the same form, and the line names the
+            # DLL, its md5, the request and the texts that it lacks.
+            request = ("MISSING: native request 7: D:/x/MWSE.dll (md5 %s) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the d3d8 "
+                       "of C:/r sends: MWSE too old; missing \"keeps MGE XE's API in use.\"" % ("e" * 32))
+            probe_request = [sys.executable, "-c", "print(%r); print('md5: %s D:/x/MWSE.dll'); raise SystemExit(%d)" % (request, "e" * 32, MISSING_FEATURE_EXIT)]
+            assert run_stages([(FEATURES_STAGE + "A", root, probe_request), (BUILD_FOR_DEPLOY, root, good), (DEPLOY_STAGE, root, never)], log) == [True] * 3
+            assert len(NOT_DEPLOYED) == 1, NOT_DEPLOYED
+            line = NOT_DEPLOYED[0]
+            assert line.startswith("NOT DEPLOYED: the build needs the MWSE features 'native request 7', which the deployed MWSE.dll lacks: A (MWSE.dll %s): "
+                                   "native request 7: D:/x/MWSE.dll (md5 %s) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the d3d8 of "
+                                   "C:/r sends: MWSE too old; missing \"keeps MGE XE's API in use.\". Deploy both together" % ("e" * 32, "e" * 32)), line
+            assert subprocess.list2cmdline(never + ["--mwse-dll", "<an MWSE.dll with native request 7>"]) in line, line
         with open(os.path.join(root, "log8.txt"), encoding="utf-8") as log:
             text = log.read()
         assert "== %s: " % DEPLOY_STAGE not in text, "a deploy ran beside a missing feature or a failed probe"
