@@ -44,6 +44,7 @@ pub const NATIVE_REQUEST_RIPPLES: u32 = 3;
 pub const NATIVE_REQUEST_INTRO_MOVIES: u32 = 4;
 pub const NATIVE_REQUEST_LIGHT_PARTICLES_FIX: u32 = 5;
 pub const NATIVE_REQUEST_SUN_GLARE: u32 = 6;
+pub const NATIVE_REQUEST_MGE_API: u32 = 7;
 pub const NATIVE_QUERY_UI_SCALE: u32 = 1;
 
 /// The name of the plugin in MWSE.log.
