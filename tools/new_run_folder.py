@@ -25,6 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import docs_place  # noqa: E402
 
 SETS = "E:/nirender-keep/mgebuilds"
+# The batch file in SETS that names the current set (W500): deploy_rest.py writes it, clean_common.current_set reads it.
+CURRENT_BAT = "current.bat"
 HARNESS = docs_place("docs", "scripts", "test-harness-2026-10-03")
 NOTE = "WHAT.txt"
 EXIT_REFUSED = 1
