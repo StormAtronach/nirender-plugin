@@ -2,7 +2,8 @@
 
     python -I tools/deploy_rest.py --build <dist-staging> [--plugin-commit SHA] [--mge-commit SHA] [--tag NAME] [--no-keep] [--dry-run]
     python -I tools/deploy_rest.py --build <dist-staging> --mwse-dll <MWSE.dll> [...]   # the build and its MWSE together
-    python -I tools/deploy_rest.py --mwse-dll <MWSE.dll> [--tag NAME] [--dry-run]       # an MWSE.dll beside the installed plugin
+    python -I tools/deploy_rest.py --mwse-dll <MWSE.dll> --mwse-commit SHA [--tag NAME] [--dry-run]   # an MWSE.dll beside the installed plugin
+    python -I tools/deploy_rest.py --check-mwse-core   # each install's MWSE core against the commit of its MWSE.dll; writes nothing
     python -I tools/deploy_rest.py --self-test    # the tests: scratch installs, no game, nothing of the real installs
 
 The merge step runs this as the stage "deploy rest" (the owner's D193: the test installs always hold the latest build).
@@ -40,9 +41,10 @@ plugin that the installs hold. Before any write (and in the dry run) it probes t
 plugin needs (tools/check_mwse_sites.py --features, which runs the plugin's tests through cargo: a compile, so take a
 build place first when you run it by hand): a missing required feature refuses with exit code 4
 (MISSING_FEATURE_EXIT), any other failure of the probe is exit code 1, and nothing is written. The probe is the code of
-this tree, so the tree must be at the commit of the plugin that goes beside the DLL, with no change in src/: the build's
-plugin, or without --build the plugin of both installs (one commit). The output and WHAT.txt name the MD5 of the
-MWSE.dll. A fault of the MWSE copy after the build was written says so: the installs may then hold the new plugin
+this tree, so the files that the probe compiles or reads (PROBE_PATHS: src/, the build files, the check tool and its
+baseline) must equal those of the commit of the plugin that goes beside the DLL, changes not yet committed included: the
+build's plugin, or without --build the plugin of both installs (one commit). The tree's HEAD may be another commit, such
+as a branch with a change of these tools (D442). The output and WHAT.txt name the MD5 of the MWSE.dll. A fault of the MWSE copy after the build was written says so: the installs may then hold the new plugin
 beside the old MWSE.dll, and the replaced files are in the backups.
 
 --mwse-dll needs --mwse-commit, the MWSE commit of the DLL (W480): the DLL and its core Lua must come from one commit.
@@ -50,20 +52,28 @@ The tool takes the core of that commit from the MWSE repository (`git archive`, 
 MWSE_REPO, local.json key "mwse_repo") and copies it file by file into the core folder beside each DLL (<mod>/Root/MWSE.dll
 gives <mod>/MWSE/core), with the same backup tag and MD5 check. It deletes nothing: a file that only the install has
 (lpeg.dll) stays, and the output names such files, and those of the deployed mod folders that the build no longer has.
+Each install then gets the record MWSE_NOTE (mwse-deployed.json in the folder of the install, D442): the commit, the
+MWSE.dll and its MD5. WHAT.txt names the MWSE commit: that of --mwse-dll, or for a build alone the commit that the
+records of all installs name for the MWSE.dll they keep, else "unknown".
+
+--check-mwse-core (D442, a stage of the merge step) writes nothing. For each install it reads the record, and fails
+when there is none, when the MWSE.dll is not the one of the record (by MD5), or when a file of the core of the record's
+commit is missing or differs in the install's core folder. A file that only the install has is no fault.
 
 A build without --mwse-dll (D328) goes beside the MWSE.dll that each install holds, so the same probe runs on each of
 those DLLs, with the same rule for the tree, before any write (and in the dry run): a missing required feature refuses
 with exit code 4. An install with no MWSE.dll at its place in MWSE_DEPLOYS refuses with exit code 1. The probe is a
-compile here too: take a build place first when you run it by hand. Every deploy of a build now needs a tree at that
-build's plugin commit with no change in src/: a rollback by hand to an older set runs in a worktree at that set's
-commit (its WHAT.txt names it), and the merge step's "deploy rest" runs in the plugin tree of the round, which must have
-no change in src/.
+compile here too: take a build place first when you run it by hand. Every deploy of a build now needs a tree whose
+files of the probe equal those of that build's plugin commit: a rollback by hand to an older set runs in a worktree at
+that set's commit (its WHAT.txt names it), and the merge step's "deploy rest" runs in the plugin tree of the round, which
+must have no change in those files.
 """
 import argparse
 import dataclasses
 import datetime
 import hashlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -74,7 +84,7 @@ import tempfile
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
-from common import BUILD_ID_RE, REPO, git_env, local, main_checkout, parts_problems, same_commit  # noqa: E402
+from common import BUILD_ID_RE, REPO, git_env, local, main_checkout, parts_problems  # noqa: E402
 from make_play_set import say  # noqa: E402
 from new_run_folder import SETS, new_set_folder  # noqa: E402  (one rule for the number, W380)
 import symbols  # noqa: E402
@@ -97,6 +107,13 @@ MWSE_DEPLOYS = local("mwse_deploys", {
 MWSE_REPO = local("mwse_repo", os.path.join(os.path.dirname(main_checkout() or REPO), "MWSE", "MWSE"))
 CORE_PATH = "misc/package/Data Files/MWSE/core"
 CHECK_MWSE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_mwse_sites.py")
+# The files that the probe of the features compiles or reads (check_mwse_sites.py --features runs the plugin's lib tests):
+# a tree may run the probe for a plugin commit when these equal that commit's.
+PROBE_PATHS = ("src", "build.rs", "build_support", "contract", "Cargo.toml", "Cargo.lock", ".cargo", "rust-toolchain.toml",
+               "tools/check_mwse_sites.py", "tools/mwse_sites.baseline")
+# The record of the MWSE commit of an install's MWSE.dll and core (D442), in the folder of the install: deploy_rest writes it
+# with --mwse-dll, and --check-mwse-core (a stage of the merge step) reads it.
+MWSE_NOTE = "mwse-deployed.json"
 # The programs that stop a deploy, as a part of the name of the image (without the case).
 BUSY_PROGRAMS = ("morrowind", "numidium", "modorganizer")
 REFUSED_EXIT = 3
@@ -284,11 +301,22 @@ def installed_plugin_commit(installs):
     return next(iter(commits.values()))
 
 
-def tree_head():
-    """The commit of this tree, with "-dirty" when src/ has a tracked change: the probe of the features is its code."""
-    head = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"], capture_output=True, text=True, env=git_env()).stdout.strip()
-    changed = subprocess.run(["git", "-C", REPO, "diff", "--quiet", "HEAD", "--", "src"], env=git_env()).returncode != 0
-    return head + ("-dirty" if changed else "")
+def git_lines(repo, *args):
+    """The lines of a git command in `repo`, or None when it fails."""
+    done = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, env=git_env())
+    return done.stdout.splitlines() if done.returncode == 0 else None
+
+
+def probe_tree_changes(plugin_commit, repo=REPO):
+    """The files of PROBE_PATHS in which this tree differs from `plugin_commit`: the tracked files against that commit,
+    with the changes not yet committed, and the new files. None when git does not know the commit."""
+    if git_lines(repo, "cat-file", "-e", plugin_commit + "^{commit}") is None:
+        return None
+    differ = git_lines(repo, "diff", "--name-only", plugin_commit, "--", *PROBE_PATHS)
+    new = git_lines(repo, "ls-files", "--others", "--exclude-standard", "--", *PROBE_PATHS)
+    if differ is None or new is None:
+        return None
+    return sorted(set(differ + new))
 
 
 def probe_features(dll):
@@ -305,14 +333,17 @@ def mwse_backup(install, dest, tag):
     return os.path.join(install["root"], "mge-backup-" + tag, below if not below.startswith("..") else os.path.basename(dest))
 
 
-def check_probe_tree(tree_commit, plugin_commit, dlls):
-    """The probe of the features is the code of this tree: DeployError unless the tree is at the commit of the plugin that
-    goes beside `dlls`, with no change in src/."""
-    tree = tree_commit()
-    # same_commit compares by the start, so a "-dirty" tree would pass it.
-    if tree.endswith("-dirty") or not same_commit(tree, plugin_commit):
-        raise DeployError("the probe of the features is the code of this tree, at %s, but the plugin that goes beside %s is %s: run this in a tree at %s with no change in src/" % (
-            tree, dlls, plugin_commit, plugin_commit))
+def check_probe_tree(tree_changes, plugin_commit, dlls):
+    """The probe of the features is the code of this tree: DeployError unless the files of the probe (PROBE_PATHS) in this
+    tree equal those of the plugin that goes beside `dlls`. The tree's HEAD may differ (W480: a tool change on a branch)."""
+    if plugin_commit.endswith("-dirty"):
+        raise DeployError("the plugin that goes beside %s is a build of %s with changes: no tree holds its code" % (dlls, plugin_commit))
+    changes = tree_changes(plugin_commit)
+    if changes is None:
+        raise DeployError("git does not know the plugin's commit %s in this repository: the probe of the features cannot be compared with it" % plugin_commit)
+    if changes:
+        raise DeployError("the probe of the features is the code of this tree, and %d of its files differ from the plugin %s that goes beside %s (%s): run this in a tree whose files of the probe equal %s" % (
+            len(changes), plugin_commit, dlls, ", ".join(changes[:5]) + (", ..." if len(changes) > 5 else ""), plugin_commit))
 
 
 def require_features(dll, plugin_commit, probe):
@@ -329,7 +360,7 @@ def require_features(dll, plugin_commit, probe):
         raise DeployError("the probe of the features of %s failed with exit code %d: %s" % (dll, code, (output.strip().splitlines() or ["no output"])[-1]))
 
 
-def check_installed_mwse(installs, plugin_commit, deploys, probe, tree_commit):
+def check_installed_mwse(installs, plugin_commit, deploys, probe, tree_changes):
     """A build without --mwse-dll (D328): each install keeps its MWSE.dll, so that DLL must have every MWSE feature that
     the build's plugin needs. The same checks as for --mwse-dll, before any write. Raises MissingFeature or DeployError."""
     dlls = {}
@@ -339,19 +370,19 @@ def check_installed_mwse(installs, plugin_commit, deploys, probe, tree_commit):
         if not os.path.isfile(deploys[name]):
             raise DeployError("%s has no MWSE.dll at %s: deploy one with --mwse-dll" % (name, deploys[name]))
         dlls[name] = deploys[name]
-    check_probe_tree(tree_commit, plugin_commit, " and ".join(dlls.values()))
+    check_probe_tree(tree_changes, plugin_commit, " and ".join(dlls.values()))
     for name, dll in dlls.items():
         say("MWSE.dll of %s: %s" % (name, dll))
         require_features(dll, plugin_commit, probe)
 
 
-def mwse_targets(mwse_dll, installs, plugin_commit, deploys, probe, tree_commit):
+def mwse_targets(mwse_dll, installs, plugin_commit, deploys, probe, tree_changes):
     """The place of the MWSE.dll in each install, {install name: path}, after the checks before any write: the file, the
     tree at the plugin's commit, the probe of the features, a place for each install in an existing folder. Raises
     MissingFeature when the probe names a missing required feature, DeployError on any other fault."""
     if not os.path.isfile(mwse_dll):
         raise DeployError("no file %s" % mwse_dll)
-    check_probe_tree(tree_commit, plugin_commit, mwse_dll)
+    check_probe_tree(tree_changes, plugin_commit, mwse_dll)
     require_features(mwse_dll, plugin_commit, probe)
     targets = {}
     for name in installs:
@@ -425,6 +456,79 @@ def core_changes(core, dest):
     return ours, differ, only
 
 
+def write_mwse_note(install, commit, dll, core_files, tag, stamp=None):
+    """Writes MWSE_NOTE into the folder of the install: the MWSE commit of its MWSE.dll and core, and the DLL's MD5 (D442)."""
+    note = {"commit": commit, "dll": dll, "md5": md5_of(dll), "core": core_folder(dll), "core_files": core_files, "tag": tag,
+            "time": stamp or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}
+    path = os.path.join(install["root"], MWSE_NOTE)
+    with open(path, "w", encoding="ascii") as file:
+        json.dump(note, file, indent=1)
+        file.write("\n")
+    return path
+
+
+def read_mwse_note(install):
+    """MWSE_NOTE of an install as a dict with "commit" and "md5", or None when there is none or it cannot be read."""
+    try:
+        with open(os.path.join(install["root"], MWSE_NOTE), encoding="ascii") as file:
+            note = json.load(file)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(note, dict) or not all(isinstance(note.get(key), str) for key in ("commit", "md5")):
+        return None
+    return note
+
+
+def noted_commit(install, dll):
+    """The MWSE commit of the install's MWSE.dll by its MWSE_NOTE, or None: no note, no DLL, or a DLL that the note does
+    not describe (another DLL came in by hand)."""
+    note = read_mwse_note(install)
+    if note is None or not os.path.isfile(dll) or md5_of(dll) != note["md5"]:
+        return None
+    return note["commit"]
+
+
+def kept_mwse_text(installs, deploys):
+    """The MWSE commit of WHAT.txt for a build without --mwse-dll: the commit of the DLL that every install keeps."""
+    commits = {noted_commit(install, deploys[name]) if name in deploys else None for name, install in installs.items()}
+    if len(commits) == 1 and None not in commits:
+        return "%s (the installs' own)" % commits.pop()
+    return "unknown (no single record %s in the installs)" % MWSE_NOTE
+
+
+def mwse_core_lines(installs, deploys, core_source=core_of):
+    """The check of the merge step (D442): each install's MWSE core must be the core of the MWSE commit of its MWSE.dll,
+    by MWSE_NOTE. Returns [(line, good)], one for each install. A file that only the install has is no fault."""
+    rows = []
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        cores = {}
+        for name, install in installs.items():
+            dll = deploys.get(name)
+            if dll is None or not os.path.isfile(dll):
+                rows.append(("%s: no MWSE.dll at its place of mwse_deploys (%s)" % (name, dll), False))
+                continue
+            note = read_mwse_note(install)
+            commit = noted_commit(install, dll)
+            if commit is None:
+                why = "no record %s" % os.path.join(install["root"], MWSE_NOTE) if note is None else "the record names another MWSE.dll (md5 %s, commit %s)" % (note["md5"], note["commit"])
+                rows.append(("%s: the MWSE commit of %s is not known: %s. Deploy it with deploy_rest.py --mwse-dll <it> --mwse-commit <its commit>" % (name, dll, why), False))
+                continue
+            try:
+                if commit not in cores:
+                    cores[commit] = core_source(commit, os.path.join(scratch, str(len(cores))))
+            except DeployError as error:
+                rows.append(("%s: %s" % (name, error), False))
+                continue
+            ours, differ, only = core_changes(cores[commit], core_folder(dll))
+            if differ:
+                rows.append(("%s: %d of %d files of the MWSE core %s are not those of MWSE %s, the commit of its MWSE.dll: %s" % (
+                    name, len(differ), len(ours), core_folder(dll), commit, ", ".join(differ[:10]) + (", ..." if len(differ) > 10 else "")), False))
+            else:
+                rows.append(("%s: the MWSE core %s is the core of MWSE %s, the commit of its MWSE.dll (%d files; %d only in the install, kept)" % (
+                    name, core_folder(dll), commit, len(ours), len(only)), True))
+    return rows
+
+
 def would_copy(build, installs, items):
     """The dry run: for each install, the items that a deploy would copy, by dest."""
     changes = {}
@@ -437,12 +541,12 @@ def would_copy(build, installs, items):
     return changes
 
 
-def what_line(name, plugin_commit, mge_commit, digests, installs, stamp=None):
-    """The one line of WHAT.txt."""
+def what_line(name, plugin_commit, mge_commit, digests, installs, stamp=None, mwse="unknown"):
+    """The one line of WHAT.txt. `mwse` is the text after "MWSE commit": the commit of --mwse-dll, or `kept_mwse_text`."""
     stamp = stamp or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     sums = ", ".join("%s %s" % (label, digest) for label, digest in digests)
-    return "%s %s: the resting build of the merge step, nirender %s, render-link %s, no pdb, deployed to %s (backups mge-backup-%s); md5 %s\n" % (
-        name, stamp, plugin_commit, mge_commit, ", ".join(installs), name, sums)
+    return "%s %s: the resting build of the merge step, nirender %s, render-link %s, MWSE commit %s, no pdb, deployed to %s (backups mge-backup-%s); md5 %s\n" % (
+        name, stamp, plugin_commit, mge_commit, mwse, ", ".join(installs), name, sums)
 
 
 def keep_build(build, folder, plugin_commit):
@@ -470,11 +574,13 @@ def check_parts(build, plugin_commit=None, mge_commit=None):
 
 
 def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile,
-        add_symbols=None, mwse_dll=None, mwse_deploys=None, probe=probe_features, tree_commit=tree_head, mwse_commit=None, core_source=core_of):
+        add_symbols=None, mwse_dll=None, mwse_deploys=None, probe=probe_features, tree_changes=probe_tree_changes, mwse_commit=None, core_source=core_of):
     """The whole deploy. Returns the exit code. `add_symbols` (symbols.add from the command line) puts the build's pdbs
     into the symbol store: the pdbs of render-link's tree around the dist-staging folder, and of this tree's plugin.
     `mwse_dll` goes into each install at its place of `mwse_deploys` (MWSE_DEPLOYS), after the build, or alone when
-    `build` is None; `probe` and `tree_commit` are the probe of its features and the commit of the probe's code."""
+    `build` is None; `probe` is the probe of its features, and `tree_changes` (`probe_tree_changes`) gives the files of the
+    probe in which this tree differs from a plugin commit. With `mwse_dll`, each install gets MWSE_NOTE, the record of
+    `mwse_commit`."""
     if build is None and mwse_dll is None:
         raise DeployError("nothing to deploy: give a build, an MWSE.dll or both")
     if mwse_dll is not None and not mwse_commit:
@@ -491,16 +597,18 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
     deploys = MWSE_DEPLOYS if mwse_deploys is None else mwse_deploys
     if mwse_dll is not None:
         beside = plugin_commit if build is not None else installed_plugin_commit(installs)
-        targets = mwse_targets(mwse_dll, installs, beside, deploys, probe, tree_commit)
+        targets = mwse_targets(mwse_dll, installs, beside, deploys, probe, tree_changes)
         say("MWSE.dll %s: has every MWSE feature that the plugin %s needs" % (mwse_dll, beside))
         digests.append(("MWSE.dll", md5_of(mwse_dll)))
         # The scratch folder lives as long as this call: the core is read from it until the end.
         scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         core = core_source(mwse_commit, scratch.name)
         say("MWSE core: %d files of %s at %s" % (len(files_below(core)), CORE_PATH, mwse_commit))
+        mwse_text = mwse_commit
     else:
-        check_installed_mwse(installs, plugin_commit, deploys, probe, tree_commit)
+        check_installed_mwse(installs, plugin_commit, deploys, probe, tree_changes)
         say("the installs' MWSE.dll: each has every MWSE feature that the plugin %s needs" % plugin_commit)
+        mwse_text = kept_mwse_text(installs, deploys)
     if dry_run:
         if build is not None:
             say("dry run: %d items for each of %d installs; nothing is written" % (len(items), len(installs)))
@@ -517,6 +625,8 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
             say("  %s: MWSE core %s: would copy %d, unchanged %d%s" % (
                 install_name, core_folder(dest), len(differ), len(ours) - len(differ), ": " + ", ".join(differ[:10]) if differ else ""))
             say("  %s: MWSE core files only in the install (kept, not deleted): %d%s" % (install_name, len(only), ": " + ", ".join(only[:10]) if only else ""))
+            say("  %s: would write the record %s: MWSE commit %s" % (install_name, os.path.join(installs[install_name]["root"], MWSE_NOTE), mwse_commit))
+        say("MWSE commit of WHAT.txt: %s" % mwse_text)
         for label, digest in digests:
             say("md5 %s %s" % (label, digest))
         return 0
@@ -558,11 +668,12 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
             raise DeployError("%s: the MWSE core is part copied; the files that this run replaced are in mge-backup-%s" % (error, tag))
         say("%s: MWSE core %s: copied %d, unchanged %d; files only in the install (kept): %d%s" % (
             install_name, folder, copied, len(ours) - copied, len(only), ": " + ", ".join(only[:10]) if only else ""))
+        say("%s: the record %s: MWSE commit %s" % (install_name, write_mwse_note(installs[install_name], mwse_commit, dest, len(ours), tag), mwse_commit))
     for label, digest in digests:
         say("md5 %s %s" % (label, digest))
     if keep:
         with open(os.path.join(sets, name, "WHAT.txt"), "w", encoding="ascii", errors="backslashreplace") as file:
-            file.write(what_line(name, plugin_commit, mge_commit, digests, list(installs)))
+            file.write(what_line(name, plugin_commit, mge_commit, digests, list(installs), mwse=mwse_text))
     pdbs = [path for install in installs.values() for mod in ("mge", "nirender") for path in files_below(mod_folder(install, mod)) if path.lower().endswith(".pdb")]
     say("pdb in the deployed mods: %d" % len(pdbs))
     if add_symbols and build is not None:
@@ -624,9 +735,9 @@ def good_probe(dll):
     return 0, "feature: count locks: present (40 of 40 count lock sites in the data of MWSE.dll)\nmd5: x %s\n" % dll
 
 
-def at_plugin():
-    """A tree at the plugin's commit of the tests, as tree_head gives it."""
-    return FAKE_HEADS["plugin"] + "0" * 33
+def no_changes(commit):
+    """A tree whose files of the probe equal those of any commit, as probe_tree_changes gives it."""
+    return []
 
 
 def installed_mwse(installs):
@@ -635,7 +746,7 @@ def installed_mwse(installs):
     deploys = {name: os.path.join(install["root"], "mods", "MWSE", "Root", "MWSE.dll") for name, install in installs.items()}
     for path in deploys.values():
         write(path, "installed mwse")
-    return dict(mwse_deploys=deploys, probe=good_probe, tree_commit=at_plugin)
+    return dict(mwse_deploys=deploys, probe=good_probe, tree_changes=no_changes)
 
 
 def self_test():
@@ -791,6 +902,7 @@ def self_test():
         assert line.endswith("\n") and line.count("\n") == 1 and line.isascii() and "backups mge-backup-f101" in line and "no pdb" in line, line
 
         mwse_test(root, build, quiet)
+        probe_tree_test(root)
     print("self-test: all passed")
 
 
@@ -838,7 +950,7 @@ def mwse_test(root, build, quiet):
     fake_build(build, "v7")
     sets = os.path.join(root, "mwse-sets")
     joint = dict(build=build, installs=pair, plugin_commit=FAKE_HEADS["plugin"], mge_commit=FAKE_HEADS["mge"], tag=None, keep=True, sets=sets,
-                 tasklist=quiet, mwse_dll=mwse, mwse_deploys=deploys, tree_commit=at_plugin, mwse_commit="abc1234", core_source=fake_core)
+                 tasklist=quiet, mwse_dll=mwse, mwse_deploys=deploys, tree_changes=no_changes, mwse_commit="abc1234", core_source=fake_core)
     state = lambda: {name: tree_of(install["root"]) for name, install in pair.items()}  # noqa: E731
     before = state()
 
@@ -848,12 +960,15 @@ def mwse_test(root, build, quiet):
         text = refused(MissingFeature, **joint, dry_run=dry, probe=missing)
         assert text.startswith("MISSING FEATURE: ") and "count locks: 0 of 40" in text and "the plugin %s needs" % FAKE_HEADS["plugin"] in text, text
         assert "exit code 1" in refused(DeployError, **joint, dry_run=dry, probe=broken)
-    # The probe is the code of the tree: a tree at another commit, or with a change in src/, refuses before the probe.
-    asked = []
-    for tree in ("1234567", at_plugin() + "-dirty"):
-        text = refused(DeployError, **dict(joint, tree_commit=lambda tree=tree: tree), probe=lambda dll: asked.append(dll) or good(dll))
-        assert "run this in a tree at %s" % FAKE_HEADS["plugin"] in text, text
-    assert asked == [], "the probe ran in a tree of another commit"
+    # The probe is the code of the tree: a tree whose files of the probe differ from the plugin's commit, or a commit that
+    # git does not know, refuses before the probe. The fake gets the plugin's commit.
+    asked, compared = [], []
+    for changes, expected in ((["src/lib.rs"], "1 of its files differ from the plugin %s" % FAKE_HEADS["plugin"]), (None, "does not know the plugin's commit")):
+        tree = lambda commit, changes=changes: compared.append(commit) or changes  # noqa: E731
+        text = refused(DeployError, **dict(joint, tree_changes=tree), probe=lambda dll: asked.append(dll) or good(dll))
+        assert expected in text and (changes is None or "src/lib.rs" in text), text
+    assert asked == [], "the probe ran in a tree that differs from the plugin"
+    assert compared == [FAKE_HEADS["plugin"]] * 2, compared
     # An install with no place, or no folder, for its MWSE.dll.
     assert "no place of the MWSE.dll of H" in refused(DeployError, **dict(joint, mwse_deploys={"G": deploys["G"]}), probe=good)
     assert "has no folder" in refused(DeployError, **dict(joint, mwse_deploys=dict(deploys, H=os.path.join(root, "none", "MWSE.dll"))), probe=good)
@@ -882,28 +997,38 @@ def mwse_test(root, build, quiet):
         assert open(os.path.join(install["root"], "mge-backup-f1", "MWSE", "MWSE", "core", "init.lua")).read() == "old core", name
     assert core_changes(fake_core("abc1234", os.path.join(root, "again")), core_folder(deploys["G"]))[1:] == ([], ["lpeg.dll"])
     what = open(os.path.join(sets, "f1", "WHAT.txt"), encoding="ascii").read()
-    assert "MWSE.dll %s" % md5_of(mwse) in what, what
+    assert "MWSE.dll %s" % md5_of(mwse) in what and "MWSE commit abc1234," in what, what
     assert not [path for path in files_below(sets) if path.lower().endswith(".pdb")]
+    core_check_test(pair, deploys, mwse, fake_core)
+
+    # D442: a build alone keeps the MWSE.dll of the installs, and WHAT.txt names its commit by their records.
+    assert run(**dict(joint, mwse_dll=None, mwse_commit=None), probe=good) == 0
+    what = open(os.path.join(sets, "f2", "WHAT.txt"), encoding="ascii").read()
+    assert "MWSE commit abc1234 (the installs' own)," in what, what
 
     # An MWSE.dll alone: it goes beside the plugin that both installs hold (79c752d now), after the same checks.
-    alone = dict(build=None, installs=pair, tag="m", keep=True, sets=sets, tasklist=quiet, mwse_dll=mwse, mwse_deploys=deploys, tree_commit=at_plugin,
+    alone = dict(build=None, installs=pair, tag="m", keep=True, sets=sets, tasklist=quiet, mwse_dll=mwse, mwse_deploys=deploys, tree_changes=no_changes,
                  mwse_commit="abc1234", core_source=fake_core)
     newer = os.path.join(root, "newer-MWSE.dll")
     write(newer, "newer mwse")
     before = state()
     assert "MISSING FEATURE: " in refused(MissingFeature, **dict(alone, mwse_dll=newer), probe=missing)
-    assert "run this in a tree at %s" % FAKE_HEADS["plugin"] in refused(DeployError, **dict(alone, mwse_dll=newer, tree_commit=lambda: "87f7049"), probe=good)
+    assert "differ from the plugin %s" % FAKE_HEADS["plugin"] in refused(DeployError, **dict(alone, mwse_dll=newer, tree_changes=lambda commit: ["Cargo.lock"]), probe=good)
     assert state() == before, "a refused MWSE deploy wrote"
     assert run(**dict(alone, mwse_dll=newer), probe=good) == 0
     for name, install in pair.items():
         assert md5_of(deploys[name]) == md5_of(newer)
         assert open(os.path.join(install["root"], "mge-backup-m", "MWSE", "Root", "MWSE.dll")).read() == "new mwse", name
-    assert sorted(os.listdir(sets)) == ["f1"], "an MWSE.dll alone keeps no set"
+    assert sorted(os.listdir(sets)) == ["f1", "f2"], "an MWSE.dll alone keeps no set"
     # Installs that hold plugins of two commits, or a plugin with no build id: refused.
     write(os.path.join(mod_folder(pair["H"], "nirender"), "MWSE", "lib", "akulakhan.dll"), "x nirender v0.3.6 87f7049")
     assert "plugins of different commits" in refused(DeployError, **alone, probe=good)
     write(os.path.join(mod_folder(pair["H"], "nirender"), "MWSE", "lib", "akulakhan.dll"), "no id")
     assert "no build id of nirender" in refused(DeployError, **alone, probe=good)
+    # A plugin built from a tree with changes: no tree holds its code, so the probe cannot run for it.
+    for install in pair.values():
+        write(os.path.join(mod_folder(install, "nirender"), "MWSE", "lib", "akulakhan.dll"), "x nirender v0.3.6 79c752d-dirty")
+    assert "a build of 79c752d-dirty with changes" in refused(DeployError, **alone, probe=good)
     assert "nothing to deploy" in refused(DeployError, **dict(alone, mwse_dll=None), probe=good)
     assert os.path.basename(mwse_backup({"root": root}, os.path.join(os.path.dirname(root), "x", "MWSE.dll"), "t")) == "MWSE.dll"
 
@@ -919,8 +1044,8 @@ def mwse_test(root, build, quiet):
         text = refused(MissingFeature, **dict(rest, dry_run=dry, probe=missing))
         assert text.startswith("MISSING FEATURE: %s lacks" % places["J"]), text
     asked = []
-    text = refused(DeployError, **dict(rest, tree_commit=lambda: "1234567", probe=lambda dll: asked.append(dll) or good(dll)))
-    assert "run this in a tree at %s" % FAKE_HEADS["plugin"] in text and asked == [], (text, asked)
+    text = refused(DeployError, **dict(rest, tree_changes=lambda commit: ["src/a.rs", "src/b.rs"], probe=lambda dll: asked.append(dll) or good(dll)))
+    assert "2 of its files differ from the plugin %s" % FAKE_HEADS["plugin"] in text and asked == [], (text, asked)
     assert "no place of the MWSE.dll of K" in refused(DeployError, **dict(rest, mwse_deploys={"J": places["J"]}))
     os.remove(places["K"])
     assert "K has no MWSE.dll at " in refused(DeployError, **rest)
@@ -932,6 +1057,93 @@ def mwse_test(root, build, quiet):
     for name, install in kept.items():
         assert open(places[name]).read() == "installed mwse", name
         assert md5_of(os.path.join(mod_folder(install, "nirender"), "MWSE", "lib", "akulakhan.dll")) == md5_of(os.path.join(build, *NIRENDER_PLUGIN.split("/")))
+    # Installs with no record: their MWSE commit is unknown.
+    assert kept_mwse_text(kept, places).startswith("unknown"), kept_mwse_text(kept, places)
+
+
+def core_check_test(pair, deploys, mwse, fake_core):
+    """D442: the record of the MWSE commit in each install after --mwse-dll, and --check-mwse-core on it. Each fault fails its
+    install only, and the check passes again when the fault is gone (the null)."""
+    for install in pair.values():
+        note = read_mwse_note(install)
+        assert note["commit"] == "abc1234" and note["md5"] == md5_of(mwse) and note["core_files"] == 2, note
+    assert check_mwse_core(pair, deploys, fake_core) == 0
+    assert kept_mwse_text(pair, deploys) == "abc1234 (the installs' own)"
+
+    def verdicts(places=deploys, source=fake_core):
+        return [(good, line) for line, good in mwse_core_lines(pair, places, source)]
+
+    (good_g, line_g), (good_h, _) = verdicts()
+    assert good_g and good_h and "is the core of MWSE abc1234" in line_g and "1 only in the install" in line_g, line_g
+    # A core file changed by hand, then a missing one.
+    a_lua = os.path.join(core_folder(deploys["G"]), "lib", "a.lua")
+    for change in (lambda: write(a_lua, "a changed"), lambda: os.remove(a_lua)):
+        change()
+        (good_g, line_g), (good_h, _) = verdicts()
+        assert not good_g and good_h and "1 of 2 files of the MWSE core" in line_g and "lib/a.lua" in line_g, line_g
+    with open(a_lua, "wb") as file:
+        file.write(b"a abc1234\r\n")
+    # Another MWSE.dll than the record's, then no record: the commit is not known.
+    write(deploys["H"], "a hand-made mwse")
+    assert "the record names another MWSE.dll" in verdicts()[1][1] and kept_mwse_text(pair, deploys).startswith("unknown")
+    shutil.copyfile(mwse, deploys["H"])
+    note = os.path.join(pair["H"]["root"], MWSE_NOTE)
+    os.remove(note)
+    assert "no record" in verdicts()[1][1]
+    write_mwse_note(pair["H"], "abc1234", deploys["H"], 2, "f1")
+    # No MWSE.dll at its place, and a commit whose core git cannot give.
+    assert verdicts(places={"G": deploys["G"]})[1] == (False, "H: no MWSE.dll at its place of mwse_deploys (None)")
+
+    def no_core(commit, into):
+        raise DeployError("git archive of the core at %s failed" % commit)
+
+    assert all(not good and "git archive of the core at abc1234 failed" in line for good, line in verdicts(source=no_core))
+    assert check_mwse_core(pair, deploys, no_core) == FAULT_EXIT
+    # The null: with every fault gone, the check passes.
+    assert check_mwse_core(pair, deploys, fake_core) == 0
+
+
+def probe_tree_test(root):
+    """probe_tree_changes on a scratch repository: a change of a file of the probe counts, committed or not, and a new file
+    too; a change elsewhere does not, and a HEAD that moved by such a change does not (the W480 tree); a commit that git
+    lacks gives None."""
+    repo = os.path.join(root, "probe-repo")
+    write(os.path.join(repo, "src", "lib.rs"), "fn a() {}")
+    write(os.path.join(repo, "tools", "deploy_rest.py"), "old")
+
+    def git(*args):
+        return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, env=git_env(), check=True).stdout.strip()
+
+    def commit(message):
+        git("add", "-A")
+        git("-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-q", "-m", message)
+
+    git("init", "-q")
+    commit("base")
+    base = git("rev-parse", "HEAD")
+    assert probe_tree_changes(base, repo) == []
+    write(os.path.join(repo, "tools", "deploy_rest.py"), "new")
+    assert probe_tree_changes(base, repo) == [], "a tool that the probe does not read counts"
+    commit("a tool change")
+    assert git("rev-parse", "HEAD") != base and probe_tree_changes(base, repo) == [], "a moved HEAD counts"
+    write(os.path.join(repo, "src", "lib.rs"), "fn b() {}")
+    assert probe_tree_changes(base, repo) == ["src/lib.rs"]
+    write(os.path.join(repo, "src", "lib.rs"), "fn a() {}")
+    write(os.path.join(repo, "src", "new.rs"), "fn c() {}")
+    assert probe_tree_changes(base, repo) == ["src/new.rs"]
+    os.remove(os.path.join(repo, "src", "new.rs"))
+    write(os.path.join(repo, "Cargo.lock"), "lock")
+    commit("a lock")
+    assert probe_tree_changes(base, repo) == ["Cargo.lock"], "a committed change of the probe's files counts"
+    assert probe_tree_changes("0" * 40, repo) is None
+
+
+def check_mwse_core(installs, deploys, core_source=core_of):
+    """--check-mwse-core: the lines of `mwse_core_lines`, a fault with "FAIL: "; exit code 1 when any install fails."""
+    rows = mwse_core_lines(installs, deploys, core_source)
+    for line, good in rows:
+        say(line if good else "FAIL: " + line)
+    return 0 if all(good for _, good in rows) else FAULT_EXIT
 
 
 def main():
@@ -945,11 +1157,15 @@ def main():
     parser.add_argument("--sets", default=SETS, help="the folder of the kept sets (a test changes it)")
     parser.add_argument("--mwse-dll", help="an MWSE.dll that goes into each install too, after its probe; without --build, beside the installed plugin")
     parser.add_argument("--mwse-commit", help="the MWSE commit of --mwse-dll: its core Lua (%s) goes beside each DLL (W480)" % CORE_PATH)
+    parser.add_argument("--check-mwse-core", action="store_true", help="only check that each install's MWSE core is the core of the MWSE commit "
+                        "of its MWSE.dll, by its record %s (the merge step's stage); writes nothing" % MWSE_NOTE)
     parser.add_argument("--self-test", action="store_true", help="the tests: scratch installs, no game")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
+    if args.check_mwse_core:
+        return check_mwse_core(REST_INSTALLS, MWSE_DEPLOYS)
     if not args.build and not args.mwse_dll:
         parser.error("it needs --build, --mwse-dll or both")
     try:

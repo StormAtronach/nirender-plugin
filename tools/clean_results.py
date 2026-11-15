@@ -14,8 +14,8 @@ E:\\nirender-keep\\runs-*. Each gets one of five treatments:
 - kept: the keep list E:\\nirender-keep\\keep-runs.txt names it, with a reason and a date (clean_common.py has
   the form). It stays whole.
 - running: younger than one hour. Not touched.
-- young: younger than 7 days. It stays whole.
-- trim: a cited run of 7 days or more, or an uncited run of 7 to 30 days. The pictures, the captures and the
+- young: younger than 2 days (D442; 7 days before). It stays whole.
+- trim: a cited run of 2 days or more, or an uncited run of 2 to 30 days. The pictures, the captures and the
   film go, all else stays, and `trimmed.txt` lists what went. A cited run stays trimmed: its text does not
   expire.
 - expired: an uncited run of 30 days or more. Removed.
@@ -457,8 +457,8 @@ def self_test():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
         common.LOG = os.path.join(temp, "test.log")
         root = os.path.join(temp, "results")
-        names = {"running": stamp(0.01) + "-a", "young": stamp(3) + "-b", "trim": stamp(10) + "-c", "expired": stamp(40) + "-d", "cited": stamp(50) + "-e", "kept": stamp(55) + "-k"}
-        # A cited run past 7 days trims and does not expire; only the keep list keeps a run whole (D152).
+        names = {"running": stamp(0.01) + "-a", "young": stamp(1) + "-b", "trim": stamp(10) + "-c", "expired": stamp(40) + "-d", "cited": stamp(50) + "-e", "kept": stamp(55) + "-k"}
+        # A cited run past 2 days trims and does not expire; only the keep list keeps a run whole (D152).
         expected = {kind: "trim" if kind == "cited" else kind for kind in names}
         for name in names.values():
             os.makedirs(os.path.join(root, name, "sub"))
@@ -577,7 +577,7 @@ def self_test():
         assert dump_treatment(40, False, True, "trim") == "compress"
         runs, kept_dumps = os.path.join(temp, "pointer-runs"), os.path.join(temp, "dumps")
         # Each run at its own time of day: a short citation counts by the time alone.
-        names = {"expired": stamp(45.01) + "-old", "young": stamp(2.02) + "-new", "cited": stamp(46.03) + "-kept", "trim": stamp(10.04) + "-trim"}
+        names = {"expired": stamp(45.01) + "-old", "young": stamp(1.02) + "-new", "cited": stamp(46.03) + "-kept", "trim": stamp(10.04) + "-trim"}
         targets = {}
         for kind, name in names.items():
             os.makedirs(os.path.join(runs, name))
@@ -600,7 +600,7 @@ def self_test():
             targets["orphan " + kind] = target
         evidence = Evidence("a record of %s, and the short citation %s" % (names["cited"], orphans["cited"][8:16]))
         plans = [(runs, plan_root(runs, evidence, now))]
-        # The cited run is past 7 days: it is trimmed, and its dump stays with it.
+        # The cited run is past 2 days: it is trimmed, and its dump stays with it.
         assert {row["name"]: row["treatment"] for row in plans[0][1]} == {names[kind]: "trim" if kind == "cited" else kind for kind in names}, plans
         owners = dump_owners(plans)
         assert set(owners) == {os.path.normcase(targets[kind]) for kind in names}, owners

@@ -43,7 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lua_checks  # noqa: E402
 import session  # noqa: E402
 import symbols  # noqa: E402
-from common import BUILD_ID_RE, REPO, part_ids  # noqa: E402
+from common import BUILD_ID_RE, REPO, git_env, part_ids  # noqa: E402
+from deploy_rest import CORE_PATH, MWSE_REPO, DeployError, core_of  # noqa: E402
 from make_play_set import PDB_KEEP  # noqa: E402
 
 TAG = "[nirender.owndevice] "
@@ -226,14 +227,35 @@ def batch_lua_problems(path, text):
     return lua_checks.problems(path, text, lua_checks.luajit())
 
 
-def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ, lua=None):
+def mwse_core_problem(commit, repo=None):
+    """The fault of --mwse-commit, or None: the MWSE repository must hold the core Lua of that commit."""
+    repo = repo or MWSE_REPO
+    done = subprocess.run(["git", "-C", repo, "cat-file", "-e", "%s:%s" % (commit, CORE_PATH)], capture_output=True, env=git_env())
+    if done.returncode != 0:
+        return "--mwse-commit: the MWSE repository %s has no %s at %s" % (repo, CORE_PATH, commit)
+    return None
+
+
+def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ, lua=None, core=None):
     """Every fault of the arguments that shows before the run starts anything: the form of
     each value, the files and folders that the run reads, the faults of its Lua files
-    (`lua`, else `batch_lua_problems`), and a budget shorter than the walk of its batch. One
+    (`lua`, else `batch_lua_problems`), the MWSE commit of --mwse-dll (`core`, else
+    `mwse_core_problem`), and a budget shorter than the walk of its batch. One
     line for each fault; none for a good command. `--check` runs only this (and the check of
     the save), so that a caller can refuse a bad command before it takes the game slot."""
     lua = lua or batch_lua_problems
+    core = core or mwse_core_problem
     problems = []
+    # D442: an MWSE.dll and its core Lua come from one commit. The MWSE.dll of a release archive goes alone, as in a
+    # player's game.
+    mwse_commit = getattr(args, "mwse_commit", None)
+    if args.mwse_dll and not mwse_commit and not getattr(args, "archive", None):
+        problems.append("--mwse-dll needs --mwse-commit, the MWSE commit of the DLL: its core Lua goes into the run's mod beside it")
+    if mwse_commit and not args.mwse_dll:
+        problems.append("--mwse-commit is the commit of --mwse-dll: give both")
+    core_fault = core(mwse_commit) if mwse_commit else None
+    if core_fault:
+        problems.append(core_fault)
     if args.reference_plugin and not (args.reference or args.engine_reference):
         problems.append("--reference-plugin is for a run with --reference or --engine-reference")
     if getattr(args, "plain_case", False) and (args.reference or args.engine_reference or not args.mge_build):
@@ -1047,6 +1069,22 @@ def self_test_checks():
         assert argument_problems(args, exists), args
     assert len(argument_problems(namespace(mge_build="E:/c", weather=10), exists)) == 3
     assert argument_problems(namespace(plain_case=True, mge_build="E:/b", env=["MGE_XE_NATIVE_REFUSE_EVENT=3"]), exists) == []
+    # D442: --mwse-dll needs its commit, and the MWSE repository must hold that commit's core; the MWSE.dll of an archive
+    # goes alone. The fake `core` finds every core.
+    def every_core(commit):
+        return None
+    dll = dict(mwse_dll="E:/a.dll")
+    assert argument_problems(namespace(**dll, mwse_commit="abc1234"), exists, core=every_core) == []
+    assert argument_problems(namespace(**dll), exists, core=every_core) == [
+        "--mwse-dll needs --mwse-commit, the MWSE commit of the DLL: its core Lua goes into the run's mod beside it"]
+    assert argument_problems(namespace(**dll, archive="E:/x"), exists, core=every_core) == []
+    assert argument_problems(namespace(mwse_commit="abc1234"), exists, core=every_core) == ["--mwse-commit is the commit of --mwse-dll: give both"]
+    assert argument_problems(namespace(**dll, mwse_commit="zzz"), exists, core=lambda commit: "no core at " + commit) == ["no core at zzz"]
+    # The real check: the MWSE repository holds no commit of forty zeros.
+    assert "has no %s at %s" % (CORE_PATH, "0" * 40) in mwse_core_problem("0" * 40)
+    # The install of the run's mod counts the files of the core in one line, added and removed apart.
+    changes = ["MWSE\\mods\\nirender\\main.lua", "MWSE\\core\\init.lua", "MWSE\\core\\lib\\a.lua", "removed MWSE\\core\\old.lua", "removed x.txt"]
+    assert session.install_lines(changes) == ["MWSE\\mods\\nirender\\main.lua", "removed x.txt", "2 files of MWSE/core", "removed 1 files of MWSE/core"], session.install_lines(changes)
 
     # The line of the case of a --plain-case run (W462): the fall-back, or the close after a refusal; not the wgpu line.
     fall_back = "!! wgpu renderer: not in use, MWSE refused the event 3. The game runs on its own Direct3D 8"
@@ -2283,7 +2321,9 @@ def main():
                     help="a file for the run's mod at PATH (from the Data Files folder, or Root/... for the game folder), for this run only: "
                     "a test texture or mesh; the run's mod wins over the instance's mods")
     ap.add_argument("--mwse-dll", help="another MWSE.dll for this run only (as --add-file <it>=Root/MWSE.dll): an A/B of an MWSE build "
-                    "without a change to the instance")
+                    "without a change to the instance. It needs --mwse-commit")
+    ap.add_argument("--mwse-commit", help="the MWSE commit of --mwse-dll: the core Lua of that commit (%s of the MWSE repository) goes "
+                    "into the run's mod beside the DLL, as MWSE/core (D442)" % CORE_PATH)
     ap.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
                     help="a variable for the game's process (the plugin, the helper and MGE XE read it), for this run only; "
                     "again for more. It wins over the runner's default box time (MGE_XE_BOX_SECONDS=5). The variables "
@@ -2365,6 +2405,16 @@ def main():
     extra_files = [entry.split("=", 1) for entry in args.add_file]
     if args.mwse_dll:
         extra_files.append((args.mwse_dll, "Root/MWSE.dll"))
+    # D442: the core Lua of the DLL's commit goes beside it. The scratch folder lives until the run's mod is staged.
+    core_scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True) if args.mwse_commit else None
+    extra_trees, mwse_facts = [], []
+    if core_scratch:
+        try:
+            core = core_of(args.mwse_commit, core_scratch.name)
+        except DeployError as error:
+            raise SystemExit("run_own_device: " + str(error))
+        extra_trees.append((core, "MWSE/core"))
+        mwse_facts.append("MWSE: %s with the core of MWSE %s" % (args.mwse_dll, args.mwse_commit))
 
     if args.instance:
         session.use_instance(args.instance, args.game_dir, args.profile)
@@ -2391,7 +2441,9 @@ def main():
     if problem:
         raise SystemExit("run_own_device: " + problem)
     session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin,
-                    timing=is_timing_run(args))
+                    timing=is_timing_run(args), extra_trees=extra_trees)
+    if core_scratch:
+        core_scratch.cleanup()
     if no_plugin:
         for name in session.plugin_mods(session.harness.read_modlist()[0]):
             if name not in args.disable_mod:
@@ -2449,7 +2501,7 @@ def main():
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = launch_run(run, spec, args, mods, facts=[shadows])
+        done = launch_run(run, spec, args, mods, facts=[shadows, *mwse_facts])
 
     print()
     progress = run.progress_lines(TAG)

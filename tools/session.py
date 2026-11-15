@@ -34,6 +34,8 @@ MOD_NAME = harness.RUN_MOD_PREFIX + "nirender"
 DLL = os.environ.get("NIRENDER_PLUGIN_DLL") or os.path.join(REPO, "target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
 DIST = os.path.join(REPO, "target", "dist", "nirender")
 RESULTS = os.path.join(REPO, "results")
+# The folders of the run's mod that `prepare` fills from a whole tree, and whose install the output counts in one line.
+EXTRA_TREE_FOLDERS = ("MWSE/core",)
 SPEC_NAME = "nirender_test"
 # MGE XE writes its log into the game folder. Mod Organizer moves it to overwrite at its exit.
 MGE_LOGS = (os.path.join(harness.GAME_DIR, "mgeXE.log"), os.path.join(harness.MO2_ROOT, "overwrite", "Root", "mgeXE.log"))
@@ -145,7 +147,7 @@ def stage_archive_lua(archive, dist):
     return sorted(shipped), sorted(missing)
 
 
-def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, timing=False):
+def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, timing=False, extra_trees=()):
     """Builds the plugin, runs the offline tests and installs the mod into the testing instance.
 
     `features` are cargo features of the build: ("rig",) for a run of the comparison rig.
@@ -153,7 +155,9 @@ def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, 
     without the plugin (`plugin_mods` names the mods of the instance to switch off too).
     `extra_files` are (source, path in the mod) pairs that go into the run's mod for this run
     only: test files, or another MWSE.dll as `Root/MWSE.dll`. The run's mod wins over the mods
-    of the instance; the next install takes them out. `archive` is an extracted release archive:
+    of the instance; the next install takes them out. `extra_trees` are (folder, path in the
+    mod) pairs whose files go the same way: the MWSE core of another MWSE.dll as `MWSE/core`
+    (D442). `archive` is an extracted release archive:
     the mod's Lua of the run is the archive's ([`stage_archive_lua`]). With `timing` the run
     measures time: the slot check refuses it unless this session holds the game slot with
     `--timing` (the owner's D297)."""
@@ -173,6 +177,11 @@ def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, 
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         shutil.copy2(source, destination)
         print("  extra file: %s <- %s" % (target, source))
+    for source, target in extra_trees:
+        destination = os.path.join(DIST, *target.split("/"))
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+        count = sum(len(names) for _, _, names in os.walk(source))
+        print("  extra folder: %s <- %s (%d files)" % (target, source, count))
     # The harness installs its own mod by default. These names make it install this one.
     harness.MOD_SRC = DIST
     harness.MOD_NAME = MOD_NAME
@@ -180,8 +189,25 @@ def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, 
     harness.SPEC_DIR = os.path.join(harness.MOD_DIR, "MWSE", "config")
     harness.refuse_if_busy(timing=timing)
     # The mod stays off between runs: it would take the place of the release in a game by hand.
-    for change in harness.install_mod(enable=False):
-        print("  %s: %s" % (MOD_NAME, change))
+    for line in install_lines(harness.install_mod(enable=False)):
+        print("  %s: %s" % (MOD_NAME, line))
+
+
+def install_lines(changes):
+    """The lines of the changes of the mod's install: one for each file, but one count for the files of each extra tree
+    (EXTRA_TREE_FOLDERS: the MWSE core has some 900 files), added and removed apart."""
+    lines, counts = [], {}
+    for change in changes:
+        removed = change.startswith("removed ")
+        path = change[len("removed "):] if removed else change
+        folder = next((folder for folder in EXTRA_TREE_FOLDERS if path.replace("\\", "/").startswith(folder + "/")), None)
+        if folder is None:
+            lines.append(change)
+        else:
+            counts[(removed, folder)] = counts.get((removed, folder), 0) + 1
+    for (removed, folder), count in sorted(counts.items()):
+        lines.append("%s%d files of %s" % ("removed " if removed else "", count, folder))
+    return lines
 
 
 def stage_mod(dist, dll, plugin, archive=None):
