@@ -34,7 +34,8 @@ standing checkouts too, a folder goes with its source left alone when all of the
 - Nothing was written in it for 48 hours.
 - No process uses the tree, no game and no helper runs: both are looked at again just before the removal.
 
-A play set is the current one that local.bat names, or the one before, or old. An old set's trees in
+A play set is the current one that mgebuilds\\current.bat, else local.bat, names (clean_common.current_set, W500), or
+the one before, or old. An old set's trees in
 C:\\tmp\\play<N> go by the steps below, with no branch and no merge needed. The rolling trees of C:\\tmp\\playset stay.
 
 All of these must hold before a worktree goes:
@@ -716,7 +717,7 @@ def clean(args):
     jobs = [(tree, target, repository) for repository, target, trees in repositories for tree in trees if os.path.isdir(tree["path"])]
     current = current_set()
     kept_sets = kept_set_numbers(current, os.listdir(SETS) if os.path.isdir(SETS) else [])
-    print("local.bat names the set %s; the play sets kept by number: %s" % (current, sorted(kept_sets)))
+    print("the current set (current.bat, else local.bat): %s; the play sets kept by number: %s" % (current, sorted(kept_sets)))
     records = load_records()
     kept_paths, keep_problems = read_keep_list()
     keep = Evidence("", keep_problems, kept_paths)

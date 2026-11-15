@@ -26,6 +26,7 @@ import ctypes
 import ctypes.wintypes as wt
 import glob
 import importlib.util
+import io
 import json
 import os
 import re
@@ -39,6 +40,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import common  # noqa: E402
+from new_run_folder import CURRENT_BAT  # noqa: E402  (the file that names the current set, W500)
 
 # The folder of the repositories: the one of the main checkout of this repository, also for a tool of a worktree.
 REPOS_ROOT = os.path.dirname(common.main_checkout()) if common.main_checkout() else common.SIBLINGS
@@ -54,7 +56,7 @@ COMMIT_REPOS = [os.path.join(REPOS_ROOT, name) for name in ("nirender-plugin", "
 REPOSITORIES = [("nirender-plugin", "master"), ("MGE-XE-G7-render-link", "feature/wgpu-renderer")]
 # The worktrees that lose only their build output.
 OUTPUT_ONLY_REPOSITORIES = [os.path.join("MWSE", "MWSE")]
-# local.bat of this checkout names the current play set.
+# local.bat of this checkout names the current play set when current.bat of SETS does not (current_set).
 PLUGIN_CHECKOUT = os.path.join(REPOS_ROOT, "nirender-plugin")
 SETS = os.path.join(KEEP_ROOT, "mgebuilds")
 # The WER crash dumps of the runs, one folder for each run under its run folder's name (D94; the
@@ -393,14 +395,35 @@ def set_number(name):
     return int(match.group(1)) if match else None
 
 
-def current_set(checkout=None):
-    """The name of the set that local.bat names, or None."""
+def mge_build_of(path):
+    """The value of the first `set "MGE_BUILD=..."` line of the batch file `path`, or None (no file, no line)."""
     try:
-        with open(os.path.join(checkout or PLUGIN_CHECKOUT, "local.bat"), encoding="utf-8", errors="replace") as file:
+        with open(path, encoding="utf-8", errors="replace") as file:
             found = re.search(r'^set "MGE_BUILD=([^"\r\n]*)"', file.read(), re.MULTILINE)
     except OSError:
         return None
-    return os.path.basename(found.group(1).rstrip("\\/")) if found else None
+    return found.group(1) if found else None
+
+
+def current_set(checkout=None, sets=None):
+    """The name of the current set: the one that current.bat of SETS names (deploy_rest.py writes it after each deploy that
+    keeps a set, and the owner's local.bat calls it, W500), else the one that local.bat names, else None (then no set goes).
+    A current.bat with no MGE_BUILD line, or that names no set folder of SETS, is passed over with a line, and local.bat
+    decides as before."""
+    sets = SETS if sets is None else sets
+    bat = os.path.join(sets, CURRENT_BAT)
+    named = mge_build_of(bat)
+    if named is not None:
+        name = os.path.basename(named.rstrip("\\/"))
+        if name and os.path.isdir(os.path.join(sets, name)):
+            return name
+        print("current set: %s names %r, which is no set folder of %s; local.bat decides" % (bat, named, sets), flush=True)
+    elif os.path.exists(bat):
+        print("current set: %s has no MGE_BUILD line; local.bat decides" % bat, flush=True)
+    named = mge_build_of(os.path.join(checkout or PLUGIN_CHECKOUT, "local.bat"))
+    if named is None:
+        return None
+    return os.path.basename(named.rstrip("\\/")) or None
 
 
 def kept_set_numbers(current, names):
@@ -649,7 +672,7 @@ def run_treatment(age_days, cited, kept=False):
 def set_treatment(age_days, cited, kept, used, current_known=True):
     """What happens to a set of mgebuilds: "stay" with the reason, or "go". With no current set known, no set goes."""
     if not current_known:
-        return "stay: local.bat names no set that is here"
+        return "stay: current.bat, else local.bat, names no set that is here"
     if kept:
         return "stay: the current play set or the one before"
     if used:
@@ -899,7 +922,25 @@ def self_test_common():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
         with open(os.path.join(temp, "local.bat"), "w", encoding="ascii") as file:
             file.write('set "OTHER=1"\nset "MGE_BUILD=E:\\nirender-keep\\mgebuilds\\f195"\n')
-        assert current_set(temp) == "f195" and current_set(os.path.join(temp, "none")) is None
+        # W500: a scratch set folder, so that the real current.bat of E: plays no part.
+        sets = os.path.join(temp, "mgebuilds")
+        os.makedirs(os.path.join(sets, "f310"))
+        assert current_set(temp, sets) == "f195" and current_set(os.path.join(temp, "none"), sets) is None
+        # current.bat comes first, also over local.bat, when it names a set folder that is there.
+        bat = os.path.join(sets, CURRENT_BAT)
+        with open(bat, "w", encoding="ascii", newline="") as file:
+            file.write('set "MGE_BUILD=%s"\r\nset "NIRENDER_PLUGIN_DLL=%s\\akulakhan-abc1234.dll"\r\n' % ((os.path.join(sets, "f310"),) * 2))
+        assert current_set(temp, sets) == "f310" and current_set(os.path.join(temp, "none"), sets) == "f310"
+        # A malformed current.bat (no MGE_BUILD line, or a set that is not there) is passed over with a line, and local.bat
+        # decides; with no local.bat either, None: no set goes.
+        for text in ("garbage\r\n", 'set "MGE_BUILD=%s"\r\n' % os.path.join(sets, "f999"), ""):
+            with open(bat, "w", encoding="ascii", newline="") as file:
+                file.write(text)
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                assert current_set(temp, sets) == "f195", text
+                assert current_set(os.path.join(temp, "none"), sets) is None, text
+            assert printed.getvalue().count("current set: %s " % bat) == 2 and "local.bat decides" in printed.getvalue(), printed.getvalue()
 
         # Each way for the text to lack a citation shows, so that no removal runs on it.
         docs = os.path.join(temp, "docs")
