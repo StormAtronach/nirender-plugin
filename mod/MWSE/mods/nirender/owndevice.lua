@@ -151,14 +151,17 @@ return function(nirender, spec)
     -- value); the list is flattened below.
     -- The Lua of the run (`--lua-file` of the runner), a little after the player arrives at
     -- a place: for a test that needs a state that a mod makes from Lua, for example the
-    -- variables of a post shader.
+    -- variables of a post shader. It reads the global mge, as the mods do (W494).
     local function runLua()
         if not spec.lua then return end
         after(2.5, function()
-            local chunk, problem = harnessChunk(spec.lua)
+            local chunk, problem = mgeview.luaFileChunk(spec.lua)
             if not chunk then
                 say("lua: does not compile: %s", tostring(problem))
                 return
+            end
+            if spec.engineReference then
+                say("lua: the file reads the game's mge, not the harness's view of it")
             end
             local ok, result = pcall(chunk)
             say("lua: %s", ok and ("ran " .. tostring(result)) or ("failed: " .. tostring(result)))

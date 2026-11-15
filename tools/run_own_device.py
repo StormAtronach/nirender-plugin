@@ -86,6 +86,14 @@ def plugin_dll_of(argument, environment, default):
     return default, "the release build of this repository"
 
 
+def runs_without_plugin(args):
+    """True for a run that loads no code of the plugin: a reference run without
+    `--reference-plugin`, and a `--plain-case` run without `--plugin-dll` (the cases of the
+    plugin name one)."""
+    reference = args.reference or args.engine_reference
+    return bool((reference and not args.reference_plugin) or (getattr(args, "plain_case", False) and not args.plugin_dll))
+
+
 # The variables of the run itself, and the option or the place that sets each. `--env` does
 # not take them: the runner is an allowed command (decision D6), so the DLL and the programs
 # that a run loads come only from its own options, never from a free value.
@@ -236,7 +244,8 @@ def mwse_core_problem(commit, repo=None):
     return None
 
 
-def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ, lua=None, core=None):
+def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ, lua=None, core=None,
+                      default_plugin=None):
     """Every fault of the arguments that shows before the run starts anything: the form of
     each value, the files and folders that the run reads, the faults of its Lua files
     (`lua`, else `batch_lua_problems`), the MWSE commit of --mwse-dll (`core`, else
@@ -286,6 +295,12 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
                          ("--mwse-dll", args.mwse_dll), ("--exe", args.exe), ("--log", args.log and os.path.dirname(os.path.abspath(args.log)))):
         if path and not exists(path):
             problems.append("%s: no %s" % (option, path))
+    # W493: the plugin DLL that main takes without --plugin-dll (the variable, else the release build of this
+    # repository). A run with --no-build builds nothing, so that file must be there before the game slot is taken.
+    if getattr(args, "no_build", False) and not args.plugin_dll and not runs_without_plugin(args):
+        dll, source = plugin_dll_of(None, environment, default_plugin or session.DLL)
+        if not exists(dll):
+            problems.append("the plugin DLL of this run is missing: %s (%s); name one with --plugin-dll, or build it" % (dll, source))
     # The Lua that the game runs: a fault there ends the run in the game, after its start.
     for option, path in (("--shader-batch", args.shader_batch), ("--lua-file", args.lua_file)):
         if path and exists(path):
@@ -294,6 +309,13 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
                 problems.append("%s: %s cannot be read as UTF-8 text" % (option, path))
             else:
                 problems.extend("%s %s: %s" % (option, path, finding) for finding in lua(path, text))
+                # W494: a --lua-file reads the game's mge. On the engine's renderer that mge takes no picture; the
+                # harness's view of it, which a step or a batch reads, does.
+                engine_run = args.engine_reference or getattr(args, "plain_case", False)
+                if option == "--lua-file" and engine_run and re.search(r"\bsaveScreenshot\b", text):
+                    problems.append("--lua-file %s: names saveScreenshot in a run on the engine's renderer (--engine-reference, "
+                                    "--plain-case), where it reads the game's mge, which takes no picture: a picture belongs "
+                                    "to a step or a batch" % path)
     if args.mge_build:
         for name in ("d3d8.dll", "numidium.exe"):
             if not exists(os.path.join(args.mge_build, name)):
@@ -1069,6 +1091,24 @@ def self_test_checks():
         assert argument_problems(args, exists), args
     assert len(argument_problems(namespace(mge_build="E:/c", weather=10), exists)) == 3
     assert argument_problems(namespace(plain_case=True, mge_build="E:/b", env=["MGE_XE_NATIVE_REFUSE_EVENT=3"]), exists) == []
+    # W493: a run with --no-build and the plugin needs the plugin DLL that main takes; a run that builds, or that has
+    # no plugin, does not.
+    release = "E:/repo/akulakhan.dll"
+    def plugin_lines(args, environment):
+        return [line for line in argument_problems(args, exists, environment=environment, default_plugin=release)
+                if "plugin DLL of this run" in line]
+    lines = plugin_lines(namespace(no_build=True, mge_build="E:/b"), {})
+    assert len(lines) == 1 and release in lines[0] and "the release build of this repository" in lines[0], lines
+    lines = plugin_lines(namespace(no_build=True, mge_build="E:/b"), {"NIRENDER_PLUGIN_DLL": "E:/none.dll"})
+    assert len(lines) == 1 and "E:/none.dll (NIRENDER_PLUGIN_DLL)" in lines[0], lines
+    assert plugin_lines(namespace(no_build=True, mge_build="E:/b"), {"NIRENDER_PLUGIN_DLL": "E:/a.dll"}) == []
+    assert plugin_lines(namespace(no_build=True, mge_build="E:/b", plugin_dll="E:/a.dll"), {}) == []
+    assert plugin_lines(namespace(no_build=False, mge_build="E:/b"), {}) == []
+    assert plugin_lines(namespace(no_build=True, mge_build="E:/b", plain_case=True), {}) == []
+    assert plugin_lines(namespace(no_build=True, engine_reference=True), {}) == []
+    assert len(plugin_lines(namespace(no_build=True, engine_reference=True, reference_plugin=True), {})) == 1
+    assert runs_without_plugin(namespace(plain_case=True)) and not runs_without_plugin(namespace(plain_case=True, plugin_dll="E:/a.dll"))
+    assert runs_without_plugin(namespace(reference=True)) and not runs_without_plugin(namespace())
     # D442: --mwse-dll needs its commit, and the MWSE repository must hold that commit's core; the MWSE.dll of an archive
     # goes alone. The fake `core` finds every core.
     def every_core(commit):
@@ -1141,6 +1181,18 @@ def self_test_checks():
     assert seen == [("E:/batch.lua", "f()\nlocal function f() end\n"), ("E:/file.lua", "return 1\n")], seen
     assert argument_problems(namespace(shader_batch="E:/batch.lua"), exists, {}.get, quiet, no_lua) == [
         "--shader-batch: E:/batch.lua cannot be read as UTF-8 text"]
+    # W494: a --lua-file that names saveScreenshot is refused in a run on the engine's renderer only; a batch that
+    # names it is not (the batch reads the harness's view, which takes the engine's picture).
+    shots = {"E:/file.lua": "mge.saveScreenshot({ path = 'x.png' })\n", "E:/batch.lua": "mge.saveScreenshot({})\n"}.get
+    readable = (present | {"E:/file.lua"}).__contains__
+    def picture_lines(**changes):
+        return [line for line in argument_problems(namespace(**changes), readable, shots, quiet, no_lua) if "saveScreenshot" in line]
+    for engine in (dict(engine_reference=True), dict(plain_case=True, mge_build="E:/b")):
+        lines = picture_lines(lua_file="E:/file.lua", **engine)
+        assert len(lines) == 1 and "a picture belongs to a step or a batch" in lines[0], lines
+        assert picture_lines(shader_batch="E:/batch.lua", **engine) == []
+    assert picture_lines(lua_file="E:/file.lua", mge_build="E:/b") == []
+    assert picture_lines(lua_file="E:/file.lua", reference=True) == []
     # A missing file is the existence fault alone; the Lua checks do not run on it.
     seen.clear()
     assert argument_problems(namespace(shader_batch="E:/none.lua"), exists, texts, quiet, one_finding) == ["--shader-batch: no E:/none.lua"]
@@ -1290,10 +1342,10 @@ def self_test_check_command():
         with open(os.path.join(config, "mgeXE.toml"), "w", encoding="utf-8") as fh:
             fh.write(TEST_TOML)
 
-        def check(*extra):
+        def check(*extra, environment=None):
             command = [sys.executable, "-I", os.path.abspath(__file__), "--check", "--instance", instance, "--game-dir", game,
                        "--save", "a.ess", *extra]
-            result = subprocess.run(command, capture_output=True, text=True)
+            result = subprocess.run(command, capture_output=True, text=True, env=environment)
             return result.returncode, result.stdout + result.stderr
 
         code, text = check()
@@ -1302,6 +1354,14 @@ def self_test_check_command():
         code, text = check()
         assert code == 0 and "nothing started" in text, text
         assert "--full-dump" not in text, text
+        # W493: a run with --no-build and the plugin, whose plugin DLL is missing, is refused in one plain line; a
+        # reference run without the plugin passes.
+        missing = os.path.join(instance, "no-plugin", "akulakhan.dll")
+        environment = dict(os.environ, NIRENDER_PLUGIN_DLL=missing)
+        code, text = check("--no-build", environment=environment)
+        assert code != 0 and "the plugin DLL of this run is missing: %s (NIRENDER_PLUGIN_DLL)" % missing in text, text
+        code, text = check("--no-build", "--reference", environment=environment)
+        assert code == 0, text
         code, text = check("--full-dump")
         assert code == 0 and "--full-dump: a crash of the run writes a dump of about " + FULL_DUMP_SIZE in text, text
         code, text = check("--weather", "10")
@@ -2410,7 +2470,8 @@ def main():
     ap.add_argument("--yaw", type=float, default=None, help="the heading of the player in degrees, 0 north; "
                     "a negative heading as --yaw=-129 is the safe form")
     ap.add_argument("--lua-file", help="a file of Lua that the game runs a little after the player arrives at the interior and at the "
-                    "exterior: for a state that a mod makes from Lua (the variables of a post shader)")
+                    "exterior: for a state that a mod makes from Lua (the variables of a post shader). It reads the global mge, "
+                    "as the game's mods do, also where a batch reads the harness's view (--engine-reference, --plain-case)")
     ap.add_argument("--shader-batch", help="a file of Lua that gives a list of sets of post shaders, { name = \"lens\", { \"Lens Effects\", "
                     "variable = value } }: the step `shaders` takes one picture for each set (sh-<name>), with one start of the game")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for the run, key = value: the line with "
@@ -2480,8 +2541,7 @@ def main():
         if args.instance:
             session.use_instance(args.instance, args.game_dir, args.profile)
         problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
-        no_plugin_run = ((args.reference or args.engine_reference) and not args.reference_plugin) or (args.plain_case and not args.plugin_dll)
-        if not problem and no_plugin_run:
+        if not problem and runs_without_plugin(args):
             problem = overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
         session.harness.refuse_stale_backups()
         enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
@@ -2510,9 +2570,7 @@ def main():
         return 0
     if args.engine_reference:
         args.reference = True
-    # A reference run has no code of the plugin in the game, unless --reference-plugin. A --plain-case run has the
-    # plugin only when --plugin-dll names one (the cases of the plugin).
-    no_plugin = (args.reference and not args.reference_plugin) or (args.plain_case and not args.plugin_dll)
+    no_plugin = runs_without_plugin(args)
     # The game is started from this process: its variables go into the game's environment.
     apply_env(os.environ, args.env)
     if args.log:
