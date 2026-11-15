@@ -1871,7 +1871,8 @@ unsafe fn state_lights(effect_state: usize, out: &mut Vec<usize>) {
         return;
     }
     let mut iter: usize = rd(effect_state, DES::lights);
-    while iter != 0 && out.len() < MOST_LIGHTS {
+    let mut dropped = 0;
+    while iter != 0 {
         let light: usize = rd(iter, DL::effect);
         iter = rd(iter, DL::next);
         if light == 0 {
@@ -1880,8 +1881,13 @@ unsafe fn state_lights(effect_state: usize, out: &mut Vec<usize>) {
         if crate::ports::light_manager::light_get_type(light) == 0 {
             continue;
         }
+        if out.len() == MOST_LIGHTS {
+            dropped += 1;
+            continue;
+        }
         out.push(light);
     }
+    crate::light_stream::note_dropped(crate::light_stream::Cap::ShapeLights, dropped, MOST_LIGHTS);
     out.reverse();
 }
 
