@@ -157,6 +157,7 @@ from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
 from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, docs_place, git_env  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
+from mwse_tree import fallback_checks  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
@@ -511,6 +512,13 @@ def withheld_line(withheld, folder, command):
         subprocess.list2cmdline(command + ["--mwse-dll", "<an MWSE.dll with %s>" % " and ".join(names)]))
 
 
+def fallback_note(output):
+    """The tail of a stage's verdict line that names the MWSE checks of its output that read the sibling MWSE (W497), or
+    an empty text: a FAIL after such a fallback can be the sibling's branch, not a fault of the code."""
+    names = fallback_checks(output)
+    return "; MWSE FALLBACK in %s (the sibling MWSE was read, not the installs' commit)" % ", ".join(names) if names else ""
+
+
 def run_stage(name, folder, command, log):
     began = time.time()
     log.write("\n== %s: %s in %s\n" % (name, " ".join(command), folder))
@@ -544,6 +552,7 @@ def run_stage(name, folder, command, log):
             NOT_DEPLOYED.append(not_deployed)
             return True
         failure = ": exit code %d%s" % (code, "; refused by the slot check: %s" % refusal if refusal else "; refused: %s" % deploy_refusal if deploy_refusal else "")
+    failure += fallback_note(output_since(log, start))
     verdict(log, "%s %s (%d s)%s" % ("PASS" if code == 0 else "FAIL", name, time.time() - began, failure))
     return code == 0
 
@@ -1278,7 +1287,19 @@ def self_test():
         # The verdict of each stage is in the log too, so that a kept log shows it.
         assert "== PASS good (" in text and "== FAIL bad (" in text and ": exit code 4" in text, text
         assert "refused" not in text, "a stage with no refusal names none"
+        assert "FALLBACK" not in text, "a stage with no MWSE fallback names none"
         assert summary_line([True, False, True], "x.log") == "2 of 3 stages passed; the output is in x.log"
+
+        # W497: a stage whose MWSE checks read the sibling MWSE says so in its line, passed or failed.
+        fell_back = "MWSE FALLBACK: mwse native: read the sibling checkout x: no single MWSE record in the installs: A none"
+        with open(os.path.join(root, "log6.txt"), "w", encoding="utf-8") as log:
+            assert run_stage("checks", root, [sys.executable, "-c", "print(%r)" % fell_back], log)
+            assert not run_stage("checks", root, [sys.executable, "-c", "print(%r); raise SystemExit(1)" % fell_back], log)
+        with open(os.path.join(root, "log6.txt"), encoding="utf-8") as log:
+            text = log.read()
+        note = "MWSE FALLBACK in mwse native (the sibling MWSE was read, not the installs' commit)"
+        assert re.search(r"== PASS checks \(\d+ s\); " + re.escape(note) + "\n", text), text
+        assert re.search(r"== FAIL checks \(\d+ s\): exit code 1; " + re.escape(note) + "\n", text), text
 
         # A replay that the slot check refused: the FAIL line names the reason, as validate_retained prints it (indented,
         # the last lines of replay.py). An older refusal in the log before the stage does not count.

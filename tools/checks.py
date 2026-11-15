@@ -59,6 +59,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
+import mwse_tree  # noqa: E402
 
 PLUGIN = Path(__file__).resolve().parents[1]
 REPOS = PLUGIN.parent
@@ -74,7 +75,6 @@ def places(siblings, main, docs=None):
 
 
 STATE, MWSE = Path(common.docs_place(*STATE_PARTS)), places(str(REPOS), common.main_checkout())[1]
-MWSE_HEADER = MWSE / "MWSE" / "MWSENativeApi.h"
 
 CHECKS = {
     "readme": (PLUGIN / "tools" / "check_readme.py", PLUGIN),
@@ -95,9 +95,13 @@ CHECKS = {
     # No new absolute clip product (a matrix times a world position) in the helper's WGSL: W49.
     "clip products": (PLUGIN / "tools" / "check_clip_products.py", REPOS / "MGE-XE-G7-render-link", ["--mge", str(REPOS / "MGE-XE-G7-render-link")]),
     "clip products parsing": (PLUGIN / "tools" / "check_clip_products.py", PLUGIN, ["--self-test"]),
-    "mwse native": (PLUGIN / "tools" / "check_mwse_native.py", MWSE_HEADER),
+    # The three MWSE checks read the MWSE commit that the test installs run, else the sibling MWSE with a FALLBACK line
+    # (mwse_tree.py, W497).
+    "mwse native": (PLUGIN / "tools" / "check_mwse_native.py", MWSE),
+    "mwse native parsing": (PLUGIN / "tools" / "check_mwse_native.py", PLUGIN, ["--self-test"]),
+    "mwse tree": (PLUGIN / "tools" / "mwse_tree.py", PLUGIN, ["--self-test"]),
     # A vtable slot of MWSE's own NI classes filled with a member of another name: W93.
-    "mwse vtable fills": (PLUGIN / "tools" / "check_mwse_vtable_fills.py", MWSE, ["--mwse", str(MWSE)]),
+    "mwse vtable fills": (PLUGIN / "tools" / "check_mwse_vtable_fills.py", MWSE),
     "mwse vtable fills parsing": (PLUGIN / "tools" / "check_mwse_vtable_fills.py", PLUGIN, ["--self-test"]),
     "module headers": (STATE / "build_module_map.py", STATE, ["--plugin", str(PLUGIN)]),
     "skill names": (STATE / "check_names.py", STATE, ["--plugin", str(PLUGIN)]),
@@ -105,7 +109,7 @@ CHECKS = {
     # keeps its value.
     "hand offsets": (PLUGIN / "tools" / "hand_offsets.py", PLUGIN, ["--check"]),
     "offset moves": (PLUGIN / "tools" / "check_offset_moves.py", PLUGIN, ["--cached"]),
-    # The IDA types of the layouts against MWSE's SharedSE and TES3 layouts.
+    # The IDA types of the layouts against MWSE's SharedSE and TES3 layouts, MWSE read as for "mwse native" (W497).
     # It also needs this tree's IDA export, which git ignores: a new worktree has none, and the export of another
     # checkout is not this tree's.
     "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", (MWSE / "SharedSE", PLUGIN / "tools" / "out" / "structs.json")),
@@ -153,7 +157,7 @@ CHECKS = {
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects", "mge plain guards"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
@@ -193,8 +197,34 @@ def self_test():
     for name in ("module headers", "skill names"):
         assert CHECKS[name][2] == ["--plugin", str(PLUGIN)], "the docs checks read the code of this tree"
     assert PLUGIN / "tools" / "out" / "structs.json" in CHECKS["sharedse layouts"][1], "the layouts check needs this tree's export"
+
+    # W497: the MWSE checks pick their MWSE themselves (no path from here), and the summary names a fallback.
+    for name in ("mwse native", "mwse vtable fills", "sharedse layouts"):
+        assert len(CHECKS[name]) == 2, "%s gets no MWSE path from checks.py" % name
+    assert summary("plugin", ["a"], [], [], []) == "checks (plugin): 1 passed"
+    line = summary("plugin", ["a", "mwse tree"], [], ["mwse native"], ["mwse native"])
+    assert line == ("checks (plugin): 2 passed, MWSE FALLBACK in 1: mwse native (the sibling MWSE was read, not the installs' "
+                    "commit), 1 FAILED: mwse native. Of these, mwse native compared the sibling MWSE: a difference there can be "
+                    "the sibling's branch. Fix the drift, or commit with --no-verify."), line
+    assert "Of these" not in summary("plugin", [], [], ["readme"], ["mwse native"]), "a fallback that passed is no cause"
     print("checks self-test: ok")
     return 0
+
+
+def summary(which, passed, skipped, failed, fell_back):
+    """The last line of a run: the counts, the checks that read the sibling MWSE (W497), and the failures."""
+    line = "checks (%s): %d passed" % (which, len(passed))
+    if skipped:
+        line += ", %d skipped (not on this machine: %s)" % (len(skipped), ", ".join(skipped))
+    if fell_back:
+        line += ", MWSE FALLBACK in %d: %s (the sibling MWSE was read, not the installs' commit)" % (len(fell_back), ", ".join(fell_back))
+    if failed:
+        line += ", %d FAILED: %s." % (len(failed), ", ".join(failed))
+        both = [name for name in failed if name in fell_back]
+        if both:
+            line += " Of these, %s compared the sibling MWSE: a difference there can be the sibling's branch." % ", ".join(both)
+        line += " Fix the drift, or commit with --no-verify."
+    return line
 
 
 def main(argv):
@@ -209,7 +239,7 @@ def main(argv):
     which = names[0] if names else "all"
     if which not in LISTS:
         raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]")
-    failed, passed, skipped = [], [], []
+    failed, passed, skipped, fell_back = [], [], [], []
     for name in LISTS[which]:
         script, needs, *rest = CHECKS[name]
         args = list(rest[0]) if rest else []
@@ -227,18 +257,18 @@ def main(argv):
             continue
         run = subprocess.run([sys.executable, "-I", str(script), *args], cwd=script.parent, capture_output=True, text=True,
                              encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        # A check that read the sibling MWSE in place of the installs' commit says so in each case (W497).
+        for fallback in mwse_tree.fallback_lines(run.stdout):
+            print(fallback)
+        if mwse_tree.fallback_lines(run.stdout):
+            fell_back.append(name)
         if run.returncode == 0:
             passed.append(name)
         else:
             failed.append(name)
             print("== the check '%s' failed (%s):" % (name, script.name))
             print((run.stdout + run.stderr).rstrip()[-4000:])
-    line = "checks (%s): %d passed" % (which, len(passed))
-    if skipped:
-        line += ", %d skipped (not on this machine: %s)" % (len(skipped), ", ".join(skipped))
-    if failed:
-        line += ", %d FAILED: %s. Fix the drift, or commit with --no-verify." % (len(failed), ", ".join(failed))
-    print(line)
+    print(summary(which, passed, skipped, failed, fell_back))
     return 1 if failed else 0
 
 

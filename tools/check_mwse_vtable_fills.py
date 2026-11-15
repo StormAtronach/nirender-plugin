@@ -1,6 +1,6 @@
 """Checks that each vtable slot MWSE fills from a member function gets the member of its own name.
 
-    python -I tools/check_mwse_vtable_fills.py [--mwse DIR]   (DIR: the MWSE repository)
+    python -I tools/check_mwse_vtable_fills.py [--mwse DIR | --mwse-commit SHA]   (DIR: an MWSE tree on disk)
     python -I tools/check_mwse_vtable_fills.py --self-test
 
 MWSE builds the vtables of its own NI classes in C++: the constructor `X_vTable::X_vTable()`
@@ -12,8 +12,8 @@ target.
 
 The rule: in the body of a vtable constructor, each slot that gets a member function gets the
 member with the slot's name. The pairs in KNOWN are the only exceptions. The files are the .cpp
-and .h files of SharedSE, MWSE and CSSE. The MWSE repository is a sibling of this repository by
-default, else a sibling of its main checkout. The exit code is 0 when no slot breaks the rule.
+and .h files of SharedSE, MWSE and CSSE of the MWSE commit that the test installs run (`mwse_tree.resolve`, W497), else
+of the sibling checkout with a FALLBACK line. The exit code is 0 when no slot breaks the rule.
 """
 import argparse
 import os
@@ -21,10 +21,9 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import sibling  # noqa: E402
+import mwse_tree  # noqa: E402
 
-# Beside this tree, else beside its main checkout (a group of worktrees in C:/tmp has neither beside it).
-DEFAULT_MWSE = sibling("MWSE", "MWSE")
+CHECK = "mwse vtable fills"
 FOLDERS = ("SharedSE", "MWSE", "CSSE")
 # (slot, member): the slot of the engine's vtable has another name than MWSE's member.
 KNOWN = {("getRTTI", "getRunTimeTypeInformation")}
@@ -58,14 +57,12 @@ def wrong_fills(lines):
     return read_fills(lines)[1]
 
 
-def sources(mwse):
+def sources(tree):
+    """The paths (with "/") of the .cpp and .h files of FOLDERS in the MWSE source `tree` (`mwse_tree`)."""
     for folder in FOLDERS:
-        place = os.path.join(mwse, folder)
-        if not os.path.isdir(place):
-            continue
-        for name in sorted(os.listdir(place)):
+        for name in tree.names(folder):
             if name.endswith((".cpp", ".h")):
-                yield os.path.join(place, name)
+                yield "%s/%s" % (folder, name)
 
 
 def self_test():
@@ -94,60 +91,69 @@ def self_test():
     import tempfile
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as mwse:
+        tree = mwse_tree.Folder(mwse)
         for folder in FOLDERS:
             os.makedirs(os.path.join(mwse, folder))
         source = os.path.join(mwse, "SharedSE", "NICopyTransformController.cpp")
         with open(source, "w", newline="\r\n") as out:
             out.write("\n".join(head + good + tail) + "\n")
-        assert scan(mwse) == (1, 3, []), "the fills of SharedSE are read"
+        assert scan(tree) == (1, 3, []), "the fills of SharedSE are read"
         with open(source, "w", newline="\r\n") as out:
             out.write("\n".join(head + [planted] + tail) + "\n")
-        files, fills, problems = scan(mwse)
-        assert fills == 1 and len(problems) == 1 and ":3: the slot targetIsRequiredType" in problems[0], "the W93 line fails"
+        files, fills, problems = scan(tree)
+        assert fills == 1 and problems == ["SharedSE/NICopyTransformController.cpp:3: the slot targetIsRequiredType gets the member "
+                                           "getRunTimeTypeInformation"], problems
         os.remove(source)
-        files, fills, problems = check(mwse)
+        files, fills, problems = check(tree)
         assert fills == 0 and len(problems) == 1 and "the scan reads nothing" in problems[0], "a tree with no fill fails"
     print("mwse vtable fills self-test: ok")
     return 0
 
 
-def scan(mwse):
-    """The count of the files and of the fills of the tree `mwse`, and a line for each fill that breaks the rule."""
+def scan(tree):
+    """The count of the files and of the fills of the MWSE source `tree`, and a line for each fill that breaks the rule."""
     files, fills, problems = 0, 0, []
-    for path in sources(mwse):
+    for path in sources(tree):
         files += 1
-        count, wrong = read_fills(open(path, encoding="utf-8", errors="replace").read().splitlines())
+        count, wrong = read_fills(tree.read(path).decode("utf-8", "replace").splitlines())
         fills += count
         for number, slot, member in wrong:
-            problems.append("%s:%d: the slot %s gets the member %s" % (os.path.relpath(path, mwse), number, slot, member))
+            problems.append("%s:%d: the slot %s gets the member %s" % (path, number, slot, member))
     return files, fills, problems
 
 
-def check(mwse):
+def check(tree):
     """`scan`, with a problem when the scan reads no fill: a folder or a pattern that misses MWSE's vtables."""
-    files, fills, problems = scan(mwse)
+    files, fills, problems = scan(tree)
     if fills == 0:
-        problems.append("no vtable fill in %d files of %s in %s: the scan reads nothing" % (files, "/".join(FOLDERS), mwse))
+        problems.append("no vtable fill in %d files of %s in %s: the scan reads nothing" % (files, "/".join(FOLDERS), tree.label))
     return files, fills, problems
 
 
-def main_with(mwse):
-    files, fills, problems = check(mwse)
+def main_with(tree):
+    files, fills, problems = check(tree)
     for problem in problems:
         print("FAIL: " + problem)
     if not problems:
-        print("mwse vtable fills ok: %d fills in %d files of %s" % (fills, files, mwse))
+        print("mwse vtable fills ok: %d fills in %d files; MWSE: %s" % (fills, files, tree.label))
+    else:
+        print("mwse vtable fills: MWSE: %s" % tree.label)
     return 1 if problems else 0
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mwse", default=DEFAULT_MWSE, help="the MWSE repository (the sibling without this)")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--mwse", help="an MWSE tree on disk to read in place of the installs' commit")
+    source.add_argument("--mwse-commit", help="an MWSE commit to read in place of the installs' commit")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
-    return main_with(args.mwse)
+    tree, fallback = mwse_tree.resolve(CHECK, folder=args.mwse, commit=args.mwse_commit)
+    if fallback:
+        print(fallback)
+    return main_with(tree)
 
 
 if __name__ == "__main__":
