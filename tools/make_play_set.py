@@ -564,14 +564,21 @@ def wait_clean():
     sys.path.insert(0, HARNESS)
     import harness
 
+    not_known = None
     for _ in range(90):
         with open(TESTING_MODLIST, encoding="utf-8", errors="replace") as file:
             harness_on = any(line.startswith("+" + harness.RUN_MOD_PREFIX) for line in file)
-        if not harness_on and not harness.processes("Morrowind.exe") and not harness.testing_mo2():
+        # A failed read of the processes is no free instance (W524 F-T-13): the wait goes on.
+        try:
+            free = not harness_on and not harness.processes("Morrowind.exe") and not harness.testing_mo2()
+            not_known = None
+        except harness.ProcessesNotKnown as error:
+            free, not_known = False, error
+        if free:
             time.sleep(2)
             return
         time.sleep(2)
-    raise SmokeFailed("the instance did not become free in 180 s")
+    raise SmokeFailed("the instance did not become free in 180 s%s" % ("; %s" % not_known if not_known else ""))
 
 
 def newest_run(tree, label, since):
@@ -1084,9 +1091,46 @@ def smoke_wiring_test(fake_slots):
     assert tour_faults(tours["not run"][1], NOT_RUN_CODE) == [] and tour_faults(tours["failed"][1], 1)
 
 
+def self_test_wait_clean():
+    """W524 F-T-13: a failed read of the processes is no free instance. The plant: every read fails, and the wait ends
+    with SmokeFailed and the reason. The null: a read of no process frees the instance at once."""
+    global TESTING_MODLIST
+    sys.path.insert(0, HARNESS)
+    import harness
+
+    saved = TESTING_MODLIST, harness.processes, time.sleep
+    reads = []
+
+    def not_known(name, tries=3):
+        reads.append(name)
+        raise harness.ProcessesNotKnown("the list of the %s processes was not read (planted)" % name)
+
+    with tempfile.TemporaryDirectory() as folder:
+        TESTING_MODLIST = os.path.join(folder, "modlist.txt")
+        with open(TESTING_MODLIST, "w", encoding="utf-8") as file:
+            file.write("+Other\n")
+        try:
+            time.sleep = lambda seconds: None
+            harness.processes = not_known
+            try:
+                wait_clean()
+            except SmokeFailed as failure:
+                assert "not read (planted)" in str(failure) and len(reads) == 90, (failure, len(reads))
+            else:
+                raise AssertionError("a failed read freed the instance")
+            reads.clear()
+            harness.processes = lambda name, tries=3: reads.append(name) or []
+            wait_clean()
+            assert reads == ["Morrowind.exe", "ModOrganizer.exe"], reads
+        finally:
+            TESTING_MODLIST, harness.processes, time.sleep = saved
+
+
 def self_test():
     global WAIT_SECONDS
     import io
+
+    self_test_wait_clean()
 
     # The accepted baseline: the tree's when it has captures, else the main checkout's; the tree's when neither has
     # (a worktree in C:/tmp has no results/: 2026-11-09, Rob's merge_step).

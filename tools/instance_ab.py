@@ -21,7 +21,7 @@ merge. The stage compares two builds on the same data, on the same day:
 fails. The pictures of the build under test and the hash lines of its grass calls (`MGE_XE_GRASS_HASH=1`: the records in
 the order of the draw and as a set) must equal those of the base. A picture does not show the order of the draws; the
 ordered hash does. When the base prints no hash line, the stage judges the pictures and prints "hash NOT RUN (base has no
-hash line)": never a PASS of the hash.
+hash line)": a FAIL when the pictures differ, else NOT RUN, never a PASS.
 
 A stage prints NOT RUN, and exits with code 5, when it cannot judge:
 
@@ -30,9 +30,15 @@ A stage prints NOT RUN, and exits with code 5, when it cannot judge:
   status is not "game: free" or "game: held ... by", or a Morrowind.exe from the instance's folder runs;
 - a file that the generator writes (`generation_report.toml`, `generation_state.bin`) changed its time or size between the
   first replay and the last;
-- the base prints hash lines and none of them holds a grass record (the capture does not reach the code).
+- the base prints hash lines and none of them holds a grass record (the capture does not reach the code);
+- the base prints no hash line, and the pictures are equal (the order of the draws is not judged).
 
-Exit code 0 is a PASS, 1 a FAIL, 5 NOT RUN. The inputs of a stage are in `<baseline>/instance/<stage>/`: the capture and
+When the base refuses the capture with a format code of the helper (10 the stream format, 11 the extension format), the
+build under test replays the same capture. If it plays it, the two builds read two formats: the stage prints "NOT RUN
+<stage>: FORMAT CHANGE (...)" and exits with code 6 (FORMAT_CHANGE_EXIT of common.py), which merge_step.py judges with an
+evidence file. If it does not, the stage FAILs.
+
+Exit code 0 is a PASS, 1 a FAIL, 5 NOT RUN, 6 a FORMAT CHANGE. The inputs of a stage are in `<baseline>/instance/<stage>/`: the capture and
 `mgeXE.toml`, a copy of the instance's file; the accepted baseline folder serves when the named one holds none. A planned
 change of the grass fails the A/B, and the Coordinator judges it from the numbers, as for any planned new look.
 """
@@ -48,7 +54,8 @@ from dataclasses import dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import BUILD_PARTS, NOT_RUN_EXIT, build_missing, capture_format_in, docs_place, docs_root, local, missing_docs_text  # noqa: E402
+from common import (BUILD_PARTS, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, REFUSED_FORMAT_EXITS, build_missing, capture_format_in,  # noqa: E402
+                    docs_place, docs_root, format_change, local, missing_docs_text)
 
 PASS, FAIL, NOT_RUN = 0, 1, NOT_RUN_EXIT
 KEEP_FOLDER = "E:\\nirender-keep\\merge-step"
@@ -285,6 +292,9 @@ def judge(null_pictures, null_hash, pictures, hashes, base_hash, now_hash):
             lines.append("hash lines equal: %d calls, %d records" % (len(base_hash), hash_records(base_hash)))
     if failures:
         return FAIL, ["FAIL the build under test differs from the base"] + ["       " + line for line in failures] + lines
+    if not base_hash:
+        # The pictures do not show the order of the draws: without the base's hash the stage judged only a part.
+        return NOT_RUN, ["NOT RUN: the order of the grass draws is not judged; the pictures equal the base, and the base equals itself"] + lines
     return PASS, ["PASS pictures equal to the base, and the base equal to itself"] + lines
 
 
@@ -426,6 +436,26 @@ def slot_lines():
     return slot.slot_status("game", time.time())
 
 
+def base_refused(stage, folder, args, out, base_code, base_output):
+    """The verdict of a stage whose base refused the capture with a format code of the helper: the replay of the build
+    under test of the same capture decides. It plays: the two builds read two formats, a FORMAT CHANGE (exit code
+    FORMAT_CHANGE_EXIT), which merge_step.py judges with an evidence file. Any other end is a FAIL of that replay."""
+    for line in base_output.splitlines()[-6:]:
+        out("       " + line)
+    began = time.time()
+    code, output, _ = replay(stage, folder, args.now_build, args.out, "now")
+    out("replay now: exit code %d, %d s" % (code, time.time() - began))
+    kind = format_change(base_code, code)
+    if kind:
+        out("NOT RUN %s: FORMAT CHANGE (the base refuses the capture with code %d, the %s format; the tip plays it)" % (stage.name, base_code, kind))
+        return FORMAT_CHANGE_EXIT
+    for line in output.splitlines()[-6:]:
+        out("       " + line)
+    third = " (the capture is of a third format: neither build reads it)" if code in REFUSED_FORMAT_EXITS else ""
+    out("FAIL %s: the base refuses the capture with code %d, and the replay of the build under test exited with code %d%s" % (stage.name, base_code, code, third))
+    return FAIL
+
+
 def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare, processes=process_listing):
     stage = STAGES[args.stage]
     folder = stage_folder(args.baseline, stage)
@@ -459,6 +489,8 @@ def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare
         began = time.time()
         code, output, pictures = replay(stage, folder, build, args.out, tag)
         out("replay %s: exit code %d, %d s, %d hash lines" % (tag, code, time.time() - began, len(hash_lines(output))))
+        if tag == "base" and code in REFUSED_FORMAT_EXITS:
+            return base_refused(stage, folder, args, out, code, output)
         other_format = capture_format_in(output)
         if code != 0 and other_format:
             # The capture is from a build of another format: this stage cannot judge the two builds with it.
@@ -575,9 +607,11 @@ def self_test():
         open(os.path.join(b, "p-29.png"), "w").write("x")
         assert picture_differences(a, b, same) == ["p-2.png: differs", "p-29.png: no picture in %s" % a]
 
-        # The verdict. The null test comes first; a base with no hash line gives "hash NOT RUN", never a PASS of the hash.
+        # The verdict. The null test comes first; a base with no hash line gives "hash NOT RUN" and the stage NOT RUN
+        # (the plant), never a PASS: equal pictures say nothing of the order of the draws.
         code, lines = judge([], [], [], [], [], [])
-        assert code == PASS and lines[-1] == "hash NOT RUN (base has no hash line)"
+        assert code == NOT_RUN and lines[0].startswith("NOT RUN: the order of the grass draws is not judged; the pictures equal") and lines[-1] == "hash NOT RUN (base has no hash line)"
+        assert named(lines[0], "grass").startswith("NOT RUN grass: the order")
         code, lines = judge([], [], [], [], [one], [one])
         assert code == PASS and "hash lines equal: 1 calls, 3 records" in lines[-1] and "NOT RUN" not in " ".join(lines)
         code, lines = judge(["p-1.png: differs"], [], [], [], [one], [one])
@@ -645,20 +679,40 @@ def self_test():
             assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: [running]) == NOT_RUN and any("a Morrowind.exe of the instance runs: %s" % running in line for line in said), said
             assert not any(line.startswith("replay ") for line in said), said
 
-            # A capture of another extension format (the grass capture at the merge step of 79c752d): NOT RUN, with the
-            # line of replay.py; another exit of the replay stays a FAIL.
+            # The format of the capture, by the exit codes of the replays alone (W527). The plant: the base refuses with
+            # 11 and the build under test plays the same capture: a FORMAT CHANGE (exit 6), whatever the text says. The
+            # nulls: both refuse (a third format) is a FAIL of the build under test; the base plays and the build under
+            # test refuses with replay.py's line is NOT RUN, as before.
             global replay
             real_replay = replay
             stale = "CAPTURE FORMAT: c.nircap was made by d3d8.dll (MGE-XE G7 Fork v0.21.0 99c8b62-dirty), which writes the extension format 1; x"
+
+            def replays(codes, text=""):
+                return lambda stage, folder, build, out, tag: (codes[tag], text, root)
+
             try:
-                replay = lambda *_: (11, "make the capture again with this build\n" + stale + "\n", root)  # noqa: E731
+                replay = replays({"base": 11, "now": 0}, "a panic\n")
                 said = []
-                assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == NOT_RUN, said
-                assert "NOT RUN g: the replay of the base: " + stale in said and not any(line.startswith("FAIL") for line in said), said
-                replay = lambda *_: (11, "a panic\n", root)  # noqa: E731
+                assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == FORMAT_CHANGE_EXIT, said
+                assert said[-1] == "NOT RUN g: FORMAT CHANGE (the base refuses the capture with code 11, the extension format; the tip plays it)", said
+                replay = replays({"base": 10, "now": 0})
+                said = []
+                assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == FORMAT_CHANGE_EXIT and "the stream format" in said[-1], said
+                replay = replays({"base": 11, "now": 11}, "make the capture again with this build\n" + stale + "\n")
                 said = []
                 assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == FAIL, said
-                assert "FAIL g: the replay of the base exited with code 11" in said, said
+                assert said[-1] == "FAIL g: the base refuses the capture with code 11, and the replay of the build under test exited with code 11 (the capture is of a third format: neither build reads it)", said
+                replay = replays({"base": 11, "now": 1})
+                said = []
+                assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == FAIL and said[-1].endswith("exited with code 1"), said
+                replay = replays({"base": 0, "now": 11}, "make the capture again with this build\n" + stale + "\n")
+                said = []
+                assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == NOT_RUN, said
+                assert "NOT RUN g: the replay of the now: " + stale in said and not any(line.startswith("FAIL") for line in said), said
+                replay = replays({"base": 12, "now": 0}, "a panic\n")
+                said = []
+                assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == FAIL, said
+                assert "FAIL g: the replay of the base exited with code 12" in said, said
             finally:
                 replay = real_replay
         finally:

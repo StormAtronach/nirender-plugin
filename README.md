@@ -241,6 +241,10 @@ The instruments and the tests:
 - `NIRENDER_MWSE_DLL=<path>`: the MWSE.dll that the unit test `every_mwse_site_in_a_port_is_followed`
   checks against the ports (`src/mwse_sites.rs`); `tools/check_mwse_sites.py` sets it. Without it
   the test is skipped; with it and no file, the test fails.
+- `NIRENDER_TESTS_NEED_INPUTS=1`: a unit test that lacks its input (the three above, a Direct3D 8
+  device of Windows) fails with "NOT RUN in a round: <what is missing>" in place of a skip
+  (`input_missing` in `src/switches.rs`). `tools/merge_step.py` sets it for the plugin's tests,
+  with the three inputs from `local.json`.
 
 The helper's diagnostic and test switches (`host/src/switches.rs`, read once; none is a
 setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own

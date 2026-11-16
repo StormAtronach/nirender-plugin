@@ -50,6 +50,19 @@ def build_missing(mge_build):
 # The exit code of a tool whose stage cannot judge: merge_step.py prints "NOT RUN" with the reason of the tool's last line
 # that starts with "NOT RUN".
 NOT_RUN_EXIT = 5
+# The exit code of an A/B stage whose base build refused the capture with a format exit code of the helper
+# (REFUSED_FORMAT_EXITS) while the build under test played the same capture: the two builds read two formats
+# (format_change). merge_step.py judges it by this code, never by a line's text (W527).
+FORMAT_CHANGE_EXIT = 6
+
+# The summary line of one test binary in the output of cargo test, quiet or not. The one reader of it in the tools:
+# merge_step.py --require-tests and check_mwse_sites.py (W527).
+TEST_RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed;", re.MULTILINE)
+
+
+def tests_ran(output):
+    """How many tests the output of `cargo test` says ran: passed and failed, over every test binary."""
+    return sum(int(passed) + int(failed) for passed, failed in TEST_RESULT.findall(output))
 
 # The build id that each part of the renderer carries as ASCII, "<program> v<version> <commit>[-dirty]"
 # (build_support/build_id.rs): the plugin (`BUILD_ID` of src/lib.rs), the host crate in numidium.exe (`BUILD_ID` of
@@ -109,10 +122,13 @@ def parts_problems(build, plugin_commit=None, mge_commit=None):
     return tuple(found), problems
 
 
-# The exit codes of a helper that refuses a stream: 10 the stream format of the plugin, 11 the extension format of
-# d3d8.dll (EXIT_STREAM_FORMAT and EXIT_EXTENSION_FORMAT of src/stream_format.rs), and the last line of such a refusal
-# in a replay (host/src/cli.rs, renderer.rs of render-link).
-REFUSED_FORMAT_EXITS = (10, 11)
+# The exit codes of a helper that refuses a stream, with the kind of format of each: 10 the stream format of the plugin,
+# 11 the extension format of d3d8.dll (EXIT_STREAM_FORMAT and EXIT_EXTENSION_FORMAT of src/stream_format.rs; the
+# self-test holds the two against that file), and the last line of such a refusal in a replay (host/src/cli.rs,
+# renderer.rs of render-link).
+FORMAT_OF_EXIT = {10: "stream", 11: "extension"}
+EXIT_CONSTANT_OF_FORMAT = {"stream": "EXIT_STREAM_FORMAT", "extension": "EXIT_EXTENSION_FORMAT"}
+REFUSED_FORMAT_EXITS = tuple(FORMAT_OF_EXIT)
 CAPTURE_AGAIN = "make the capture again with this build"
 # The start of the line that replay.py adds to such a refusal.
 CAPTURE_FORMAT = "CAPTURE FORMAT"
@@ -142,6 +158,30 @@ def capture_format_line(capture, code, output):
 def capture_format_in(output):
     """The CAPTURE FORMAT line of replay.py in `output`, or ""."""
     return next((line.strip() for line in output.splitlines() if line.strip().startswith(CAPTURE_FORMAT)), "")
+
+
+def format_exit_problems(source):
+    """The problems of FORMAT_OF_EXIT against the text of src/stream_format.rs: each code must be the value of its
+    constant there, so that a change of a code fails this check and not a merge round."""
+    problems = []
+    for code, kind in FORMAT_OF_EXIT.items():
+        name = EXIT_CONSTANT_OF_FORMAT[kind]
+        match = re.search(r"^pub const %s: u32 = (\d+);" % name, source, re.M)
+        if not match:
+            problems.append("src/stream_format.rs has no %s" % name)
+        elif int(match.group(1)) != code:
+            problems.append("src/stream_format.rs has %s = %s, and tools/common.py has %d" % (name, match.group(1), code))
+    return problems
+
+
+def format_change(base_code, tip_code):
+    """The format change between the base and the tip that two replays of ONE capture show, as the kind of format
+    ("stream" or "extension"), or None. The base refused the capture with a format code of the helper, so it does not
+    read the capture's format; the tip played it (exit code 0), so it does. Their formats differ. A capture that the tip
+    refuses too is of a third format: no change of the two builds, and a failure of the tip's replay."""
+    if tip_code != 0:
+        return None
+    return FORMAT_OF_EXIT.get(base_code)
 
 
 # The helper's exit code of a replay whose stage shaders failed (EXIT_REPLAY_STAGE_SHADERS of src/stream_format.rs;
@@ -604,6 +644,18 @@ def parts_test():
     # Another exit, or no "make the capture again": no line.
     assert capture_format_line("x.nircap", 1, output) == "" and capture_format_line("x.nircap", 10, "panic") == ""
     assert capture_format_in("no such line") == ""
+    # The refusal codes against the plugin's source, and the plants: another value, no constant.
+    with open(os.path.join(REPO, "src", "stream_format.rs"), encoding="utf-8") as source:
+        problems = format_exit_problems(source.read())
+    assert problems == [], problems
+    planted = "pub const EXIT_STREAM_FORMAT: u32 = 10;\npub const EXIT_EXTENSION_FORMAT: u32 = 13;\n"
+    assert format_exit_problems(planted) == ["src/stream_format.rs has EXIT_EXTENSION_FORMAT = 13, and tools/common.py has 11"]
+    assert format_exit_problems("pub const EXIT_EXTENSION_FORMAT: u32 = 11;\n") == ["src/stream_format.rs has no EXIT_STREAM_FORMAT"]
+    # A format change: the base refuses with a format code and the tip plays the same capture. A third format (the tip
+    # refuses too), another code of the base, and a base that played are none.
+    assert format_change(11, 0) == "extension" and format_change(10, 0) == "stream"
+    assert format_change(11, 11) is None and format_change(11, 1) is None
+    assert format_change(5, 0) is None and format_change(0, 0) is None
 
 # The functions of the renderer subsystem, by their name in the IDA database.
 FUNC_RE = re.compile(r"^(NiDX8|NiD3D|NiRenderState|NiRenderer|NiGetD3DFormat|NiPropertyState"

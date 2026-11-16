@@ -1544,7 +1544,7 @@ mod tests {
     #[test]
     fn every_mwse_site_in_a_port_is_followed() {
         let Ok(path) = std::env::var("NIRENDER_MWSE_DLL") else {
-            eprintln!("skipped: no NIRENDER_MWSE_DLL");
+            crate::switches::input_missing("no NIRENDER_MWSE_DLL");
             return;
         };
         let pe = std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
@@ -1575,7 +1575,7 @@ mod tests {
     #[test]
     fn every_required_mwse_feature_is_present() {
         let Ok(path) = std::env::var("NIRENDER_MWSE_DLL") else {
-            eprintln!("skipped: no NIRENDER_MWSE_DLL");
+            crate::switches::input_missing("no NIRENDER_MWSE_DLL");
             return;
         };
         let pe = std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
@@ -1774,14 +1774,14 @@ mod tests {
     #[test]
     fn the_dtor_site_of_a_real_dll_is_reached() {
         let Ok(path) = std::env::var("NIRENDER_MWSE_DLL") else {
-            eprintln!("skipped: no NIRENDER_MWSE_DLL");
+            crate::switches::input_missing("no NIRENDER_MWSE_DLL");
             return;
         };
         let pe = std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
         let (found, _) = operands(&pe, only(DTOR_SITE));
         println!("{path}: 0x6a9d83 {found:?}");
         if found.is_empty() {
-            eprintln!("skipped: {path} names no 0x6a9d83");
+            crate::switches::input_missing(&format!("{path} names no 0x6a9d83"));
             return;
         }
         assert!(
