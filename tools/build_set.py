@@ -32,9 +32,12 @@ name is there, its check passes and its manifest has the request's full commits,
 with other full commits (the name holds only 8 hex of each), the tool stops with exit code 1 and names both. If the
 name is there and its check fails, or <name>.making is
 there, the tool stops and names the folder: it never builds a second time into a name, and it deletes nothing (until
-the delete right of D492 is in, an unfinished folder is the owner's to remove). The tool takes the build slot for its
-builds and the probe and gives it back at its end. Before each write to E: it asks `slot.py e-ok` (D297) one time, and
-when the gate says no it stops with exit code 3 and writes nothing. One run of the tool at a time on this machine:
+the delete right of D492 is in, an unfinished folder is the owner's to remove). The tool takes the build slot before its
+first write to E: and keeps it to the rename of the set, noting its work and renewing its lease each minute. A hold can
+lapse after 15 idle minutes, so the tool asks the E: gate (`slot.py e-ok`, D297; the game holder is read first, see
+sets.e_gate) again before each phase of writes to E: (each build step of a tree on E:, the set's folder, the pdbs, the
+manifest and the rename). A gate that says no, or a renew that the slot tool refuses, stops it with exit code 3 before
+that phase writes. One run of the tool at a time on this machine:
 make() itself takes the run lock C:/tmp/buildset/build_set.lock, also when another tool calls it, and stops with exit
 code 3 while another run holds it.
 
@@ -54,6 +57,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sets  # noqa: E402
@@ -360,14 +364,18 @@ class Trees:
         self.applied = []
         self.gate = gate
         self.disk_usage = disk_usage
+        # The SlotHold of the make() that uses these trees (make sets it): a lost hold stops the next step.
+        self.slot_hold = None
 
     def on_project_disk(self):
         """The trees are on the disk of the sets (E:): each build step there is a write to E: (D297)."""
         return os.path.splitdrive(os.path.abspath(self.root))[0].lower() == os.path.splitdrive(os.path.abspath(sets.SETS))[0].lower()
 
     def room(self, what):
-        """Stops before `what` when the disk of the trees has less than LEAST_FREE_BYTES free, or when the trees are on
-        E: and the E: gate says no."""
+        """Stops before `what` when the build hold was lost, when the disk of the trees has less than LEAST_FREE_BYTES
+        free, or when the trees are on E: and the E: gate says no."""
+        if self.slot_hold is not None and self.slot_hold.lost:
+            raise SetFault("the build slot was lost before %s (%s): nothing more is built or written" % (what, self.slot_hold.lost), EXIT_REFUSED)
         free = self.disk_usage(os.path.splitdrive(os.path.abspath(self.root))[0] + os.sep).free
         if free < LEAST_FREE_BYTES:
             raise SetFault("no room for %s: the disk of %s has %.1f GB free, and the floor is %.0f GB" % (
@@ -482,27 +490,50 @@ class Trees:
         return done.returncode, done.stdout + done.stderr
 
 
-@contextlib.contextmanager
-def build_hold(slots, label, no_wait):
-    """The build slot for the builds and the probe, noted each minute (a child's compile is not seen by the slot's own
-    notes), and given back at the end."""
-    from merge_step import take_build
+class SlotHold:
+    """The state of the maker's build hold: `lost` is the slot tool's line when a renew was refused, else None."""
 
-    if not take_build(slots, label, no_wait):
-        raise SetFault("no build slot", EXIT_REFUSED)
+    def __init__(self):
+        self.lost = None
+
+
+@contextlib.contextmanager
+def hold_notes(slots, label, seconds=NOTE_SECONDS):
+    """Notes the build work and renews the lease of the hold `label` every `seconds` (a child's compile is not seen by
+    the slot's own notes). A renew that the slot tool refuses (the hold lapsed) sets `lost` of the SlotHold that this
+    yields, and the notes stop: the maker then writes nothing more to E: (verdict 507, addition 1)."""
+    hold = SlotHold()
     stop = threading.Event()
 
     def note():
-        while not stop.wait(NOTE_SECONDS):
+        while not stop.wait(seconds):
             slots.note_holder_build(slots.owner_of(slots.session_id(), label), time.time())
+            reply = slots.renew("build", who=label)
+            if reply.code != slots.DONE:
+                hold.lost = (reply.text or "").strip().splitlines()[0] if (reply.text or "").strip() else "the renew was refused"
+                return
 
     thread = threading.Thread(target=note, daemon=True)
     thread.start()
     try:
-        yield
+        yield hold
     finally:
         stop.set()
         thread.join()
+
+
+@contextlib.contextmanager
+def build_hold(slots, label, no_wait):
+    """The build slot from before the first write to E: to the rename of the set, with hold_notes, and given back at
+    the end. Yields the SlotHold."""
+    from merge_step import take_build
+
+    if not take_build(slots, label, no_wait):
+        raise SetFault("no build slot", EXIT_REFUSED)
+    try:
+        with hold_notes(slots, label) as hold:
+            yield hold
+    finally:
         say(slots.release("build", label).text.splitlines()[0])
 
 
@@ -583,8 +614,21 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
     to_build = [part for part in sets.PARTS if found[part] is None]
     for part in sets.PARTS:
         say("part %s: %s" % (part, "copied from %s" % found[part][0] if found[part] else "built"))
+    parts_from = {part: found[part][0] if found[part] else "built" for part in sets.PARTS}
     try:
-        with hold() if hold else contextlib.nullcontext():
+        # The build slot is held from before the first write to E: (a tree on E:) to the rename of the set (the
+        # design's 11.6). A hold can lapse (15 idle minutes, verdict 507 addition 1), so each phase of writes to E:
+        # checks the hold and asks the E: gate again, and stops before it writes.
+        with hold() if hold else contextlib.nullcontext() as slot_hold:
+            builder.slot_hold = slot_hold
+
+            def phase(what):
+                if slot_hold is not None and slot_hold.lost:
+                    raise SetFault("the build slot was lost before %s (%s): nothing more is written" % (what, slot_hold.lost), EXIT_REFUSED)
+                allowed, gate_line = gate()
+                if not allowed:
+                    raise SetFault("no set made: the E: gate says no before %s: %s" % (what, gate_line), EXIT_REFUSED)
+
             for repo in ("nirender", "render-link"):
                 builder.ready(repo, commits[repo])
             if "mwse" in to_build:
@@ -612,9 +656,7 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
                 raise SetFault("MISSING FEATURE: the MWSE.dll of the set lacks what the plugin needs; no set is made", MISSING_FEATURE_EXIT)
             if code != 0:
                 raise SetFault("the probe of the MWSE features failed with exit code %d: %s" % (code, (output.strip().splitlines() or ["no output"])[-1]))
-            allowed, gate_line = gate()
-            if not allowed:
-                raise SetFault("no set made: the E: gate says no: %s" % gate_line, EXIT_REFUSED)
+            phase("the set's folder")
             try:
                 os.mkdir(making)
             except FileExistsError:
@@ -635,15 +677,16 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
                         if sets.part_of(path) == part and path.lower().endswith((".dll", ".exe")):
                             pdbs[path] = os.path.join(source, os.path.splitext(os.path.basename(path))[0] + ".pdb")
             pdbs = {path: pdb for path, pdb in pdbs.items() if not sets.PLUGIN_COPY_RE.fullmatch(path)}
+            phase("the pdbs")
             lines += ["pdb: " + line for line in keep_pdbs(name, making, pdbs, keep, root)]
             lines += builder.size_lines()
+            phase("the manifest and the rename of the set")
+            write_manifest(making, name, kind, commits, patches, parts_from, keys, now or datetime.datetime.now().astimezone(), session())
+            os.rename(making, folder)
     except SetFault as fault:
         return fault.code, lines + builder.size_lines() + [str(fault)]
     finally:
         builder.unpatch()
-    parts_from = {part: found[part][0] if found[part] else "built" for part in sets.PARTS}
-    write_manifest(making, name, kind, commits, patches, parts_from, keys, now or datetime.datetime.now().astimezone(), session())
-    os.rename(making, folder)
     try:
         manifest = sets.check(folder)
     except sets.SetError as error:
@@ -832,6 +875,46 @@ def self_test():
         before = sorted(os.listdir(root))
         code, lines = run(dict(commits, mwse="bbbb2222" + "0" * 32), gate=lambda: (False, "a timing run holds the game"))
         assert code == EXIT_REFUSED and sorted(os.listdir(root)) == before, lines
+        # Verdict 507, addition 1: the gate is asked before each phase of writes to E:. A no at the pdb phase: exit 3,
+        # no pdb, no manifest, no set (the unfinished folder stays, as after any fault).
+        answers = iter([(True, "e-ok: yes"), (False, "a timing run holds the game")])
+        late = dict(commits, mwse="bbbb3333" + "0" * 32)
+        code, lines = run(late, gate=lambda: next(answers), reuse=False)
+        late_name = sets.set_name(late)
+        assert code == EXIT_REFUSED and "before the pdbs" in lines[-1], lines
+        assert not os.path.exists(os.path.join(keep, late_name)) and not os.path.exists(os.path.join(root, late_name)), lines
+        assert not os.path.exists(os.path.join(root, late_name + ".making", sets.MANIFEST)), lines
+        # A hold that lapses between two phases: the next phase stops before it writes. The null: a hold that stays
+        # (the first set of this test, made with no hold, and the notes test below).
+        lapsing = SlotHold()
+
+        def lapse_after_the_first_ask():
+            lapsing.lost = "build: nobody holds it: take it"
+            return True, "e-ok: yes"
+
+        lost = dict(commits, mwse="bbbb4444" + "0" * 32)
+        code, lines = make(lost, {}, sets.KIND_USUAL, builder, root, lapse_after_the_first_ask, lambda: contextlib.nullcontext(lapsing),
+                           keep, session, reuse=False, lock=lock)
+        assert code == EXIT_REFUSED and "the build slot was lost before the pdbs" in lines[-1], lines
+        assert not os.path.exists(os.path.join(keep, sets.set_name(lost))) and not os.path.exists(os.path.join(root, sets.set_name(lost))), lines
+        # The notes: a renew that the slot tool refuses after 2 calls sets `lost`; the null: renews that pass keep it None.
+        for refuse_after, expect_lost in ((2, True), (None, False)):
+            renews = []
+
+            def renew(slot, who=None, refuse_after=refuse_after):
+                renews.append(who)
+                refused = refuse_after is not None and len(renews) > refuse_after
+                return types.SimpleNamespace(code="refused" if refused else "done", text="build: nobody holds it: take it" if refused else "")
+
+            fake = types.SimpleNamespace(DONE="done", renew=renew, note_holder_build=lambda owner, now: None,
+                                         owner_of=lambda session, label: session, session_id=lambda: "s")
+            with hold_notes(fake, "build_set: test", seconds=0.01) as noted:
+                deadline = time.time() + 5
+                while len(renews) < 4 and noted.lost is None and time.time() < deadline:
+                    time.sleep(0.01)
+            assert (noted.lost is not None) == expect_lost and renews[0] == "build_set: test", (noted.lost, renews)
+            if expect_lost:
+                assert noted.lost == "build: nobody holds it: take it" and len(renews) == 3, renews
         # Test 9: a commit and one patch: the mark, the patch in the set, a "-dirty" render-link taken; no part shared
         # with the plain set.
         patch_file = os.path.join(scratch, "change.patch")
@@ -954,6 +1037,15 @@ def self_test():
         except SetFault as fault:
             assert fault.code == EXIT_REFUSED and "the floor is 20 GB" in str(fault), fault
         Trees(os.path.join(scratch, "high"), gate=yes, disk_usage=usage(LEAST_FREE_BYTES)).room("a test")
+        # A lost build hold stops the next build step too (verdict 507, addition 1); the null is the line above.
+        held_lost = Trees(os.path.join(scratch, "high"), gate=yes, disk_usage=usage(LEAST_FREE_BYTES))
+        held_lost.slot_hold = SlotHold()
+        held_lost.slot_hold.lost = "build: nobody holds it: take it"
+        try:
+            held_lost.room("a test")
+            raise AssertionError("a build step went on after the build hold was lost")
+        except SetFault as fault:
+            assert fault.code == EXIT_REFUSED and "the build slot was lost before a test" in str(fault), fault
         asked = []
         on_e = Trees(os.path.join(os.path.splitdrive(sets.SETS)[0] + os.sep, "no-such-folder-of-a-test"),
                      gate=lambda: asked.append(1) or (False, "a timing run holds the game"), disk_usage=usage(LEAST_FREE_BYTES))
