@@ -12,7 +12,7 @@ missing, changed or unplaced file stops the run with its name. Every file of the
 the set, by the one map of sets.py: the d3d8.dll, the helper, MWSE.dll, lua51.dll, the MWSE core,
 the plugin, its Lua and its test files. The runner builds nothing and reads no file of this
 checkout's builds. The options --plugin-dll, --mwse-dll and --mwse-commit are gone: they stop
-the run with a line that names build_set.py. The variable NIRENDER_PLUGIN_DLL is read by nothing.
+the run with a line that names build_set.py. So does the variable NIRENDER_PLUGIN_DLL with any value.
 
 The command of a run takes no variable prefix, redirect or chained command, so that one
 allow rule of a session covers every run: `--log` names a file that gets the runner's own output,
@@ -113,11 +113,17 @@ MAKE_A_SET = "make a set of the commits with tools/build_set.py and name it with
 GONE_OPTIONS = (("plugin_dll", "--plugin-dll"), ("mwse_dll", "--mwse-dll"), ("mwse_commit", "--mwse-commit"))
 
 
-def gone_option_problems(args):
-    """A line for each option of the command that W521 took away: a run takes the plugin, MWSE.dll and the MWSE core
-    of its set. Read before `archive_arguments`, which fills two of them from the archive."""
-    return ["%s is gone: a run takes the plugin, MWSE.dll and the MWSE core of its set (W521); %s" % (option, MAKE_A_SET)
-            for name, option in GONE_OPTIONS if getattr(args, name, None)]
+def gone_option_problems(args, environment=None):
+    """A line for each option of the command that W521 took away, and one for the variable NIRENDER_PLUGIN_DLL with
+    any value: a run takes the plugin, MWSE.dll and the MWSE core of its set. A caller that names a plugin for each arm
+    of an A/B through the variable would get the set's plugin in both arms, so the run stops (Q8, verdict 507
+    addendum 6). Read before `archive_arguments`, which fills two of the options from the archive."""
+    lines = ["%s is gone: a run takes the plugin, MWSE.dll and the MWSE core of its set (W521); %s" % (option, MAKE_A_SET)
+             for name, option in GONE_OPTIONS if getattr(args, name, None)]
+    if (os.environ if environment is None else environment).get("NIRENDER_PLUGIN_DLL"):
+        lines.append("NIRENDER_PLUGIN_DLL is set: a run takes the plugin of its set and no other (W521); unset the variable, "
+                     "and %s" % MAKE_A_SET)
+    return lines
 
 
 def run_set_folder(args, current=None, who="run_own_device", hint=MAKE_A_SET):
@@ -169,7 +175,7 @@ def staged_paths(mods):
 # not take them: the runner is an allowed command (decision D6), so the DLL and the programs
 # that a run loads come only from its own options, never from a free value.
 RUNNER_VARIABLES = {
-    "NIRENDER_PLUGIN_DLL": "--mge-build (the set's plugin; nothing reads the variable)",
+    "NIRENDER_PLUGIN_DLL": "--mge-build (the set's plugin; the variable stops a run)",
     "NIRENDER_HOST_EXE": "--mge-build (the set's numidium.exe)",
     "NIRENDER_HOST_LOG": "the runner (host.txt in the run folder)",
     "NIRENDER_BACKEND": "--backend",
@@ -1493,11 +1499,14 @@ def self_test_check_command():
         # The set's line: its name and its manifest's md5 (test 4 of the design).
         assert "set: %s (" % name in text and "manifest md5 %s" % sets.manifest_md5(folder) in text, text
         # W521: a gone option stops the run with the tool that makes a set; --no-build is taken and does nothing; the
-        # variable NIRENDER_PLUGIN_DLL gets one line and is not read.
+        # variable NIRENDER_PLUGIN_DLL stops the run with any value, the set's own plugin too (Q8).
         code, text = check("--plugin-dll", os.path.join(folder, sets.PLUGIN_STAGED))
         assert code != 0 and "--plugin-dll is gone" in text and "build_set.py" in text, text
-        code, text = check("--no-build", environment=dict(os.environ, NIRENDER_PLUGIN_DLL="E:/none.dll"))
-        assert code == 0 and "NIRENDER_PLUGIN_DLL is set and not read" in text, text
+        for value in ("E:/none.dll", os.path.join(folder, sets.PLUGIN_STAGED)):
+            code, text = check("--no-build", environment=dict(os.environ, NIRENDER_PLUGIN_DLL=value))
+            assert code != 0 and "NIRENDER_PLUGIN_DLL is set" in text and "nothing started" in text, text
+        code, text = check("--no-build")
+        assert code == 0, text
         # A changed file of the set stops the command with its name (the design's test 2); the null passes above.
         sets.write(os.path.join(folder, "numidium.exe"), b"other")
         code, text = check()
@@ -2567,9 +2576,13 @@ def self_test_set():
         return argparse.Namespace(**values)
 
     # The gone options: one line each, with the tool that makes a set; the null has none.
-    assert gone_option_problems(namespace()) == []
-    lines = gone_option_problems(namespace(plugin_dll="E:/a.dll", mwse_dll="E:/m.dll", mwse_commit="abc"))
+    assert gone_option_problems(namespace(), {}) == []
+    lines = gone_option_problems(namespace(plugin_dll="E:/a.dll", mwse_dll="E:/m.dll", mwse_commit="abc"), {})
     assert [line.split(" ")[0] for line in lines] == ["--plugin-dll", "--mwse-dll", "--mwse-commit"] and all("build_set.py" in line for line in lines), lines
+    # The plugin variable with any value is a line too (Q8); an empty value is no value.
+    lines = gone_option_problems(namespace(), {"NIRENDER_PLUGIN_DLL": "E:/a.dll"})
+    assert len(lines) == 1 and lines[0].startswith("NIRENDER_PLUGIN_DLL is set") and "build_set.py" in lines[0], lines
+    assert gone_option_problems(namespace(), {"NIRENDER_PLUGIN_DLL": ""}) == []
     # Which runs load the plugin (addendum 5): a reference run and a --plain-case run only with --reference-plugin.
     assert not runs_without_plugin(namespace())
     assert runs_without_plugin(namespace(plain_case=True)) and not runs_without_plugin(namespace(plain_case=True, reference_plugin=True))
@@ -2898,8 +2911,6 @@ def main():
     if gone:
         raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(gone))
     archive_arguments(args)
-    if os.environ.get("NIRENDER_PLUGIN_DLL"):
-        print("run_own_device: NIRENDER_PLUGIN_DLL is set and not read: the run takes its set's plugin (W521)", flush=True)
     # The run's set and its staging (W521): an archive keeps its own path (D 2.4).
     manifest = None if args.archive else open_set(args)
     no_plugin = runs_without_plugin(args)

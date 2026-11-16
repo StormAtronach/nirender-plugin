@@ -24,7 +24,8 @@ check of the staging in an instance.
 --plugin puts the set's plugin, its Lua and its test files into "Harness - nirender" for the
 game, over the release of the instance. Without it the game has the instance's release of the
 plugin. --plugin-dll is gone: it stops the tool with a line that names build_set.py. The
-variable NIRENDER_PLUGIN_DLL is read by nothing.
+variable NIRENDER_PLUGIN_DLL is read by nothing: a game prints one line and goes on (the runner
+stops on it).
 --livecoding FILE adds the Livecoding mod to "Harness - nirender": its main.lua, read from
 the instance's own Livecoding mod, and FILE as its livecoding.lua (Alt+X in the game loads
 it). The staged copy of FILE is in the Harness mod: an edit there during the game shows at
@@ -232,8 +233,26 @@ def open_game_set(args, current=None, verify=sets.verify):
     return run_own_device.open_set(args, current, verify, who="play", hint=NO_SET_HINT)
 
 
+def gone_problems(args):
+    """The runner's lines for the gone options. The variable NIRENDER_PLUGIN_DLL does not stop a game: the owner's
+    local.bat may set it by hand (verdict 507 addendum 6, change 1), and `plugin_variable_line` names it."""
+    return run_own_device.gone_option_problems(args, environment={})
+
+
+def plugin_variable_line(environment):
+    """The line for a set NIRENDER_PLUGIN_DLL, or None: the game goes on with the set's plugin."""
+    if environment.get("NIRENDER_PLUGIN_DLL"):
+        return "play: NIRENDER_PLUGIN_DLL is set and not read: --plugin loads the set's plugin (W521)"
+    return None
+
+
 def self_test_set():
     """W521: the game's set and its files. The null of the staging: the runner's own map for a run with the plugin."""
+    # The plugin variable with a foreign value: a line, and no stop (the runner stops on it, Q8).
+    namespace = argparse.Namespace(plugin_dll=None, mwse_dll=None, mwse_commit=None)
+    foreign = {"NIRENDER_PLUGIN_DLL": "E:/nirender-keep/mgebuilds/f308/akulakhan-0f2afbd.dll"}
+    assert gone_problems(namespace) == [] and run_own_device.gone_option_problems(namespace, foreign) != []
+    assert plugin_variable_line(foreign).startswith("play: NIRENDER_PLUGIN_DLL is set and not read") and plugin_variable_line({}) is None
     with tempfile.TemporaryDirectory(prefix="w521-play-") as scratch:
         name = "s-6d1b2140-d9741db1-89198b53"
         folder = os.path.join(scratch, name)
@@ -283,11 +302,12 @@ def main():
         self_test()
         return 0
 
-    gone = run_own_device.gone_option_problems(args)
+    gone = gone_problems(args)
     if gone:
         raise SystemExit("play: " + "; ".join(gone))
-    if os.environ.get("NIRENDER_PLUGIN_DLL"):
-        print("play: NIRENDER_PLUGIN_DLL is set and not read: --plugin loads the set's plugin (W521)", flush=True)
+    variable_line = plugin_variable_line(os.environ)
+    if variable_line:
+        print(variable_line, flush=True)
     manifest = open_game_set(args)
     print("play: " + run_own_device.set_line(args.mge_build, manifest), flush=True)
     mge_files, plugin_files = game_files(args.mge_build, manifest, args.plugin)

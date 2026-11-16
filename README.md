@@ -134,8 +134,9 @@ The run:
 - `NIRENDER_RING_MB=<n>`: the size of the ring in MB, 1 to 512, default 128 (a texture
   level must fit it whole; a 4096 x 4096 ARGB level is 64 MiB); a value outside is named
   in the plugin's log and 128 is taken.
-- `NIRENDER_PLUGIN_DLL=<path>`: retired (W521). `tools/run_own_device.py` reads nothing of it: a run takes the
-  plugin of its sealed set, and the runner prints one line when the variable is set. One arm of an A/B is another set
+- `NIRENDER_PLUGIN_DLL=<path>`: retired (W521). A run takes the plugin of its sealed set, and
+  `tools/run_own_device.py` stops with one line when the variable has any value: an A/B whose arms named their plugins
+  by it would run one plugin twice. `tools/play.py` prints one line and goes on. One arm of an A/B is another set
   (`tools/build_set.py`).
 - `MGE_XE_TEXTURE_TIER=a|c`: the texture binding tier of the helper, for an A/B on one
   machine. `a`: the binding arrays (the default when the adapter has them). `c`: no binding
