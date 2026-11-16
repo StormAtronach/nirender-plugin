@@ -311,6 +311,20 @@ def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, 
 
 # --- the builds -------------------------------------------------------------------------------
 
+def update_submodules(tree, source):
+    """Checks out the submodules of the worktree `tree` from the modules of the checkout `source` on this machine, not
+    from the network. Their URL goes to the one command by `git -c`: a worktree's `git config` would write the config of
+    the owner's repository (2026-11-16: an earlier form of this tool changed the URL of deps/rubic0n there)."""
+    overrides = ["-c", "protocol.file.allow=always"]
+    for line in git(tree, "config", "--file", ".gitmodules", "--get-regexp", r"submodule\..*\.path").splitlines():
+        key = line.split(None, 1)[0]
+        module = key[len("submodule."):-len(".path")]
+        local = os.path.join(source, ".git", "modules", *module.split("/"))
+        if not os.path.isdir(local):
+            raise SetFault("the checkout %s has no modules of the submodule %s: no set is made" % (source, module))
+        overrides += ["-c", "submodule.%s.url=%s" % (module, local.replace("\\", "/")), "-c", "submodule.%s.active=true" % module]
+    git(tree, *overrides, "submodule", "update")
+
 class Trees:
     """The real builds, in clean detached trees in `root`."""
 
@@ -363,14 +377,7 @@ class Trees:
                 raise SetFault("the tree %s has changes, and no set is made:\n%s" % (tree, changed))
             git(tree, "checkout", "--quiet", "--detach", commit)
         if repo == "mwse":
-            # The submodules come from the modules of the MWSE checkout on this machine, not from the network.
-            git(tree, "submodule", "init")
-            for path in git(tree, "config", "--file", ".gitmodules", "--get-regexp", r"submodule\..*\.path").splitlines():
-                module = path.split()[1]
-                local = os.path.join(SOURCE_REPOS["mwse"], ".git", "modules", *module.split("/"))
-                if os.path.isdir(local):
-                    git(tree, "config", "submodule.%s.url" % module, local.replace("\\", "/"))
-            git(tree, "-c", "protocol.file.allow=always", "submodule", "update")
+            update_submodules(tree, SOURCE_REPOS["mwse"])
         self.trees[repo] = tree
         return tree
 
@@ -774,6 +781,27 @@ def self_test():
         finally:
             SOURCE_REPOS["nirender"] = saved
             git(repo, "worktree", "remove", "--force", tree)
+        # The submodules of a worktree come from the main checkout's modules, and the main checkout's config stays as it
+        # is. The null: the old form (`git config` in the worktree) changes it.
+        sub, main = os.path.join(scratch, "sub"), os.path.join(scratch, "main")
+        for folder in (sub, main):
+            os.mkdir(folder)
+            for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+                git(folder, *args)
+        with open(os.path.join(sub, "s.txt"), "w", encoding="ascii") as file:
+            file.write("s\n")
+        git(sub, "add", "s.txt")
+        git(sub, "commit", "-q", "-m", "s")
+        git(main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.replace("\\", "/"), "deps/sub")
+        git(main, "commit", "-q", "-m", "m")
+        before = git(main, "config", "--get-regexp", r"^submodule\.")
+        linked = os.path.join(scratch, "linked")
+        git(main, "worktree", "add", "-q", "--detach", linked, "HEAD")
+        update_submodules(linked, main)
+        assert os.path.isfile(os.path.join(linked, "deps", "sub", "s.txt")), "the submodule was not checked out"
+        assert git(main, "config", "--get-regexp", r"^submodule\.") == before, "the main checkout's config changed"
+        git(linked, "config", "submodule.deps/sub.url", "elsewhere")
+        assert git(main, "config", "--get-regexp", r"^submodule\.") != before, "the null cannot fail"
         # The floor of free space, and the E: gate for trees on the disk of the sets.
         usage = lambda free: (lambda path: shutil._ntuple_diskusage(0, 0, free))  # noqa: E731
         low = Trees(os.path.join(scratch, "low"), gate=yes, disk_usage=usage(LEAST_FREE_BYTES - 1))
