@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::objects::{Create, CreateView};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
 /// the lights and the bones of the frame, and the buffers of the retained instances.
@@ -737,6 +738,7 @@ impl Renderer {
             wireframe,
             planted: source.contains(crate::CORE_MOD_FAULT_PLANT),
             fault_key: crate::world_key_fault().then(|| crate::stage_shaders::first_world_key(samples)),
+            times: Default::default(),
         };
         let stage_shaders = crate::stage_shaders::StageShaders::new(switches().stage_shaders, &source);
         let renderer = Renderer {
@@ -2148,7 +2150,7 @@ impl Renderer {
             if self.world.fault.is_some() && !self.world.exhausted {
                 return None;
             }
-            let (built, error) = self.maker.guarded_build(key, &self.shader);
+            let (built, error) = self.maker.guarded_build(key, &self.shader, &[], Making::GeneralPipeline);
             if let Some(error) = error {
                 if !self.world.exhausted {
                     self.world.fault = Some(error);
@@ -2162,7 +2164,7 @@ impl Renderer {
             let Some(fragment) = self.variant_shader() else {
                 return self.pipeline_of(PipelineKey { debug: 0, ..key });
             };
-            self.maker.build(key, &fragment)
+            self.maker.general(key, &fragment)
         };
         let pipeline = Rc::new(built?);
         self.pipelines.insert(key, pipeline.clone());
@@ -2333,7 +2335,7 @@ impl Renderer {
             planted: false,
             ..self.maker.clone()
         };
-        probe.guarded_build(key, &module).1
+        probe.guarded_build(key, &module, &[], Making::GeneralPipeline).1
     }
 
     /// The pipelines of the first key of the world and of the key of the walk, made and kept: None
@@ -2342,7 +2344,7 @@ impl Renderer {
         let first = crate::stage_shaders::first_world_key(self.samples);
         let keys = std::iter::once(first).chain(self.world.trial_key.filter(|key| *key != first));
         for key in keys {
-            let (pipeline, error) = self.maker.guarded_build(key, &self.shader);
+            let (pipeline, error) = self.maker.guarded_build(key, &self.shader, &[], Making::GeneralPipeline);
             if let Some(error) = error {
                 return Some((error, key));
             }
@@ -2382,6 +2384,69 @@ impl Renderer {
     pub(crate) fn begin_frame_stage_shaders(&mut self) {
         self.stage_shaders.receive(&mut self.pipelines);
         self.stage_shaders.after_frame();
+    }
+
+    /// The line of the report on the time of the pipelines' making ([`MakingTimes::report`]).
+    pub(crate) fn making_report(&self) -> String {
+        self.maker.times.report()
+    }
+}
+
+/// What a [`PipelineMaker`] makes, for its times.
+#[derive(Clone, Copy)]
+pub(crate) enum Making {
+    /// A fragment module of a stage key or a world variant.
+    Module,
+    /// The pipeline of a key with a stage key.
+    StagePipeline,
+    /// A pipeline of the world shader's general text or of a world variant.
+    GeneralPipeline,
+}
+
+/// The times of the work of a [`PipelineMaker`] and its clones, by what it makes and by thread:
+/// the frame's thread, or the thread of the stage pipelines ([`crate::stage_shaders::THREAD_NAME`]).
+/// For the gate of W530: on Vulkan, a pipeline whose module declares override constants is
+/// written to SPIR-V again for each pipeline.
+#[derive(Default)]
+pub(crate) struct MakingTimes {
+    count: [[AtomicU64; 2]; 3],
+    ticks: [[AtomicU64; 2]; 3],
+    largest: [[AtomicU64; 2]; 3],
+}
+
+impl MakingTimes {
+    fn add(&self, making: Making, ticks: u64) {
+        let thread = usize::from(std::thread::current().name() == Some(crate::stage_shaders::THREAD_NAME));
+        let kind = making as usize;
+        self.count[kind][thread].fetch_add(1, Ordering::Relaxed);
+        self.ticks[kind][thread].fetch_add(ticks, Ordering::Relaxed);
+        self.largest[kind][thread].fetch_max(ticks, Ordering::Relaxed);
+    }
+
+    /// "pipeline making, in ms: modules: the frame's thread N (sum S, largest L), the stage thread
+    /// ...; stage pipelines: ...; general pipelines: ...".
+    pub(crate) fn report(&self) -> String {
+        let ms = |ticks: &AtomicU64| ticks::duration(ticks.load(Ordering::Relaxed)).as_secs_f64() * 1000.0;
+        let class = |kind: usize, thread: usize| {
+            format!(
+                "{} (sum {:.3}, largest {:.3})",
+                self.count[kind][thread].load(Ordering::Relaxed),
+                ms(&self.ticks[kind][thread]),
+                ms(&self.largest[kind][thread])
+            )
+        };
+        let kinds: Vec<String> = ["modules", "stage pipelines", "general pipelines"]
+            .iter()
+            .enumerate()
+            .map(|(kind, name)| {
+                format!(
+                    "{name}: the frame's thread {}, the stage thread {}",
+                    class(kind, 0),
+                    class(kind, 1)
+                )
+            })
+            .collect();
+        format!("pipeline making, in ms: {}", kinds.join("; "))
     }
 }
 
@@ -2449,18 +2514,22 @@ pub(crate) struct PipelineMaker {
     /// the text, a fault that is no core mod's (the null of the probe of
     /// [`Renderer::settle_world_shader`]).
     fault_key: Option<PipelineKey>,
+    /// The times of the work of this maker and its clones.
+    times: std::sync::Arc<MakingTimes>,
 }
 
 impl PipelineMaker {
     /// A fragment module of a stage key or a world variant, or None when the device refuses it.
     /// `label` names the module and starts the line of its error.
     pub(crate) fn module(&self, label: &str, source: &str) -> Option<wgpu::ShaderModule> {
+        let clock = ticks::Clock::now();
         let (module, error) = crate::gpu::guarded(&self.device, || {
             self.device.counted_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             })
         });
+        self.times.add(Making::Module, clock.elapsed());
         match error {
             None => Some(module),
             Some(error) => {
@@ -2470,9 +2539,20 @@ impl PipelineMaker {
         }
     }
 
-    /// The pipeline of a key with a fragment module of a stage key, or None when it fails.
-    pub(crate) fn make(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
-        match self.guarded_build(key, fragment) {
+    /// The pipeline of a key with a fragment module of a stage part and the constants of the key's
+    /// facts ([`crate::stage_shaders::StageKey::constants`]), or None when it fails. The keys of the
+    /// uber set (`stage_shaders::UBER_SET`) come here too, with the general text and no constants.
+    pub(crate) fn make(
+        &self,
+        key: PipelineKey,
+        fragment: &wgpu::ShaderModule,
+        constants: &[(&str, f64)],
+    ) -> Option<wgpu::RenderPipeline> {
+        let making = match key.stages {
+            0 => Making::GeneralPipeline,
+            _ => Making::StagePipeline,
+        };
+        match self.guarded_build(key, fragment, constants, making) {
             (pipeline, None) => pipeline,
             (_, Some(error)) => {
                 println!("stage shaders: a pipeline failed: {error}");
@@ -2481,19 +2561,40 @@ impl PipelineMaker {
         }
     }
 
-    /// [`PipelineMaker::build`] under the error scopes of [`crate::gpu::guarded`]: the pipeline, or
-    /// None for a key that has no pipeline, and the error of the device. A pipeline with an error
-    /// is invalid: each draw with it fails.
+    /// [`PipelineMaker::build`] under the error scopes of [`crate::gpu::guarded`], its time added
+    /// to `making`: the pipeline, or None for a key that has no pipeline, and the error of the
+    /// device. A pipeline with an error is invalid: each draw with it fails.
     pub(crate) fn guarded_build(
         &self,
         key: PipelineKey,
         fragment: &wgpu::ShaderModule,
+        constants: &[(&str, f64)],
+        making: Making,
     ) -> (Option<wgpu::RenderPipeline>, Option<String>) {
-        crate::gpu::guarded(&self.device, || self.build(key, fragment))
+        let clock = ticks::Clock::now();
+        let built = crate::gpu::guarded(&self.device, || self.build(key, fragment, constants));
+        self.times.add(making, clock.elapsed());
+        built
     }
 
-    /// The pipeline of a key, with the world shader's `vs` and the `fs` of `fragment`.
-    fn build(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
+    /// The pipeline of a key with a world variant's text, made at its first draw on the frame's
+    /// thread. An error goes to the device's handler, as the numbered GPU errors.
+    fn general(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
+        let clock = ticks::Clock::now();
+        let pipeline = self.build(key, fragment, &[]);
+        self.times.add(Making::GeneralPipeline, clock.elapsed());
+        pipeline
+    }
+
+    /// The pipeline of a key, with the world shader's `vs` and the `fs` of `fragment`. The
+    /// constants go to the fragment stage only: the vertex stage is the general module, which
+    /// declares no override (the Architect's section 6.2).
+    fn build(
+        &self,
+        key: PipelineKey,
+        fragment: &wgpu::ShaderModule,
+        constants: &[(&str, f64)],
+    ) -> Option<wgpu::RenderPipeline> {
         let present = attributes(key.fvf, key.stride)?;
         let topology = match key.topology {
             1 => wgpu::PrimitiveTopology::PointList,
@@ -2629,7 +2730,10 @@ impl PipelineMaker {
                 } else {
                     "fs"
                 }),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants,
+                    ..Default::default()
+                },
                 targets: &[Some(wgpu::ColorTargetState {
                     format: self.target_format,
                     blend,
@@ -2992,5 +3096,38 @@ mod held_tests {
     #[test]
     fn held_bytes_of_a_depth_with_a_stencil_are_none() {
         assert_eq!(texture_bytes(4, 4, 1, 1, 1, TextureFormat::Depth24PlusStencil8), 0);
+    }
+}
+
+#[cfg(test)]
+mod making_tests {
+    use super::{Making, MakingTimes};
+
+    /// Each time goes to its kind and thread: the thread of the stage pipelines by its name, any
+    /// other thread is the frame's. The null: a thread with another name counts as the frame's.
+    #[test]
+    fn a_time_goes_to_its_kind_and_thread() {
+        let times = std::sync::Arc::new(MakingTimes::default());
+        times.add(Making::GeneralPipeline, 5);
+        for name in [crate::stage_shaders::THREAD_NAME, "another thread"] {
+            let shared = times.clone();
+            std::thread::Builder::new()
+                .name(name.into())
+                .spawn(move || shared.add(Making::StagePipeline, 7))
+                .unwrap()
+                .join()
+                .unwrap();
+        }
+        let line = times.report();
+        assert!(
+            line.starts_with(
+                "pipeline making, in ms: modules: the frame's thread 0 (sum 0.000, largest 0.000), the stage thread 0 "
+            ),
+            "{line}"
+        );
+        assert!(line.contains("; stage pipelines: the frame's thread 1 ("), "{line}");
+        assert!(line.contains("), the stage thread 1 ("), "{line}");
+        assert!(line.contains("; general pipelines: the frame's thread 1 ("), "{line}");
+        assert!(line.ends_with("), the stage thread 0 (sum 0.000, largest 0.000)"), "{line}");
     }
 }
