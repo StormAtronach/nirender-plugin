@@ -2285,6 +2285,8 @@ impl Renderer {
         self.variant_shader = None;
         let variant = self.debug_variant;
         let before = std::mem::replace(&mut self.stage_shaders, crate::stage_shaders::StageShaders::new(false, ""));
+        // The session's last report line has only the new text's counts: this line keeps the old text's.
+        println!("world shader switch: the text before: {}", before.report());
         self.stage_shaders = before.switched(&source);
         self.stage_shaders.set_variant(variant);
         if self.world.stages_started {
