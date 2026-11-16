@@ -49,6 +49,9 @@ pub(crate) struct Stream {
     pub(crate) object_class: u32,
     /// The sky values of the extension for the draw in progress, or [`None`].
     pub(crate) sky: Option<[[f32; 4]; 8]>,
+    /// The frame's [`crate::FrameParameters::clouds`]: with `sky` values, a draw of the clouds
+    /// gets [`crate::CLOUDS_HOOK_BIT`].
+    pub(crate) clouds: bool,
     pub(crate) shape: ShapeFacts,
     /// The fog of the shape record in progress (flag 32): the colour, the start, the end
     /// and the range fog flag, as the render state of the game gets them from the fog
@@ -146,13 +149,7 @@ impl Stream {
         data.texture_factor = [1.0; 4];
         if let Some(sky) = self.sky {
             data.extension = sky;
-            // The class of the draw names the part of the sky: a mod's mesh with or without a
-            // texture does not change it.
-            if self.object_class == engine::scene::CLASS_SKY_DOME {
-                data.counts[3] |= 4;
-            } else if self.object_class == engine::scene::CLASS_SKY_MOON_SHADOW {
-                data.counts[3] |= 8;
-            }
+            data.counts[3] |= sky_bits(self.object_class, self.clouds);
         }
 
         let has_color = fvf & 0x40 != 0;
@@ -229,5 +226,39 @@ impl Stream {
         data.counts[1] = stages.min(STAGES) as u32;
         data.counts[2] = ambient_source;
         data
+    }
+}
+
+/// The bits of `counts.w` of a sky draw with the sky values of the extension. The class of the
+/// draw names the part of the sky: a mod's mesh with or without a texture does not change it.
+/// 4 the dome, 8 the shadow of a moon, and [`crate::CLOUDS_HOOK_BIT`] the clouds when the
+/// extension has a colour function for them (`clouds`, [`crate::FrameParameters::clouds`]).
+fn sky_bits(class: u32, clouds: bool) -> u32 {
+    match class {
+        engine::scene::CLASS_SKY_DOME => 4,
+        engine::scene::CLASS_SKY_MOON_SHADOW => 8,
+        engine::scene::CLASS_SKY_CLOUDS if clouds => crate::CLOUDS_HOOK_BIT,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::scene::{CLASS_SKY_CLOUDS, CLASS_SKY_DOME, CLASS_SKY_MOON_SHADOW};
+
+    /// Only the clouds take the clouds bit, and only when the extension has their function; the
+    /// dome and the shadow of a moon keep their bits either way.
+    #[test]
+    fn the_clouds_bit_needs_the_class_and_the_function() {
+        assert_eq!(sky_bits(CLASS_SKY_CLOUDS, true), crate::CLOUDS_HOOK_BIT);
+        assert_eq!(sky_bits(CLASS_SKY_CLOUDS, false), 0);
+        for clouds in [false, true] {
+            assert_eq!(sky_bits(CLASS_SKY_DOME, clouds), 4);
+            assert_eq!(sky_bits(CLASS_SKY_MOON_SHADOW, clouds), 8);
+            for class in [0, 2, 4, 5, 7, 8, 10] {
+                assert_eq!(sky_bits(class, clouds), 0, "class {class}");
+            }
+        }
     }
 }

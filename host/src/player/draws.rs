@@ -356,10 +356,9 @@ impl Player {
         }
         // A draw of a class that the extension takes: the extension draws at the first one.
         let class = self.stream.object_class;
-        let (watched, shade, fog_range, sky) = self
-            .parameters
-            .as_ref()
-            .map_or((0, false, None, None), |p| (p.watched, p.shade, p.fog_range, p.sky));
+        let (watched, shade, fog_range, sky, clouds) = self.parameters.as_ref().map_or((0, false, None, None, false), |p| {
+            (p.watched, p.shade, p.fog_range, p.sky, p.clouds)
+        });
         if in_back_buffer && class < 32 && watched & (1 << class) != 0 {
             if self.replaced & (1 << class) == 0 {
                 self.replaced |= 1 << class;
@@ -441,6 +440,7 @@ impl Player {
         }
         self.stream.fog_range = fog_range.filter(|_| world);
         self.stream.sky = sky.filter(|_| in_back_buffer && (1..=7).contains(&self.stream.object_class));
+        self.stream.clouds = clouds;
         // A draw that cannot change the picture (`material::draw_keeps_picture`) is not drawn,
         // after the frame's plan took its steps above and the extension's class took the draw:
         // not a sky draw that the extension draws its own sky over (alpha 1, the shader).

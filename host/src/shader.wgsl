@@ -354,6 +354,16 @@ struct CornerShade {
     light: vec3f,
 }
 
+// A pixel of the clouds for `extension_clouds_color` (CLOUDS_HOOK_BIT, 1024): the coordinate
+// of the first texture stage, the colour of the vertex, the direction from the camera (length
+// 1, in the space of the world) and the screen pixel.
+struct CloudPixel {
+    texcoords: vec2f,
+    color: vec4f,
+    direction: vec3f,
+    pixel: vec2f,
+}
+
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
 fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view_normal: vec3f, world_position: vec3f, world_normal: vec3f) -> vec4f {
     let how = draws[record].stages[index].coordinate;
@@ -512,8 +522,9 @@ fn vs(in: VertexIn) -> VertexOut {
     out.world_normal = world_normal;
     out.vertex_color = vertex_color;
     out.world_normal_flat = world_normal;
-    if (draw_counts_w() & 12u) != 0u {
-        // For the sky: the direction from the camera, in the space of the world.
+    if (draw_counts_w() & 1036u) != 0u {
+        // For the sky (the dome 4, the moon's shadow 8, the clouds with the extension's colour
+        // 1024): the direction from the camera, in the space of the world.
         let v = draw_view();
         out.world_position = transpose(mat3x3f(v[0].xyz, v[1].xyz, v[2].xyz)) * view_position.xyz;
     }
@@ -661,6 +672,12 @@ fn final_coordinate(index: u32, value: vec4f) -> vec2f {
     return value.xy / divisor;
 }
 
+// The first texture of the draw with its sampler, at level 0: for `extension_clouds_color`,
+// which may read it in a branch and at moved coordinates.
+fn cloud_texture(uv: vec2f) -> vec4f {
+    return textureSampleLevel(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], uv, 0.0);
+}
+
 // D3DTOP_BUMPENVMAP is 22 and D3DTOP_BUMPENVMAPLUMINANCE is 23. The move that the bump stage
 // `index` gives to the coordinate of the next stage, from its texel.
 fn bump_move(index: u32, texel: vec4f) -> vec2f {
@@ -705,6 +722,16 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
 
     if (draw_counts_w() & 4u) != 0u {
         return vec4f(extension_sky_color(normalize(inp.world_position), inp.clip.xy), 1.0);
+    }
+    if (draw_counts_w() & 1024u) != 0u {
+        // The clouds with the extension's colour (CLOUDS_HOOK_BIT): its colour and alpha are
+        // final, as a pixel shader's on the fixed-function state; the alpha test of the draw
+        // still acts on them.
+        let cloud = extension_clouds_color(CloudPixel(final_coordinate(0u, inp.coordinate0), inp.vertex_color, normalize(inp.world_position), inp.clip.xy));
+        if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(cloud.a * 255.0 + 0.5), f32(draws[record].more.w)) {
+            discard;
+        }
+        return cloud;
     }
     // A sky draw has a direction in `world_position`, and is above the water in any case.
     let clip_plane = draw_clip_plane();

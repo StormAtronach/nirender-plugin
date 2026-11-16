@@ -146,11 +146,13 @@ const UBER_SET: [PipelineKey; 48] = [
 ];
 /// The bits of `counts.w` in a stage key: each one chooses a branch of `fs` or of the
 /// extension's shade (1 the extension shades, 2, 16, 32 the sun's shadow, 128 the light for
-/// each pixel, 512, and this crate's [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit at its
-/// corners, and [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained table
+/// each pixel, 512, and this crate's [`crate::CLOUDS_HOOK_BIT`], 1024: the clouds with the
+/// extension's colour, [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit at its corners, and
+/// [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained table
 /// also takes the bits of its kind from the scene (`draw_counts_w`): those stay values of the
 /// frame. The key keeps the bits in a `u16`.
-const SHADE_BITS: u32 = 1 | 2 | 16 | 32 | 128 | 512 | crate::CORNER_LIGHT_BIT | crate::NO_LIGHTS_BIT;
+const SHADE_BITS: u32 =
+    1 | 2 | 16 | 32 | 128 | 512 | crate::CLOUDS_HOOK_BIT | crate::CORNER_LIGHT_BIT | crate::NO_LIGHTS_BIT;
 const _: () = assert!(SHADE_BITS <= u16::MAX as u32, "the stage key keeps the shade bits in a u16");
 
 /// The codes that `fs` switches on for a draw. Only the stages below `count` are kept; the
@@ -307,16 +309,19 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
     }
     source.replace_range(start..end, &steps);
 
-    // The alpha test.
-    let test = "    if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {\n        discard;\n    }\n";
-    if source.matches(test).count() != 1 {
-        return None;
+    // The alpha test: the draw's, and the same test on the colour of the clouds hook.
+    for (indent, value) in [("    ", "current"), ("        ", "cloud")] {
+        let test = format!("{indent}if draws[record].more.z != 0u && !compare(draws[record].more.z, floor({value}.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n{indent}    discard;\n{indent}}}\n");
+        if source.matches(&test).count() != 1 {
+            return None;
+        }
+        let fixed_test = match key.alpha_test {
+            0 => String::new(),
+            function => format!("{indent}if !compare({function}u, floor({value}.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n{indent}    discard;\n{indent}}}\n"),
+        };
+        source = source.replacen(&test, &fixed_test, 1);
     }
-    let fixed_test = match key.alpha_test {
-        0 => String::new(),
-        function => format!("    if !compare({function}u, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n        discard;\n    }}\n"),
-    };
-    fixed_facts(&source.replacen(test, &fixed_test, 1), key)
+    fixed_facts(&source, key)
 }
 
 /// The text with the draw's facts of the key as constants, so that the compiler leaves out the
@@ -1086,6 +1091,7 @@ mod tests {
             (SHADE_BITS as u16, 1, 1, true, true),
             (1 | 32 | 128, 1, 0, false, true),
             (2 | 16 | 512, 0, 1, true, false),
+            (crate::CLOUDS_HOOK_BIT as u16, 1, 0, false, false),
         ] {
             let key = StageKey {
                 shade,
@@ -1136,7 +1142,7 @@ mod tests {
     #[test]
     fn the_key_takes_the_facts_of_the_record() {
         let mut data = DrawData::zeroed();
-        data.counts[3] = 1 | 4 | 32 | 1024;
+        data.counts[3] = 1 | 4 | 32 | 2048;
         data.flags = [1, 1, 0, 0];
         data.light_range[3] = 4 | 1 | crate::ADDS_BIT;
         let key = StageKey::of(&data).unwrap();
@@ -1144,7 +1150,7 @@ mod tests {
             (key.shade, key.lit, key.normal, key.scene, key.adds),
             (1 | 32, 1, 1, true, true)
         );
-        // A bit outside SHADE_BITS (4 the sky, 1024) does not split a key.
+        // A bit outside SHADE_BITS (4 the sky, 2048) does not split a key.
         let mut other = data;
         other.counts[3] = 1 | 32;
         assert_eq!(StageKey::of(&other), Some(key));
