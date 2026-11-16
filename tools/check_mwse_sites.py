@@ -44,6 +44,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+from common import tests_ran  # noqa: E402
 TEST = "mwse_sites::tests::every_mwse_site_in_a_port_is_followed"
 FEATURES_TEST = "mwse_sites::tests::every_required_mwse_feature_is_present"
 # The lines of the test; cargo's own lines are left out. "reach: " is the line of the decode of the code: how much of
@@ -196,6 +198,15 @@ def self_test():
         sources = d3d8_request_sources(root)
         assert sources == (["mwse/mwsenative.cpp"], ["mwse/MWSENativeApi.h"], 2), sources
         assert d3d8_line("C:/r", sources) == "d3d8: C:/r sends native request 7 (mwse/mwsenative.cpp)", d3d8_line("C:/r", sources)
+    # W527 (W524 F-G-7): cargo's own text of a filter that matches no test, exit code 0. The null: before W527 exit code
+    # 0 was "mwse sites: ok".
+    none = "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 412 filtered out; finished in 0.00s\n\n"
+    assert sites_problem(0, none, report_lines(none)) == "the test ran 0 times"
+    count = "C:/x/MWSE.dll: 37 places in ported or census functions, 0 failed, 0 stale baseline lines; 1.2 s\n"
+    one = "\nrunning 1 test\n%stest %s ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 411 filtered out\n" % (count, TEST)
+    assert sites_problem(0, one, report_lines(one)) is None, report_lines(one)
+    assert sites_problem(0, one.replace(count, ""), report_lines(one.replace(count, ""))) == "the test printed no count line"
+    assert sites_problem(101, one, report_lines(one)) == "the test failed (exit code 101)"
     print("check_mwse_sites self-test: ok")
 
 
@@ -206,16 +217,30 @@ def run_test(test, dll):
     return done.returncode, done.stdout + done.stderr
 
 
+def sites_problem(code, output, lines):
+    """Why the run of the sites test does not pass, or None. Exit code 0 is a pass only with the test's own count line and
+    at least one test run (common.tests_ran): a filter that matches no test exits with 0 and judges nothing (W527, W524
+    F-G-7)."""
+    if code != 0:
+        return "the test failed (exit code %d)" % code
+    if tests_ran(output) == 0:
+        return "the test ran 0 times"
+    if not any(" places in ported or census functions, " in line for line in lines):
+        return "the test printed no count line"
+    return None
+
+
 def check_sites(dll):
     code, output = run_test(TEST, dll)
     lines = report_lines(output)
     for line in lines:
         print(line)
-    if code != 0 and not any(" places in ported or census functions, " in line for line in lines):
-        # The test did not get to its count: a build error, or the DLL could not be read.
+    problem = sites_problem(code, output, lines)
+    if problem:
+        # The test did not get to its count: a build error, the DLL could not be read, or no test ran.
         print(output[-3000:])
-    print("mwse sites: %s" % ("ok" if code == 0 else "FAILED"))
-    return 0 if code == 0 else 1
+    print("mwse sites: %s" % ("ok" if not problem else "FAILED: %s" % problem))
+    return 1 if problem else 0
 
 
 def check_features(dll, mge=None):

@@ -646,18 +646,19 @@ mod tests {
     /// inside a ported function must be in [`ports::CODE_PATCH_RECORDS`], and the census must
     /// follow it with the option on (the bytes of the record) and off (the bytes of
     /// [`NIRENDER_VANILLA_EXE`], or `vanilla_exe` of `local.json`). Skipped when no place is
-    /// named: the patch file is not ours to ship. A named place whose file cannot be read, or a
+    /// named: the patch file is not ours to ship. In a merge round the skip is a failure
+    /// ([`crate::switches::input_missing`]). A named place whose file cannot be read, or a
     /// patch file with no record, fails the test, so that a check that did not run never passes.
     /// A record outside the ports is not checked, so 0 records checked can pass.
     #[test]
     fn every_code_patch_record_in_a_port_is_followed() {
         let Some((roots, roots_from)) = named("NIRENDER_MCPATCH", "mcpatch_root") else {
-            eprintln!("skipped: no NIRENDER_MCPATCH and no mcpatch_root in local.json");
+            crate::switches::input_missing("no NIRENDER_MCPATCH and no mcpatch_root in local.json");
             return;
         };
         let roots: Vec<String> = roots.split(';').map(str::to_string).collect();
         let Some((vanilla_path, vanilla_from)) = named("NIRENDER_VANILLA_EXE", "vanilla_exe") else {
-            eprintln!("skipped: no NIRENDER_VANILLA_EXE and no vanilla_exe in local.json");
+            crate::switches::input_missing("no NIRENDER_VANILLA_EXE and no vanilla_exe in local.json");
             return;
         };
         let vanilla = std::fs::read(&vanilla_path)

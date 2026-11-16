@@ -46,8 +46,9 @@ the sibling of this tree, else the sibling of its main checkout (`common.sibling
 checks read the code of this tree (`--plugin`), not the code of the checkout beside the docs.
 
 Each takes well under a second. A check whose repository is not on this machine is skipped
-with a line; with `--strict` (release.py) such a check is a failure, since a release needs
-every check. The exit code is 1 when a check fails; its output is printed. `tools/docs.py`
+with a line; with `--strict` (release.py and the merge step) such a check is NOT RUN, since a
+release and a merge round need every check. The exit code is 1 when a check fails (its output
+is printed), else `common.NOT_RUN_EXIT` (5) when a check is NOT RUN, else 0. `tools/docs.py`
 compiles, so it is not here: release.py runs it (only its `--self-test` is here). `tools/install_hooks.py` writes the hooks.
 
     python -I tools/checks.py --self-test   # the places of the docs and MWSE
@@ -75,6 +76,12 @@ def places(siblings, main, docs=None):
 
 
 STATE, MWSE = Path(common.docs_place(*STATE_PARTS)), places(str(REPOS), common.main_checkout())[1]
+# The IDA export of the layouts check: the main checkout's (this tree when it has no main checkout).
+MAIN_EXPORT = Path(common.main_checkout() or PLUGIN, "tools", "out", "structs.json")
+# How to make what a check needs, for its NOT RUN line.
+HOW_TO_MAKE = {
+    "sharedse layouts": "make the export in IDA (Morrowind2.i64) with tools/ports/ida_export_inventory.py of the main checkout",
+}
 
 CHECKS = {
     "readme": (PLUGIN / "tools" / "check_readme.py", PLUGIN),
@@ -110,9 +117,10 @@ CHECKS = {
     "hand offsets": (PLUGIN / "tools" / "hand_offsets.py", PLUGIN, ["--check"]),
     "offset moves": (PLUGIN / "tools" / "check_offset_moves.py", PLUGIN, ["--cached"]),
     # The IDA types of the layouts against MWSE's SharedSE and TES3 layouts, MWSE read as for "mwse native" (W497).
-    # It also needs this tree's IDA export, which git ignores: a new worktree has none, and the export of another
-    # checkout is not this tree's.
-    "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", (MWSE / "SharedSE", PLUGIN / "tools" / "out" / "structs.json")),
+    # It reads the one IDA export of the main checkout (git ignores it): the export is a fact of the IDA database, the
+    # same for every tree (W527, the Architect's answer to Q1). The check names its path, md5 and time.
+    "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", (MWSE / "SharedSE", MAIN_EXPORT), ["--export", str(MAIN_EXPORT)]),
+    "sharedse layouts parsing": (PLUGIN / "tools" / "check_sharedse_layouts.py", PLUGIN, ["--self-test"]),
     # The fixture test of the third-party notices writer of the release archive.
     "notices": (PLUGIN / "tools" / "third_party_notices.py", PLUGIN, ["--self-test"]),
     # The tests of the pure parts of the release tool (the untracked-file stop, the tag name,
@@ -159,9 +167,22 @@ CHECKS = {
     "check places": (PLUGIN / "tools" / "checks.py", PLUGIN, ["--self-test"]),
     # The pure parts of the corrupted-capture tool (the record walk, the mutations, the verdicts).
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
+    # The self-tests that no check ran before W527 (W524 F-G-20 C33): a test that no stage runs cannot fail a round.
+    "lua checks": (PLUGIN / "tools" / "lua_checks.py", PLUGIN, ["--self-test"]),
+    "build sets": (PLUGIN / "tools" / "build_set.py", PLUGIN, ["--self-test"]),
+    "sets": (PLUGIN / "tools" / "sets.py", PLUGIN, ["--self-test"]),
+    "mwse sites parsing": (PLUGIN / "tools" / "check_mwse_sites.py", PLUGIN, ["--self-test"]),
+    "bc7": (PLUGIN / "tools" / "bc7.py", PLUGIN, ["--self-test"]),
+    "frame census": (PLUGIN / "tools" / "frame_census.py", PLUGIN, ["--self-test"]),
+    "new run folder": (PLUGIN / "tools" / "new_run_folder.py", PLUGIN, ["--self-test"]),
+}
+# The tools with a --self-test that no check runs, each with the reason. A new tool with a --self-test is a check, or a
+# line here (sibling of self_tests_without_check).
+SELF_TESTS_NOT_CHECKED = {
+    "symbols.py": "about 11 s and symstore.exe: too slow for the hook of each commit",
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "tour", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "sharedse layouts parsing", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "tour", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test", "lua checks", "build sets", "sets", "mwse sites parsing", "bc7", "frame census", "new run folder"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects", "mge plain guards"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
@@ -169,7 +190,34 @@ LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 # The option that gives each check of the MGE XE tree another tree than the render-link sibling
 # (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
-MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge", "mge counted objects": "--mge", "mge plain guards": "--mge"}
+MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "mge handshake": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge", "mge counted objects": "--mge", "mge plain guards": "--mge"}
+
+
+def self_tests_without_check(tools, checks, exempt):
+    """The scripts of the folder `tools` and its subfolders, by their path in it, that take --self-test, that no check of
+    `checks` runs with it, and that `exempt` does not name."""
+    run = {Path(script).resolve() for script, _, *rest in checks.values() if rest and "--self-test" in rest[0]}
+    found = []
+    for path in sorted(Path(tools).glob("*.py")) + sorted(Path(tools).glob("*/*.py")):
+        name = path.relative_to(tools).as_posix()
+        if name not in exempt and path.resolve() not in run and "--self-test" in path.read_text(encoding="utf-8", errors="replace"):
+            found.append(name)
+    return found
+
+
+# The checks that compare the tree with a commit (the index, or HEAD), and that take the base of a merge round with
+# `checks.py --base COMMIT` (merge_step): the round's tree is at the merge, so its HEAD and index hold no change (W527,
+# W524 F-G-6). "offset moves" runs in the plugin round, "mge handshake" in the render-link round.
+BASE_OPTION = ("offset moves", "mge handshake")
+# The checks that read MWSE through mwse_tree.resolve: the installs' commit, else the sibling checkout with a FALLBACK line.
+# With --strict they are NOT RUN when mwse_tree.installs_source gives no commit.
+MWSE_CHECKS = ("mwse native", "mwse vtable fills", "sharedse layouts")
+
+
+def sibling_checks_without_option(checks, options):
+    """The checks of `checks` that read the render-link sibling and have no entry in `options`: with `--mge DIR` they would
+    still read the sibling, not the tree under test (W524 F-G-21)."""
+    return [name for name, (_, needs, *_) in checks.items() if needs == REPOS / "MGE-XE-G7-render-link" and name not in options]
 
 
 def self_test():
@@ -200,26 +248,90 @@ def self_test():
 
     for name in ("module headers", "skill names"):
         assert CHECKS[name][2] == ["--plugin", str(PLUGIN)], "the docs checks read the code of this tree"
-    assert PLUGIN / "tools" / "out" / "structs.json" in CHECKS["sharedse layouts"][1], "the layouts check needs this tree's export"
+    # W527 (Q1): the layouts check reads the main checkout's export, in a worktree too, and names it.
+    assert MAIN_EXPORT in CHECKS["sharedse layouts"][1] and CHECKS["sharedse layouts"][2] == ["--export", str(MAIN_EXPORT)]
+    assert MAIN_EXPORT.parts[-3:] == ("tools", "out", "structs.json")
 
     # W497: the MWSE checks pick their MWSE themselves (no path from here), and the summary names a fallback.
     for name in ("mwse native", "mwse vtable fills", "sharedse layouts"):
-        assert len(CHECKS[name]) == 2, "%s gets no MWSE path from checks.py" % name
+        assert not any(argument.startswith("--mwse") for argument in (CHECKS[name][2] if len(CHECKS[name]) > 2 else [])), \
+            "%s gets no MWSE path from checks.py" % name
     assert summary("plugin", ["a"], [], [], []) == "checks (plugin): 1 passed"
     line = summary("plugin", ["a", "mwse tree"], [], ["mwse native"], ["mwse native"])
     assert line == ("checks (plugin): 2 passed, MWSE FALLBACK in 1: mwse native (the sibling MWSE was read, not the installs' "
                     "commit), 1 FAILED: mwse native. Of these, mwse native compared the sibling MWSE: a difference there can be "
                     "the sibling's branch. Fix the drift, or commit with --no-verify."), line
     assert "Of these" not in summary("plugin", [], [], ["readme"], ["mwse native"]), "a fallback that passed is no cause"
+    self_test_strict()
+    # W527 (W524 F-G-21): with --mge DIR every check of the render-link sibling reads DIR. The null: before W527 the
+    # handshake check of MGE XE had no entry, so a merge round of render-link compared the sibling's mgeversion.h.
+    assert sibling_checks_without_option(CHECKS, MGE_OPTION) == [], sibling_checks_without_option(CHECKS, MGE_OPTION)
+    without = {name: option for name, option in MGE_OPTION.items() if name != "mge handshake"}
+    assert sibling_checks_without_option(CHECKS, without) == ["mge handshake"]
+    # W527 (W524 F-G-6): with --base the checks that read the index or HEAD read the merge's base. The null: without
+    # --base the offset check reads the index (--cached), which holds no change in a round's tree.
+    assert check_command("offset moves")[2] == ["--cached"]
+    assert check_command("offset moves", base="abc")[2] == ["--base", "abc"]
+    assert check_command("mge handshake", "D", "abc")[2] == ["--mge", "--mge", "D", "--base", "abc"]
+    assert check_command("readme", "D", "abc")[2] == [], "a check with no base option gets none"
+    assert all(name in CHECKS for name in BASE_OPTION)
+    # W527 (W524 F-G-20 C33): every self-test of the tools is a check, or a line of SELF_TESTS_NOT_CHECKED. The plant: a
+    # new tool with a --self-test in a scratch folder. The null: before W527, eight tools of this folder were named.
+    unrun = self_tests_without_check(PLUGIN / "tools", CHECKS, SELF_TESTS_NOT_CHECKED)
+    assert unrun == [], "self-tests that no check runs: %s" % unrun
+    with tempfile.TemporaryDirectory() as folder:
+        with open(os.path.join(folder, "new_tool.py"), "w", encoding="utf-8") as file:
+            file.write('if "--self-test" in sys.argv:\n    pass\n')
+        assert self_tests_without_check(folder, CHECKS, SELF_TESTS_NOT_CHECKED) == ["new_tool.py"]
     print("checks self-test: ok")
     return 0
 
 
-def summary(which, passed, skipped, failed, fell_back):
-    """The last line of a run: the counts, the checks that read the sibling MWSE (W497), and the failures."""
+def self_test_strict():
+    """W527 (W524 F-G-5): with --strict a check that cannot run is NOT RUN, and checks.py exits with NOT_RUN_EXIT, which
+    fails a merge round. The plant: a list of one check whose script is not there. The null: without --strict the same
+    list is skipped, and checks.py exits with 0, so a merge round passed on a check that did not run."""
+    saved = CHECKS.copy(), LISTS.copy()
+    try:
+        CHECKS["planted"] = (PLUGIN / "tools" / "no_such_check.py", PLUGIN)
+        LISTS["planted"] = ["planted"]
+        assert main(["planted", "--strict"]) == common.NOT_RUN_EXIT
+        assert main(["planted"]) == 0
+        # A failure stays a failure (exit 1) beside a check that did not run.
+        CHECKS["fails"] = (PLUGIN / "tools" / "checks.py", PLUGIN, ["--no-such-option"])
+        LISTS["planted"] = ["planted", "fails"]
+        assert main(["planted", "--strict"]) == 1
+    finally:
+        CHECKS.clear(), CHECKS.update(saved[0]), LISTS.clear(), LISTS.update(saved[1])
+    # W527 (W524 F-G-15): with --strict the MWSE checks are NOT RUN while the installs name no single MWSE commit. The
+    # plant: installs_source gives two commits. The null: without --strict the same check runs (and would fall back).
+    global MWSE_CHECKS
+    saved_mwse = MWSE_CHECKS, mwse_tree.installs_source
+    try:
+        CHECKS["planted mwse"] = (PLUGIN / "tools" / "bc7.py", PLUGIN, ["--self-test"])
+        LISTS["planted"] = ["planted mwse"]
+        MWSE_CHECKS = ("planted mwse",)
+        mwse_tree.installs_source = lambda *args, **kwargs: (None, "no single MWSE record in the installs: A 1111, B 2222")
+        assert main(["planted", "--strict"]) == common.NOT_RUN_EXIT
+        assert main(["planted"]) == 0
+        mwse_tree.installs_source = lambda *args, **kwargs: ("1111", None)
+        assert main(["planted", "--strict"]) == 0, "one commit in the installs: the check runs"
+    finally:
+        MWSE_CHECKS, mwse_tree.installs_source = saved_mwse
+        CHECKS.pop("planted mwse", None), LISTS.pop("planted", None)
+    assert all(name in CHECKS for name in MWSE_CHECKS)
+    line = summary("plugin", ["a"], [], [], [], ["b", "c"])
+    assert line == "checks (plugin): 1 passed, 2 NOT RUN (--strict; not on this machine: b, c)", line
+
+
+def summary(which, passed, skipped, failed, fell_back, not_run=()):
+    """The last line of a run: the counts, the checks that read the sibling MWSE (W497), the checks that did not run, and
+    the failures."""
     line = "checks (%s): %d passed" % (which, len(passed))
     if skipped:
         line += ", %d skipped (not on this machine: %s)" % (len(skipped), ", ".join(skipped))
+    if not_run:
+        line += ", %d NOT RUN (--strict; not on this machine: %s)" % (len(not_run), ", ".join(not_run))
     if fell_back:
         line += ", MWSE FALLBACK in %d: %s (the sibling MWSE was read, not the installs' commit)" % (len(fell_back), ", ".join(fell_back))
     if failed:
@@ -231,31 +343,58 @@ def summary(which, passed, skipped, failed, fell_back):
     return line
 
 
+def check_command(name, mge=None, base=None):
+    """(script, needs, arguments) of the check `name`: with `mge`, the MGE XE tree of its option (MGE_OPTION); with `base`,
+    the base of a merge round in place of the index or HEAD (BASE_OPTION)."""
+    script, needs, *rest = CHECKS[name]
+    args = list(rest[0]) if rest else []
+    if mge and name in MGE_OPTION:
+        args += [MGE_OPTION[name], mge]
+        if needs == REPOS / "MGE-XE-G7-render-link":
+            needs = Path(mge)
+    if base and name in BASE_OPTION:
+        args = [argument for argument in args if argument != "--cached"] + ["--base", base]
+    return script, needs, args
+
+
+USAGE = "usage: checks.py plugin|mge|all [--strict] [--mge DIR] [--base COMMIT]"
+
+
 def main(argv):
     if argv[:1] == ["--self-test"]:
         return self_test()
-    # `--strict`: a check that would be skipped is a failure (a release needs every check).
+    # `--strict`: a check that would be skipped is NOT RUN (a release and a merge round need every check).
     strict = "--strict" in argv
-    if "--mge" in argv and argv.index("--mge") + 1 >= len(argv):
-        raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]: --mge needs the folder of the MGE XE tree")
-    mge = argv[argv.index("--mge") + 1] if "--mge" in argv else None
-    names = [argument for index, argument in enumerate(argv) if argument not in ("--strict", "--mge") and (index == 0 or argv[index - 1] != "--mge")]
+    values = {}
+    for option in ("--mge", "--base"):
+        if option in argv:
+            if argv.index(option) + 1 >= len(argv):
+                raise SystemExit("%s: %s needs a value" % (USAGE, option))
+            values[option] = argv[argv.index(option) + 1]
+    mge, base = values.get("--mge"), values.get("--base")
+    names = [argument for index, argument in enumerate(argv)
+             if argument not in ("--strict", "--mge", "--base") and (index == 0 or argv[index - 1] not in ("--mge", "--base"))]
     which = names[0] if names else "all"
     if which not in LISTS:
-        raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]")
-    failed, passed, skipped, fell_back = [], [], [], []
+        raise SystemExit(USAGE)
+    failed, passed, skipped, fell_back, not_run = [], [], [], [], []
+    mwse_problem = None
+    if strict and any(name in MWSE_CHECKS for name in LISTS[which]):
+        mwse_problem = mwse_tree.installs_source()[1]
     for name in LISTS[which]:
-        script, needs, *rest = CHECKS[name]
-        args = list(rest[0]) if rest else []
-        if mge and name in MGE_OPTION:
-            args += [MGE_OPTION[name], mge]
-            if needs == REPOS / "MGE-XE-G7-render-link":
-                needs = Path(mge)
+        script, needs, args = check_command(name, mge, base)
+        if mwse_problem and name in MWSE_CHECKS:
+            # A check of another MWSE than the installs' judges nothing about them (W527, W524 F-G-15).
+            not_run.append(name)
+            print("== NOT RUN: the check '%s' (--strict): it would read the sibling MWSE: %s; %s"
+                  % (name, mwse_problem, mwse_tree.DEPLOY_HINT))
+            continue
         missing = [path for path in (script, *(needs if isinstance(needs, tuple) else (needs,))) if not path.exists()]
         if missing:
             if strict:
-                failed.append(name)
-                print("== the check '%s' cannot run (--strict): %s is not on this machine" % (name, missing[0]))
+                not_run.append(name)
+                how = "; %s" % HOW_TO_MAKE[name] if name in HOW_TO_MAKE else ""
+                print("== NOT RUN: the check '%s' (--strict): %s is not on this machine%s" % (name, missing[0], how))
             else:
                 skipped.append(name)
             continue
@@ -272,8 +411,12 @@ def main(argv):
             failed.append(name)
             print("== the check '%s' failed (%s):" % (name, script.name))
             print((run.stdout + run.stderr).rstrip()[-4000:])
-    print(summary(which, passed, skipped, failed, fell_back))
-    return 1 if failed else 0
+    print(summary(which, passed, skipped, failed, fell_back, not_run))
+    # A failure is 1. A check that did not run is NOT_RUN_EXIT: a merge round fails on it (merge_step.run_stage), and
+    # release.py reads every code other than 0 as a failure.
+    if failed:
+        return 1
+    return common.NOT_RUN_EXIT if not_run else 0
 
 
 if __name__ == "__main__":

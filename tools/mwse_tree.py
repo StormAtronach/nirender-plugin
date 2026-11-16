@@ -109,6 +109,25 @@ def installed_commit(installs=None, deploys=None):
         "%s %s" % (name, commit or "none") for name, commit in commits.items())
 
 
+def installs_source(repo=None, installs=None, deploys=None):
+    """(the MWSE commit of the installs' records, None), or (None, the reason the checks have no such commit). The one
+    rule of which MWSE the checks of a merge round read: `resolve` falls back to the sibling without one, and checks.py
+    --strict gives NOT RUN (W527, W524 F-G-15). W521's step 3 (the manifest of the resting set) changes this function."""
+    if repo is None:
+        import deploy_rest
+
+        repo = deploy_rest.MWSE_REPO
+    commit, reason = installed_commit(installs, deploys)
+    if commit and not has_commit(repo, commit):
+        commit, reason = None, "the commit %s of the installs' records is not in the MWSE repository %s" % (commit, repo)
+    return commit, reason
+
+
+# What makes the installs' MWSE one commit again, for the NOT RUN line of a merge round.
+DEPLOY_HINT = ("deploy one MWSE.dll and its commit to every test install: python -I tools/deploy_rest.py --mwse-dll "
+               "<MWSE.dll> --mwse-commit <commit>")
+
+
 def resolve(check, folder=None, commit=None, repo=None, installs=None, deploys=None, fallback=None):
     """The MWSE source of the check `check` and the FALLBACK line to print, or None.
 
@@ -125,9 +144,7 @@ def resolve(check, folder=None, commit=None, repo=None, installs=None, deploys=N
         if not has_commit(repo, commit):
             raise SystemExit("%s: the commit %s is not in the MWSE repository %s" % (check, commit, repo))
         return Commit(repo, commit), None
-    commit, reason = installed_commit(installs, deploys)
-    if commit and not has_commit(repo, commit):
-        commit, reason = None, "the commit %s of the installs' records is not in the MWSE repository %s" % (commit, repo)
+    commit, reason = installs_source(repo, installs, deploys)
     if commit:
         return Commit(repo, commit, "commit %s of the installs' records (%s)" % (commit, repo)), None
     tree = Folder(fallback, "the sibling checkout %s" % fallback)

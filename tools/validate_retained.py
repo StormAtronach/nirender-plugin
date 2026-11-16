@@ -25,8 +25,9 @@ Stages (capture, baseline and only by default, in this order):
            meant to change them. A tour run in `tour/` of the baseline folder is replayed
            and compared the same way (`tour/accepted`). The adapter of the replays (the
            GPU, the backend, the driver, as the helper prints it) is written with the
-           accepted pictures (`accepted/adapter.txt`) and printed with the result; a
-           compare on another adapter says so, since the pictures can differ by the GPU.
+           accepted pictures (`accepted/adapter.txt`) and printed with the result, after
+           a fixed word: SAME, OTHER (another adapter: the pictures can differ by the
+           GPU) or UNKNOWN (no adapter printed or recorded). release.py reads the word.
            The replays run with MGE_XE_CORE_MODS=0: no core mod joins the shaders.
            Last, the objects check (D288): each capture again to its last frame, plain (no GPU
            time, no marks: nothing waits for the GPU), on vulkan and on dx12. A steady frame (no
@@ -291,6 +292,11 @@ def stage_capture(place, mge_build):
 
 
 ADAPTER_FILE = "adapter.txt"
+# The fixed word of the gate's adapter line, which release.py reads: SAME when the run's
+# adapter is the one of the accepted pictures, OTHER when it is another one, UNKNOWN when the
+# helper printed none or the accepted pictures name none.
+ADAPTER_SAME, ADAPTER_OTHER, ADAPTER_UNKNOWN = "SAME", "OTHER", "UNKNOWN"
+ADAPTER_LINE = re.compile(r"^\s*adapter: (%s|%s|%s): (.*?)\s*$" % (ADAPTER_SAME, ADAPTER_OTHER, ADAPTER_UNKNOWN), re.M)
 
 
 EARLY_LINE = re.compile(r"^early world draws: (\d+) starts of a world for the extension checked, (\d+) scenes with draws of their world already in the target, (\d+) draws", re.M)
@@ -325,15 +331,15 @@ def adapter_of(output):
 
 
 def adapter_note(recorded, now):
-    """What to say about the adapter of a compare: the one of the run, and whether the
-    accepted pictures were made on it."""
+    """What to say about the adapter of a compare: the fixed word (`ADAPTER_LINE`), the
+    adapter of the run, and whether the accepted pictures were made on it."""
     if now is None:
-        return "adapter: not printed by the helper"
+        return "adapter: %s: not printed by the helper" % ADAPTER_UNKNOWN
     if recorded is None:
-        return "adapter: %s; the accepted pictures name none (accept again to record it)" % now
+        return "adapter: %s: %s; the accepted pictures name none (accept again to record it)" % (ADAPTER_UNKNOWN, now)
     if recorded != now:
-        return "adapter: %s; the accepted pictures were made on %s, so a difference can be the GPU's" % (now, recorded)
-    return "adapter: %s, as the accepted pictures" % now
+        return "adapter: %s: %s; the accepted pictures were made on %s, so a difference can be the GPU's" % (ADAPTER_OTHER, now, recorded)
+    return "adapter: %s: %s, as the accepted pictures" % (ADAPTER_SAME, now)
 
 
 def self_test():
@@ -353,10 +359,13 @@ def self_test():
     assert places_without_view(line % 68) == 68
     assert places_without_view("frame 1\n") is None
     same = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
-    assert adapter_note(same, same) == "adapter: %s, as the accepted pictures" % same
+    assert adapter_note(same, same) == "adapter: SAME: %s, as the accepted pictures" % same
     assert adapter_note(None, same).endswith("(accept again to record it)")
     assert "can be the GPU's" in adapter_note("AMD Radeon (Vulkan, driver 1)", same)
-    assert adapter_note(same, None) == "adapter: not printed by the helper"
+    assert adapter_note(same, None) == "adapter: UNKNOWN: not printed by the helper"
+    # The word of each case, as the gate prints the line (indented).
+    for recorded, now, word in ((same, same, "SAME"), ("AMD Radeon (Vulkan, driver 1)", same, "OTHER"), (None, same, "UNKNOWN"), (same, None, "UNKNOWN")):
+        assert ADAPTER_LINE.findall("       " + adapter_note(recorded, now) + "\n")[0][0] == word
     # The objects stage (D288): a steady frame that made objects fails with its sites; a lost
     # device, a build without the count and two surface views in a steady frame fail too; a
     # capture with no steady frame warns.

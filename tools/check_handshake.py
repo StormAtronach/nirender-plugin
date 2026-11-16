@@ -146,7 +146,39 @@ def self_test():
     assert "Settings 2 -> none" in version_problems(before, before.replace("impl Settings {\n    const VERSION: u32 = 2;\n}\n", ""))[0]
     # A VERSION outside an impl, or of a trait impl's block, belongs to no record of this file.
     assert record_versions("const VERSION: u32 = 3;\nimpl Extension for DistantLand {\n    const VERSION: u32 = 4;\n}\n") == {}
+    self_test_base(before, w68)
     print("check_handshake self-test: ok")
+
+
+def self_test_base(before, after):
+    """W527 (W524 F-G-6): a merge round's tree is at the merge, so HEAD gives the merge's own renderer.rs. The plant: a
+    scratch MGE XE tree with a commit that changes a record's version and keeps the format. With --base (the commit
+    before) the check finds it. The null: against HEAD, as a round ran it before W527, the check finds nothing."""
+    import tempfile
+
+    def git(tree, *args):
+        subprocess.run(["git", "-C", tree, "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True,
+                       capture_output=True, env=common.git_env())
+
+    def write(tree, path, text):
+        os.makedirs(os.path.dirname(os.path.join(tree, path)), exist_ok=True)
+        with open(os.path.join(tree, path), "w", encoding="ascii", newline="\n") as file:
+            file.write(text)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tree:
+        git(tree, "init", "-q")
+        write(tree, "d3d8/cpp/mge/mgeversion.h", "#define MGE_EXTENSION_FORMAT 1\n")
+        write(tree, RENDERER, before)
+        git(tree, "add", "-A")
+        git(tree, "commit", "-q", "-m", "base")
+        base = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"], capture_output=True, text=True, env=common.git_env()).stdout.strip()
+        write(tree, RENDERER, after)
+        git(tree, "commit", "-q", "-am", "merge")
+        assert check_mge(tree) == [], check_mge(tree)
+        problems = check_mge(tree, base)
+        assert len(problems) == 1 and "Environment 8 -> 9" in problems[0], problems
+        problems = check_mge(tree, "no-such-commit")
+        assert len(problems) == 1 and "was not read" in problems[0], problems
 
 
 RENDERER = "mgeHost64/src/renderer.rs"
@@ -182,13 +214,16 @@ def version_problems(before, now):
             "MGE_EXTENSION_FORMAT in mgeversion.h" % (", ".join(changed), format_now)]
 
 
-def head_text(mge, path):
-    """The file at HEAD of the tree `mge`, or None with no git or no such file (a tree that is not a checkout)."""
-    done = subprocess.run(["git", "-C", mge, "show", "HEAD:" + path], capture_output=True, env=common.git_env())
+def head_text(mge, path, rev="HEAD"):
+    """The file at `rev` (HEAD by default) of the tree `mge`, or None with no git or no such file (a tree that is not a
+    checkout)."""
+    done = subprocess.run(["git", "-C", mge, "show", "%s:%s" % (rev, path)], capture_output=True, env=common.git_env())
     return done.stdout.decode("utf-8") if done.returncode == 0 else None
 
 
-def check_mge(mge):
+def check_mge(mge, base=None):
+    """The problems of the MGE XE tree `mge`. The record versions are compared with renderer.rs at `base`, else at HEAD:
+    a merge round gives the base of the merge, as its HEAD is the merge itself (W527, W524 F-G-6)."""
     header = read(os.path.join(mge, "d3d8", "cpp", "mge", "mgeversion.h"))
     renderer = read(os.path.join(mge, *RENDERER.split("/")))
     cpp = number(header, r"^#define MGE_EXTENSION_FORMAT (\d+)", "MGE_EXTENSION_FORMAT in mgeversion.h")
@@ -196,9 +231,11 @@ def check_mge(mge):
     problems = []
     if cpp != rust:
         problems.append("MGE_EXTENSION_FORMAT is %d in mgeversion.h and EXTENSION_FORMAT %d in renderer.rs" % (cpp, rust))
-    before = head_text(mge, RENDERER)
+    before = head_text(mge, RENDERER, base or "HEAD")
     if before is not None:
         problems += version_problems(before.replace("\r\n", "\n"), renderer)
+    elif base:
+        problems.append("%s at the base %s was not read: the record versions were not compared" % (RENDERER, base))
     # mgeHost64 reads the stream's constants through the host crate, never as a copy.
     problems += check_folders(mge, (os.path.join("mgeHost64", "src"),), home_names())
     return problems
@@ -208,12 +245,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mge", nargs="?", const=MGE, help="check MGE XE's extension format, and that mgeHost64 has no copy of a constant "
                     "of src/stream_format.rs, in this folder (default: the render-link worktree)")
+    ap.add_argument("--base", help="with --mge: compare the record versions with renderer.rs at this commit, not at HEAD "
+                    "(a merge round: the base of the merge)")
     ap.add_argument("--self-test", action="store_true", help="the tests of the search for a second definition")
     args = ap.parse_args()
     if args.self_test:
         self_test()
         return 0
-    problems = check_mge(args.mge) if args.mge else check_plugin()
+    problems = check_mge(args.mge, args.base) if args.mge else check_plugin()
     for problem in problems:
         print(problem)
     print("handshake (%s): %d problems" % ("mge" if args.mge else "plugin", len(problems)))

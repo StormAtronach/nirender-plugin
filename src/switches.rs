@@ -119,9 +119,48 @@ fn set_line(variables: impl Iterator<Item = (String, String)>) -> String {
     }
 }
 
+/// The switch of a merge round: `tools/merge_step.py` sets it to 1 for the plugin's tests, so
+/// that a test without its input fails in place of a skip.
+#[cfg(test)]
+pub(crate) const TESTS_NEED_INPUTS: &str = "NIRENDER_TESTS_NEED_INPUTS";
+
+/// The one way a test of the plugin ends early for a missing input (W527): it prints
+/// "skipped: <what>", and the test passes. With [`TESTS_NEED_INPUTS`] on (a merge round) it
+/// panics with "NOT RUN in a round: <what>", as a check that did not run must not pass a round.
+/// The caller returns after it.
+#[cfg(test)]
+pub(crate) fn input_missing(what: &str) {
+    let need_inputs = on(TESTS_NEED_INPUTS) == Some(true);
+    let line = missing_input_line(need_inputs, what);
+    assert!(!need_inputs, "{line}");
+    eprintln!("{line}");
+}
+
+#[cfg(test)]
+fn missing_input_line(need_inputs: bool, what: &str) -> String {
+    if need_inputs {
+        format!("NOT RUN in a round: {what}")
+    } else {
+        format!("skipped: {what}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A missing input is a skip, and in a merge round a failure that names it.
+    #[test]
+    fn a_missing_input_fails_only_in_a_round() {
+        assert_eq!(
+            missing_input_line(false, "no NIRENDER_MWSE_DLL"),
+            "skipped: no NIRENDER_MWSE_DLL"
+        );
+        assert_eq!(
+            missing_input_line(true, "no NIRENDER_MWSE_DLL"),
+            "NOT RUN in a round: no NIRENDER_MWSE_DLL"
+        );
+    }
 
     /// A name of a test switch, from the prefix: a name in quotes would look like a read of
     /// the code to `tools/check_readme.py`, which wants every read in README.md.
