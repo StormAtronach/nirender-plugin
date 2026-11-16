@@ -14,6 +14,15 @@
 //! when a pipeline fails, past the cap on the keys, and with `MGE_XE_STAGE_SHADERS=0`. It is
 //! also the reference of the look test (W293).
 //!
+//! The uber-shader draws the same picture, so a rewrite or a pipeline that fails shows in no
+//! picture: only the speed goes. Three things make it loud (W523). The rewrite searches the
+//! parts that it needs one time in the crate's own text only, so the text of an extension or of
+//! a mod's file cannot make it fail ([`fragment_source`]), and it names the part that refused
+//! ([`RewriteRefusal`]). The report counts the failures and the draws on the uber-shader by
+//! cause ([`StageShaders::report`]). And a replay, which makes each pipeline at its first use,
+//! ends with an exit code of its own when it has one of them ([`StageShaders::replay_fault`]); a
+//! live session only reports them.
+//!
 //! A live helper makes the pipelines on a thread of its own, so a new key costs a few frames
 //! of the uber-shader and not a hitch [I: wgpu's own locks can still hold the frame]. A
 //! replay makes them at once, so that its frames are the same from the first. The pipelines
@@ -34,7 +43,7 @@
 //! so a draw of the view never takes a module of normal play, or the reverse. The pipelines of
 //! a variant do not go to the list, and a change of the variant drops them.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -158,7 +167,7 @@ const SHADE_BITS: u32 =
     1 | 2 | SKY_BITS | 16 | 32 | 128 | 512 | crate::CLOUDS_HOOK_BIT | crate::CORNER_LIGHT_BIT | crate::NO_LIGHTS_BIT;
 /// The sky's bits of `counts.w`: 4 the dome, 8 the shadow of a moon. Only the stream sets them
 /// (`stream::sky_bits`). The scene's bits of a table's kind never have them (`retained::apply_shade`
-/// takes them out), so the key's text takes them out of the scene's part too ([`fixed_facts`]),
+/// takes them out), so the key's text takes them out of the scene's part too ([`fixed_once`]),
 /// and a table's draw has them as constants.
 pub(crate) const SKY_BITS: u32 = 4 | 8;
 const _: () = assert!(SHADE_BITS <= u16::MAX as u32, "the stage key keeps the shade bits in a u16");
@@ -729,8 +738,15 @@ pub(crate) struct StageShaders {
     pub(crate) from_list: u32,
     /// The list's pipelines left out: their stage key is past the list's share of the cap.
     pub(crate) list_left_out: u32,
-    pub(crate) failed_count: u32,
-    pub(crate) uber_draws: u64,
+    /// The stage keys whose text the rewrite could not make, by id, each with its refusal.
+    refused: BTreeMap<u32, String>,
+    /// The stage keys with a text whose module or pipeline failed, by id.
+    failed_pipelines: BTreeSet<u32>,
+    /// The draws with a stage key that the uber-shader drew, by cause: the key's rewrite failed, its module or
+    /// pipeline failed, or the thread had not made its pipeline yet (a live session only).
+    draws_refused: u64,
+    draws_failed: u64,
+    draws_not_made: u64,
     pub(crate) past_cap: u64,
     /// The draws whose record has a code that does not fit a stage key: the uber-shader draws them.
     pub(crate) no_key: u64,
@@ -784,8 +800,11 @@ impl StageShaders {
             made_count: 0,
             from_list: 0,
             list_left_out: 0,
-            failed_count: 0,
-            uber_draws: 0,
+            refused: BTreeMap::new(),
+            failed_pipelines: BTreeSet::new(),
+            draws_refused: 0,
+            draws_failed: 0,
+            draws_not_made: 0,
             past_cap: 0,
             no_key: 0,
             uber_set: Vec::new(),
@@ -1069,11 +1088,7 @@ impl StageShaders {
             match self.source_of(id) {
                 Ok(source) => Some(source),
                 Err(refusal) => {
-                    self.failed_sources.insert(id);
-                    println!(
-                        "stage shaders: the rewrite of stage key {} failed ({refusal}); the uber-shader draws it",
-                        key.stages
-                    );
+                    self.note_refusal(id, &refusal);
                     return false;
                 }
             }
@@ -1090,6 +1105,8 @@ impl StageShaders {
     /// Takes the pipelines that the thread made.
     pub(crate) fn receive(&mut self, pipelines: &mut rustc_hash::FxHashMap<PipelineKey, std::rc::Rc<wgpu::RenderPipeline>>) {
         let Some(done) = &self.done else { return };
+        // The failed pipelines are noted after the loop, which holds the channel.
+        let mut failed = Vec::new();
         while let Ok(Done { key, pipeline }) = done.try_recv() {
             self.pending.remove(&key);
             // A key of the uber set waits for its first draw ([`StageShaders::uber_pipeline`]). When the frame thread
@@ -1124,17 +1141,48 @@ impl StageShaders {
                         }
                     }
                 }
-                None => {
-                    self.failed.insert(key);
-                    self.failed_count += 1;
-                    println!(
-                        "stage shaders: the pipeline of stage key {} failed; the uber-shader draws it",
-                        key.stages
-                    );
-                }
+                None => failed.push(key),
             }
         }
+        for key in failed {
+            self.note_failed_pipeline(key);
+        }
         self.send_queued();
+    }
+
+    /// A stage key whose text the rewrite cannot make: the uber-shader draws it. One line for each key and
+    /// variant, with the part that refused.
+    fn note_refusal(&mut self, id: ModuleId, refusal: &RewriteRefusal) {
+        if self.failed_sources.insert(id) {
+            self.refused.entry(id.0).or_insert_with(|| refusal.to_string());
+            println!(
+                "stage shaders: the rewrite of stage key {} failed ({refusal}); the uber-shader draws it",
+                id.0
+            );
+        }
+    }
+
+    /// A pipeline of a stage key that failed: the uber-shader draws it. A key whose rewrite failed has its own
+    /// line and count ([`StageShaders::note_refusal`]); this is a key that has a text.
+    fn note_failed_pipeline(&mut self, key: PipelineKey) {
+        if self.failed.insert(key) && !self.failed_sources.contains(&module_id(&key)) {
+            self.failed_pipelines.insert(key.stages);
+            println!(
+                "stage shaders: the pipeline of stage key {} failed; the uber-shader draws it",
+                key.stages
+            );
+        }
+    }
+
+    /// Counts a draw with a stage key that the uber-shader draws, by its cause.
+    fn count_uber_draw(&mut self, key: &PipelineKey) {
+        if self.failed_sources.contains(&module_id(key)) {
+            self.draws_refused += 1;
+        } else if self.failed.contains(key) {
+            self.draws_failed += 1;
+        } else {
+            self.draws_not_made += 1;
+        }
     }
 
     /// The pipeline of a key with a stage key, or None: then the caller draws with the uber-shader.
@@ -1149,7 +1197,7 @@ impl StageShaders {
         }
         self.not_ready.insert(key.stages);
         if self.failed.contains(&key) {
-            self.uber_draws += 1;
+            self.count_uber_draw(&key);
             return None;
         }
         if self.sync {
@@ -1158,7 +1206,7 @@ impl StageShaders {
                 let module = match self.source_of(id) {
                     Ok(source) => maker.module("stage shaders", &source),
                     Err(refusal) => {
-                        println!("stage shaders: the rewrite of stage key {} failed ({refusal})", key.stages);
+                        self.note_refusal(id, &refusal);
                         None
                     }
                 };
@@ -1170,12 +1218,8 @@ impl StageShaders {
                 .and_then(|module| module.as_ref())
                 .and_then(|module| maker.make(key, module));
             let Some(pipeline) = pipeline else {
-                self.failed.insert(key);
-                self.failed_count += 1;
-                println!(
-                    "stage shaders: the pipeline of stage key {} failed; the uber-shader draws it",
-                    key.stages
-                );
+                self.note_failed_pipeline(key);
+                self.count_uber_draw(&key);
                 return None;
             };
             let pipeline = std::rc::Rc::new(pipeline);
@@ -1184,11 +1228,55 @@ impl StageShaders {
             return Some(pipeline);
         }
         if !self.pending.contains(&key) && !self.send(key) {
-            self.failed.insert(key);
-            self.failed_count += 1;
+            self.note_failed_pipeline(key);
         }
-        self.uber_draws += 1;
+        self.count_uber_draw(&key);
         None
+    }
+
+    /// The fault of a replay, or None. A replay makes each pipeline at its first use, so there every draw with
+    /// a stage key has its own pipeline, and a capture of ours never passes the cap of the keys. A failed
+    /// rewrite, a failed pipeline, a draw with a stage key on the uber-shader and a draw past the cap are each
+    /// a fault there: the picture is the same, and only the speed is lost, so nothing else shows it. The line
+    /// has every failed key and each count. A live session has no such fault: there the thread makes the
+    /// pipelines behind the draws, and the helper never ends for this.
+    pub(crate) fn replay_fault(&self) -> Option<String> {
+        let uber_draws = self.draws_refused + self.draws_failed + self.draws_not_made;
+        let none = self.refused.is_empty() && self.failed_pipelines.is_empty() && uber_draws == 0 && self.past_cap == 0;
+        if !self.sync || none {
+            return None;
+        }
+        Some(format!(
+            "stage shaders: a fault of the replay: {}; {}; the uber-shader drew {uber_draws} draws that have a stage key ({} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made); {} draws past the cap of {MAX_KEYS} keys",
+            self.refused_text(),
+            self.failed_pipelines_text(),
+            self.draws_refused,
+            self.draws_failed,
+            self.draws_not_made,
+            self.past_cap
+        ))
+    }
+
+    /// "N rewrites failed", with each key and the refusal of each.
+    fn refused_text(&self) -> String {
+        let mut text = format!("{} rewrites failed", self.refused.len());
+        for (index, (id, refusal)) in self.refused.iter().enumerate() {
+            text.push_str(if index == 0 { " (" } else { "; " });
+            text.push_str(&format!("stage key {id}: {refusal}"));
+        }
+        if !self.refused.is_empty() {
+            text.push(')');
+        }
+        text
+    }
+
+    /// "N pipelines failed", with the keys.
+    fn failed_pipelines_text(&self) -> String {
+        let ids: Vec<String> = self.failed_pipelines.iter().map(u32::to_string).collect();
+        match ids.is_empty() {
+            true => "0 pipelines failed".to_string(),
+            false => format!("{} pipelines failed (stage keys {})", ids.len(), ids.join(", ")),
+        }
     }
 
     /// After a frame: writes the list when it changed, at most every [`SAVE_FRAMES`] frames.
@@ -1231,19 +1319,30 @@ impl StageShaders {
         }
     }
 
+    /// The line of the report: the keys and the pipelines, then what failed, each kind with its keys, then the
+    /// draws that the uber-shader took, by cause. A replay with a number other than 0 after "pipelines made"
+    /// (but the draws with no key) ends with [`StageShaders::replay_fault`]; a live session only reports, and the
+    /// draws with a pipeline not made are its cold start (the list says whether it had one).
     pub(crate) fn report(&self) -> String {
+        let made = match (self.sync, self.from_list) {
+            (true, _) => "made at the first use".to_string(),
+            (false, 0) => "made on a thread, with no list: a cold start".to_string(),
+            (false, _) => "made on a thread, with a list".to_string(),
+        };
         format!(
-            "stage shaders: {} ({}), {} stage keys (cap {MAX_KEYS}, {} draws past it, {} draws with no key), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap), {} failed, {} draws on the uber-shader while their pipeline was not made",
+            "stage shaders: {} ({made}), {} stage keys (cap {MAX_KEYS}), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap); {}; {}; draws on the uber-shader with a stage key: {} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made; {} draws past the cap, {} draws with no key",
             if self.on { "on" } else { "off" },
-            if self.sync { "made at the first use" } else { "made on a thread" },
             self.keys.len() - 1,
-            self.past_cap,
-            self.no_key,
             self.made_count,
             self.from_list,
             self.list_left_out,
-            self.failed_count,
-            self.uber_draws
+            self.refused_text(),
+            self.failed_pipelines_text(),
+            self.draws_refused,
+            self.draws_failed,
+            self.draws_not_made,
+            self.past_cap,
+            self.no_key
         )
     }
 
@@ -1945,6 +2044,100 @@ mod tests {
         assert_eq!(texts[2], None);
     }
 
+    /// A key whose rewrite fails is named with the part that refused, and its draws count as draws after a
+    /// failed rewrite. A live session has no fault of a replay for it; the same counts in a replay are a fault,
+    /// in one line with the key and each count.
+    #[test]
+    fn a_failed_rewrite_is_counted_with_its_key_and_its_draws() {
+        // A world text with no end mark of the stage loop: no key gets a text.
+        let broken = world().replacen(STAGE_LOOP_END, "", 1);
+        let mut shaders = StageShaders::new(true, &broken);
+        let (jobs, _received) = mpsc::channel();
+        shaders.jobs = Some(jobs);
+        shaders.sync = false;
+        let id = shaders.intern(key(1, 0));
+        let pipeline = pipeline_key(id, 0);
+        // As `pipeline` does for a key whose send fails, and then for each of its draws.
+        assert!(!shaders.send(pipeline));
+        shaders.note_failed_pipeline(pipeline);
+        shaders.count_uber_draw(&pipeline);
+        shaders.count_uber_draw(&pipeline);
+        // A second pipeline of the same key adds no second line and no second key.
+        let other = PipelineKey { cull: 2, ..pipeline };
+        assert!(!shaders.send(other));
+        shaders.note_failed_pipeline(other);
+        shaders.count_uber_draw(&other);
+
+        let refusal = "the end mark of the stage loop: 0 in the text, 1 wanted";
+        assert_eq!(shaders.refused.iter().collect::<Vec<_>>(), [(&id, &refusal.to_string())]);
+        assert!(shaders.failed_pipelines.is_empty());
+        assert_eq!(
+            (shaders.draws_refused, shaders.draws_failed, shaders.draws_not_made),
+            (3, 0, 0)
+        );
+        let counts = format!(
+            "1 rewrites failed (stage key {id}: {refusal}); 0 pipelines failed; draws on the uber-shader with a stage key: 3 after a failed rewrite, 0 after a failed pipeline, 0 with a pipeline not made; 0 draws past the cap, 0 draws with no key"
+        );
+        assert!(shaders.report().ends_with(&counts), "{}", shaders.report());
+        assert_eq!(shaders.replay_fault(), None, "a live session has no fault of a replay");
+
+        shaders.sync = true;
+        let fault = shaders.replay_fault().expect("a replay with a failed rewrite");
+        assert_eq!(
+            fault,
+            format!(
+                "stage shaders: a fault of the replay: 1 rewrites failed (stage key {id}: {refusal}); 0 pipelines failed; the uber-shader drew 3 draws that have a stage key (3 after a failed rewrite, 0 after a failed pipeline, 0 with a pipeline not made); 0 draws past the cap of {MAX_KEYS} keys"
+            )
+        );
+    }
+
+    /// A pipeline that the thread could not make is a failed pipeline, apart from a failed rewrite; a draw of
+    /// a key that waits for the thread is a draw with a pipeline not made. A replay with no failure and no such
+    /// draw has no fault, and a draw past the cap is one.
+    #[test]
+    fn a_failed_pipeline_and_a_pipeline_not_made_are_counted_apart() {
+        let mut shaders = StageShaders::new(true, &world());
+        let (jobs, _received) = mpsc::channel();
+        shaders.jobs = Some(jobs);
+        let (done_sender, done) = mpsc::channel();
+        shaders.done = Some(done);
+        shaders.sync = false;
+        let id = shaders.intern(key(1, 0));
+        let pipeline = pipeline_key(id, 0);
+        assert!(shaders.send(pipeline));
+        shaders.count_uber_draw(&pipeline);
+        done_sender
+            .send(Done {
+                key: pipeline,
+                pipeline: None,
+            })
+            .unwrap();
+        let mut pipelines = rustc_hash::FxHashMap::default();
+        shaders.receive(&mut pipelines);
+        shaders.count_uber_draw(&pipeline);
+
+        assert!(shaders.refused.is_empty());
+        assert_eq!(shaders.failed_pipelines.iter().collect::<Vec<_>>(), [&id]);
+        assert_eq!(
+            (shaders.draws_refused, shaders.draws_failed, shaders.draws_not_made),
+            (0, 1, 1)
+        );
+        assert!(shaders
+            .report()
+            .contains(&format!("0 rewrites failed; 1 pipelines failed (stage keys {id}); ")));
+        assert!(shaders.report().contains("(made on a thread, with no list: a cold start)"));
+        assert_eq!(shaders.replay_fault(), None);
+        shaders.sync = true;
+        assert!(shaders.replay_fault().unwrap().contains("1 pipelines failed (stage keys 1)"));
+
+        let mut clean = StageShaders::new(true, &world());
+        assert_eq!(clean.replay_fault(), None);
+        assert!(clean.report().contains("(made at the first use)"));
+        clean.past_cap = 3;
+        let fault = clean.replay_fault().expect("a replay past the cap");
+        assert!(fault.ends_with("3 draws past the cap of 256 keys"), "{fault}");
+    }
+
     /// A change of the variant drops what the stage shaders keep of the old one, and a job of
     /// the old variant that comes back later is discarded.
     #[test]
@@ -1985,7 +2178,7 @@ mod tests {
         shaders.receive(&mut pipelines);
         assert!(!shaders.failed.contains(&lights));
         assert!(shaders.failed.contains(&layers));
-        assert_eq!(shaders.failed_count, 1);
+        assert_eq!(shaders.failed_pipelines.iter().collect::<Vec<_>>(), [&id]);
 
         shaders.set_variant(0);
         assert!(shaders.failed.is_empty());
