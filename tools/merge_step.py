@@ -1037,6 +1037,12 @@ def git(repo, *args):
     return done.stdout.strip()
 
 
+def changed_paths(repo, older, newer):
+    """The paths that the diff from `older` to `newer` changes. A moved file gives its old and its new path: a move out
+    of a gate path changes the gate's input (W528)."""
+    return git(repo, "diff", "--name-only", "--no-renames", older, newer).splitlines()
+
+
 def base_folder_of(branch):
     """The folder of the kept base build of a target branch: one for each branch, replaced at each pass."""
     return os.path.join(LOG_FOLDER, "base-" + branch.replace("/", "-"))
@@ -1161,7 +1167,7 @@ def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, com
     if not is_ancestor(sibling, last, head):
         say("%s: %s stays at %s: it is not an ancestor of the HEAD %s" % (name, ref, last[:10], head[:10]))
         return False
-    paths = git(sibling, "diff", "--name-only", last, head).splitlines()
+    paths = changed_paths(sibling, last, head)
     needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, branch)
     if why:
         say("%s: %s stays at %s: the stages of its diff to %s are not known (%s)" % (name, ref, last[:10], head[:10], why))
@@ -1750,6 +1756,31 @@ def self_test():
             assert git(beta, "rev-parse", "HEAD") == beta_head, "git() answers for the hook's repository"
         finally:
             del os.environ["GIT_DIR"]
+        # W528: a file moved out of a gate path plans the gate; a move inside tools/ plans none.
+        moves = os.path.join(root, "moves")
+        os.makedirs(os.path.join(moves, "mgeHost64", "src"))
+        os.makedirs(os.path.join(moves, "tools"))
+        for name in ("mgeHost64/src/renderer.rs", "tools/a.py"):
+            with open(os.path.join(moves, name), "w", encoding="ascii") as moved_file:
+                moved_file.write("a file with enough lines\nto be found as a move\nby git diff\n")
+        subprocess.run(["git", "-C", moves, "init", "-q"], check=True, env=git_env())
+        subprocess.run(["git", "-C", moves, "add", "."], check=True, env=git_env())
+        subprocess.run(["git", "-C", moves, *author, "commit", "-q", "-m", "m1"], check=True, env=git_env())
+        before_moves = resolve(moves, "HEAD")
+        subprocess.run(["git", "-C", moves, "mv", "mgeHost64/src/renderer.rs", "tools/renderer.rs"], check=True, env=git_env())
+        subprocess.run(["git", "-C", moves, *author, "commit", "-q", "-m", "m2"], check=True, env=git_env())
+        out_of_gate = resolve(moves, "HEAD")
+        subprocess.run(["git", "-C", moves, "mv", "tools/a.py", "tools/b.py"], check=True, env=git_env())
+        subprocess.run(["git", "-C", moves, *author, "commit", "-q", "-m", "m3"], check=True, env=git_env())
+        inside_tools = resolve(moves, "HEAD")
+        renamed = git(moves, "-c", "diff.renames=true", "diff", "--name-only", before_moves, out_of_gate).splitlines()
+        assert renamed == ["tools/renderer.rs"], "the case is a move that git finds: %s" % renamed
+        assert not touches(renamed, GATE_PATHS["mge"]), "the null of the plant: the new path alone plans no gate"
+        both = changed_paths(moves, before_moves, out_of_gate)
+        assert sorted(both) == ["mgeHost64/src/renderer.rs", "tools/renderer.rs"], both
+        assert touches(both, GATE_PATHS["mge"]), "a move out of a gate path plans the gate"
+        inside = changed_paths(moves, out_of_gate, inside_tools)
+        assert sorted(inside) == ["tools/a.py", "tools/b.py"] and not touches(inside, GATE_PATHS["mge"]), inside
         assert tips_for("mge", sibling_tree, "base", first)[1].startswith("no sibling"), "no sibling tree"
         # The A/B stages replay with the game slot held: their round takes both (D208).
         assert round_slot([("a", root, good), (INSTANCE_STAGE, root, good)]) == "both"
@@ -2481,7 +2512,7 @@ def main():
     if problem:
         say("FAIL the base: %s" % problem)
         return 1
-    paths = git(repo, "diff", "--name-only", base, commit).splitlines()
+    paths = changed_paths(repo, base, commit)
     baseline = os.path.abspath(args.baseline)
     commits = under_test(kind, commit, resolve(sibling_of(kind, repo), "HEAD") if kind and os.path.isdir(sibling_of(kind, repo)) else None)
     stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, branch, args.sibling_base) if kind else ([], None, None)
