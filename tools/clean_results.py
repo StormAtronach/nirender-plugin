@@ -69,7 +69,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # `python -I` leaves the folder of the script off the path.
 sys.path.insert(0, HERE)
 import clean_common as common  # noqa: E402
-from clean_common import DUMP_DAYS, KEEP_ROOT, SETS, Evidence, GameNotFree, current_set, files_in, game_kept_free, games_in, gigabytes, is_heavy, is_link, is_link_entry, kept_set_names, log_line, long_path, processes, project_trees, remove_file, remove_tree, run_age_days, run_treatment, set_number, set_treatment, users_of, walk  # noqa: E402
+from clean_common import DUMP_DAYS, KEEP_ROOT, SETS, Evidence, GameNotFree, current_set, files_in, game_kept_free, games_in, gigabytes, is_heavy, is_link, is_link_entry, kept_set_names, log_line, long_path, processes, project_trees, remove_file, remove_tree, run_age_days, run_treatment, set_made, set_number, set_treatment, users_of, walk  # noqa: E402
 
 RUN_PLACES = ["E:\\nirender-results"]
 DUMP_PLACES = ["C:\\tmp\\mwdumps", common.KEPT_DUMPS]
@@ -293,7 +293,7 @@ def plan_sets(sets, evidence, current, running, now):
         found = sorted((entry for entry in entries if not is_link_entry(entry) and entry.is_dir(follow_symlinks=False)), key=lambda entry: (set_number(entry.name) or 0, entry.name))
     names = [entry.name for entry in found]
     current_known = current in names
-    kept = kept_set_names(current, names) if current_known else set()
+    kept = kept_set_names(current, names, lambda name: set_made(sets, name)) if current_known else set()
     rows = []
     for entry in found:
         size, _, newest, links, unread = walk(entry.path)

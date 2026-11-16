@@ -22,6 +22,7 @@ clean_merged_worktrees.py does not remove that tree, as a copy of the run would 
 """
 import bisect
 import contextlib
+import datetime
 import ctypes
 import ctypes.wintypes as wt
 import glob
@@ -40,7 +41,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import common  # noqa: E402
-from sets import CURRENT_BAT, write_current_bat  # noqa: E402  (the file that names the current set, W500; its home is sets.py, W521)
+from sets import CURRENT_BAT, MANIFEST, NAME_RE, write_current_bat  # noqa: E402  (the file that names the current set, W500; its home is sets.py, W521)
 
 # The folder of the repositories: the one of the main checkout of this repository, also for a tool of a worktree.
 REPOS_ROOT = os.path.dirname(common.main_checkout()) if common.main_checkout() else common.SIBLINGS
@@ -436,9 +437,28 @@ def kept_set_numbers(current, names):
     return {number, max(before)} if before else {number}
 
 
-def kept_set_names(current, names):
-    """The names of the sets that stay as the current one and the one before. A current set with no number stays by
-    its name, and the highest number counts as the one before."""
+def set_made(sets, name):
+    """The time (seconds) when the sealed set `name` of `sets` was made, from its manifest's "made" (W521), or None: a
+    folder f<N> and a set whose manifest does not read have none."""
+    if not NAME_RE.fullmatch(name):
+        return None
+    try:
+        with open(os.path.join(sets, name, MANIFEST), encoding="utf-8") as file:
+            return datetime.datetime.fromisoformat(json.load(file)["made"]).timestamp()
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def kept_set_names(current, names, made=lambda name: None):
+    """The names of the sets that stay as the current one and the one before (D 2.5). A sealed set has no number: the
+    one before it is the newest sealed set made before it (`made` gives a set's time, `set_made`), else the highest f<N>,
+    as every f<N> is older than every sealed set. Any other current set with no number stays by its name, and the
+    highest number counts as the one before."""
+    current_made = made(current)
+    if current_made is not None:
+        earlier = [(when, name) for when, name in ((made(name), name) for name in names) if when is not None and when < current_made]
+        if earlier:
+            return {current, max(earlier)[1]}
     number = set_number(current)
     numbered = [(found, name) for found, name in ((set_number(name), name) for name in names) if found is not None and (number is None or found < number)]
     return {current, max(numbered)[1]} if numbered else {current}
@@ -893,6 +913,23 @@ def self_test_common():
     assert kept_set_numbers("f27", ["f27", "f28"]) == {27} and kept_set_numbers(None, ["f1"]) == set() and kept_set_numbers("vd-a28", ["f1"]) == set()
     assert kept_set_names("f195", ["f27", "f193", "f195", "vd-a"]) == {"f195", "f193"} and kept_set_names("vd-a", ["f27", "f28", "vd-a"]) == {"vd-a", "f28"}
     assert kept_set_names("f27", ["f27"]) == {"f27"} and kept_set_names("vd-a", ["vd-a"]) == {"vd-a"}
+    # Sealed sets (W521): the one before is the newest set made before the current one, else the highest f<N>; a set made
+    # later, and a set whose manifest does not read, are not the one before.
+    with tempfile.TemporaryDirectory(prefix="clean-sets-") as sets:
+        first, second, third, broken = ("s-%s-bbbbbbbb-cccccccc" % (letter * 8) for letter in "1234")
+        for name, made in ((first, "2026-11-17T01:00:00+01:00"), (second, "2026-11-17T02:00:00+01:00"), (third, "2026-11-17T03:00:00+01:00"), (broken, None)):
+            os.makedirs(os.path.join(sets, name))
+            with open(os.path.join(sets, name, MANIFEST), "w", encoding="utf-8") as file:
+                file.write(json.dumps({"made": made}) if made else "{not json")
+        names = ["f310", "f311", first, second, third, broken]
+        made = lambda name: set_made(sets, name)  # noqa: E731
+        assert set_made(sets, "f311") is None and set_made(sets, broken) is None and set_made(sets, first) < set_made(sets, second)
+        assert kept_set_names(second, names, made) == {second, first}, kept_set_names(second, names, made)
+        assert kept_set_names(third, names, made) == {third, second}
+        assert kept_set_names(first, names, made) == {first, "f311"}, "the first sealed set: the highest f<N> before it"
+        # The null: without the times, a sealed set keeps only the highest number, the rule before W521.
+        assert kept_set_names(third, names) == {third, "f311"}
+        assert kept_set_names("f311", names, made) == {"f311", "f310"}
     assert old_play_set("C:\\tmp\\play185\\nirender-plugin", {195, 194}) and not old_play_set("C:\\tmp\\play194\\x", {195, 194})
     assert not old_play_set("C:\\tmp\\playset\\x", {195, 194}) and not old_play_set("C:\\tmp\\play185\\x", set()) and not old_play_set("C:\\tmp\\walk\\x", {195})
     assert own_line([{"pid": 5, "parent": 3, "created": 30}, {"pid": 3, "parent": 1, "created": 20}, {"pid": 1, "parent": 0, "created": 10}, {"pid": 9, "parent": 3, "created": 40}], 5) == {5, 3, 1}
