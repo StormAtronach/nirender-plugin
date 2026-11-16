@@ -1829,7 +1829,8 @@ mod tests {
 
     /// A switch of the world text keeps each stage key at its id, so that an id the retained table kept
     /// still names its key and the rewrite finds it (live run G3 of 2026-11-16: "the stage key of the id: 0 in
-    /// the text, 1 wanted" after the switch). The null: stage shaders made new for the text lose the id.
+    /// the text, 1 wanted" after the switch). The stage parts of the old text start again: the key's module
+    /// is the part of the new text. The null: stage shaders made new for the text lose the id.
     #[test]
     fn a_switch_of_the_world_text_keeps_the_ids_of_the_stage_keys() {
         let mut data = DrawData::zeroed();
@@ -1838,14 +1839,25 @@ mod tests {
         let mut shaders = StageShaders::new(true, &world());
         let id = shaders.id_of(&data);
         assert_ne!(id, 0);
+        let module = shaders.module_of(&pipeline_key(id, 0));
+        assert!(shaders.source_of(module).is_ok());
         shaders.past_cap = 3;
         shaders.no_key = 2;
 
         let switched_text = format!("{}\n// switched\n", world());
         let mut switched = shaders.switched(&switched_text);
-        assert!(switched.source_of((id, 0)).is_ok());
+        assert_eq!(
+            (switched.parts.len(), switched.part_ids.len()),
+            (1, 0),
+            "the parts start again"
+        );
+        let switched_module = switched.module_of(&pipeline_key(id, 0));
+        assert_eq!(switched_module, (1, 0), "the key's part is the first part of the new text");
+        assert!(switched.source_of(switched_module).is_ok());
         assert_eq!(switched.id_of(&data), id);
-        assert!(StageShaders::new(true, &switched_text).source_of((id, 0)).is_err());
+        let mut fresh = StageShaders::new(true, &switched_text);
+        let fresh_module = fresh.module_of(&pipeline_key(id, 0));
+        assert!(fresh.source_of(fresh_module).is_err());
 
         // The counts of the key table go with the keys: the shapes that got id 0 do not ask again.
         assert_eq!((switched.past_cap, switched.no_key), (3, 2));
