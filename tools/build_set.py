@@ -52,16 +52,19 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sets  # noqa: E402
-from common import BUILD_ID_RE, REPO, docs_place, same_commit  # noqa: E402
+from common import BUILD_ID_RE, REPO, docs_place, local, main_checkout, same_commit  # noqa: E402
 from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_REPO  # noqa: E402
-from make_play_set import MGE_BRANCH, MGE_REPO, PDBS, PDB_KEEP, PLUGIN_BRANCH, PLUGIN_REPO, hold_run_lock, inside, say  # noqa: E402
+from make_play_set import MGE_BRANCH, PDBS, PDB_KEEP, PLUGIN_BRANCH, hold_run_lock, inside, say  # noqa: E402
 from new_run_folder import e_gate, this_session  # noqa: E402
 import symbols  # noqa: E402
 
 TREES = "C:/tmp/buildset"
 TREE_NAMES = {"nirender": "nirender-plugin", "render-link": "MGE-XE-G7-render-link", "mwse": "MWSE"}
-SOURCE_REPOS = {"nirender": PLUGIN_REPO, "render-link": MGE_REPO, "mwse": MWSE_REPO}
+# The repositories that the commits come from: beside the main checkout (as deploy_rest.MWSE_REPO), so that a run from
+# a worktree finds them; the key "repos" of local.json (make_play_set.REPOS) when it is set.
+SOURCE_ROOT = local("repos", os.path.dirname(main_checkout() or REPO))
+SOURCE_REPOS = {"nirender": os.path.join(SOURCE_ROOT, "nirender-plugin"), "render-link": os.path.join(SOURCE_ROOT, "MGE-XE-G7-render-link"), "mwse": MWSE_REPO}
 LUAJIT_BAT = docs_place("docs", "scripts", "mwse-build", "build_luajit.bat")
 MSBUILD = "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe"
 PLUGIN_TARGET = os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
