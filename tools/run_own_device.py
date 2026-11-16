@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lua_checks  # noqa: E402
 import session  # noqa: E402
 import symbols  # noqa: E402
-from common import BUILD_ID_RE, REPO, git_env, part_ids  # noqa: E402
+from common import BUILD_ID_RE, REPO, git_env, part_ids, stage_session_problem  # noqa: E402
 from deploy_rest import CORE_PATH, MWSE_REPO, DeployError, core_of  # noqa: E402
 from make_play_set import PDB_KEEP  # noqa: E402
 
@@ -2039,7 +2039,51 @@ def self_test_crash_after_done():
     assert run_exit_code(False, False, False, ENDED_OTHER, False, False) == 1, "a crash before DONE (Rob's 20261115-224206-rob-w344-ref-exit)"
     assert run_exit_code(False, False, True, ENDED_DONE, True, True) == EXIT_FELL_BACK
     assert run_exit_code(True, True, True, ENDED_DONE, False, True) == 2
-    assert len({0, 1, 2, EXIT_ENDED_BY_HAND, EXIT_FELL_BACK, EXIT_CRASHED_AFTER_DONE}) == 6, "one code for each ending"
+    assert len({0, 1, 2, EXIT_ENDED_BY_HAND, EXIT_FELL_BACK, EXIT_CRASHED_AFTER_DONE, EXIT_STAGE_SHADERS}) == 7, "one code for each ending"
+
+
+def self_test_stage_shaders():
+    """W523: a session whose helper reports a failed rewrite or a failed pipeline fails with EXIT_STAGE_SHADERS and an
+    ERROR line, with DONE, after a crash in the close and after an end by hand; the codes 2, 4 and 1 win. The null: a
+    clean report line, draws with a pipeline not made, a helper from before W523 and no text of the helper pass."""
+    import contextlib
+    import io
+    import tempfile
+
+    report = ("stage shaders: on (made on a thread, with a list), 37 stage keys (cap 256), 52 pipelines made (40 sent from the list, 0 of the list left out past its share of the cap); "
+              "%s; %s; draws on the uber-shader with a stage key: %d after a failed rewrite, %d after a failed pipeline, 31 with a pipeline not made; 0 draws past the cap, 12 draws with no key\n")
+    refused = "2 rewrites failed (stage key 1: the end mark of the stage loop: 0 in the text, 1 wanted; stage key 2: the end mark of the stage loop: 0 in the text, 1 wanted)"
+    with tempfile.TemporaryDirectory() as folder:
+        host = os.path.join(folder, "host.txt")
+
+        def of(text):
+            if text is None:
+                if os.path.isfile(host):
+                    os.remove(host)
+            else:
+                with open(host, "w", encoding="utf-8") as file:
+                    file.write("shapes: 1\n" + text)
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                return stage_shaders_of_run(host), said.getvalue()
+
+        problem, said = of(report % (refused, "0 pipelines failed", 900, 0))
+        assert problem and said.endswith("ERROR: the stage shaders failed in the session: 2 rewrites failed (the first: stage key 1: the end mark of the stage loop: "
+                                         "0 in the text, 1 wanted), 0 pipelines failed. The pictures are right; the speed of the stage shaders is lost\n"), said
+        problem, said = of(report % ("0 rewrites failed", "1 pipelines failed (stage keys 4)", 0, 3))
+        assert problem and "0 rewrites failed, 1 pipelines failed." in said, said
+        problem, said = of(report % ("0 rewrites failed", "0 pipelines failed", 0, 0))
+        assert problem is None and "ERROR" not in said and said.startswith("stage shaders: made on a thread, with a list; 0 rewrites failed, 0 pipelines failed; "), said
+        assert "31 with a pipeline not made" in said, "the draws of a cold start are reported, not failed: " + said
+        problem, said = of("stage shaders: on, 37 keys (cap 256), 52 pipelines made, 0 failed, 0 draws on the uber-shader while their pipeline was not made\n")
+        assert problem is None and said.rstrip().endswith("not checked"), said
+        assert of(None) == (None, ""), "a reference run has no text of the helper"
+    assert run_exit_code(False, False, True, ENDED_DONE, False, False, True) == EXIT_STAGE_SHADERS == 6
+    assert run_exit_code(False, False, True, ENDED_DONE, False, True, True) == EXIT_STAGE_SHADERS, "over the crash after DONE, which the gate takes as ran"
+    assert run_exit_code(False, False, False, ENDED_BY_HAND, False, False, True) == EXIT_STAGE_SHADERS, "a live session ended by hand"
+    assert run_exit_code(False, False, False, ENDED_OTHER, False, False, True) == 1, "the crash path first"
+    assert run_exit_code(False, False, True, ENDED_DONE, True, False, True) == EXIT_FELL_BACK
+    assert run_exit_code(True, True, True, ENDED_DONE, False, False, True) == 2
+    assert run_exit_code(False, False, True, ENDED_DONE, False, False, False) == 0
 
 
 def self_test_run_log():
@@ -2578,6 +2622,7 @@ def self_test():
     self_test_full_dump()
     self_test_ending()
     self_test_crash_after_done()
+    self_test_stage_shaders()
     self_test_run_log()
     self_test_use_instance()
     self_test_build_ids()
@@ -2957,6 +3002,7 @@ def main():
         print("  " + open(run.path("host.txt"), errors="replace").read().strip().replace("\n", "\n  ")[-3000:])
     else:
         print("\nhost: no text; the host program did not start")
+    stage_failed = stage_shaders_of_run(run.path("host.txt"))
     # The plugin's lines: in mgeXE.log with MGE XE's d3d8.dll. Without its export the plugin
     # writes into nirender.log of the game folder until Lua names the log of the run.
     lines = run.plugin_lines()
@@ -3005,7 +3051,7 @@ def main():
     print_disk_limits()
     if closed:
         print("plain case: the close after the refusal, as designed; the run passes without DONE")
-    return run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed))
+    return run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed), bool(stage_failed))
 
 
 # The endings of a run (W372): DONE came; the game closed by itself without DONE, after a step started, with exit code
@@ -3021,6 +3067,10 @@ EXIT_FELL_BACK = 4
 # (`close_game`, "[runner] game closed ...") has an exit code that is not 0, or the run kept a dump. The pictures and
 # logs of the steps stay in the run folder; the run is not clean.
 EXIT_CRASHED_AFTER_DONE = 5
+# A run whose helper reports a failed rewrite or a failed pipeline of the stage shaders (W523): the uber-shader drew
+# the draws, so the pictures are right and only the helper's report line shows it. The helper never ends a live
+# session for this; the runner fails the run at its end.
+EXIT_STAGE_SHADERS = 6
 CLOSE_LINE = re.compile(r"^\[runner\] game closed in \d+ s, without /F, exit code (.+)$")
 # The copy of the --log stream in the run folder, from the run folder's start on: a --log file of the same name in a
 # later run does not take it (W417).
@@ -3151,16 +3201,38 @@ def last_step(progress):
     return found
 
 
-def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, crashed_after_done=False):
+def stage_shaders_of_run(host_text):
+    """Prints the stage shaders of the session from the helper's text at the path `host_text` (W523): the summary of
+    the helper's report line, and an ERROR line for a failed rewrite or a failed pipeline. Returns the problem, or
+    None; a run with no text of the helper (a reference run) prints nothing."""
+    if not os.path.isfile(host_text):
+        return None
+    with open(host_text, encoding="utf-8", errors="replace") as file:
+        line, problem = stage_session_problem(file.read())
+    print(line)
+    if problem:
+        print("ERROR: " + problem)
+    return problem
+
+
+def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, crashed_after_done=False, stage_failed=False):
     """2 for a run without the plugin that loaded it (no reference), 4 (EXIT_FELL_BACK) for a wgpu
-    run that MGE XE took to the plain game, also with DONE, 5 (EXIT_CRASHED_AFTER_DONE) for a run
-    whose game crashed in its close after DONE (W417), else 0 when the steps were done in the
-    budget, 3 for a run ended by hand (W372), 1 for any other end. The 4 of check_mwse_sites.py and
-    deploy_rest.py (a missing MWSE feature) is another tool's code: nothing reads both."""
+    run that MGE XE took to the plain game, also with DONE, 1 for a run that ended without DONE and
+    not by hand (the crash path), 6 (EXIT_STAGE_SHADERS) for a run whose helper reports a failed
+    rewrite or a failed pipeline of the stage shaders (W523), also with DONE and after an end by
+    hand, 5 (EXIT_CRASHED_AFTER_DONE) for a run whose game crashed in its close after DONE (W417),
+    else 0 when the steps were done in the budget, 3 for a run ended by hand (W372). The 6 wins
+    over the 5 because validate_retained.py takes the 5 as a run that ran. The 4 of
+    check_mwse_sites.py and deploy_rest.py (a missing MWSE feature) is another tool's code:
+    nothing reads both."""
     if no_plugin and loaded:
         return 2
     if fell_back:
         return EXIT_FELL_BACK
+    if not done and ending != ENDED_BY_HAND:
+        return 1
+    if stage_failed:
+        return EXIT_STAGE_SHADERS
     if done and crashed_after_done:
         return EXIT_CRASHED_AFTER_DONE
     if done:

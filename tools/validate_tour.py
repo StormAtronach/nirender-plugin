@@ -6,7 +6,9 @@
 The run comes from `run_own_device.py --steps tour --tour-cells "@nifTest_1;@nifTest_2;@nifTest_3"`:
 its folder has `tour-<cell>.nircap` with two frames for each stop, and `progress.log` names
 the stops. This replays the second frame of each stop into `<out>/<cell>-<stop>-<id>.png`
-(`<out>` is the run folder without `--out`). With `--against`, it compares each picture with
+(`<out>` is the run folder without `--out`). The full output of each replay stays there too:
+`tour-frames-<capture>.replay.txt` for the one run of a capture, `<picture>.replay.txt` for a
+second try of one picture, each with the exit code first. With `--against`, it compares each picture with
 the one of the same name in the baseline folder and prints the mean difference, with the
 largest ones first. Make a baseline by replaying a run and copying its folder.
 
@@ -19,7 +21,11 @@ no picture of it is checked: it is "NOT RUN: slot refused", not a failed picture
 no second try. Its pairs are not compared. The exit code is 1 when a picture failed, else 3 when
 a replay was not run, else 0.
 
-    python tools/validate_tour.py --self-test   # a planted refusal, with no replay
+A replay that ended with the fault of the stage shaders (the helper's exit code 40, W523) made its
+pictures, and they are right: the uber-shader drew the draws. The pictures are compared, the fault
+has a "FAILED stage shaders" line with replay.py's line of each such replay, and the exit code is 1.
+
+    python tools/validate_tour.py --self-test   # a planted refusal and a planted fault, with no replay
 """
 import argparse
 import os
@@ -29,6 +35,9 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from common import keep_replay_output, stage_fault_in  # noqa: E402
+
 PYTHON = sys.executable
 # The start of the refusal of slot.py's check of build work (`refuse_build_tool`), which replay.py calls.
 REFUSED = "Refused by the slot check"
@@ -36,6 +45,8 @@ NOT_RUN = "NOT RUN: slot refused"
 NOT_RUN_CODE = 3
 # The runner of replay.py: the self-test replaces it.
 run_tool = subprocess.run
+# replay.py's line of each replay of this process that ended with the fault of the stage shaders.
+STAGE_FAULTS = []
 
 
 def stops_of(run):
@@ -62,6 +73,7 @@ def replay(capture, frame, picture):
     if MGE_BUILD:
         command += ["--mge-build", MGE_BUILD]
     result = run_tool(command, capture_output=True, text=True)
+    keep_replay_output(picture, result.returncode, result.stdout + result.stderr)
     return result.returncode == 0 and os.path.isfile(picture), (result.stdout + result.stderr)[-400:]
 
 
@@ -80,7 +92,11 @@ def replay_many(capture, items):
         command += ["--mge-build", MGE_BUILD]
     result = run_tool(command, capture_output=True, text=True)
     output = result.stdout + result.stderr
+    keep_replay_output(prefix, result.returncode, output)
     refused = refusal_of(output)
+    fault = stage_fault_in(output)
+    if fault:
+        STAGE_FAULTS.append(fault)
     missing = []
     for frame, picture in items:
         made = "%s-%05d.png" % (prefix, frame)
@@ -163,7 +179,11 @@ def main():
     print("%d pictures, %d failed" % (len(work) - len(failures) - len(not_run), len(failures)))
     if not_run:
         print("%s: %d pictures not made, and not checked" % (NOT_RUN, len(not_run)))
-    sys.path.insert(0, HERE)
+    stage_faults = list(STAGE_FAULTS)
+    if stage_faults:
+        print("FAILED stage shaders: %d replays ended with the fault of the stage shaders:" % len(stage_faults))
+        for fault in stage_faults:
+            print("  " + fault)
     import picture_diff
 
     if pairs:
@@ -189,7 +209,7 @@ def main():
         equal = sum(1 for mean, _, _ in rows if mean == 0)
         print("pairs: %d of %d equal%s" % (equal, len(rows), "; %d pairs %s, not compared" % (unrun, NOT_RUN) if unrun else ""))
     if not args.against:
-        return 1 if failures else NOT_RUN_CODE if not_run else 0
+        return 1 if failures or stage_faults else NOT_RUN_CODE if not_run else 0
 
     rows = []
     import glob
@@ -215,7 +235,7 @@ def main():
         print("  %-48s %s" % (name, text))
     equal = sum(1 for mean, _, _ in rows if mean == 0)
     print("%d of %d equal" % (equal, len(rows)))
-    return NOT_RUN_CODE if not_run else 0
+    return 1 if stage_faults else NOT_RUN_CODE if not_run else 0
 
 
 def self_test():
@@ -289,8 +309,41 @@ def self_test():
                     with contextlib.redirect_stdout(io.StringIO()) as printed:
                         assert main() == code, (tool.__name__, printed.getvalue())
                     assert text in printed.getvalue() and NOT_RUN in printed.getvalue(), printed.getvalue()
+                    assert STAGE_FAULTS == [] and "stage shaders" not in printed.getvalue(), printed.getvalue()
+
+                # W523: a replay that made each picture and ended with the fault of the stage shaders (exit code 40).
+                # No picture failed, the pairs are compared, and the tour fails with the line of each replay.
+                import shutil
+
+                import picture_diff
+
+                fault = "STAGE SHADERS: the replay of %s failed with exit code 40: 2 rewrites failed, 0 pipelines failed, 9 draws on the uber-shader with a stage key, 0 draws past the cap of the keys."
+                picture = os.path.join(folder, "one.png")
+                picture_diff.Image.new("RGB", (4, 4), (10, 20, 30)).save(picture)
+
+                def made_with_fault(command, **_):
+                    capture, prefix = command[2], command[3]
+                    for frame in command[command.index("--frames-at") + 1].split(","):
+                        shutil.copyfile(picture, "%s-%05d.png" % (prefix, int(frame)))
+                    return subprocess.CompletedProcess(command, 40, "stage shaders: a fault of the replay: 2 rewrites failed\n", fault % os.path.basename(capture) + "\n")
+
+                def made_clean(command, **kind):
+                    made_with_fault(command, **kind)
+                    return subprocess.CompletedProcess(command, 0, "", "")
+
+                for tool, code, faults in ((made_with_fault, 1, 2), (made_clean, 0, 0)):
+                    run_tool = tool
+                    STAGE_FAULTS.clear()
+                    with contextlib.redirect_stdout(io.StringIO()) as printed:
+                        assert main() == code, (tool.__name__, printed.getvalue())
+                    text = printed.getvalue()
+                    assert "4 pictures, 0 failed" in text and "pairs: 2 of 2 equal" in text, text
+                    kept = os.path.join(run, "tour-frames-tour-1.replay.txt")
+                    assert open(kept, encoding="utf-8").read().startswith("exit code %d\n" % (40 if faults else 0)), "the output of the replay is kept beside the pictures"
+                    assert text.count("  STAGE SHADERS: the replay of tour-") == faults and ("FAILED stage shaders: 2 replays" in text) == bool(faults), text
             finally:
                 sys.argv = real_argv
+                STAGE_FAULTS.clear()
         finally:
             run_tool = subprocess.run
     assert refusal_of("a\n" + refusal + "\nb") == refusal and refusal_of("replay of x: 3 pictures missing") == ""
