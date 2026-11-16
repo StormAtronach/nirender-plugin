@@ -30,9 +30,11 @@ set that it comes from.
 The set is made in <name>.making and renamed at the end, so a folder with the name is whole or is not there. If the
 name is there, its check passes and its manifest has the request's full commits, patch md5s and kind, nothing is built;
 with other full commits (the name holds only 8 hex of each), the tool stops with exit code 1 and names both. If the
-name is there and its check fails, or <name>.making is
-there, the tool stops and names the folder: it never builds a second time into a name, and it deletes nothing (until
-the delete right of D492 is in, an unfinished folder is the owner's to remove). The tool takes the build slot before its
+name is there and its check fails, the tool stops and names the folder: it never builds a second time into a name. The
+first file of <name>.making is the marker MAKING.json (the tool's commit, the session, the process id, the time); it is
+removed before the manifest is written. A later call that finds <name>.making with a marker whose process is gone
+renames it to <name>.failed-<time> and makes the set; with no marker, or with a process that lives, it stops. It
+deletes nothing (an unfinished folder goes by the delete right of D492, or by the owner). The tool takes the build slot before its
 first write to E: and keeps it to the rename of the set, noting its work and renewing its lease each minute. A hold can
 lapse after 15 idle minutes, so the tool asks the E: gate (`slot.py e-ok`, D297; the game holder is read first, see
 sets.e_gate) again before each phase of writes to E: (each build step of a tree on E:, the set's folder, the pdbs, the
@@ -102,6 +104,9 @@ NOTE_SECONDS = 60
 LEAST_FREE_BYTES = 20 * 10**9
 EXIT_FAULT = 1
 EXIT_REFUSED = 3
+# The first file of `<name>.making` (the design's 11.5): the tool's commit, the session, the process id and the time.
+# It is removed before the manifest is written, so a set never holds it.
+MARKER = "MAKING.json"
 # The Reviewer's point B (verdict 452): no real run has yet built a plain and a patched set of one commit in both
 # orders. A checkout of the same commit does not write HEAD, and the build ids are made again only on a change of HEAD,
 # so [I] the build id of a binary can miss its patch, or show "-dirty" without one.
@@ -558,6 +563,40 @@ def run_lock(path):
         os.close(descriptor)
 
 
+def process_lives(pid):
+    """(lives, program) of the process `pid`, from the Windows process list. Any process with that id counts as living,
+    whatever its program (another process can have taken the id again): the safe side. A list that cannot be read
+    counts as living too."""
+    try:
+        done = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid), "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                              timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        return True, "the process list: %s" % error
+    for line in done.stdout.splitlines():
+        cells = [cell.strip('"') for cell in line.split('","')]
+        if len(cells) > 1 and cells[1].strip('"') == str(int(pid)):
+            return True, cells[0]
+    return done.returncode != 0, "" if done.returncode == 0 else "the process list failed"
+
+
+def write_marker(making, session, now):
+    """The first file of `<name>.making`: who makes it (the design's 11.5)."""
+    marker = {"tool": tool_version(), "session": session, "pid": os.getpid(), "time": now.isoformat(timespec="seconds")}
+    with open(os.path.join(making, MARKER), "w", encoding="utf-8", newline="\n") as file:
+        json.dump(marker, file, indent=1, sort_keys=True)
+        file.write("\n")
+
+
+def read_marker(making):
+    """The marker of `<name>.making` as a dict, or None when it has none or it does not read."""
+    try:
+        with open(os.path.join(making, MARKER), encoding="utf-8") as file:
+            marker = json.load(file)
+    except (OSError, ValueError):
+        return None
+    return marker if isinstance(marker, dict) and isinstance(marker.get("pid"), int) else None
+
+
 def request_differences(manifest, commits, patch_md5s, kind):
     """How the set of `manifest` differs from a request of `commits` ({repo: full commit}), `patch_md5s` ({repo: md5})
     and `kind`: one text for each repo whose commit or patch differs, and one for the kind. Empty when it is the set of
@@ -576,20 +615,21 @@ def request_differences(manifest, commits, patch_md5s, kind):
 
 
 def make(commits, patches, kind, builder, root=sets.SETS, gate=e_gate, hold=None, keep=PDB_KEEP, session=this_session,
-         now=None, reuse=True, lock=RUN_LOCK):
+         now=None, reuse=True, lock=RUN_LOCK, lives=process_lives):
     """Makes the set of `commits` ({repo: full commit}) with `patches` ({repo: (file, md5)}). `builder` does the builds
     (Trees, or a fake in the tests); `hold` is a context manager for the build slot (None: no slot, the tests). Returns
     (exit code, lines); the last line is the set's folder. `reuse` False builds every part (only the null of a test).
     make() takes the tool's run lock `lock` itself, so that no caller can skip it, and stops with exit code 3 when
-    another run holds it (verdict 507, addition 2)."""
+    another run holds it (verdict 507, addition 2). `lives` replaces the process list in the tests."""
     with run_lock(lock) as held:
         if not held:
             return EXIT_REFUSED, ["another run of build_set.py holds its run lock %s: nothing is built" % lock.replace("\\", "/")]
-        return make_locked(commits, patches, kind, builder, root, gate, hold, keep, session, now, reuse)
+        return make_locked(commits, patches, kind, builder, root, gate, hold, keep, session, now, reuse, lives)
 
 
-def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session, now, reuse):
+def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session, now, reuse, lives):
     """make() under the run lock."""
+    now = now or datetime.datetime.now().astimezone()
     patch_md5s = {repo: md5 for repo, (_, md5) in patches.items()}
     name = sets.set_name(commits, patch_md5s, kind)
     folder = os.path.join(root, name)
@@ -607,8 +647,22 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
             return EXIT_FAULT, ["%s is there and is the set of other commits, and nothing is built: %s" % (name, "; ".join(differences))]
         there = ["%s is there and its check passes: nothing is built" % name]
         return 0, there + ([PATCH_UNVERIFIED] if patches else []) + [folder.replace("\\", "/")]
+    # An unfinished folder (the design's 11.5). Under the run lock no other maker runs, so a folder with the tool's
+    # marker is stale; the marker's process must also be gone (a second check). It is renamed aside, as the first
+    # phase of writes below; nothing is deleted.
+    stale = None
     if os.path.exists(making):
-        return EXIT_FAULT, ["%s is there: an unfinished set or another run that makes it; nothing is built" % making.replace("\\", "/")]
+        marker = read_marker(making)
+        if marker is None:
+            return EXIT_FAULT, ["%s is there with no marker %s: not an unfinished set of this tool by proof; nothing is built"
+                                % (making.replace("\\", "/"), MARKER)]
+        alive, program = lives(marker["pid"])
+        if alive:
+            return EXIT_FAULT, ["%s is there, and the process %d of its marker lives (%s); nothing is built"
+                                % (making.replace("\\", "/"), marker["pid"], program or "unknown")]
+        stale = "%s.failed-%s" % (folder, now.strftime("%Y%m%d-%H%M%S"))
+        if os.path.exists(stale):
+            return EXIT_FAULT, ["%s is there already: nothing is built" % stale.replace("\\", "/")]
     keys = part_keys(commits, lambda repo, folder: builder.tree(repo, commits[repo], folder), patch_md5s)
     found = {part: sets.find_part(root, part, keys[part], kind) if reuse else None for part in sets.PARTS}
     to_build = [part for part in sets.PARTS if found[part] is None]
@@ -629,6 +683,11 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
                 if not allowed:
                     raise SetFault("no set made: the E: gate says no before %s: %s" % (what, gate_line), EXIT_REFUSED)
 
+            if stale:
+                phase("the rename of the unfinished folder")
+                os.rename(making, stale)
+                lines.append("%s was an unfinished set of a run that is gone: renamed to %s" % (
+                    making.replace("\\", "/"), os.path.basename(stale)))
             for repo in ("nirender", "render-link"):
                 builder.ready(repo, commits[repo])
             if "mwse" in to_build:
@@ -661,6 +720,7 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
                 os.mkdir(making)
             except FileExistsError:
                 raise SetFault("%s appeared: another run makes this set" % making) from None
+            write_marker(making, session(), now)
             for part in sets.PARTS:
                 if found[part]:
                     source_name, source_manifest = found[part]
@@ -681,7 +741,9 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
             lines += ["pdb: " + line for line in keep_pdbs(name, making, pdbs, keep, root)]
             lines += builder.size_lines()
             phase("the manifest and the rename of the set")
-            write_manifest(making, name, kind, commits, patches, parts_from, keys, now or datetime.datetime.now().astimezone(), session())
+            # The marker is the tool's own file: it goes before the manifest, which records the same facts.
+            os.remove(os.path.join(making, MARKER))
+            write_manifest(making, name, kind, commits, patches, parts_from, keys, now, session())
             os.rename(making, folder)
     except SetFault as fault:
         return fault.code, lines + builder.size_lines() + [str(fault)]
@@ -945,7 +1007,34 @@ def self_test():
         assert code == 1 and "is not a sealed set" in lines[-1] and builder.cargo_builds == builds, lines
         os.mkdir(os.path.join(root, "s-6d1b214a-d9741dbb-0f0f0f0f.making"))
         code, lines = run(dict(commits, mwse="0f0f0f0f" + "1" * 32))
-        assert code == 1 and ".making is there" in lines[-1], lines
+        assert code == 1 and ".making is there with no marker" in lines[-1], lines
+        # The design's 11.5: a .making with the tool's marker whose process is gone is renamed to .failed-<time> under
+        # the lock, and the set is made; a marker whose process lives stops the call; the rename waits for the E: gate.
+        stale_commits = dict(commits, mwse="0e0e0e0e" + "1" * 32)
+        stale_making = os.path.join(root, sets.set_name(stale_commits) + ".making")
+        os.mkdir(stale_making)
+        write_marker(stale_making, "a gone session", datetime.datetime(2026, 11, 17, 1, 2, 3).astimezone())
+        dead = lambda pid: (False, "")  # noqa: E731
+        alive = lambda pid: (True, "python.exe")  # noqa: E731
+        code, lines = make(stale_commits, {}, sets.KIND_USUAL, builder, root, yes, None, keep, session, lock=lock, lives=alive)
+        assert code == EXIT_FAULT and "lives (python.exe)" in lines[-1] and os.path.isdir(stale_making), lines
+        code, lines = make(stale_commits, {}, sets.KIND_USUAL, builder, root, lambda: (False, "a timing run holds the game"), None, keep,
+                           session, lock=lock, lives=dead)
+        assert code == EXIT_REFUSED and "before the rename of the unfinished folder" in lines[-1] and os.path.isdir(stale_making), lines
+        assert not [name for name in os.listdir(root) if ".failed-" in name], os.listdir(root)
+        when = datetime.datetime(2026, 11, 17, 4, 5, 6).astimezone()
+        code, lines = make(stale_commits, {}, sets.KIND_USUAL, builder, root, yes, None, keep, session, now=when, lock=lock, lives=dead)
+        failed = sets.set_name(stale_commits) + ".failed-20261117-040506"
+        assert code == 0 and any("renamed to " + failed in line for line in lines), lines
+        assert os.path.isfile(os.path.join(root, failed, MARKER)) and not os.path.exists(stale_making), os.listdir(root)
+        made = sets.check(lines[-1])
+        assert MARKER not in made["files"] and not os.path.exists(os.path.join(lines[-1], MARKER)), "the marker went into the set"
+        assert read_marker(os.path.join(root, failed))["session"] == "a gone session"
+        # process_lives on this process (it lives) and on an id that no process has.
+        assert process_lives(os.getpid())[0] is True
+        assert process_lives(99999991) == (False, ""), process_lives(99999991)
+        # A process list that fails (tasklist refuses this id) counts as living: the safe side.
+        assert process_lives(4294967291)[0] is True
         # The builds and the probe run without the variables that point outside their trees (verdict 452, A2).
         outside = {"PATH": "p", "CARGO_TARGET_DIR": "t", "NIRENDER_PLUGIN_DIR": "n"}
         assert build_environment(outside) == {"PATH": "p"} and len(outside) == 3, outside
