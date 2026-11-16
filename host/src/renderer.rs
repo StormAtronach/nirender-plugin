@@ -2284,7 +2284,8 @@ impl Renderer {
         self.pipelines.clear();
         self.variant_shader = None;
         let variant = self.debug_variant;
-        self.stage_shaders = crate::stage_shaders::StageShaders::new(self.stage_shaders.on, &source);
+        let before = std::mem::replace(&mut self.stage_shaders, crate::stage_shaders::StageShaders::new(false, ""));
+        self.stage_shaders = before.switched(&source);
         self.stage_shaders.set_variant(variant);
         if self.world.stages_started {
             self.stage_shaders.start(self.maker.clone(), self.samples);

@@ -828,6 +828,17 @@ impl StageShaders {
         }
     }
 
+    /// The stage shaders of a new world text in the same session (W317's switch of the world shader).
+    /// The stage keys keep their ids: the retained table keeps the id of each shape for its life. All
+    /// that comes from the text starts again: the modules, the refusals, the list and the thread.
+    pub(crate) fn switched(self, world_source: &str) -> StageShaders {
+        StageShaders {
+            ids: self.ids,
+            keys: self.keys,
+            ..StageShaders::new(self.on, world_source)
+        }
+    }
+
     /// The id of the stage key of a record that took a plane after its key: the split copy of a draw, or a draw of a
     /// view with a plane (`view`). The plane is a fact of the key ([`StageKey::plane`]).
     pub(crate) fn id_with_plane(&mut self, data: &DrawData, view: bool) -> u32 {
@@ -1696,6 +1707,25 @@ mod tests {
         let mut expected: Vec<(String, String)> = known.iter().map(|&(f, l)| (f.to_string(), l.to_string())).collect();
         expected.sort();
         assert_eq!(found, expected);
+    }
+
+    /// A switch of the world text keeps each stage key at its id, so that an id the retained table kept
+    /// still names its key and the rewrite finds it (live run G3 of 2026-11-16: "the stage key of the id: 0 in
+    /// the text, 1 wanted" after the switch). The null: stage shaders made new for the text lose the id.
+    #[test]
+    fn a_switch_of_the_world_text_keeps_the_ids_of_the_stage_keys() {
+        let mut data = DrawData::zeroed();
+        data.counts[3] = 1 | 128;
+        data.flags = [1, 1, 0, 0];
+        let mut shaders = StageShaders::new(true, &world());
+        let id = shaders.id_of(&data);
+        assert_ne!(id, 0);
+
+        let switched_text = format!("{}\n// switched\n", world());
+        let mut switched = shaders.switched(&switched_text);
+        assert!(switched.source_of((id, 0)).is_ok());
+        assert_eq!(switched.id_of(&data), id);
+        assert!(StageShaders::new(true, &switched_text).source_of((id, 0)).is_err());
     }
 
     #[test]
