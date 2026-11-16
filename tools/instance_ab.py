@@ -21,7 +21,7 @@ merge. The stage compares two builds on the same data, on the same day:
 fails. The pictures of the build under test and the hash lines of its grass calls (`MGE_XE_GRASS_HASH=1`: the records in
 the order of the draw and as a set) must equal those of the base. A picture does not show the order of the draws; the
 ordered hash does. When the base prints no hash line, the stage judges the pictures and prints "hash NOT RUN (base has no
-hash line)": never a PASS of the hash.
+hash line)": a FAIL when the pictures differ, else NOT RUN, never a PASS.
 
 A stage prints NOT RUN, and exits with code 5, when it cannot judge:
 
@@ -30,7 +30,8 @@ A stage prints NOT RUN, and exits with code 5, when it cannot judge:
   status is not "game: free" or "game: held ... by", or a Morrowind.exe from the instance's folder runs;
 - a file that the generator writes (`generation_report.toml`, `generation_state.bin`) changed its time or size between the
   first replay and the last;
-- the base prints hash lines and none of them holds a grass record (the capture does not reach the code).
+- the base prints hash lines and none of them holds a grass record (the capture does not reach the code);
+- the base prints no hash line, and the pictures are equal (the order of the draws is not judged).
 
 Exit code 0 is a PASS, 1 a FAIL, 5 NOT RUN. The inputs of a stage are in `<baseline>/instance/<stage>/`: the capture and
 `mgeXE.toml`, a copy of the instance's file; the accepted baseline folder serves when the named one holds none. A planned
@@ -285,6 +286,9 @@ def judge(null_pictures, null_hash, pictures, hashes, base_hash, now_hash):
             lines.append("hash lines equal: %d calls, %d records" % (len(base_hash), hash_records(base_hash)))
     if failures:
         return FAIL, ["FAIL the build under test differs from the base"] + ["       " + line for line in failures] + lines
+    if not base_hash:
+        # The pictures do not show the order of the draws: without the base's hash the stage judged only a part.
+        return NOT_RUN, ["NOT RUN: the order of the grass draws is not judged; the pictures equal the base, and the base equals itself"] + lines
     return PASS, ["PASS pictures equal to the base, and the base equal to itself"] + lines
 
 
@@ -575,9 +579,11 @@ def self_test():
         open(os.path.join(b, "p-29.png"), "w").write("x")
         assert picture_differences(a, b, same) == ["p-2.png: differs", "p-29.png: no picture in %s" % a]
 
-        # The verdict. The null test comes first; a base with no hash line gives "hash NOT RUN", never a PASS of the hash.
+        # The verdict. The null test comes first; a base with no hash line gives "hash NOT RUN" and the stage NOT RUN
+        # (the plant), never a PASS: equal pictures say nothing of the order of the draws.
         code, lines = judge([], [], [], [], [], [])
-        assert code == PASS and lines[-1] == "hash NOT RUN (base has no hash line)"
+        assert code == NOT_RUN and lines[0].startswith("NOT RUN: the order of the grass draws is not judged; the pictures equal") and lines[-1] == "hash NOT RUN (base has no hash line)"
+        assert named(lines[0], "grass").startswith("NOT RUN grass: the order")
         code, lines = judge([], [], [], [], [one], [one])
         assert code == PASS and "hash lines equal: 1 calls, 3 records" in lines[-1] and "NOT RUN" not in " ".join(lines)
         code, lines = judge(["p-1.png: differs"], [], [], [], [one], [one])
