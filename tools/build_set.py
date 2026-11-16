@@ -34,7 +34,9 @@ name is there and its check fails, or <name>.making is
 there, the tool stops and names the folder: it never builds a second time into a name, and it deletes nothing (until
 the delete right of D492 is in, an unfinished folder is the owner's to remove). The tool takes the build slot for its
 builds and the probe and gives it back at its end. Before each write to E: it asks `slot.py e-ok` (D297) one time, and
-when the gate says no it stops with exit code 3 and writes nothing. One run of the tool at a time on this machine.
+when the gate says no it stops with exit code 3 and writes nothing. One run of the tool at a time on this machine:
+make() itself takes the run lock C:/tmp/buildset/build_set.lock, also when another tool calls it, and stops with exit
+code 3 while another run holds it.
 
 The last line is the set's folder. Exit code 0; 1 for a fault; 3 when a slot or the E: gate refuses; 4 when the probe
 finds a missing MWSE feature.
@@ -43,6 +45,7 @@ import argparse
 import contextlib
 import datetime
 import json
+import msvcrt
 import os
 import re
 import shutil
@@ -62,6 +65,8 @@ from sets import e_gate, this_session  # noqa: E402
 import symbols  # noqa: E402
 
 TREES = "C:/tmp/buildset"
+# The tool's run lock: one make() at a time on this machine, whoever calls it (main, make_play_set.py, merge_step.py).
+RUN_LOCK = os.path.join(TREES, "build_set.lock")
 TREE_NAMES = {"nirender": "nirender-plugin", "render-link": "MGE-XE-G7-render-link", "mwse": "MWSE"}
 # The repositories that the commits come from: beside the main checkout (as deploy_rest.MWSE_REPO), so that a run from
 # a worktree finds them; the key "repos" of local.json (make_play_set.REPOS) when it is set.
@@ -503,6 +508,25 @@ def build_hold(slots, label, no_wait):
 
 # --- the set ------------------------------------------------------------------------------------
 
+@contextlib.contextmanager
+def run_lock(path):
+    """The tool's run lock for the time of one make(): yields True, or False when another holds it. It is given back at
+    the end, so that a caller can call make() again (a lock is held per handle: a second handle of this process would be
+    refused too)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    descriptor = hold_run_lock(path)
+    if descriptor is None:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        with contextlib.suppress(OSError):
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        os.close(descriptor)
+
+
 def request_differences(manifest, commits, patch_md5s, kind):
     """How the set of `manifest` differs from a request of `commits` ({repo: full commit}), `patch_md5s` ({repo: md5})
     and `kind`: one text for each repo whose commit or patch differs, and one for the kind. Empty when it is the set of
@@ -521,10 +545,20 @@ def request_differences(manifest, commits, patch_md5s, kind):
 
 
 def make(commits, patches, kind, builder, root=sets.SETS, gate=e_gate, hold=None, keep=PDB_KEEP, session=this_session,
-         now=None, reuse=True):
+         now=None, reuse=True, lock=RUN_LOCK):
     """Makes the set of `commits` ({repo: full commit}) with `patches` ({repo: (file, md5)}). `builder` does the builds
     (Trees, or a fake in the tests); `hold` is a context manager for the build slot (None: no slot, the tests). Returns
-    (exit code, lines); the last line is the set's folder. `reuse` False builds every part (only the null of a test)."""
+    (exit code, lines); the last line is the set's folder. `reuse` False builds every part (only the null of a test).
+    make() takes the tool's run lock `lock` itself, so that no caller can skip it, and stops with exit code 3 when
+    another run holds it (verdict 507, addition 2)."""
+    with run_lock(lock) as held:
+        if not held:
+            return EXIT_REFUSED, ["another run of build_set.py holds its run lock %s: nothing is built" % lock.replace("\\", "/")]
+        return make_locked(commits, patches, kind, builder, root, gate, hold, keep, session, now, reuse)
+
+
+def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session, now, reuse):
+    """make() under the run lock."""
     patch_md5s = {repo: md5 for repo, (_, md5) in patches.items()}
     name = sets.set_name(commits, patch_md5s, kind)
     folder = os.path.join(root, name)
@@ -714,8 +748,19 @@ def self_test():
         os.mkdir(root)
         builder = FakeBuilder(scratch)
 
+        lock = os.path.join(scratch, "build_set.lock")
+
         def run(commits_of, builder_of=None, patches=None, gate=yes, reuse=True):
-            return make(commits_of, patches or {}, sets.KIND_USUAL, builder_of or builder, root, gate, None, keep, session, reuse=reuse)
+            return make(commits_of, patches or {}, sets.KIND_USUAL, builder_of or builder, root, gate, None, keep, session, reuse=reuse,
+                        lock=lock)
+
+        # The run lock (verdict 507, addition 2): make() takes it itself, and refuses while another holds it. The null:
+        # the same call after the holder lets go makes the set (the first set below).
+        with run_lock(lock) as held:
+            assert held
+            code, lines = run(commits)
+            assert code == EXIT_REFUSED and "holds its run lock" in lines[-1] and builder.cargo_builds == 0, lines
+            assert os.listdir(root) == [], os.listdir(root)
 
         # A set from nothing: every part built, the set passes its check, today's runner takes it.
         code, lines = run(commits)
@@ -946,10 +991,6 @@ def main():
         say(str(fault))
         return fault.code
     say("the commits: %s" % ", ".join("%s %s (%s)" % (repo, commits[repo][:8], names[repo]) for repo in sets.REPOS))
-    os.makedirs(TREES, exist_ok=True)
-    if hold_run_lock(os.path.join(TREES, "build_set.lock")) is None:
-        say("another run of build_set.py is at work, and this one stops")
-        return EXIT_REFUSED
     from make_play_set import load_slots
 
     slots = load_slots()
