@@ -285,11 +285,16 @@ unsafe fn exact_transform(t: &MainThread, node: usize) -> DTransform {
 
 /// In first person the game copies the stored position of the "Camera" node into the camera
 /// roots. This is the copy together with the exact position of the node at that moment. It
-/// is valid only in the frame in which the game made the copy.
+/// is the pair of the frame in which the game made the copy. A later frame takes it only
+/// while the root that the camera hangs from still holds the copy ([`pair_path`]): a camera
+/// that stands still then has one place, with or without a copy in the frame.
 struct EyePair {
     valid: bool,
     frame: u32,
     roots: [usize; 3],
+    /// The stored local translation of each root at the copy.
+    root_stored: [[f32; 3]; 3],
+    /// The stored local translation of root 0 at the copy: `exact` was made with it.
     stored: [f32; 3],
     exact: [f64; 3],
 }
@@ -298,6 +303,7 @@ static EYE: MainCell<EyePair> = MainCell::new(EyePair {
     valid: false,
     frame: 0,
     roots: [0; 3],
+    root_stored: [[0.0; 3]; 3],
     stored: [0.0; 3],
     exact: [0.0; 3],
 });
@@ -325,7 +331,10 @@ unsafe fn capture_eye(controller: usize) {
     }
     let Some(exact) = exact_translation(t, head, 0) else { return };
     let head_stored: [f32; 3] = rd(head, AV_WORLD + T_TRANSLATION);
-    eye.stored = rd(world_root, AV_LOCAL_TRANSLATE);
+    eye.root_stored = eye
+        .roots
+        .map(|root| if root == 0 { [0.0; 3] } else { rd(root, AV_LOCAL_TRANSLATE) });
+    eye.stored = eye.root_stored[0];
     for i in 0..3 {
         eye.exact[i] = exact[i] + (eye.stored[i] as f64 - head_stored[i] as f64);
     }
@@ -340,18 +349,65 @@ unsafe extern "C" fn camera_transforms_updated(_user: *mut core::ffi::c_void, pa
     capture_eye(packet.player_animation_controller as usize);
 }
 
-/// True when the camera hangs from a root that the game wrote the copy into.
-unsafe fn hangs_from_copied_root(eye: &EyePair, camera: usize) -> bool {
+/// The root that the camera hangs from, of the roots that the game wrote the copy into: its
+/// index in `eye.roots`.
+unsafe fn copied_root_above(eye: &EyePair, camera: usize) -> Option<usize> {
     let mut node: usize = rd(camera, AV_PARENT);
     let mut depth = 0;
     while node != 0 && depth < EYE_MAX_PARENT_DEPTH {
-        if eye.roots.contains(&node) {
-            return true;
+        if let Some(index) = eye.roots.iter().position(|&root| root == node) {
+            return Some(index);
         }
         node = rd(node, AV_PARENT);
         depth += 1;
     }
-    false
+    None
+}
+
+/// Where the place of a scene of the game's own camera comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EyePath {
+    /// The pair that the game's copy made in this frame.
+    Frame = 0,
+    /// The pair of an earlier frame.
+    Kept = 1,
+    /// The camera's own chain of stored values.
+    Chain = 2,
+}
+
+/// The path of a camera that hangs from a root of a valid pair. `root_kept` is the stored local
+/// translation of that root at the copy, `root_now` the same value now. The pair of an earlier
+/// frame is taken only while the two are equal to the bit: the game then wrote no other place
+/// into the root, so the pair is exact for this frame too. `keep` off leaves only the pair of
+/// the frame, as `camerarelative.cpp` has it.
+fn pair_path(made_in_this_frame: bool, keep: bool, root_kept: [f32; 3], root_now: [f32; 3]) -> EyePath {
+    if made_in_this_frame {
+        EyePath::Frame
+    } else if keep && root_kept.map(f32::to_bits) == root_now.map(f32::to_bits) {
+        EyePath::Kept
+    } else {
+        EyePath::Chain
+    }
+}
+
+unsafe fn eye_path(t: &MainThread, eye: &EyePair, camera: usize) -> EyePath {
+    if !eye.valid {
+        return EyePath::Chain;
+    }
+    let Some(root) = copied_root_above(eye, camera) else {
+        return EyePath::Chain;
+    };
+    let root_now: [f32; 3] = rd(eye.roots[root], AV_LOCAL_TRANSLATE);
+    // The comparison with the hooks of MGE XE stays a port of their steps.
+    pair_path(eye.frame == *FRAME.get(t), !compare(), eye.root_stored[root], root_now)
+}
+
+/// The exact place of a camera whose stored world translation is `location` and that hangs
+/// from a root of the pair. The root's value at the copy is in the sum two times with opposite
+/// signs: the place is `location` plus the rounding of the "Camera" node at the copy, whichever
+/// root the camera hangs from.
+fn eye_place(eye: &EyePair, location: [f32; 3]) -> [f64; 3] {
+    [0, 1, 2].map(|i| eye.exact[i] + (location[i] as f64 - eye.stored[i] as f64))
 }
 
 // ---- the state of the scene
@@ -376,6 +432,10 @@ static COUNTS: MainCell<[u32; 8]> = MainCell::new([0; 8]);
 unsafe fn count(t: &MainThread, index: usize) {
     (*COUNTS.get(t))[index] += 1;
 }
+
+/// The scenes of the game's own cameras by [`EyePath`]: the pair of the frame, the kept pair,
+/// the chain.
+static EYE_PATHS: MainCell<[u32; 3]> = MainCell::new([0; 3]);
 
 /// Turns the comparison on or off. Listens for the eye at the first use.
 ///
@@ -450,10 +510,11 @@ pub unsafe fn scene_begin(t: &MainThread, world_location: usize) -> Option<[f64;
     }
     let location: [f32; 3] = rd(world_location, 0);
     let eye = &*EYE.get(t);
-    let exact = if eye.valid && eye.frame == *FRAME.get(t) && hangs_from_copied_root(eye, camera) {
-        Some([0, 1, 2].map(|i| eye.exact[i] + (location[i] as f64 - eye.stored[i] as f64)))
-    } else {
-        exact_translation(t, camera, 0)
+    let path = eye_path(t, eye, camera);
+    (*EYE_PATHS.get(t))[path as usize] += 1;
+    let exact = match path {
+        EyePath::Frame | EyePath::Kept => Some(eye_place(eye, location)),
+        EyePath::Chain => exact_translation(t, camera, 0),
     };
     let origin = exact.unwrap_or(location.map(f64::from));
     // The entries of the scene before can describe a pose that the game changed.
@@ -958,12 +1019,14 @@ pub unsafe fn check_skinned_transforms(
 /// thread.
 pub unsafe fn report(t: &MainThread, reset: bool) -> String {
     let counts = &mut *COUNTS.get(t);
+    let paths = &mut *EYE_PATHS.get(t);
     let text = format!(
-        "camera_space: origin_equal {} origin_different {} rigid_equal {} rigid_different {} skinned_equal {} skinned_different {} rigid_made {} skinned_made {}",
-        counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6], counts[7]
+        "camera_space: origin_equal {} origin_different {} rigid_equal {} rigid_different {} skinned_equal {} skinned_different {} rigid_made {} skinned_made {} eye_frame {} eye_kept {} eye_chain {}",
+        counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6], counts[7], paths[0], paths[1], paths[2]
     );
     if reset {
         *counts = [0; 8];
+        *paths = [0; 3];
     }
     text
 }
@@ -1048,6 +1111,83 @@ mod tests {
             // A child that the game placed in another way keeps its stored translation.
             crate::mem::wr(c, AV_WORLD + T_TRANSLATION, [5.0f32, 0.0, 0.0]);
             assert_eq!(exact_translation(t, c, 0).unwrap()[0], 5.0);
+        }
+    }
+
+    #[test]
+    fn a_later_frame_takes_the_pair_only_while_the_root_holds_the_copy() {
+        let copy = [123456.79f32, -0.0, 8.5];
+        assert_eq!(pair_path(true, true, copy, copy), EyePath::Frame);
+        assert_eq!(pair_path(false, true, copy, copy), EyePath::Kept);
+        // The pair of the frame needs no equal root: the game made the copy in this frame.
+        assert_eq!(pair_path(true, true, copy, [0.0; 3]), EyePath::Frame);
+
+        // One float step on one axis is another place.
+        let moved = [f32::from_bits(copy[0].to_bits() + 1), copy[1], copy[2]];
+        assert_eq!(pair_path(false, true, copy, moved), EyePath::Chain);
+        // The compare is of the bits: 0.0 is not -0.0.
+        assert_eq!(pair_path(false, true, copy, [copy[0], 0.0, copy[2]]), EyePath::Chain);
+
+        // Without the kept pair, only the frame of the copy takes it.
+        assert_eq!(pair_path(false, false, copy, copy), EyePath::Chain);
+        assert_eq!(pair_path(true, false, copy, copy), EyePath::Frame);
+    }
+
+    #[test]
+    fn the_copied_root_above_a_camera_is_found_by_its_index() {
+        // camera -> a -> b -> c -> d, each the parent of the one before.
+        let mut nodes = [[0u8; 0x90]; 5];
+        let address: Vec<usize> = nodes.iter_mut().map(|node| node.as_mut_ptr() as usize).collect();
+        let (camera, a, b, c, d) = (address[0], address[1], address[2], address[3], address[4]);
+        let eye = |roots: [usize; 3]| EyePair {
+            valid: true,
+            frame: 1,
+            roots,
+            root_stored: [[0.0; 3]; 3],
+            stored: [0.0; 3],
+            exact: [0.0; 3],
+        };
+        unsafe {
+            for pair in address.windows(2) {
+                crate::mem::wr(pair[0], AV_PARENT, pair[1]);
+            }
+            assert_eq!(copied_root_above(&eye([a, 0, 0]), camera), Some(0));
+            assert_eq!(copied_root_above(&eye([d, b, 0]), camera), Some(1));
+            assert_eq!(copied_root_above(&eye([0, 0, c]), camera), Some(2));
+            // The fourth node above the camera is over the depth of the walk.
+            assert_eq!(copied_root_above(&eye([d, 0, 0]), camera), None);
+            // A root of 0 is no root: the walk ends at a node with no parent.
+            assert_eq!(copied_root_above(&eye([0; 3]), camera), None);
+            // The camera itself is not above the camera.
+            assert_eq!(copied_root_above(&eye([camera, 0, 0]), camera), None);
+        }
+    }
+
+    #[test]
+    fn the_place_of_the_eye_is_the_location_plus_the_rounding_of_the_copy() {
+        // The "Camera" node at the copy: stored 400000.03125, exact 400000.04.
+        let head_stored = [400000.03f32, 10.0, -20.0];
+        let head_exact = [400000.04f64, 10.0, -20.0];
+        let rounding = [0, 1, 2].map(|i| head_exact[i] - head_stored[i] as f64);
+        let location = [400010.0f32, 12.0, -21.5];
+        // The place does not depend on the root whose value the pair was made with.
+        for stored in [head_stored, [0.0; 3], [-7.5, 3.25, 1e6]] {
+            let eye = EyePair {
+                valid: true,
+                frame: 1,
+                roots: [0; 3],
+                root_stored: [[0.0; 3]; 3],
+                stored,
+                exact: [0, 1, 2].map(|i| head_exact[i] + (stored[i] as f64 - head_stored[i] as f64)),
+            };
+            let place = eye_place(&eye, location);
+            for i in 0..3 {
+                assert!(
+                    (place[i] - (location[i] as f64 + rounding[i])).abs() < 1e-9,
+                    "axis {i}: {}",
+                    place[i]
+                );
+            }
         }
     }
 }
