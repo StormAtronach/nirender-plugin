@@ -318,14 +318,16 @@ def placing(manifest, kinds=KINDS):
 
 # The Harness mod of a run that takes each kind, by the name after the prefix "Harness - " (harness.RUN_MOD_PREFIX).
 RUN_MOD = {"mge": "MGE XE", "mwse": "MGE XE", "nirender": "nirender", "test": "nirender"}
-RUN_KINDS_NO_PLUGIN = ("mge", "mwse")
+PLUGIN_IN_MOD = "MWSE/lib/akulakhan.dll"
 
 
 def stage_files(manifest, plugin):
-    """The staging of a run from the set's manifest: {(Harness mod, path in the mod): set path}. A run that loads the
-    plugin (`plugin`) takes every kind; a run that loads no plugin takes the MGE XE half only."""
-    placed, _, _ = placing(manifest, KINDS if plugin else RUN_KINDS_NO_PLUGIN)
-    return {(RUN_MOD[kind], dest): path for path, (kind, dest) in placed.items()}
+    """The staging of a run from the set's manifest: {(Harness mod, path in the mod): set path}. A run takes every
+    kind. A run that loads no plugin (not `plugin`) leaves out the plugin's DLL only: its scenario Lua
+    (noplugin.lua, test.lua) is in the nirender mod too."""
+    placed, _, _ = placing(manifest)
+    return {(RUN_MOD[kind], dest): path for path, (kind, dest) in placed.items()
+            if plugin or (kind, dest) != ("nirender", PLUGIN_IN_MOD)}
 
 
 def placing_faults(manifest):
@@ -485,7 +487,8 @@ def self_test_placing():
     assert with_plugin[("MGE XE", "Root/MWSE.dll")] == "MWSE.dll"
     assert with_plugin[("nirender", "MWSE/mods/nirender/test_views.lua")] == "plugin-test/MWSE/mods/nirender/test_views.lua"
     without = stage_files(manifest, False)
-    assert {mod for mod, _ in without} == {"MGE XE"} and ("MGE XE", "Root/dinput8.dll") in without
+    assert set(with_plugin) - set(without) == {("nirender", PLUGIN_IN_MOD)}, set(with_plugin) - set(without)
+    assert ("nirender", "MWSE/mods/nirender/main.lua") in without and ("MGE XE", "Root/dinput8.dll") in without
     assert len(with_plugin) == len(placed) and placing_faults(manifest) == []
     # Faults: a file of a new kind, a Lua folder below the plugin's Lua, a plugin-test file in the plugin-lua's place.
     for odd in ("tool.exe", "Data Files/Icons/a.dds", "Data Files/mwse/mods/nirender/sub/a.lua", "other/a.txt"):
