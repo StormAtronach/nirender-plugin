@@ -82,14 +82,24 @@ def stops_of(run):
     return stops, dual
 
 
-MGE_BUILD = None
+# replay.py's arguments that name the build of the replays (W545): ["--mge-build", <set>], ["--archive", <folder>] of
+# release.py's gate, or none (replay.py then takes the current set). main sets them.
+BUILD_ARGS = []
+
+
+def build_args(mge_build, archive):
+    """The arguments of replay.py for --mge-build or --archive. Raises ValueError for both."""
+    if mge_build and archive:
+        raise ValueError("an archive is not a set: no --mge-build with --archive")
+    if archive:
+        return ["--archive", archive]
+    return ["--mge-build", mge_build] if mge_build else []
 
 
 def replay(capture, frame, picture):
     command = [PYTHON, os.path.join(HERE, "replay.py"), capture, picture, "--frame", str(frame)]
     # The helper of the build under test, not the default one of replay.py.
-    if MGE_BUILD:
-        command += ["--mge-build", MGE_BUILD]
+    command += BUILD_ARGS
     result = run_tool(command, capture_output=True, text=True)
     keep_replay_output(picture, result.returncode, result.stdout + result.stderr)
     return result.returncode == 0 and os.path.isfile(picture), (result.stdout + result.stderr)[-400:]
@@ -106,8 +116,7 @@ def replay_many(capture, items):
     ("" when the replay ran)."""
     prefix = os.path.join(os.path.dirname(items[0][1]), "tour-frames-%s" % os.path.basename(capture)[:-7])
     command = [PYTHON, os.path.join(HERE, "replay.py"), capture, prefix, "--frames-at", ",".join(str(f) for f, _ in items)]
-    if MGE_BUILD:
-        command += ["--mge-build", MGE_BUILD]
+    command += BUILD_ARGS
     result = run_tool(command, capture_output=True, text=True)
     output = result.stdout + result.stderr
     keep_replay_output(prefix, result.returncode, output)
@@ -173,11 +182,14 @@ def main():
     ap.add_argument("--against")
     ap.add_argument("--out")
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--mge-build", default=None, help="the MGE XE build whose helper replays (replay.py's default without it)")
+    ap.add_argument("--mge-build", default=None, help="the sealed set whose helper replays (W545; replay.py's default, the current set, without it)")
+    ap.add_argument("--archive", default=None, help="the folder of an unpacked release archive whose helper replays: the release check")
     ap.add_argument("--least-stops", type=int, default=0, help="the tour fails with fewer stops than this (the play set: a much shorter tour did not run through)")
     args = ap.parse_args()
-    global MGE_BUILD
-    MGE_BUILD = args.mge_build
+    try:
+        BUILD_ARGS[:] = build_args(args.mge_build, args.archive)
+    except ValueError as problem:
+        ap.error(str(problem))
     del STAGE_FAULTS[:], CHECK_GAPS[:]
     out = args.out or args.run
     os.makedirs(out, exist_ok=True)
@@ -439,6 +451,24 @@ def self_test():
         finally:
             run_tool = subprocess.run
     assert refusal_of("a\n" + refusal + "\nb") == refusal and refusal_of("replay of x: 3 pictures missing") == ""
+    # W545: the build goes to replay.py as --archive for an archive, as --mge-build for a set, and not at all for the
+    # current set; both together are refused. The null of the archive is the form of the set.
+    assert build_args(None, "A") == ["--archive", "A"] and build_args("S", None) == ["--mge-build", "S"] and build_args(None, None) == []
+    try:
+        build_args("S", "A")
+        raise AssertionError("--mge-build with --archive was taken")
+    except ValueError as problem:
+        assert str(problem) == "an archive is not a set: no --mge-build with --archive", problem
+    try:
+        BUILD_ARGS[:] = ["--archive", "A"]
+        calls.clear()
+        run_tool = refused
+        with tempfile.TemporaryDirectory() as folder:
+            replay(os.path.join(folder, "tour-1.nircap"), 1, os.path.join(folder, "1-01.png"))
+        assert calls[-1][-2:] == ["--archive", "A"] and "--mge-build" not in calls[-1], calls[-1]
+    finally:
+        BUILD_ARGS[:] = []
+        run_tool = subprocess.run
     print("validate_tour self-test: ok")
     return 0
 
