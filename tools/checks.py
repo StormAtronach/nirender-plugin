@@ -158,9 +158,23 @@ CHECKS = {
     "check places": (PLUGIN / "tools" / "checks.py", PLUGIN, ["--self-test"]),
     # The pure parts of the corrupted-capture tool (the record walk, the mutations, the verdicts).
     "fuzz": (PLUGIN / "tools" / "fuzz_capture.py", PLUGIN, ["--self-test"]),
+    # The self-tests that no check ran before W527 (W524 F-G-20 C33): a test that no stage runs cannot fail a round.
+    "tour validation": (PLUGIN / "tools" / "validate_tour.py", PLUGIN, ["--self-test"]),
+    "lua checks": (PLUGIN / "tools" / "lua_checks.py", PLUGIN, ["--self-test"]),
+    "build sets": (PLUGIN / "tools" / "build_set.py", PLUGIN, ["--self-test"]),
+    "sets": (PLUGIN / "tools" / "sets.py", PLUGIN, ["--self-test"]),
+    "mwse sites parsing": (PLUGIN / "tools" / "check_mwse_sites.py", PLUGIN, ["--self-test"]),
+    "bc7": (PLUGIN / "tools" / "bc7.py", PLUGIN, ["--self-test"]),
+    "frame census": (PLUGIN / "tools" / "frame_census.py", PLUGIN, ["--self-test"]),
+    "new run folder": (PLUGIN / "tools" / "new_run_folder.py", PLUGIN, ["--self-test"]),
+}
+# The tools with a --self-test that no check runs, each with the reason. A new tool with a --self-test is a check, or a
+# line here (sibling of self_tests_without_check).
+SELF_TESTS_NOT_CHECKED = {
+    "symbols.py": "about 11 s and symstore.exe: too slow for the hook of each commit",
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test", "tour validation", "lua checks", "build sets", "sets", "mwse sites parsing", "bc7", "frame census", "new run folder"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects", "mge plain guards"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
@@ -169,6 +183,18 @@ LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 # The option that gives each check of the MGE XE tree another tree than the render-link sibling
 # (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
 MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "mge handshake": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge", "mge counted objects": "--mge", "mge plain guards": "--mge"}
+
+
+def self_tests_without_check(tools, checks, exempt):
+    """The scripts of the folder `tools` and its subfolders, by their path in it, that take --self-test, that no check of
+    `checks` runs with it, and that `exempt` does not name."""
+    run = {Path(script).resolve() for script, _, *rest in checks.values() if rest and "--self-test" in rest[0]}
+    found = []
+    for path in sorted(Path(tools).glob("*.py")) + sorted(Path(tools).glob("*/*.py")):
+        name = path.relative_to(tools).as_posix()
+        if name not in exempt and path.resolve() not in run and "--self-test" in path.read_text(encoding="utf-8", errors="replace"):
+            found.append(name)
+    return found
 
 
 def sibling_checks_without_option(checks, options):
@@ -222,6 +248,14 @@ def self_test():
     assert sibling_checks_without_option(CHECKS, MGE_OPTION) == [], sibling_checks_without_option(CHECKS, MGE_OPTION)
     without = {name: option for name, option in MGE_OPTION.items() if name != "mge handshake"}
     assert sibling_checks_without_option(CHECKS, without) == ["mge handshake"]
+    # W527 (W524 F-G-20 C33): every self-test of the tools is a check, or a line of SELF_TESTS_NOT_CHECKED. The plant: a
+    # new tool with a --self-test in a scratch folder. The null: before W527, eight tools of this folder were named.
+    unrun = self_tests_without_check(PLUGIN / "tools", CHECKS, SELF_TESTS_NOT_CHECKED)
+    assert unrun == [], "self-tests that no check runs: %s" % unrun
+    with tempfile.TemporaryDirectory() as folder:
+        with open(os.path.join(folder, "new_tool.py"), "w", encoding="utf-8") as file:
+            file.write('if "--self-test" in sys.argv:\n    pass\n')
+        assert self_tests_without_check(folder, CHECKS, SELF_TESTS_NOT_CHECKED) == ["new_tool.py"]
     print("checks self-test: ok")
     return 0
 
