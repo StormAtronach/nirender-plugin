@@ -12,7 +12,7 @@ The name is s-<nirender>-<render-link>-<mwse>, each the first 8 hex of the commi
 patch has "+p<the first 8 hex of the patch's md5>" after its commit. A build of another kind than the usual one has
 "-<kind>" at the end. So two kinds or a patch never share a name with the plain build of the same commits.
 
-A set has five parts, and each part comes from its own commits (its key). A key is the part's own repo's commit and, for
+A set has seven parts, and each part comes from its own commits (its key). A key is the part's own repo's commit and, for
 each thing of another repo that the part's build reads, the smallest name that holds it: the git tree of a folder, or
 the commit for a whole crate. Each path of a set is in one part.
 
@@ -23,6 +23,11 @@ the commit for a whole crate. Each path of a set is in one part.
   the git tree of nirender's contract/ (d3d8.dll compiles the contract header of the nirender tree beside it).
 - numidium: numidium.exe; key: the render-link and the nirender commits (it holds the host crate).
 - mwse: MWSE.dll and the core Lua; key: the MWSE commit.
+- luajit: lua51.dll in the root, beside MWSE.dll; key: the commit of deps/rubic0n that the MWSE commit names, and the
+  git blob of SharedSE/LuaJIT.targets (the build parameter) at the MWSE commit (the design's 11.2).
+- plugin-test: the files of the nirender tree's mod/ folder that the release does not ship (the test Lua, meshes and
+  textures that a run stages), below plugin-test/ as below mod/; key: plugin-lua's, since xtask's list of shipped Lua
+  decides the split (the plan's addendum 3). No deploy places it.
 
 `check` is the proof that a folder is a sealed set: its manifest reads, each folder and each file of the manifest is
 there, each file with its size and md5, no other file or folder is there, nothing in the folder is a link or a junction,
@@ -35,16 +40,23 @@ import re
 import stat
 import sys
 import tempfile
+import time
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from new_run_folder import SETS  # noqa: E402,F401  (the root of the sets: the root of the f<N> folders)
+from common import docs_place  # noqa: E402
 
+# The root of the sets (and of the older f<N> folders).
+SETS = "E:/nirender-keep/mgebuilds"
+HARNESS = docs_place("docs", "scripts", "test-harness-2026-10-03")
 MANIFEST = "MANIFEST.json"
 # The form of the manifest. A reader refuses another form (D126: no code for an old form).
 FORM = 1
 REPOS = ("nirender", "render-link", "mwse")
 KIND_USUAL = "usual"
-PARTS = ("plugin", "plugin-lua", "render-link", "numidium", "mwse")
+PARTS = ("plugin", "plugin-lua", "render-link", "numidium", "mwse", "luajit", "plugin-test")
+# The folder of the part plugin-test in a set: the files of the nirender tree's mod/ folder, below it as below mod/.
+PLUGIN_TEST = "plugin-test"
 PATCHES = "patches"
 # The name of a set: three commits of 8 hex, each with an optional patch mark, and an optional kind.
 NAME_RE = re.compile(r"s-([0-9a-f]{8})(\+p[0-9a-f]{8})?-([0-9a-f]{8})(\+p[0-9a-f]{8})?-([0-9a-f]{8})(\+p[0-9a-f]{8})?(?:-([a-z][a-z0-9]*))?")
@@ -56,10 +68,41 @@ PLUGIN_PATHS = ("data files/mwse/lib/akulakhan.dll",)
 PLUGIN_LUA_PATHS = ("data files/mwse/mods/nirender/",)
 NUMIDIUM_PATHS = ("numidium.exe",)
 MWSE_PATHS = ("mwse.dll", "data files/mwse/core/")
+LUAJIT_PATHS = ("lua51.dll",)
 
 
 class SetError(Exception):
     """A folder is not a sealed set; the message names the fault."""
+
+
+def slot_tool():
+    sys.path.insert(0, HARNESS)
+    import slot
+    return slot
+
+
+def e_gate(slot=None):
+    """(True, line) when no timing run holds the game (`slot.py e-ok`, D297), else (False, line). slot.py's e_ok applies
+    a timing holder's own rule (`in_force`) itself since W546 (docs 15d72f7b), so no read of the holder is needed here.
+    `slot` replaces the slot tool in the tests."""
+    try:
+        slot = slot or slot_tool()
+        reply = slot.e_ok()
+    except Exception as error:  # noqa: BLE001 - any fault of the slot tool means no write
+        return False, "the slot tool did not answer: %s" % error
+    return reply.code == slot.DONE, reply.text
+
+
+def this_session():
+    """The session of this process for the note: its id and, when slot.py finds it, its name."""
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not session:
+        return "no session (a terminal)"
+    try:
+        name = slot_tool().session_name(session)
+    except Exception:  # noqa: BLE001 - the name is only for the note
+        name = None
+    return "%s (%s)" % (name, session) if name else session
 
 
 def md5_of(path):
@@ -89,6 +132,8 @@ def part_of(path):
     low = path.lower()
     if low == MANIFEST.lower() or low.startswith(PATCHES + "/"):
         return None
+    if low.startswith(PLUGIN_TEST + "/"):
+        return "plugin-test"
     if PLUGIN_COPY_RE.fullmatch(low) or low.startswith(PLUGIN_PATHS):
         return "plugin"
     if low.startswith(PLUGIN_LUA_PATHS):
@@ -97,6 +142,8 @@ def part_of(path):
         return "numidium"
     if low.startswith(MWSE_PATHS):
         return "mwse"
+    if low in LUAJIT_PATHS:
+        return "luajit"
     return "render-link"
 
 
@@ -187,6 +234,160 @@ def check(folder):
     return manifest
 
 
+# --- the one map of placing (the plan's addendum 1 A4) ----------------------------------------------
+#
+# Where each file of a set goes, for a run's Harness mods and for the deploy's install mods alike: (kind, path in the
+# mod). The kinds: "mge" (the MGE XE mod), "nirender" (the plugin and its Lua), "mwse" (MWSE.dll, lua51.dll and the MWSE
+# core), and "test" (the part plugin-test, which only a run places). A file that the map cannot place is a fault, so a
+# set with a new kind of file stops both a run and a deploy (W524 F-T-4), and the two never place different files
+# (F-T-8).
+DATA_FILES = "data files/"
+MGE_ROOT_FILES = ("d3d8.dll", "dinput8.dll", "numidium.exe", "mgexegui.exe")
+MGE_DATA_FOLDERS = ("meshes/", "textures/", "shaders/", "mwse/mods/mge xe options/")
+MWSE_ROOT_FILES = ("mwse.dll", "lua51.dll")
+KINDS = ("mge", "nirender", "mwse", "test")
+# The kinds that a deploy places: no test files go into an install.
+DEPLOY_KINDS = ("mge", "nirender", "mwse")
+
+
+def never_placed(path):
+    """Why the set's file `path` is placed by no run and no deploy, or None. The set's own files (the manifest, the
+    patches, the plugin copy in the root), and what no deploy writes: a pdb, an esp or esm (it changes the load order),
+    the user's mgeXE.toml, a d3d9.dll."""
+    low = path.lower()
+    name = low.rsplit("/", 1)[-1]
+    if low == MANIFEST.lower() or low.startswith(PATCHES + "/") or PLUGIN_COPY_RE.fullmatch(low):
+        return "the set's own file"
+    if name.endswith((".pdb", ".esp", ".esm")) or name in ("mgexe.toml", "d3d9.dll"):
+        return "no deploy writes it"
+    return None
+
+
+def place_of(path):
+    """(kind, path in the mod) of the set's file `path`, or None when the map has no place for it. The case of the path
+    below a known folder is kept."""
+    low = path.lower()
+    folder, _, name = low.rpartition("/")
+    if low.startswith(PLUGIN_TEST + "/"):
+        return "test", path[len(PLUGIN_TEST) + 1:]
+    if folder == "":
+        if name in MGE_ROOT_FILES or name.endswith(".md"):
+            return "mge", "Root/" + path
+        if name in MWSE_ROOT_FILES:
+            return "mwse", "Root/" + path
+        return None
+    if folder == "mge3" and name.endswith(".toml"):
+        return "mge", "Root/" + path
+    if not low.startswith(DATA_FILES):
+        return None
+    below, low_below = path[len(DATA_FILES):], low[len(DATA_FILES):]
+    if low_below == "mwse/lib/akulakhan.dll":
+        return "nirender", "MWSE/lib/akulakhan.dll"
+    if low_below.startswith("mwse/mods/nirender/") and "/" not in low_below[len("mwse/mods/nirender/"):]:
+        return "nirender", "MWSE/mods/nirender/" + below[len("mwse/mods/nirender/"):]
+    if low_below.startswith("mwse/core/"):
+        return "mwse", "MWSE/core/" + below[len("mwse/core/"):]
+    if low_below.startswith(MGE_DATA_FOLDERS):
+        return "mge", below
+    return None
+
+
+def placing(manifest, kinds=KINDS):
+    """The one map of a set: ({set path: (kind, path in the mod)} for the kinds `kinds`, {set path: why it is never
+    placed}, [the set paths that the map cannot place]). A run takes every kind (KINDS, less "nirender" and "test" when
+    it loads no plugin); a deploy takes DEPLOY_KINDS."""
+    placed, never, unplaced = {}, {}, []
+    for path in sorted(manifest.get("files", {})):
+        why = never_placed(path)
+        if why:
+            never[path] = why
+            continue
+        place = place_of(path)
+        if place is None:
+            unplaced.append(path)
+        elif place[0] in kinds:
+            placed[path] = place
+    return placed, never, unplaced
+
+
+# The Harness mod of a run that takes each kind, by the name after the prefix "Harness - " (harness.RUN_MOD_PREFIX).
+RUN_MOD = {"mge": "MGE XE", "mwse": "MGE XE", "nirender": "nirender", "test": "nirender"}
+PLUGIN_IN_MOD = "MWSE/lib/akulakhan.dll"
+
+
+def stage_files(manifest, plugin):
+    """The staging of a run from the set's manifest: {(Harness mod, path in the mod): set path}. A run takes every
+    kind. A run that loads no plugin (not `plugin`) leaves out the plugin's DLL only: its scenario Lua
+    (noplugin.lua, test.lua) is in the nirender mod too."""
+    placed, _, _ = placing(manifest)
+    return {(RUN_MOD[kind], dest): path for path, (kind, dest) in placed.items()
+            if plugin or (kind, dest) != ("nirender", PLUGIN_IN_MOD)}
+
+
+def placing_faults(manifest):
+    """The faults of the map for this set: a file with no place, and two files with one place in a mod (the case of a
+    path does not count on Windows)."""
+    placed, _, unplaced = placing(manifest)
+    faults = ["the file %s has no place in a run or a deploy (sets.place_of)" % path for path in unplaced]
+    targets = {}
+    for path, (kind, dest) in placed.items():
+        target = (RUN_MOD[kind], dest.lower())
+        if target in targets:
+            faults.append("the files %s and %s have one place, %s in Harness - %s" % (targets[target], path, dest, target[0]))
+        else:
+            targets[target] = path
+    return faults
+
+
+def verify(folder):
+    """The manifest of the sealed set `folder`, after check(folder) and the faults of the map. Raises SetError with every
+    fault found. A run and a deploy read a set only through this."""
+    manifest = check(folder)
+    faults = placing_faults(manifest)
+    if faults:
+        raise SetError("%s cannot be placed: %s" % (folder, "; ".join(faults)))
+    return manifest
+
+
+# The batch file in SETS that names the current set (W500, the owner's D461; W521 D 2.5: one line): deploy_rest.py after
+# each deploy and make_play_set.py after a set that passed write it (`write_current_bat`); clean_common.current_set reads
+# it, and the owner's local.bat calls it. The tries of its rename while a reader holds it, and the wait between them.
+CURRENT_BAT = "current.bat"
+CURRENT_BAT_TRIES = 5
+CURRENT_BAT_WAIT_SECONDS = 0.5
+
+
+def current_bat_text(folder):
+    """The one line of CURRENT_BAT (CRLF) for the set `folder`. No plugin line: a run takes the set's plugin, and the
+    variable NIRENDER_PLUGIN_DLL is read by nothing (W521)."""
+    return 'set "MGE_BUILD=%s"\r\n' % os.path.normpath(os.path.abspath(folder))
+
+
+def write_current_bat(sets_root, name):
+    """Writes CURRENT_BAT in `sets_root` for the set `name`. The text goes to a temporary name in the same folder first
+    and then takes the place of the old file in one rename, so a reader sees the old file or the new one, never a part.
+    A reader that holds the old file makes the rename try again a few times. Returns the path; raises OSError when it
+    cannot."""
+    path = os.path.join(sets_root, CURRENT_BAT)
+    temporary = path + ".new"
+    with open(temporary, "w", encoding="ascii", newline="") as file:
+        file.write(current_bat_text(os.path.join(sets_root, name)))
+    for attempt in range(CURRENT_BAT_TRIES):
+        try:
+            os.replace(temporary, path)
+            return path
+        except PermissionError:
+            if attempt + 1 == CURRENT_BAT_TRIES:
+                raise
+            time.sleep(CURRENT_BAT_WAIT_SECONDS)
+    return path
+
+
+# The binaries of a set whose pdbs the symbol store takes, as paths in the set; the pdbs are in E:/nirender-keep/pdb/<the
+# set's name> (a set holds none). The runner and the deploy add them under the set's name.
+SYMBOL_FILES = ("d3d8.dll", "dinput8.dll", "numidium.exe", "MWSE.dll", "lua51.dll", PLUGIN_STAGED)
+
+
 def plugin_copy(manifest):
     """The path of the plugin copy in the root of a set, from its manifest."""
     return next(path for path in manifest["files"] if PLUGIN_COPY_RE.fullmatch(path))
@@ -255,7 +456,89 @@ def faults_of(folder):
     return ""
 
 
+def fake_slot(e_ok_code="done"):
+    """A slot tool for the test of e_gate: it records its calls in `calls`, and has only e_ok."""
+    calls = []
+    slot = types.SimpleNamespace(DONE="done", calls=calls)
+    slot.e_ok = lambda: calls.append("e_ok") or types.SimpleNamespace(code=e_ok_code, text="e-ok: %s" % e_ok_code)
+    return slot
+
+
+def self_test_e_gate():
+    # e_ok decides, and it is the only call (W546: no read of the game holder here).
+    slot = fake_slot("refused")
+    assert e_gate(slot) == (False, "e-ok: refused") and slot.calls == ["e_ok"], slot.calls
+    # The null: e_ok's yes.
+    slot = fake_slot()
+    assert e_gate(slot) == (True, "e-ok: done") and slot.calls == ["e_ok"], slot.calls
+    # A slot tool that fails: no.
+    broken = fake_slot()
+    broken.e_ok = lambda: (_ for _ in ()).throw(OSError("state busy"))
+    assert e_gate(broken)[0] is False and "state busy" in e_gate(broken)[1]
+
+
+def self_test_placing():
+    # The files of a set of each group that the real set s-a7b9d1c6-8fd46faf-89198b53 holds, and plugin-test.
+    paths = ["MANIFEST.json", "akulakhan-a7b9d1c.dll", "d3d8.dll", "dinput8.dll", "numidium.exe", "MGEXEgui.exe",
+             "README.md", "mge3/main.toml", "MWSE.dll", "lua51.dll", "patches/render-link.patch",
+             "Data Files/XE Sky Variations.esp", "Data Files/meshes/f/sky.nif", "Data Files/mwse/core/initialize.lua",
+             "Data Files/mwse/lib/akulakhan.dll", "Data Files/mwse/mods/nirender/main.lua",
+             "Data Files/mwse/mods/MGE XE Options/main.lua", "Data Files/shaders/core/a.fx",
+             "Data Files/shaders/XEshaders/b.fx", "Data Files/textures/MGE/c.dds",
+             "plugin-test/MWSE/mods/nirender/test_views.lua", "plugin-test/meshes/@_nifx/a.nif"]
+    manifest = {"files": {path: {} for path in paths}}
+    placed, never, unplaced = placing(manifest)
+    assert unplaced == [], unplaced
+    assert set(never) == {"MANIFEST.json", "akulakhan-a7b9d1c.dll", "patches/render-link.patch",
+                          "Data Files/XE Sky Variations.esp"}, never
+    assert set(placed) | set(never) == set(paths)
+    assert placed["d3d8.dll"] == ("mge", "Root/d3d8.dll") and placed["mge3/main.toml"] == ("mge", "Root/mge3/main.toml")
+    assert placed["MWSE.dll"] == ("mwse", "Root/MWSE.dll") and placed["lua51.dll"] == ("mwse", "Root/lua51.dll")
+    assert placed["Data Files/mwse/core/initialize.lua"] == ("mwse", "MWSE/core/initialize.lua")
+    assert placed["Data Files/mwse/lib/akulakhan.dll"] == ("nirender", "MWSE/lib/akulakhan.dll")
+    assert placed["Data Files/mwse/mods/nirender/main.lua"] == ("nirender", "MWSE/mods/nirender/main.lua")
+    assert placed["Data Files/mwse/mods/MGE XE Options/main.lua"] == ("mge", "mwse/mods/MGE XE Options/main.lua")
+    assert placed["plugin-test/meshes/@_nifx/a.nif"] == ("test", "meshes/@_nifx/a.nif")
+    # The run's map less plugin-test is the deploy's map, path for path (addendum 1 A4).
+    deploy, _, _ = placing(manifest, DEPLOY_KINDS)
+    assert {path: place for path, place in placed.items() if place[0] != "test"} == deploy
+    assert not any(path.lower().startswith(PLUGIN_TEST + "/") for path in deploy)
+    # The staging of a run with the plugin and without it.
+    with_plugin = stage_files(manifest, True)
+    assert with_plugin[("MGE XE", "Root/MWSE.dll")] == "MWSE.dll"
+    assert with_plugin[("nirender", "MWSE/mods/nirender/test_views.lua")] == "plugin-test/MWSE/mods/nirender/test_views.lua"
+    without = stage_files(manifest, False)
+    assert set(with_plugin) - set(without) == {("nirender", PLUGIN_IN_MOD)}, set(with_plugin) - set(without)
+    assert ("nirender", "MWSE/mods/nirender/main.lua") in without and ("MGE XE", "Root/dinput8.dll") in without
+    assert len(with_plugin) == len(placed) and placing_faults(manifest) == []
+    # Faults: a file of a new kind, a Lua folder below the plugin's Lua, a plugin-test file in the plugin-lua's place.
+    for odd in ("tool.exe", "Data Files/Icons/a.dds", "Data Files/mwse/mods/nirender/sub/a.lua", "other/a.txt"):
+        assert placing_faults({"files": dict(manifest["files"], **{odd: {}})}) == [
+            "the file %s has no place in a run or a deploy (sets.place_of)" % odd], odd
+    twin = dict(manifest["files"], **{"plugin-test/MWSE/mods/nirender/Main.lua": {}})
+    assert "have one place" in placing_faults({"files": twin})[0], placing_faults({"files": twin})
+    # Never placed: a pdb, an esm, mgeXE.toml and d3d9.dll; a pdb in the plugin's folder too.
+    for withheld in ("d3d8.pdb", "Data Files/a.esm", "mge3/mgeXE.toml", "d3d9.dll", "Data Files/mwse/lib/akulakhan.pdb"):
+        assert never_placed(withheld) == "no deploy writes it", withheld
+
+
+def self_test_current_bat():
+    """3.2 (D 2.5): current.bat is one line, ASCII and CRLF, that names the set's folder; a second write replaces it whole,
+    and no temporary file stays. The null: the form before W521 had a second line, NIRENDER_PLUGIN_DLL."""
+    with tempfile.TemporaryDirectory(prefix="sets-bat-") as root:
+        for name in ("s-6d1b2140-d9741db1-89198b53", "s-00000000-d9741db1-89198b53"):
+            path = write_current_bat(root, name)
+            with open(path, "rb") as file:
+                data = file.read()
+            assert data == ('set "MGE_BUILD=%s"\r\n' % os.path.join(os.path.abspath(root), name)).encode("ascii"), data
+            assert data.count(b"\r\n") == 1 and b"NIRENDER_PLUGIN_DLL" not in data
+        assert os.listdir(root) == [CURRENT_BAT], os.listdir(root)
+
+
 def self_test():
+    self_test_e_gate()
+    self_test_placing()
+    self_test_current_bat()
     commits = {"nirender": "6d1b214" + "0" * 33, "render-link": "d9741db" + "1" * 33, "mwse": "89198b53f0" + "2" * 30}
     assert set_name(commits) == "s-6d1b2140-d9741db1-89198b53"
     assert set_name(commits, {"render-link": "abcdef0123456789"}, "rig") == "s-6d1b2140-d9741db1+pabcdef01-89198b53-rig"
@@ -269,6 +552,8 @@ def self_test():
     assert part_of("akulakhan-45b645b.dll") == "plugin" and part_of("Data Files/mwse/mods/nirender/main.lua") == "plugin-lua"
     assert part_of("Data Files/MWSE/lib/akulakhan.dll") == "plugin" and part_of("numidium.exe") == "numidium"
     assert part_of("MWSE.dll") == "mwse" and part_of("Data Files/MWSE/core/initialize.lua") == "mwse"
+    assert part_of("lua51.dll") == "luajit" and part_of("Data Files/lua51.dll") == "render-link"
+    assert part_of("plugin-test/meshes/@_nifx/a.nif") == "plugin-test" and part_of("plugin-test/MWSE/mods/nirender/t.lua") == "plugin-test"
     assert part_of("d3d8.dll") == "render-link" and part_of("Data Files/mwse/mods/MGE XE Options/main.lua") == "render-link"
     assert part_of(MANIFEST) is None and part_of("patches/mwse.patch") is None
 
@@ -307,6 +592,18 @@ def self_test():
         os.remove(os.path.join(folder, "d3d8.pdb"))
         scratch_manifest(folder, name)
         assert faults_of(folder) == ""
+        # verify: the null passes; a sealed file with no place stops it, and check alone does not see it.
+        assert verify(folder)["name"] == name
+        write(os.path.join(folder, "tool.exe"), b"x")
+        scratch_manifest(folder, name)
+        assert faults_of(folder) == ""
+        try:
+            verify(folder)
+            raise AssertionError("verify took a file with no place")
+        except SetError as error:
+            assert "the file tool.exe has no place" in str(error), error
+        os.remove(os.path.join(folder, "tool.exe"))
+        scratch_manifest(folder, name)
         # A junction inside: named, and not entered.
         target = os.path.join(root, "elsewhere")
         os.mkdir(target)

@@ -1,6 +1,6 @@
 """The checks of a merge, for the Coordinator, on the merged tree: one PASS or FAIL line for each stage.
 
-    python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--no-wait] [--dry-run]
+    python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --self-test    # the tests of the pure parts: no build, no game
     python -I tools/merge_step.py --open-deploys # the WITHHELD deploys that no deploy closed
 
@@ -12,7 +12,7 @@ When a stage needs the game slot (the replay gate, the instance A/B, deploy rest
 build side in one take, slot.py's `take both` (a lease of 4 hours), for the whole check (the owner's D161, D183). It never
 holds one of them while it waits for the other (the owner's D208, after the deadlock of 14:37 on 2026-11-10): it waits in
 both queues and holds nothing until both are free. A check with no such stage leaves the game slot free, so a game can run
-beside it: none of its stages may then name a path on E: (a base build, a copy to E:\\nirender-keep), and the tool refuses
+beside it: none of its stages may then name a path on E: (a set, a copy to E:\\nirender-keep), and the tool refuses
 such a stage list (only its own log and closes.tsv, small appends, go to E: then). The slots are released on every exit
 path: a pass, a failing stage, an exception and Ctrl-C. While the stages run, a thread notes the game slot's work each
 minute, as no game runs and the slot lapses after 15 idle minutes; a hold that lapses all the same is taken again before
@@ -32,7 +32,7 @@ After a later commit, <branch>@{1} moves past a merge that failed or had no run.
 the last commit that passed all stages, and the tool also refuses a <tip> newer than it. A branch with no such ref has only
 the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch.
 
-A FORMAT CHANGE (W527): the instance A/B exits with code 6 when the base build refuses the capture with a format code of
+A FORMAT CHANGE (W527): the instance A/B exits with code 6 when the base set refuses the capture with a format code of
 the helper and the build under test plays it, so the two builds read two formats and cannot be compared on one capture.
 The exit code decides, never a line's text. The stage passes only with --evidence "instance A/B grass=FILE", a file that
 exists; the verdict and the round's close line name the file's md5. Without the file the round fails. Any other NOT RUN
@@ -52,40 +52,40 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   shader, the depth and the spot functions), and tests in several of its modules read that text, most of them through
   helper functions: a mark on the tests would miss some, so the whole package runs. The stage runs through
   "merge_step.py --require-tests <command>" and fails when no test ran;
-- for nirender-plugin, "mwse sites <instance>": tools/check_mwse_sites.py on the MWSE.dll deployed in each test install
-  (Morrowind75testing, Outlander-test), when the change touches the ports, the hooks, the install, the function table,
-  the call sites or the baseline of the check (Brief 22): a new port over an MWSE patch that is already deployed fails;
-- in every round that deploys (the gate's paths, or DEPLOY_PATHS of the plugin), "mwse features <instance>":
-  tools/check_mwse_sites.py --features in the plugin's tree on the same MWSE.dll of each test install, before the build
-  (W406). It asks whether that MWSE has what this plugin needs (MWSE_FEATURES of src/mwse_sites.rs), not whether a
-  port meets an MWSE patch. With --mge and the render-link sibling, it also asks for what that tree's d3d8.dll needs:
-  native request 7 (MWSE_NATIVE_REQUEST_MGE_API) when its d3d8 source sends it, as render-link 76918d5 and later do
-  (W495). A failure of the probe (exit code 1) fails the round, and nothing is deployed. A missing
-  required feature (exit code 4) is the word WITHHELD, which counts as passed: the code under test is right, and the
-  deployed MWSE is too old for it. The build still runs, `deploy rest` then deploys nothing and is WITHHELD too, and the
-  round prints one "WITHHELD deploy rest" line (in the log, and again after the summary) with each install's MWSE.dll
-  and what it lacks, and the command that deploys the build
-  with an MWSE.dll that has it (deploy_rest.py --mwse-dll). The installs keep the pair that they hold;
-- in the same rounds, after those probes, "mwse core": deploy_rest.py --check-mwse-core (D442). It fails when an
-  install's MWSE core is not the core of the MWSE commit of its MWSE.dll, by the record that deploy_rest.py --mwse-dll
-  --mwse-commit writes in each install (mwse-deployed.json), or when there is no such record. A failure fails the round,
-  and nothing is deployed;
+- "build the set" (W521): every round that deploys (the gate's paths, or DEPLOY_PATHS of the plugin) first makes the
+  sealed set of the commits under test and the round's MWSE commit with tools/build_set.py, in the plugin's tree and in
+  the take of the round (--in-hold <the round's label>). The set is E:\\nirender-keep\\mgebuilds\\s-<nir8>-<rl8>-<mwse8>.
+  The maker builds each part in its own trees under C:\\tmp\\buildset and takes a part that an earlier set holds. The
+  round's MWSE commit is --mwse <commit>, else the commit that the record of every test install names; a round that
+  makes a set with no known MWSE commit is refused before its take. Before the seal the maker probes the set's MWSE.dll
+  for what the plugin needs (MWSE_FEATURES of src/mwse_sites.rs) and what the d3d8.dll of the set needs (native request
+  7, W495). A missing feature (the maker's exit code 4) is the word WITHHELD on the stage, and the round fails (Q10):
+  the stages that take the set (the sites of the set, deploy rest, the replay gate, the helper sources, the instance
+  A/B) are NOT RUN, and the line names the missing feature and --mwse <an MWSE commit that has it>. Any other failure of
+  the maker fails the round, and the same stages are NOT RUN. The maker needs 20 GB free on C:, and a set may be cleaned
+  from E: between rounds: the next round makes it again;
+- for nirender-plugin, "mwse sites": tools/check_mwse_sites.py, when the change touches the ports, the hooks, the
+  install, the function table, the call sites or the baseline of the check (Brief 22). A new port over an MWSE patch
+  fails. In a round with a set, the stage "mwse sites (the set)" reads the set's MWSE.dll, the one that the deploy
+  writes, after the set and before the deploy. A change of the baseline alone deploys nothing: the stages
+  "mwse sites <instance>" then read the MWSE.dll deployed in each test install (Morrowind75testing, Outlander-test);
 - a d3d8 build and check_contract.py --mge when the change touches d3d8, mge-config or contract/;
-- the replay gate, tools/validate_retained.py baseline with no game, when the change touches the host's source, the
-  helper's renderer, the shaders of the assets (the source of the shaders in a build), or a manifest or a lock of the
-  build. The path decides: a stream or a table change can move a picture too. The gate does not run when its build failed;
-- with the gate, the A/B stages of tools/instance_ab.py: `base build` keeps the build of the current tips of the target
-  branches of BOTH repos in E:\\nirender-keep\\merge-step\\base-<branch> (key: both commits and the profile; a tip that
-  moved builds again), and `instance A/B grass` replays a capture of Outlander-test with the base, the build under test and
-  the base again, on the same data, and compares the pictures and the hash lines of the grass calls. NOT RUN is not a PASS:
-  it counts as a stage that did not pass (exit code 5 of the tool). The base is built at <tip> for the tree's repo and at
-  the sibling's commit that passed with <tip>: the pair as it passed, so the A/B shows the change of both repos since that
-  pass. The sibling's HEAD is not the base, as it can hold code that <tip> lacks (a render-link that needs a newer nirender
-  fails the base build). A pass (against the accepted folder) keeps its pair in the sibling's repo, in the ref
-  refs/merge-step-pair/<plugin|mge>/<commit>, when the sibling's HEAD did not move during the round. A base with no kept
-  pair (a pass from before these refs) stops the tool: --sibling-base <commit> names the sibling's commit. It also takes the
-  place of a kept pair. The sibling's commit must be an ancestor of the sibling's HEAD. The tool prints the option in the
-  first line, and the key file of the base build names both commits;
+- the replay gate, tools/validate_retained.py baseline with no game, on the round's set (--mge-build), when the change
+  touches the host's source, the helper's renderer, the shaders of the assets (the source of the shaders in a build), or
+  a manifest or a lock of the build. The path decides: a stream or a table change can move a picture too. The gate does
+  not run when the round's set was not made;
+- with the gate, the A/B stages of tools/instance_ab.py: `base set` makes, in the same take, the set of the current
+  tips of the target branches of BOTH repos with the round's MWSE commit (a set that exists and passes its check is taken as it is), and
+  `instance A/B grass` replays a capture of Outlander-test with the base set (--base-build), the round's set
+  (--now-build) and the base set again, on the same data, and compares the pictures and the hash lines of the grass
+  calls. NOT RUN is not a PASS: it counts as a stage that did not pass (exit code 5 of the tool). The base set is made
+  at <tip> for the tree's repo and at the sibling's commit that passed with <tip>: the pair as it passed, so the A/B
+  shows the change of both repos since that pass. The sibling's HEAD is not the base, as it can hold code that <tip>
+  lacks (a render-link that needs a newer nirender fails the base set). A pass (against the accepted folder) keeps its
+  pair in the sibling's repo, in the ref refs/merge-step-pair/<plugin|mge>/<commit>, when the sibling's HEAD did not
+  move during the round. A base with no kept pair (a pass from before these refs) stops the tool: --sibling-base
+  <commit> names the sibling's commit. It also takes the place of a kept pair. The sibling's commit must be an ancestor
+  of the sibling's HEAD. The tool prints the option in the first line, and the base set's manifest names its commits;
 - after a pass that moves refs/merge-step/<branch>, the sibling's own refs/merge-step/<branch> moves to the sibling's
   HEAD of the round only when this round ran and passed every stage that the sibling's own check of its diff since
   that ref would run, matched by folder and command (W370). Else it stays, and one line names the stages that did not
@@ -98,28 +98,29 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
 - each ref line of a round (its own ref moves from <old> to <new>, or stays at <old> with the reason; the pair, which
   starts "this round's pair:"; the line of the sibling, which starts "the sibling <name>:") goes to the console and,
   after the summary, into the round's log (W532);
-- `build for the deploy`, `cargo xtask dist` in render-link, and then `deploy rest`, when a plugin change touches
-  DEPLOY_PATHS (the plugin DLL's src/, build.rs, build_support/, the mod's Lua, contract/) and not the paths of the gate
-  (W406). The replay gate cannot see these, as it never runs the plugin, so the round has no gate and no A/B. The dist
-  builds the plugin of ../nirender-plugin, so the tree must have its own name, as for the gate;
+- a plugin change that touches DEPLOY_PATHS (the plugin DLL's src/, build.rs, build_support/, the mod's Lua,
+  contract/) and not the paths of the gate (W406) makes the set and deploys it, with no gate and no A/B: the replay gate
+  cannot see these, as it never runs the plugin;
 - the build of the dist alone, `cargo xtask dist`, when a render-link change touches xtask and not the paths of the gate:
   the replay cannot see it;
-- with the gate or the build for the deploy, `deploy rest` (tools/deploy_rest.py, the owner's D193: the test installs
-  hold the latest build): after the build and before the replay gate it puts the dist-staging folder into both test installs as their resting build, and
-  keeps a copy as the next E:\\nirender-keep\\mgebuilds\\f<N> with a WHAT.txt. It runs only when every stage before it
-  passed, and the gate's result does not stop it: a build that the gate rejects is deployed too. It never copies a pdb, an
-  esp, mgeXE.toml or d3d9.dll, backs up each replaced file once for each tag, compares each copy by MD5, and prints the MD5
-  of d3d8.dll, numidium.exe and akulakhan.dll. While Morrowind, numidium or Mod Organizer runs, the tool writes nothing
-  and does not wait, and the stage prints "WITHHELD deploy rest (<n> s): <why>. To deploy this build alone, run in
-  <folder>: <command>" (in the log, and again after the summary). That refusal does not fail the round: WITHHELD counts
-  as passed, so a
-  merge whose other stages passed still moves refs/merge-step. Any other failure of the tool is a FAIL. The stage
-  runs also when the replay gate or the A/B stages fail: only the stages before it decide (the gate is red until the owner
-  accepts a new baseline, and the owner tests the latest build, D193). The round holds the game slot (deploy rest is one
-  of GAME_STAGES), so that the write to E: is allowed (evidence_problem);
+- with the set, `deploy rest` (tools/deploy_rest.py --set <the round's set>, the owner's D193: the test installs hold
+  the latest build): after the set and before the replay gate it puts the set into both test installs as their resting
+  build. It runs only when the set was made and every stage before it passed, and the gate's result does not stop it: a
+  build that the gate rejects is deployed too. It never copies a pdb, an esp, mgeXE.toml or d3d9.dll, backs up each
+  replaced file once for each tag, compares each copy by MD5, and prints the MD5 of d3d8.dll, numidium.exe,
+  akulakhan.dll, MWSE.dll and lua51.dll. A set whose lua51.dll differs from an install's stops it (D 11.2): the
+  Coordinator runs or approves that deploy by hand with --lua51-change. While Morrowind, numidium or Mod Organizer runs,
+  the tool writes nothing and does not wait, and the stage prints "WITHHELD deploy rest (<n> s): <why>. To deploy this
+  build alone, run in <folder>: <command>" (in the log, and again after the summary). That refusal does not fail the
+  round: WITHHELD counts as passed, so a merge whose other stages passed still moves refs/merge-step. Any other failure
+  of the tool is a FAIL. The stage runs also when the replay gate or the A/B stages fail: only the stages before it
+  decide (the gate is red until the owner accepts a new baseline, and the owner tests the latest build, D193). The round
+  holds the game slot (deploy rest is one of GAME_STAGES), so that the sets on E: are allowed (evidence_problem);
 - the helper's sources (W528): after the gate, the stage "helper sources" keeps the source files of numidium.exe of
-  each repo, read from the dep-info file of the gate's build (target/x86_64-pc-windows-msvc/release/numidium.d), with
-  the two commits, in E:\\nirender-keep\\merge-step\\helper-sources.txt. A later round plans the gate for a change of a
+  each repo, read from the dep-info file of the set's build in the maker's render-link tree
+  (target/x86_64-pc-windows-msvc/release/numidium.d), with the two commits, in
+  E:\\nirender-keep\\merge-step\\helper-sources.txt. It reads the file only when the numidium.exe beside it is the set's
+  (by MD5): a part that the maker took from another set leaves the list as it is, with a line. A later round plans the gate for a change of a
   listed file of its repo, beside the fixed list of gate paths. The plan prints the list's commits; with no list, or a
   list whose commit is not an ancestor of the base, it plans the gate and says why;
 - the open deploys (W528): a round that passes with its deploy WITHHELD appends a WITHHELD line with both commits to
@@ -179,13 +180,15 @@ import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_mwse_sites import MD5, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
+from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
-from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
+from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
+import build_set  # noqa: E402  (the maker's trees and the round's set, W521)
+import sets  # noqa: E402
 from common import (DEPLOY_WITHHELD, DEPLOYS_FILE, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, append_deploys, deploys_line,  # noqa: E402
                     docs_place, git_env, local, main_checkout, open_deploys, open_deploys_text, tests_ran)
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
-from mwse_tree import fallback_checks  # noqa: E402
+from mwse_tree import fallback_checks, installed_commit  # noqa: E402
 
 PLUGIN_NAME = "nirender-plugin"
 MGE_NAME = "MGE-XE-G7-render-link"
@@ -220,11 +223,22 @@ LAST_PARENTHESES = re.compile(r"\(([^()]*)\)\s*$")
 # The tries of an append to the closes file while a reader holds it, and the wait between them.
 CLOSE_TRIES = 5
 CLOSE_WAIT_SECONDS = 0.5
-# The stages that replay the build of the gate or the kept base build.
+# The stage that makes the round's sealed set (tools/build_set.py --in-hold, W521, the plan's addendum 10): the commits
+# under test and the MWSE commit of the round (the installs' commit, or --mwse). The deploy, the gate, the helper sources
+# and the A/B take that set. The maker's MISSING FEATURE (its exit code 4) makes it WITHHELD, and the stages that take
+# the set are NOT RUN: the round fails, and its line names --mwse (Q10).
+SET_STAGE = "build the set"
+# The stage that makes the set of the base pair for the A/B; the A/B replays the base set and the round's set.
 INSTANCE_STAGE = "instance A/B grass"
-BASE_STAGE = "base build"
-# The stage that puts the build of the gate into both test installs (tools/deploy_rest.py, the owner's D193). It stands after
-# the build and before the replay gate, and it runs only when every stage before it passed: the gate's result does not stop it.
+BASE_STAGE = "base set"
+# The folder of a set in a plan whose commits are not known (the self-test; main refuses such a round).
+UNPLANNED_SET = "<the round's set: its commits are not known>"
+# The option of build_set.py that runs the maker inside the round's take; stage_key leaves out its label.
+IN_HOLD = "--in-hold"
+# The check of MWSE's patch sites on the set's MWSE.dll, the DLL that the deploy writes (addendum 11).
+SITES_SET_STAGE = "mwse sites (the set)"
+# The stage that puts the round's set into both test installs (tools/deploy_rest.py --set, the owner's D193). It stands after
+# the set and before the replay gate, and it runs only when every stage before it passed: the gate's result does not stop it.
 DEPLOY_STAGE = "deploy rest"
 # The exit code of deploy_rest.py when a game or Mod Organizer runs. That refusal does not fail the round: the stage counts as
 # passed (WITHHELD), and the round prints one line for it, in the log and again after the summary. Any other failure of
@@ -232,9 +246,6 @@ DEPLOY_STAGE = "deploy rest"
 DEPLOY_REFUSED_CODE = REFUSED_EXIT
 # The "WITHHELD deploy rest" lines of the last run_stages: the deploys that did not happen.
 NOT_DEPLOYED = []
-# The installs of the last run_stages whose MWSE.dll lacks a feature that the plugin needs, as (install, md5 of the
-# MWSE.dll, the MISSING texts of the probe): the round deploys nothing then (W406).
-WITHHELD = []
 # The evidence files of the round, by the stage's name, as (path, md5): the one way a stage with a FORMAT CHANGE passes
 # (W527). Only the instance A/B can have one; main fills it from --evidence before the round.
 EVIDENCE = {}
@@ -270,18 +281,12 @@ DEPLOY_PATHS = {"plugin": ("src/", "build.rs", "build_support/", "mod/MWSE/mods/
 # What a change must touch for the build of the dist alone, with no deploy: xtask itself, which the replay cannot see.
 DIST_PATHS = {"plugin": (), "mge": ("xtask/",)}
 # What a plugin change must touch for the check of MWSE's patch sites against the ports (check_mwse_sites.py, Brief 22):
-# a new port, hook or follow rule can meet an MWSE patch that is already deployed.
+# a new port, hook or follow rule can meet an MWSE patch. A round with a set checks the set's MWSE.dll (SITES_SET_STAGE);
+# a change of the baseline alone deploys nothing, and its stages check each install's MWSE.dll.
 MWSE_SITES_PATHS = ("src/ports/", "src/hook.rs", "src/install.rs", "src/gen/", "src/site.rs", "tools/mwse_sites.baseline")
-# The stages of the probe of the MWSE features that the plugin needs, one for each install (check_mwse_sites.py
-# --features, W406): in every round that deploys, plugin or render-link, before its build. A missing required feature
-# (exit code 4) is WITHHELD and keeps the deploy back, with one "WITHHELD deploy rest" line for the round.
-FEATURES_STAGE = "mwse features "
-# The check that each install's MWSE core is the core of the MWSE commit of its MWSE.dll (deploy_rest.py --check-mwse-core,
-# D442): in every round that deploys, after the probes. A failure fails the round, so nothing is deployed.
-MWSE_CORE_STAGE = "mwse core"
-BUILD_FOR_DEPLOY = "build for the deploy"
-# W528 item 1 (F-G-4): the helper's own source files plan the gate, beside GATE_PATHS. After the build of the gate, the
-# stage HELPER_SOURCES_STAGE reads the dep-info file that cargo writes beside numidium.exe and keeps the source files
+# W528 item 1 (F-G-4): the helper's own source files plan the gate, beside GATE_PATHS. After the set of the gate, the
+# stage HELPER_SOURCES_STAGE reads the dep-info file that cargo wrote beside numidium.exe in the maker's render-link tree,
+# when the set's numidium.exe is that build (addendum 10 C5), and keeps the source files
 # of each repo in HELPER_SOURCES_PATH, with the two commits of the build. GATE_PATHS keeps what dep-info does not name:
 # the shaders under assets/, the manifests and lock files, the toolchain files. A new source file is declared in a
 # file that is on the list (a mod line, an include, a path dependency), so its diff touches a listed path; neither
@@ -351,14 +356,44 @@ def helper_text_stage(plugin, mge, commits=None):
     return name, mge, [sys.executable, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64"]
 
 
-def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None, commits=None, base=None, helper_paths=()):
+def round_set(commits, mwse_commit):
+    """The commits of a round's set, {repo of sets.REPOS: commit}, from a pair {"plugin": sha, "mge": sha} and the MWSE
+    commit of the round, or None when one of them is not known."""
+    if not commits or not mwse_commit:
+        return None
+    return {"nirender": commits["plugin"], "render-link": commits["mge"], "mwse": mwse_commit}
+
+
+def set_folder_of(set_commits, root=None):
+    """The folder of the set of `set_commits` (round_set) under the sets (sets.set_name: no patch, the usual kind), or
+    UNPLANNED_SET when its commits are not known."""
+    if not set_commits:
+        return UNPLANNED_SET
+    return os.path.join(sets.SETS if root is None else root, sets.set_name(set_commits))
+
+
+def set_stage(name, plugin, set_commits, label):
+    """A stage of the maker inside the round's take (build_set.py --in-hold <label>, addendum 10 C2)."""
+    commits = set_commits or {repo: "unknown" for repo in sets.REPOS}
+    return (name, plugin, [sys.executable, "-I", os.path.join("tools", "build_set.py"), "--nirender", commits["nirender"],
+                           "--render-link", commits["render-link"], "--mwse", commits["mwse"], IN_HOLD, label or "merge_step"])
+
+
+def maker_tree(repo):
+    """The maker's tree of a repo of sets.REPOS (build_set.TREES)."""
+    return os.path.join(build_set.TREES, build_set.TREE_NAMES[repo])
+
+
+def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None, mwse_dlls=None, commits=None, base=None, helper_paths=(),
+               label=None):
     """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `base` is the base
-    commit of the round: the checks stage compares with it (checks.py --base), as the tree is at the merge. `tips` are the
-    commits of the base build, {"plugin": sha, "mge": sha}, and `base_folder` holds it: with both, the gate is followed by
-    the A/B stages. `mwse_dlls` are the (instance, MWSE.dll) of the "mwse sites" stages, by default those deployed now.
-    `commits` are the commits under test, {"plugin": sha, "mge": sha}: the parts of the deployed build must be those.
-    `helper_paths` are the helper's source files of this repo (helper_gate_paths), which plan the gate too; None plans
-    it always."""
+    commit of the round: the checks stage compares with it (checks.py --base), as the tree is at the merge. `commits` are
+    the commits under test, {"plugin": sha, "mge": sha}, and `mwse_commit` the MWSE commit of the round: with both, the
+    round's set has a name, and every stage that takes it names its folder (W521). `tips` are the commits of the base
+    pair, {"plugin": sha, "mge": sha}: with them, the gate is followed by the base set and the A/B. `mwse_dlls` are the
+    (instance, MWSE.dll) of the "mwse sites" stages of a round with no set, by default those deployed now. `label` is the
+    label of the round's take, which the maker's stages check (--in-hold). `helper_paths` are the helper's source files
+    of this repo (helper_gate_paths), which plan the gate too; None plans it always."""
     python = sys.executable
     plugin = repo if kind == "plugin" else sibling_of(kind, repo)
     mge = repo if kind == "mge" else sibling_of(kind, repo)
@@ -377,39 +412,42 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
                   ("checks", plugin, tool("checks.py", "mge", "--strict", "--mge", mge, *on_base)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
+    gate = touches(paths, GATE_PATHS[kind]) or helper_paths is None or touches(paths, helper_paths)
+    # A round that deploys makes a set; the gate's round always deploys.
+    deploys = gate or touches(paths, DEPLOY_PATHS[kind])
+    sites = kind == "plugin" and touches(paths, MWSE_SITES_PATHS)
     if kind == "plugin" and touches(paths, HELPER_TEXT_PATHS):
         stages.append(helper_text_stage(plugin, mge, commits))
-    if kind == "plugin" and touches(paths, MWSE_SITES_PATHS):
+    if sites and not deploys:
+        # A change of the baseline alone: no set, and the installs keep the MWSE.dll of the last deploy (addendum 11).
         for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
             stages.append(("mwse sites " + instance, plugin, tool("check_mwse_sites.py", dll)))
     if touches(paths, D3D8_PATHS[kind]):
         stages.append(("d3d8 build", mge, ["cargo", "build", "--quiet", "-p", "d3d8", "--profile", "release-dll"]))
         stages.append(("contract", plugin, tool("check_contract.py", "--mge", mge)))
-    gate = touches(paths, GATE_PATHS[kind]) or helper_paths is None or touches(paths, helper_paths)
-    deploys = gate or touches(paths, DEPLOY_PATHS[kind])
-    staging = os.path.join(mge, "target", "dist-staging")
-    # The commits under test, not the HEADs at the time of the stage: a merge can move a HEAD during the round.
-    commit_args = ["--plugin-commit", commits["plugin"], "--mge-commit", commits["mge"]] if commits else []
-    deploy = (DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--build", staging, *commit_args))
+    the_set = round_set(commits, mwse_commit)
+    folder = set_folder_of(the_set)
     if deploys:
-        for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
-            stages.append((FEATURES_STAGE + instance, plugin, tool("check_mwse_sites.py", "--features", "--mge", mge, dll)))
-        stages.append((MWSE_CORE_STAGE, plugin, tool("deploy_rest.py", "--check-mwse-core")))
+        # The commits under test, not the HEADs at the time of the stage: a merge can move a HEAD during the round.
+        commit_args = ["--plugin-commit", commits["plugin"], "--mge-commit", commits["mge"]] if commits else []
+        stages.append(set_stage(SET_STAGE, plugin, the_set, label))
+        if sites:
+            stages.append((SITES_SET_STAGE, plugin, tool("check_mwse_sites.py", os.path.join(folder, "MWSE.dll"))))
+        stages.append((DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--set", folder, *commit_args)))
     if gate:
-        stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
-        stages.append(deploy)
-        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", staging, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
+        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
         under_test = commits or {}
         stages.append((HELPER_SOURCES_STAGE, plugin, [python, "-I", os.path.join(plugin, "tools", "merge_step.py"), HELPER_SOURCES,
-                                                      os.path.join(mge, HELPER_DEP_INFO), HELPER_SOURCES_PATH, plugin, mge,
-                                                      under_test.get("plugin", "unknown"), under_test.get("mge", "unknown")]))
-        if tips and base_folder:
-            stages.append((BASE_STAGE, plugin, tool("instance_ab.py", "base-build", "--plugin-repo", plugin, "--mge-repo", mge, "--plugin-tip", tips["plugin"], "--mge-tip", tips["mge"], "--out", base_folder)))
-            stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", os.path.join(base_folder, "build"), "--now-build", staging, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
-    elif deploys:
-        stages.append((BUILD_FOR_DEPLOY, mge, ["cargo", "xtask", "dist"]))
-        stages.append(deploy)
-    elif touches(paths, DIST_PATHS[kind]):
+                                                      os.path.join(maker_tree("render-link"), HELPER_DEP_INFO), HELPER_SOURCES_PATH,
+                                                      maker_tree("nirender"), maker_tree("render-link"),
+                                                      under_test.get("plugin", "unknown"), under_test.get("mge", "unknown"),
+                                                      os.path.join(folder, "numidium.exe")]))
+        if tips:
+            base_set = round_set(tips, mwse_commit)
+            stages.append(set_stage(BASE_STAGE, plugin, base_set, label))
+            stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", set_folder_of(base_set),
+                                                        "--now-build", folder, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
+    elif not deploys and touches(paths, DIST_PATHS[kind]):
         stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
 
@@ -432,7 +470,7 @@ def require_tests(command):
 
 
 def needs_clean_sibling(stages):
-    return any(name in ("replay gate", "d3d8 build", "build of the dist", BUILD_FOR_DEPLOY) for name, _, _ in stages)
+    return any(name in ("replay gate", "d3d8 build", "build of the dist", SET_STAGE) for name, _, _ in stages)
 
 
 def baseline_problem(stages, baseline):
@@ -451,12 +489,8 @@ def tree_problem(kind, repo, stages, head, commit, changed, sibling_changed=Fals
         return "the tree is at %s, not %s: merge first, as this tool makes no trial merge" % (head[:10], commit[:10])
     if changed:
         return "the tree has tracked changes"
-    gate = any(name == "replay gate" for name, _, _ in stages)
-    if gate and os.path.basename(repo) != {"plugin": PLUGIN_NAME, "mge": MGE_NAME}[kind]:
-        return "the gate needs the tree under its own name beside its sibling: the helper's Cargo.toml names ../../%s/host" % PLUGIN_NAME
-    # The dist of the sibling builds and collects the plugin of ../nirender-plugin: another tree's plugin would be deployed.
-    if any(name == BUILD_FOR_DEPLOY for name, _, _ in stages) and os.path.basename(repo) != {"plugin": PLUGIN_NAME, "mge": MGE_NAME}[kind]:
-        return "the deploy needs the tree under its own name beside its sibling: the sibling's dist collects the plugin of ../%s" % PLUGIN_NAME
+    # The builds of the gate and the deploy are the maker's, in its own trees of the commits (W521): this tree's name does
+    # not choose what they build, so a worktree with another name may run them.
     missing = [folder for _, folder, _ in stages if not os.path.isdir(folder)]
     if missing:
         return "no folder %s: the stages need the sibling" % missing[0]
@@ -607,28 +641,18 @@ def not_run_reason(output):
     return (not_run_reasons(output) or ["the stage could not judge"])[-1]
 
 
-def missing_features_in(output):
-    """(md5 of the MWSE.dll, [the MISSING texts]) of the output of check_mwse_sites.py --features, or None when it names
-    no missing feature."""
-    lines = output.splitlines()
-    missing = [line[len(MISSING):] for line in lines if line.startswith(MISSING)]
-    if not missing:
-        return None
-    md5 = next((line[len(MD5):].split()[0] for line in lines if line.startswith(MD5) and line[len(MD5):].split()), "unknown")
-    return md5, missing
+def maker_missing_in(output):
+    """The MISSING texts of the maker's probe ("probe: MISSING ..." lines of build_set.py) in a stage's output."""
+    prefix = "probe: " + MISSING
+    return [line[len(prefix):] for line in output.splitlines() if line.startswith(prefix)]
 
 
-def withheld_line(withheld, folder, command):
-    """The one "WITHHELD deploy rest" line of a round whose installs lack MWSE features that the build needs (the plugin,
-    or the d3d8.dll: native request 7, W495): each install with its MWSE.dll and what it lacks, and the command that
-    deploys the build of the round with an MWSE.dll that has them. Also the short reason for the close line."""
-    names = sorted({text.split(": ", 1)[0] for _, _, missing in withheld for text in missing})
-    features = ", ".join("'%s'" % name for name in names)
-    lacks = "; ".join("%s (MWSE.dll %s): %s" % (install, md5, "; ".join(missing)) for install, md5, missing in withheld)
-    line = "%s %s: the build needs the MWSE features %s, which the deployed MWSE.dll lacks: %s. Deploy both together, run in %s: %s" % (
-        WITHHELD_WORD, DEPLOY_STAGE, features, lacks, subprocess.list2cmdline([folder]),
-        subprocess.list2cmdline(command + ["--mwse-dll", "<an MWSE.dll with %s>" % " and ".join(names)]))
-    return line, "the deployed MWSE.dll lacks the MWSE features %s" % features
+def mwse_withheld_reason(missing, command):
+    """The reason of a set stage whose MWSE.dll lacks what the plugin needs (the maker's MISSING FEATURE, Q10): the round
+    fails, and the line names the option that makes the round's set with another MWSE commit."""
+    mwse = command[command.index("--mwse") + 1] if "--mwse" in command else "unknown"
+    return ("MISSING %s in the MWSE.dll of MWSE %s; the stages that take the set do not run, and the round fails: run the "
+            "round again with --mwse <an MWSE commit that has it>" % ("; ".join(missing) or "a feature", mwse[:10]))
 
 
 def fallback_note(output):
@@ -701,14 +725,12 @@ def run_stage(name, folder, command, log):
         return format_change_verdict(name, time.time() - began, log)
     if code != 0:
         output = output_since(log, start)
-        missing = missing_features_in(output) if name.startswith(FEATURES_STAGE) and code == MISSING_FEATURE_EXIT else None
-        if missing:
-            # The code under test is right; the MWSE.dll of the install is too old for it. The stage passes, and the deploy of
-            # the round is kept back until the plugin and an MWSE.dll with the feature go together.
-            WITHHELD.append((name[len(FEATURES_STAGE):], missing[0], missing[1]))
-            lacks = "MISSING %s" % "; ".join(missing[1])
-            verdict(log, "%s %s (%d s): %s; the round deploys nothing" % (WITHHELD_WORD, name, time.time() - began, lacks))
-            return noted(name, WITHHELD_WORD, lacks)
+        if name in (SET_STAGE, BASE_STAGE) and code == MISSING_FEATURE_EXIT:
+            # The code under test may be right; the MWSE.dll of the round's MWSE commit is too old for it, and the maker made
+            # no set (G1). The stages that take the set are NOT RUN (run_stages), so the round fails (Q10).
+            reason = mwse_withheld_reason(maker_missing_in(output), command)
+            verdict(log, "%s %s (%d s): %s" % (WITHHELD_WORD, name, time.time() - began, reason))
+            return noted(name, WITHHELD_WORD, reason)
         refusal, deploy_refusal = slot_refusal_in(output), deploy_refusal_in(output)
         if name == DEPLOY_STAGE and code == DEPLOY_REFUSED_CODE and deploy_refusal:
             # A game or Mod Organizer runs: nothing was written. The merge is no worse for it, so the stage does not fail the
@@ -755,8 +777,9 @@ def run_stages(stages, log, note_stage=lambda: None):
     no compile seen, and a round can pass that with a stage that does not compile. It returns False when the holds could
     not be taken again: the stage is then NOT RUN, and counts as not passed."""
     results = {}
+    # Whether each set stage made its set: only a PASS did (a WITHHELD set stage made none).
+    made = {}
     del NOT_DEPLOYED[:]
-    del WITHHELD[:]
     del FORMAT_CHANGES[:]
     del STAGE_WORDS[:]
 
@@ -765,28 +788,26 @@ def run_stages(stages, log, note_stage=lambda: None):
         return noted(name, NOT_RUN_WORD, reason)
 
     for name, folder, command in stages:
-        if name in ("replay gate", INSTANCE_STAGE, HELPER_SOURCES_STAGE) and not results.get("build for the gate", True):
-            results[name] = not_run(name, "its build failed")
+        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE, INSTANCE_STAGE) and not made.get(SET_STAGE, True):
+            results[name] = not_run(name, "the round's set was not made")
             continue
-        if name == INSTANCE_STAGE and not results.get(BASE_STAGE, True):
-            results[name] = not_run(name, "the base build failed")
+        if name == INSTANCE_STAGE and not made.get(BASE_STAGE, True):
+            results[name] = not_run(name, "the base set was not made")
             continue
         if name == DEPLOY_STAGE and not all(results.values()):
             failed = next(stage for stage, passed in results.items() if not passed)
-            results[name] = not_run(name, "%s did not pass, and a build is put into the test installs only when every stage before it passed" % failed)
-            continue
-        if name == DEPLOY_STAGE and WITHHELD:
-            not_deployed, lacks = withheld_line(WITHHELD, folder, command)
-            verdict(log, not_deployed)
-            NOT_DEPLOYED.append(not_deployed)
-            results[name] = noted(name, WITHHELD_WORD, lacks)
+            results[name] = not_run(name, "%s did not pass, and a set is put into the test installs only when every stage before it passed" % failed)
             continue
         if name == "replay gate":
             clear_pictures(command[command.index("--now") + 1])
         if note_stage() is False:
             results[name] = not_run(name, "the slot hold of this run ended and was not taken again")
+            if name in (SET_STAGE, BASE_STAGE):
+                made[name] = False
             continue
         results[name] = run_stage(name, folder, command, log)
+        if name in (SET_STAGE, BASE_STAGE):
+            made[name] = STAGE_WORDS[-1][1] == PASS_WORD
     return list(results.values())
 
 
@@ -1190,11 +1211,6 @@ def changed_paths(repo, older, newer):
     return git(repo, "diff", "--name-only", "--no-renames", older, newer).splitlines()
 
 
-def base_folder_of(branch):
-    """The folder of the kept base build of a target branch: one for each branch, replaced at each pass."""
-    return os.path.join(LOG_FOLDER, "base-" + branch.replace("/", "-"))
-
-
 PAIR_REFS = "refs/merge-step-pair"
 
 
@@ -1238,7 +1254,7 @@ def keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head, log_path=No
 
 
 def settle_refs(kind, repo, passed_ref, commit, sibling, sibling_head, stages, results, baseline, commits,
-                sibling_changed, log_path):
+                sibling_changed, log_path, mwse_commit=None):
     """The refs after a round, and the round's exit code: a pass against the accepted folder moves the round's ref and
     can move the sibling's; any other end keeps both, with a line. Every line also goes to the round's log."""
     old = resolve(repo, passed_ref)
@@ -1251,12 +1267,12 @@ def settle_refs(kind, repo, passed_ref, commit, sibling, sibling_head, stages, r
         return 0
     keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head, log_path)
     if os.path.isdir(sibling):
-        move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits, sibling_changed, log_path)
+        move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits, sibling_changed, log_path, mwse_commit)
     return 0
 
 
 def tips_for(kind, repo, base, sibling_base=None):
-    """The commits of the base build: `base` for the tree's repo, and for the sibling the commit that passed with `base`,
+    """The commits of the base set: `base` for the tree's repo, and for the sibling the commit that passed with `base`,
     which the pass kept in pair_ref(kind, base). The sibling's HEAD is not the base: it can hold code that `base` lacks
     (2026-11-10, a render-link tip that needs W84 with the plugin's last pass: "no field `like_exterior`"; 2026-11-09,
     nirender 9f68cd1 with a render-link that calls the spot cone). `sibling_base` names the sibling's commit in place of the
@@ -1265,10 +1281,10 @@ def tips_for(kind, repo, base, sibling_base=None):
     other = "mge" if kind == "plugin" else "plugin"
     sibling = sibling_of(kind, repo)
     if not os.path.isdir(sibling):
-        return None, "no sibling %s for the base build" % sibling
+        return None, "no sibling %s for the base set" % sibling
     sibling_head = resolve(sibling, "HEAD")
     if sibling_head is None:
-        return None, "the sibling %s has no HEAD for the base build" % sibling
+        return None, "the sibling %s has no HEAD for the base set" % sibling
     if sibling_base is None:
         source = "the kept pair %s" % pair_ref(kind, base)
         sibling_commit = resolve(sibling, pair_ref(kind, base))
@@ -1310,10 +1326,19 @@ def sources_by_repo(paths, roots):
     return {kind: sorted(names) for kind, names in found.items()}
 
 
-def keep_helper_sources(dep_info, out, plugin, mge, plugin_commit, mge_commit):
+def keep_helper_sources(dep_info, out, plugin, mge, plugin_commit, mge_commit, set_helper=None):
     """The stage HELPER_SOURCES_STAGE: writes the helper's source files of each repo, read from the dep-info file of
-    the gate's build, to `out`, with the two commits of the build. Exit 0, or 1 with a FAIL line when the file is
-    missing or names no source of a repo: the plans would then not know the helper's sources."""
+    the set's build in the maker's tree, to `out`, with the two commits of the build. Exit 0, or 1 with a FAIL line when
+    the file is missing or names no source of a repo: the plans would then not know the helper's sources.
+    `set_helper` is the set's numidium.exe (addendum 10 C5): the dep-info is read only when the tree's numidium.exe
+    beside it has the same md5. Else the set's part was copied from another set, or the set was there already: the list
+    stays, with a line, as a part with the same key was built from the same sources."""
+    if set_helper is not None:
+        built = os.path.splitext(dep_info)[0] + ".exe"
+        if not os.path.isfile(built) or not os.path.isfile(set_helper) or file_md5(built) != file_md5(set_helper):
+            say("helper sources: the set's numidium.exe %s is not the build of the maker's tree (%s): the list in %s stays"
+                % (set_helper, built, out))
+            return 0
     try:
         with open(dep_info, encoding="utf-8") as file:
             text = file.read()
@@ -1371,25 +1396,46 @@ def helper_gate_paths(kind, repo, base, path=None):
                            % (commits["plugin"][:10], commits["mge"][:10], len(sources[kind])))
 
 
-def planned_stages(kind, repo, paths, baseline, commits, base, branch, sibling_base=None):
-    """The stages of a check of `paths` from `base`, as main() runs them: with the replay gate, also the base build of
-    tips_for and the A/B. (stages, tips, None); (stages, None, why) when the gate needs a base build that tips_for
-    cannot give. The helper's sources (helper_gate_paths) plan the gate too."""
+def round_mwse(name, repo=None, installed=installed_commit):
+    """(the MWSE commit of the round's sets, None) or (None, why not): --mwse resolved in the MWSE repository, else the
+    commit that every test install's record names (mwse_tree.installed_commit)."""
+    if name:
+        repo = repo or build_set.SOURCE_REPOS["mwse"]
+        found = resolve(repo, name)
+        return (found, None) if found else (None, "--mwse %s is no commit of %s" % (name, repo))
+    return installed()
+
+
+def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None, mwse_commit=None, label=None, mwse_why=None):
+    """The stages of a check of `paths` from `base`, as main() runs them: with the replay gate, also the base set of
+    tips_for and the A/B. (stages, tips, None); (stages, None, why) when the round makes a set whose commits are not known
+    (`mwse_why` says why the MWSE commit is not), or when the gate needs a base pair that tips_for cannot give. The
+    helper's sources (helper_gate_paths) plan the gate too."""
     helper_paths, _ = helper_gate_paths(kind, repo, base)
-    stages = stages_for(kind, repo, paths, baseline, commits=commits, base=base, helper_paths=helper_paths)
+
+    def plan(tips=None):
+        return stages_for(kind, repo, paths, baseline, tips, mwse_commit, commits=commits, base=base, helper_paths=helper_paths, label=label)
+
+    stages = plan()
+    if any(name == SET_STAGE for name, _, _ in stages) and round_set(commits, mwse_commit) is None:
+        unknown = "the sibling's commit is not known" if not commits else "its MWSE commit is not known (%s): give --mwse <commit>" % (mwse_why or "none")
+        return stages, None, "the round makes a set, and %s" % unknown
     if not any(name == "replay gate" for name, _, _ in stages):
         return stages, None, None
-    if not branch:
-        return stages, None, "the tree is on no branch, and the kept base build is one for each branch"
     tips, why = tips_for(kind, repo, base, sibling_base)
     if why:
         return stages, None, why
-    return stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits, base=base, helper_paths=helper_paths), tips, None
+    return plan(tips), tips, None
 
 
 def stage_key(stage):
-    """What a stage runs: its folder and its command. A name is no proof, as both repos have a stage "checks"."""
+    """What a stage runs: its folder and its command. A name is no proof, as both repos have a stage "checks". The label
+    after --in-hold names the round's take, not what the stage runs: it is left out, so that the sibling's own check and
+    this round match on the same set (W370)."""
     _, folder, command = stage
+    command = list(command)
+    if IN_HOLD in command:
+        del command[command.index(IN_HOLD):command.index(IN_HOLD) + 2]
     return os.path.normcase(os.path.abspath(folder)), tuple(command)
 
 
@@ -1399,7 +1445,7 @@ def missing_stages(needed, ran, results):
     return [name for name, folder, command in needed if stage_key((name, folder, command)) not in passed]
 
 
-def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits, sibling_changed=False, log_path=None):
+def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, commits, sibling_changed=False, log_path=None, mwse_commit=None):
     """After a pass of the repo of `kind`: moves the sibling's refs/merge-step/<branch> to `sibling_head`, the
     sibling's HEAD at the start of the round, only when the round ran and passed every stage that the sibling's own
     check of its diff since that ref would run (W370). Else the ref stays, and one line says why. `sibling_changed`:
@@ -1439,7 +1485,8 @@ def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, com
         ref_say(log_path, "the sibling %s: %s stays at %s: it is not an ancestor of the HEAD %s" % (name, ref, last[:10], head[:10]))
         return False
     paths = changed_paths(sibling, last, head)
-    needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, branch)
+    # The same MWSE commit as this round: the sibling's own check would make the same set.
+    needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, mwse_commit=mwse_commit)
     if why:
         ref_say(log_path, "the sibling %s: %s stays at %s: the stages of its diff to %s are not known (%s)" % (name, ref, last[:10], head[:10], why))
         return False
@@ -1493,13 +1540,10 @@ def self_test():
             return [name for name, _, _ in stages_for(kind, repo, paths)]
 
         base = ["plugin tests", "host tests", HOST_GPU_STAGE, "clippy baseline", "checks", "docs"]
-        # W406: every round that deploys probes the MWSE.dll of each install for the features that the plugin needs, before
-        # its build, and then checks the MWSE core of each install (D442). A round of the plugin DLL or the mod's Lua builds
-        # the dist and deploys it without the gate.
-        features = [FEATURES_STAGE + name for name in MWSE_DEPLOYS] + [MWSE_CORE_STAGE]
-        gate_tail = features + ["build for the gate", DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE]
-        deploy_tail = features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
-        assert len(features) == 3
+        # W521: every round that deploys makes its set first (the maker probes the set's MWSE.dll before the seal, G1), then
+        # deploys it. A round of the plugin DLL or the mod's Lua deploys without the gate.
+        gate_tail = [SET_STAGE, DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE]
+        deploy_tail = [SET_STAGE, DEPLOY_STAGE]
         assert names("plugin", plugin, "tools/x.py") == base and names("plugin", plugin, "README.md") == base, "a change of no deployed part deployed"
         assert names("plugin", plugin, "src/lib.rs") == base + deploy_tail
         assert names("plugin", plugin, "build.rs") == names("plugin", plugin, "build_support/build_id.rs") == base + deploy_tail
@@ -1513,27 +1557,42 @@ def self_test():
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "srcx/lib.rs") == base, "a name that only starts the same deployed"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"] + deploy_tail
-        # The probe runs in the plugin's tree, on the deployed DLL of each install.
-        probe = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[FEATURES_STAGE + "Outlander-test"]
-        # W495: with the render-link sibling, whose d3d8.dll goes beside the same MWSE.dll.
-        assert probe[0] == plugin and probe[1][-5:] == [os.path.join("tools", "check_mwse_sites.py"), "--features", "--mge", mge, MWSE_DEPLOYS["Outlander-test"]], probe
-        build_stage = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[BUILD_FOR_DEPLOY]
-        assert build_stage == (mge, ["cargo", "xtask", "dist"]), build_stage
-        # D442: the check of the MWSE core runs in the plugin's tree, before the build.
-        core_stage = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["src/lib.rs"])}[MWSE_CORE_STAGE]
-        assert core_stage[0] == plugin and core_stage[1][-2:] == [os.path.join("tools", "deploy_rest.py"), "--check-mwse-core"], core_stage
-        # A change of the ports, the hooks, the install or the table: the MWSE.dll of each test install against the ports.
-        # The sites stage is where it was before W406, and in no more rounds.
+        # The set of the commits under test and the round's MWSE commit: the maker in the round's take (--in-hold, C2), in
+        # the plugin's tree; the deploy and the gate name its folder (C3).
+        full = under_test("plugin", "a" * 40, "b" * 40)
+        mwse = "c" * 40
+        the_set = os.path.join(sets.SETS, "s-aaaaaaaa-bbbbbbbb-cccccccc")
+        assert set_folder_of(round_set(full, mwse)) == the_set and round_set(full, None) is None and set_folder_of(None) == UNPLANNED_SET
+        planned = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["host/src/retained.rs"], commits=full, mwse_commit=mwse, label="merge_step: x")}
+        maker = planned[SET_STAGE]
+        assert maker[0] == plugin and maker[1][2:] == [os.path.join("tools", "build_set.py"), "--nirender", "a" * 40, "--render-link", "b" * 40, "--mwse", mwse,
+                                                       IN_HOLD, "merge_step: x"], maker
+        deploy_command = planned[DEPLOY_STAGE][1]
+        assert deploy_command[deploy_command.index("--set") + 1] == the_set and "--build" not in deploy_command, deploy_command
+        gate_command = planned["replay gate"][1]
+        assert gate_command[gate_command.index("--mge-build") + 1] == the_set, gate_command
+        assert not any("dist-staging" in part or "base-" in os.path.basename(part) for _, command in planned.values() for part in command), planned
+        # C5: the helper sources read the maker's render-link tree and compare the set's numidium.exe.
+        sources = planned[HELPER_SOURCES_STAGE][1]
+        assert sources[4] == os.path.join(build_set.TREES, build_set.TREE_NAMES["render-link"], HELPER_DEP_INFO) and sources[-1] == os.path.join(the_set, "numidium.exe"), sources
+        # The label of the take is no part of what a stage runs (W370 compares the sibling's stages by stage_key).
+        assert stage_key((SET_STAGE, plugin, maker[1])) == stage_key((SET_STAGE, plugin, set_stage(SET_STAGE, plugin, round_set(full, mwse), "other")[2]))
+        assert stage_key((SET_STAGE, plugin, maker[1])) != stage_key((SET_STAGE, plugin, set_stage(SET_STAGE, plugin, round_set(full, "d" * 40), "merge_step: x")[2]))
+        # A change of the ports, the hooks, the install or the table: the MWSE.dll of the round's set, the one that the deploy
+        # writes, after the set and before the deploy (addendum 11). A change of the baseline alone deploys nothing: the
+        # MWSE.dll of each test install, as before.
         dlls = [("Morrowind75testing", "D:/m75/MWSE.dll"), ("Outlander-test", "D:/o/MWSE.dll")]
         sites = ["mwse sites Morrowind75testing", "mwse sites Outlander-test"]
-        dll_features = [FEATURES_STAGE + "Morrowind75testing", FEATURES_STAGE + "Outlander-test", MWSE_CORE_STAGE]
-        for path in ("src/ports/device_setup.rs", "src/hook.rs", "src/install.rs", "src/gen/funcs.rs", "src/site.rs", "tools/mwse_sites.baseline"):
-            stages = stages_for("plugin", plugin, [path], mwse_dlls=dlls)
-            tail = [] if path.startswith("tools/") else dll_features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
-            assert [name for name, _, _ in stages] == base + sites + tail, path
-            last_site = stages[len(base) + 1]
-            assert last_site[2][-2:] == [os.path.join("tools", "check_mwse_sites.py"), "D:/o/MWSE.dll"] and last_site[1] == plugin
-        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], mwse_dlls=dlls)] == base + dll_features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
+        for path in ("src/ports/device_setup.rs", "src/hook.rs", "src/install.rs", "src/gen/funcs.rs", "src/site.rs"):
+            stages = stages_for("plugin", plugin, [path], mwse_dlls=dlls, commits=full, mwse_commit=mwse)
+            assert [name for name, _, _ in stages] == base + [SET_STAGE, SITES_SET_STAGE, DEPLOY_STAGE], path
+            set_site = dict((name, command) for name, _, command in stages)[SITES_SET_STAGE]
+            assert set_site[-2:] == [os.path.join("tools", "check_mwse_sites.py"), os.path.join(the_set, "MWSE.dll")], set_site
+            assert not any(dll in command for _, _, command in stages for _, dll in dlls), "an install's MWSE.dll was read in a round with a set"
+        stages = stages_for("plugin", plugin, ["tools/mwse_sites.baseline"], mwse_dlls=dlls)
+        assert [name for name, _, _ in stages] == base + sites and stages[len(base) + 1][2][-2:] == [os.path.join("tools", "check_mwse_sites.py"), "D:/o/MWSE.dll"]
+        assert stages[len(base) + 1][1] == plugin and SET_STAGE not in [name for name, _, _ in stages], "the null: no set, each install's MWSE.dll"
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], mwse_dlls=dlls)] == base + deploy_tail
         assert [name for name, _, _ in stages_for("mge", mge, ["src/hook.rs"], mwse_dlls=dlls)] == ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert not any(name.startswith("mwse sites") for kind, repo, path in (("mge", mge, "mgeHost64/src/renderer.rs"), ("plugin", plugin, "src/lib.rs"),
                                                                               ("plugin", plugin, "host/src/retained.rs")) for name in names(kind, repo, path))
@@ -1550,8 +1609,7 @@ def self_test():
                 assert "Harness mod" in str(error), error
             else:
                 raise AssertionError("a Harness copy was read: " + harness)
-        # The mod's Lua: xtask dist checks it against its list of shipped files (7b7b72d broke the dist that way), and since
-        # W406 the build is deployed.
+        # The mod's Lua: the set holds it (part plugin-lua), and since W406 a change of it is deployed.
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + deploy_tail
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == host_base + gate_tail
         assert needs_clean_sibling(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/noplugin.lua"]))
@@ -1562,12 +1620,13 @@ def self_test():
         assert not names("plugin", plugin, "tools/merge_step.py")[-len(gate_tail):] == gate_tail, "the null: another tool plans no gate"
         mge_base = ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("mge", mge, "xtask/src/main.rs") == mge_base + ["build of the dist"]
-        # A render-link round deploys the sibling's plugin with its build: the probe stands before the build there too.
         for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
             assert names("mge", mge, path) == mge_base + gate_tail, path
         assert names("mge", mge, "mge-config/Cargo.toml") == mge_base + ["d3d8 build", "contract"] + gate_tail
-        mge_probe = {name: (folder, command) for name, folder, command in stages_for("mge", mge, ["mgeHost64/src/renderer.rs"])}[FEATURES_STAGE + "Morrowind75testing"]
-        assert mge_probe[0] == plugin and mge_probe[1][-4:-1] == ["--features", "--mge", mge], mge_probe
+        # A render-link round makes the set of the pair in the plugin's tree too, with the plugin's commit under test.
+        mge_full = under_test("mge", "b" * 40, "a" * 40)
+        mge_maker = {name: (folder, command) for name, folder, command in stages_for("mge", mge, ["mgeHost64/src/renderer.rs"], commits=mge_full, mwse_commit=mwse)}[SET_STAGE]
+        assert mge_maker[0] == plugin and mge_maker[1][3:9] ==["--nirender", "a" * 40, "--render-link", "b" * 40, "--mwse", mwse], mge_maker
         assert stages_for("mge", mge, [])[0][2][-4:] == ["-p", "mgeHost64", "-p", "mge-config"], stages_for("mge", mge, [])[0][2]
         # The GPU tests run the ignored tests of the helper in its tree, through the wrapper that fails on 0 tests, and the
         # plugin's tests do not run them.
@@ -1593,7 +1652,7 @@ def self_test():
         # Each stage runs in the right repo: the gate replays the build of the sibling, and the checks of the tools' repo.
         stages = {name: (folder, command) for name, folder, command in stages_for("mge", mge, ["mgeHost64/src/renderer.rs", "d3d8/x"])}
         assert stages["checks"][0] == plugin and stages["checks"][1][-1] == mge
-        assert stages["replay gate"][0] == plugin and os.path.join(mge, "target", "dist-staging") in stages["replay gate"][1]
+        assert stages["replay gate"][0] == plugin and UNPLANNED_SET in stages["replay gate"][1], "no commits: the plan names no set"
         assert stages["d3d8 build"][0] == mge and stages["contract"][1][-1] == mge
 
         # The gate compares with the folder that it is given, and neither the accepted folder nor a copy takes its pictures.
@@ -1611,10 +1670,12 @@ def self_test():
         assert "tracked changes" in tree_problem("plugin", plugin, plain, "abc", "abc", True)
         assert "no tree" in tree_problem(None, root, [], "abc", "abc", False)
         assert tree_problem("plugin", plugin, gate, "abc", "abc", False) is None
+        # W521: the maker builds the gate's and the deploy's set in its own trees of the commits, so a worktree of another
+        # name may run them (before, the gate and the dist built this tree beside its sibling).
         worktree = os.path.join(root, PLUGIN_NAME + "-x")
-        assert "own name" in tree_problem("plugin", worktree, stages_for("plugin", worktree, ["host/src/shader.wgsl"]), "abc", "abc", False)
-        # A deploy with no gate too: the sibling's dist collects the plugin of ../nirender-plugin, not of this tree.
-        assert "own name" in tree_problem("plugin", worktree, stages_for("plugin", worktree, ["src/lib.rs"]), "abc", "abc", False)
+        os.makedirs(os.path.join(worktree, "host"))
+        assert tree_problem("plugin", worktree, stages_for("plugin", worktree, ["host/src/shader.wgsl"]), "abc", "abc", False) is None
+        assert tree_problem("plugin", worktree, stages_for("plugin", worktree, ["src/lib.rs"]), "abc", "abc", False) is None
         assert tree_problem("plugin", plugin, stages_for("plugin", plugin, ["src/lib.rs"]), "abc", "abc", False) is None
         assert "tracked changes" in tree_problem("plugin", plugin, stages_for("plugin", plugin, ["src/lib.rs"]), "abc", "abc", False, True)
         # Without the gate, a worktree of another name passes; a missing sibling does not.
@@ -1715,52 +1776,55 @@ def self_test():
             release_slot(Released, "build", "x")
         assert shown.getvalue() == "build: released: x\ndisk C: 29.0 GB free\nWARNING: below 30 GB\n", shown.getvalue()
 
-        # The gate does not run on a failed build, and a failure stops no other stage.
-        good, bad = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(4)"]
+        # The stages that take the round's set do not run when the set was not made, and a failure stops no other stage.
+        # A fault is exit code 1: exit code 4 of a set stage is the maker's MISSING FEATURE.
+        good, bad = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(1)"]
         now = os.path.join(root, "now")
         gate_stage = ("replay gate", root, good + ["--now", now])
         os.makedirs(os.path.join(now, "tour"))
         with open(os.path.join(root, "log2.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("a", root, bad), ("build for the gate", root, bad), gate_stage], log) == [False, False, False]
+            assert run_stages([("a", root, bad), (SET_STAGE, root, bad), gate_stage], log) == [False, False, False]
         with open(os.path.join(root, "log2.txt"), encoding="utf-8") as log:
             text = log.read()
-        assert "== replay gate:" not in text and "== NOT RUN replay gate: its build failed" in text, text
+        assert "== replay gate:" not in text and "== NOT RUN replay gate: the round's set was not made" in text, text
         # A stale picture cannot compare: the gate clears its folder and the tour's.
         for stale in (os.path.join(now, "old.png"), os.path.join(now, "tour", "old.png")):
             open(stale, "w", encoding="ascii").close()
         with open(os.path.join(root, "log3.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("a", root, bad), ("build for the gate", root, good), gate_stage], log) == [False, True, True]
+            assert run_stages([("a", root, bad), (SET_STAGE, root, good), gate_stage], log) == [False, True, True]
         assert os.listdir(now) == ["tour"] and os.listdir(os.path.join(now, "tour")) == []
 
-        # The deploy of the build (D193) stands between the build and the gate. It runs when every stage before it passed,
+        # The deploy of the set (D193) stands between the set and the gate. It runs when every stage before it passed,
         # whatever the gate says; it does not run after a failed code stage, and a failed deploy stops no other stage.
         deploy_stage = (DEPLOY_STAGE, root, good)
         with open(os.path.join(root, "log5.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("a", root, good), ("build for the gate", root, good), deploy_stage, ("replay gate", root, bad + ["--now", now])], log) == [True, True, True, False]
-            assert run_stages([("a", root, good), ("build for the gate", root, good), (DEPLOY_STAGE, root, bad), gate_stage], log) == [True, True, False, True]
-            assert run_stages([("a", root, bad), ("build for the gate", root, good), deploy_stage, gate_stage], log) == [False, True, False, True]
-            assert run_stages([("a", root, good), ("build for the gate", root, bad), deploy_stage, gate_stage], log) == [True, False, False, False]
+            assert run_stages([("a", root, good), (SET_STAGE, root, good), deploy_stage, ("replay gate", root, bad + ["--now", now])], log) == [True, True, True, False]
+            assert run_stages([("a", root, good), (SET_STAGE, root, good), (DEPLOY_STAGE, root, bad), gate_stage], log) == [True, True, False, True]
+            assert run_stages([("a", root, bad), (SET_STAGE, root, good), deploy_stage, gate_stage], log) == [False, True, False, True]
+            assert run_stages([("a", root, good), (SET_STAGE, root, bad), deploy_stage, gate_stage], log) == [True, False, False, False]
         with open(os.path.join(root, "log5.txt"), encoding="utf-8") as log:
             text = log.read()
-        assert "== NOT RUN deploy rest: a did not pass" in text and "== NOT RUN deploy rest: build for the gate did not pass" in text, text
+        assert "== NOT RUN deploy rest: a did not pass" in text and "== NOT RUN deploy rest: the round's set was not made" in text, text
         # The results of the gate and of the A/B stages come after the deploy and do not stop it (the Coordinator's rule: the
         # code stages decide; the gate is red until the owner's baseline swap, and the owner still tests the latest build).
         gate_bad = ("replay gate", root, bad + ["--now", now])
         with open(os.path.join(root, "log6.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("a", root, good), ("build for the gate", root, good), deploy_stage, gate_bad, (BASE_STAGE, root, bad), (INSTANCE_STAGE, root, good)], log) == [True, True, True, False, False, False]
+            assert run_stages([("a", root, good), (SET_STAGE, root, good), deploy_stage, gate_bad, (BASE_STAGE, root, bad), (INSTANCE_STAGE, root, good)], log) == [True, True, True, False, False, False]
         with open(os.path.join(root, "log6.txt"), encoding="utf-8") as log:
-            assert "PASS deploy rest" in log.read(), "the deploy did not run beside a red gate"
+            text = log.read()
+        assert "PASS deploy rest" in text, "the deploy did not run beside a red gate"
+        assert "== NOT RUN %s: the base set was not made" % INSTANCE_STAGE in text, text
 
         # A refused deploy (a game or Mod Organizer runs) is no failure of the round: the line "WITHHELD deploy rest" names the command
         # that deploys alone. A fault of the deploy, and the exit code of the refusal with no "REFUSED" line, still fail.
         refused = [sys.executable, "-c", "print('REFUSED: Morrowind.exe runs, and the deploy does not wait: end it'); raise SystemExit(%d)" % DEPLOY_REFUSED_CODE]
         with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("a", root, good), ("build for the gate", root, good), (DEPLOY_STAGE, root, refused), gate_stage], log) == [True, True, True, True]
+            assert run_stages([("a", root, good), (SET_STAGE, root, good), (DEPLOY_STAGE, root, refused), gate_stage], log) == [True, True, True, True]
             # W528: each stage has its word, and the close names the WITHHELD stage with its reason.
             assert [word for _, word, _ in STAGE_WORDS] == [PASS_WORD, PASS_WORD, WITHHELD_WORD, PASS_WORD], STAGE_WORDS
             column = stages_column(STAGE_WORDS)
-            assert column == ("PASS 3, WITHHELD 1 of 4: a, build for the gate, replay gate; WITHHELD deploy rest: Morrowind.exe runs, "
-                              "and the deploy does not wait: end it"), column
+            assert column == ("PASS 3, WITHHELD 1 of 4: a, %s, replay gate; WITHHELD deploy rest: Morrowind.exe runs, "
+                              "and the deploy does not wait: end it" % SET_STAGE), column
             assert len(NOT_DEPLOYED) == 1 and "Morrowind.exe runs" in NOT_DEPLOYED[0] and "To deploy this build alone, run in %s: " % root in NOT_DEPLOYED[0] and subprocess.list2cmdline(refused) in NOT_DEPLOYED[0], NOT_DEPLOYED
             # A folder and an argument with a space are quoted: the line pastes into a shell.
             spaced = os.path.join(root, "a folder")
@@ -1776,104 +1840,71 @@ def self_test():
         assert "== WITHHELD deploy rest (" in text and "PASS replay gate" in text, text
 
         gate_names = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"])]
-        assert gate_names.index("build for the gate") + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index("replay gate") - 1
+        assert gate_names.index(SET_STAGE) + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index("replay gate") - 1
         assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("mge", mge, ["xtask/src/main.rs"])], "a build of the dist alone is not deployed"
         assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["tools/x.py"])]
 
-        # W406: the probe of the features stands before the build, and the deploy after it, in both kinds of rounds.
-        for kind, repo, path in (("plugin", plugin, "src/lib.rs"), ("plugin", plugin, "host/src/retained.rs"), ("mge", mge, "mgeHost64/src/renderer.rs")):
-            order = [name for name, _, _ in stages_for(kind, repo, [path])]
-            build_at = order.index("build for the gate" if "build for the gate" in order else BUILD_FOR_DEPLOY)
-            assert all(order.index(name) < build_at for name in features) and order.index(DEPLOY_STAGE) > build_at, order
-        # A probe that fails (exit code 1: no file, a build error) fails the round and stops the deploy, with no WITHHELD
-        # line. A missing required feature (exit code 4 with a MISSING line) is WITHHELD; the build runs, the deploy does
-        # not, the round passes, and one "WITHHELD deploy rest" line names the features, each install and the joint command.
-        def probe_missing(md5):
-            return [sys.executable, "-c", "print('MISSING: count locks: 0 of 40 count lock sites in the data of MWSE.dll, missing 0x6fe39f, ...: the plugin needs it');"
-                    "print('md5: %s D:/x/MWSE.dll'); raise SystemExit(%d)" % (md5, MISSING_FEATURE_EXIT)]
-        probe_fail = [sys.executable, "-c", "print('mwse features: FAILED'); raise SystemExit(1)"]
+        # Q10 (addendum 10 C4, test 3): the maker's MISSING FEATURE (exit code 4) makes the set stage WITHHELD, and the stages
+        # that take the set are NOT RUN, so the round fails; the line names the missing feature and --mwse. The null: a set
+        # that was made lets them run. Exit code 4 of another stage is a fault.
+        maker_missing = [sys.executable, "-c", "print('probe: MISSING: count locks: 0 of 40 count lock sites: the plugin needs it'); "
+                         "print('MISSING FEATURE: the MWSE.dll of the set lacks what the plugin needs; no set is made'); raise SystemExit(%d)" % MISSING_FEATURE_EXIT,
+                         "--mwse", "e" * 40]
         never = [sys.executable, "-c", "raise SystemExit(9)"]
         with open(os.path.join(root, "log8.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("a", root, good), (FEATURES_STAGE + "A", root, probe_fail), (BUILD_FOR_DEPLOY, root, good), (DEPLOY_STAGE, root, never)], log) == [True, False, True, False]
-            assert NOT_DEPLOYED == [] and WITHHELD == []
-            stages = [("a", root, good), (FEATURES_STAGE + "A", root, probe_missing("a" * 32)), (FEATURES_STAGE + "B", root, probe_missing("b" * 32)),
-                      (BUILD_FOR_DEPLOY, root, good), (DEPLOY_STAGE, root, never)]
-            assert run_stages(stages, log) == [True] * 5
-            assert [word for _, word, _ in STAGE_WORDS] == [PASS_WORD, WITHHELD_WORD, WITHHELD_WORD, PASS_WORD, WITHHELD_WORD], STAGE_WORDS
-            assert STAGE_WORDS[-1] == (DEPLOY_STAGE, WITHHELD_WORD, "the deployed MWSE.dll lacks the MWSE features 'count locks'"), STAGE_WORDS
-            column = stages_column(STAGE_WORDS)
-            assert column.startswith("PASS 2, WITHHELD 3 of 5: a, %s; WITHHELD %sA: MISSING count locks: 0 of 40" % (BUILD_FOR_DEPLOY, FEATURES_STAGE)), column
-            assert len(NOT_DEPLOYED) == 1, NOT_DEPLOYED
-            line = NOT_DEPLOYED[0]
-            assert line.startswith("WITHHELD deploy rest: the build needs the MWSE features 'count locks', which the deployed MWSE.dll lacks: A (MWSE.dll %s): count locks: 0 of 40" % ("a" * 32)), line
-            assert "; B (MWSE.dll %s): count locks" % ("b" * 32) in line and "Deploy both together, run in %s: " % root in line, line
-            assert subprocess.list2cmdline(never + ["--mwse-dll", "<an MWSE.dll with count locks>"]) in line, line
-            # One install that lacks the feature keeps the deploy of both back.
-            assert run_stages([(FEATURES_STAGE + "A", root, good), (FEATURES_STAGE + "B", root, probe_missing("b" * 32)), (DEPLOY_STAGE, root, never)], log) == [True] * 3
-            assert len(NOT_DEPLOYED) == 1 and "B (MWSE.dll" in NOT_DEPLOYED[0] and "A (MWSE.dll" not in NOT_DEPLOYED[0], NOT_DEPLOYED
-            # Exit code 4 with no MISSING line is a fault, and a MISSING line excuses no other stage.
-            assert run_stages([(FEATURES_STAGE + "A", root, [sys.executable, "-c", "raise SystemExit(%d)" % MISSING_FEATURE_EXIT]), (DEPLOY_STAGE, root, never)], log) == [False, False]
-            assert run_stages([("docs", root, probe_missing("c" * 32)), (DEPLOY_STAGE, root, never)], log) == [False, False]
-            assert NOT_DEPLOYED == [] and WITHHELD == []
-            # A round with the gate: the gate's build and the gate run; only the deploy is kept back.
-            assert run_stages([(FEATURES_STAGE + "A", root, probe_missing("d" * 32)), ("build for the gate", root, good), (DEPLOY_STAGE, root, never), gate_stage], log) == [True] * 4
-            assert len(NOT_DEPLOYED) == 1
-            # W495: an MWSE.dll without native request 7 beside a d3d8 that sends it: the same form, and the line names the
-            # DLL, its md5, the request and the texts that it lacks.
-            request = ("MISSING: native request 7: D:/x/MWSE.dll (md5 %s) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the d3d8 "
-                       "of C:/r sends: MWSE too old; missing \"keeps MGE XE's API in use.\"" % ("e" * 32))
-            probe_request = [sys.executable, "-c", "print(%r); print('md5: %s D:/x/MWSE.dll'); raise SystemExit(%d)" % (request, "e" * 32, MISSING_FEATURE_EXIT)]
-            assert run_stages([(FEATURES_STAGE + "A", root, probe_request), (BUILD_FOR_DEPLOY, root, good), (DEPLOY_STAGE, root, never)], log) == [True] * 3
-            assert len(NOT_DEPLOYED) == 1, NOT_DEPLOYED
-            line = NOT_DEPLOYED[0]
-            assert line.startswith("WITHHELD deploy rest: the build needs the MWSE features 'native request 7', which the deployed MWSE.dll lacks: A (MWSE.dll %s): "
-                                   "native request 7: D:/x/MWSE.dll (md5 %s) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the d3d8 of "
-                                   "C:/r sends: MWSE too old; missing \"keeps MGE XE's API in use.\". Deploy both together" % ("e" * 32, "e" * 32)), line
-            assert subprocess.list2cmdline(never + ["--mwse-dll", "<an MWSE.dll with native request 7>"]) in line, line
+            stages = [("a", root, good), (SET_STAGE, root, maker_missing), (SITES_SET_STAGE, root, never), (DEPLOY_STAGE, root, never), gate_stage,
+                      (HELPER_SOURCES_STAGE, root, never), (BASE_STAGE, root, good), (INSTANCE_STAGE, root, never)]
+            assert run_stages(stages, log) == [True, True, False, False, False, False, True, False]
+            assert [word for _, word, _ in STAGE_WORDS] == [PASS_WORD, WITHHELD_WORD] + [NOT_RUN_WORD] * 4 + [PASS_WORD, NOT_RUN_WORD], STAGE_WORDS
+            reason = STAGE_WORDS[1][2]
+            assert "MISSING count locks: 0 of 40" in reason and "--mwse <an MWSE commit that has it>" in reason and "MWSE eeeeeeeeee" in reason, reason
+            assert NOT_DEPLOYED == []
+            # The base set's MISSING FEATURE stops the A/B alone.
+            assert run_stages([(SET_STAGE, root, good), (BASE_STAGE, root, maker_missing), (INSTANCE_STAGE, root, never)], log) == [True, True, False]
+            assert run_stages([("docs", root, maker_missing)], log) == [False], "exit code 4 of another stage is a fault"
         with open(os.path.join(root, "log8.txt"), encoding="utf-8") as log:
             text = log.read()
-        assert "== %s: " % DEPLOY_STAGE not in text, "a deploy ran beside a missing feature or a failed probe"
-        assert "== WITHHELD mwse features A (" in text and "MISSING count locks: 0 of 40" in text and "the round deploys nothing" in text, text
-        assert "== FAIL mwse features A (" in text and "== NOT RUN deploy rest: mwse features A did not pass" in text, text
-        assert missing_features_in("feature: x: present\nmd5: abc D:/x\n") is None
-        assert missing_features_in("MISSING: x: 0 of 1\n") == ("unknown", ["x: 0 of 1"])
-        # The deploy of the round: deploy rest needs the game slot (its set on E:, its refusal while a game runs).
+        assert "== %s: " % DEPLOY_STAGE not in text and "== replay gate: " not in text, "a stage took a set that was not made"
+        assert "== WITHHELD %s (" % SET_STAGE in text and "== NOT RUN deploy rest: the round's set was not made" in text, text
+        assert maker_missing_in("probe: MISSING: x: 0 of 1\nprobe: feature: y: present\nMISSING: z\n") == ["x: 0 of 1"]
+        # The deploy of the round needs the game slot: its set on E:, its refusal while a game runs.
         assert needs_game(stages_for("plugin", plugin, ["src/lib.rs"])) and needs_game(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/main.lua"]))
         assert not needs_game(stages_for("plugin", plugin, ["tools/x.py"])) and not needs_game(stages_for("mge", mge, ["d3d8/x.cpp"]))
-        assert evidence_problem(stages_for("plugin", plugin, ["src/lib.rs"])) is None
+        with_set = stages_for("plugin", plugin, ["src/lib.rs"], commits=full, mwse_commit=mwse)
+        assert any(EVIDENCE_PATH.search(part) for _, _, command in with_set for part in command), "the set's folder is on E:"
+        assert evidence_problem(with_set) is None, "the round holds the game slot, so its stages may name E:"
         deploy = next(stage for stage in stages_for("plugin", plugin, ["host/src/retained.rs"]) if stage[0] == DEPLOY_STAGE)
-        assert deploy[1] == plugin and "--build" in deploy[2] and "dist-staging" in deploy[2][deploy[2].index("--build") + 1], deploy
-        assert not any(EVIDENCE_PATH.search(str(text)) for text in deploy[2]), "the stage names no path on E: (the tool keeps its set folder itself)"
+        assert deploy[1] == plugin and deploy[2][deploy[2].index("--set") + 1] == UNPLANNED_SET, deploy
         assert deploy_refusal_in("x\nREFUSED: Morrowind.exe runs, and the deploy does not wait: end it\nFAIL: y") == "Morrowind.exe runs, and the deploy does not wait: end it"
         assert deploy_refusal_in("FAIL: x") is None
 
         # Each stage that runs notes the slot's work, and a gate that does not run does not.
         notes = []
         with open(os.path.join(root, "log4.txt"), "w", encoding="utf-8") as log:
-            run_stages([("a", root, good), ("build for the gate", root, bad), gate_stage], log, lambda: notes.append(1))
+            run_stages([("a", root, good), (SET_STAGE, root, bad), gate_stage], log, lambda: notes.append(1))
         assert len(notes) == 2
 
-        # The A/B stages follow the gate, with the tips of both repos, and only with them.
-        tips = {"plugin": "p" * 40, "mge": "m" * 40}
-        kept = os.path.join(root, "kept")
-        with_tips = stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips, kept)
-        assert [name for name, _, _ in with_tips][-6:] == ["build for the gate", DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE, BASE_STAGE, INSTANCE_STAGE]
+        # The A/B stages follow the gate, with the base pair of both repos, and only with it (addendum 10 C3, test 4): the
+        # base set of the pair and the round's MWSE commit, made in the round's take.
+        tips = {"plugin": "1" * 40, "mge": "2" * 40}
+        with_tips = stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips, mwse, commits=full, label="merge_step: x")
+        assert [name for name, _, _ in with_tips][-6:] == [SET_STAGE, DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE, BASE_STAGE, INSTANCE_STAGE]
         by_name = {name: (folder, command) for name, folder, command in with_tips}
         build = by_name[BASE_STAGE][1]
-        assert build[build.index("--plugin-tip") + 1] == "p" * 40 and build[build.index("--mge-tip") + 1] == "m" * 40 and build[build.index("--out") + 1] == kept
+        assert build[build.index("--nirender") + 1] == "1" * 40 and build[build.index("--render-link") + 1] == "2" * 40 and build[build.index("--mwse") + 1] == mwse, build
+        assert build[build.index(IN_HOLD) + 1] == "merge_step: x", build
         run = by_name[INSTANCE_STAGE][1]
-        assert run[run.index("--base-build") + 1] == os.path.join(kept, "build") and run[run.index("--now-build") + 1] == os.path.join(mge, "target", "dist-staging")
+        assert run[run.index("--base-build") + 1] == os.path.join(sets.SETS, "s-11111111-22222222-cccccccc") and run[run.index("--now-build") + 1] == the_set, run
         assert run[run.index("--baseline") + 1] == BASELINE and not run[run.index("--out") + 1].startswith(BASELINE)
-        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, kept)] == base + deploy_tail, "no gate, no A/B stage"
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, mwse)] == base + deploy_tail, "no gate, no A/B stage"
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE)][-1] == HELPER_SOURCES_STAGE, "no base pair, no A/B stage"
         # deploy rest gets the commits under test (the tree's and the sibling's at the start of the round), not HEADs.
         assert under_test("plugin", "a" * 40, "b" * 40) == {"plugin": "a" * 40, "mge": "b" * 40}
         assert under_test("mge", "b" * 40, "a" * 40) == {"plugin": "a" * 40, "mge": "b" * 40}
         assert under_test("plugin", "a" * 40, None) is None and under_test("", "a", "b") is None
-        deploy = {name: command for name, _, command in stages_for("plugin", plugin, ["host/src/retained.rs"], commits=under_test("plugin", "a" * 40, "b" * 40))}[DEPLOY_STAGE]
+        deploy = by_name[DEPLOY_STAGE][1]
         assert deploy[deploy.index("--plugin-commit") + 1] == "a" * 40 and deploy[deploy.index("--mge-commit") + 1] == "b" * 40, deploy
-        assert "--plugin-repo" not in deploy and "--plugin-commit" not in by_name[DEPLOY_STAGE][1], by_name[DEPLOY_STAGE][1]
-        assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips)][-1] == HELPER_SOURCES_STAGE, "no folder, no A/B stage"
-        assert base_folder_of("feature/wgpu-renderer") == os.path.join(LOG_FOLDER, "base-feature-wgpu-renderer") and base_folder_of("master").endswith("base-master")
+        assert "--plugin-commit" not in next(command for name, _, command in stages_for("plugin", plugin, ["host/src/retained.rs"]) if name == DEPLOY_STAGE)
         assert tips_for("plugin", os.path.join(root, "alone", PLUGIN_NAME), "b")[0] is None
         # The sibling's side of the base is the pair that passed with the base, kept in the sibling's repo.
         pair = os.path.join(root, "pair")
@@ -1888,7 +1919,7 @@ def self_test():
         assert first != second
         plugin_of_pair = os.path.join(pair, PLUGIN_NAME)
         no_pair = tips_for("plugin", plugin_of_pair, "base")
-        assert no_pair[0] is None and "keeps no pair for the base" in no_pair[1] and "--sibling-base" in no_pair[1], "no kept pair, no option: no base build"
+        assert no_pair[0] is None and "keeps no pair for the base" in no_pair[1] and "--sibling-base" in no_pair[1], "no kept pair, no option: no base set"
         keep_pair("plugin", sibling_tree, "base", first)
         assert resolve(sibling_tree, pair_ref("plugin", "base")) == first
         assert tips_for("plugin", plugin_of_pair, "base") == ({"plugin": "base", "mge": first}, None), "the kept pair, HEAD itself"
@@ -1902,7 +1933,6 @@ def self_test():
         assert tips_for("plugin", plugin_of_pair, "base") == ({"plugin": "base", "mge": first}, None), "without the option: the kept pair, not the sibling's HEAD"
         assert tips_for("plugin", plugin_of_pair, "base", second) == ({"plugin": "base", "mge": second}, None), "an ancestor of HEAD, in place of the kept pair"
         assert tips_for("plugin", plugin_of_pair, "base", second[:10]) == ({"plugin": "base", "mge": second}, None), "a short name gives the full commit"
-        assert base_key("base", second) != base_key("base", third), "the key names the sibling's commit"
         subprocess.run(["git", "-C", sibling_tree, "checkout", "-q", "--detach", first], check=True, env=git_env())
         assert tips_for("plugin", plugin_of_pair, "base", second)[1].endswith("(%s)" % first[:10]) and "not an ancestor" in tips_for("plugin", plugin_of_pair, "base", second)[1], "a commit ahead of HEAD"
         keep_pair("plugin", sibling_tree, "later", second)
@@ -1945,9 +1975,9 @@ def self_test():
         mge_round = stages_for("mge", cover_mge, ["mgeHost64/src/x.rs"], BASELINE, commits=cover_commits, base=c1)
         plugin_round = stages_for("plugin", cover_plugin, ["tools/x.py"], BASELINE, commits=cover_commits)
 
-        def sibling_move(stages, results, sibling_head=c2, changed=False):
+        def sibling_move(stages, results, sibling_head=c2, changed=False, mwse_commit="c" * 40):
             with contextlib.redirect_stdout(io.StringIO()) as said:
-                moved = move_sibling_ref("plugin", cover_mge, sibling_head, stages, results, BASELINE, cover_commits, changed)
+                moved = move_sibling_ref("plugin", cover_mge, sibling_head, stages, results, BASELINE, cover_commits, changed, mwse_commit=mwse_commit)
             return moved, said.getvalue()
 
         moved, said = sibling_move(plugin_round, [True] * len(plugin_round))
@@ -2022,6 +2052,12 @@ def self_test():
         c4 = resolve(cover_mge, "HEAD")
         moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c4)
         assert not moved and "are not known" in said and "keeps no pair" in said and resolve(cover_mge, cover_ref) == c1, said
+        # The sibling's diff makes a set: with no MWSE commit of the round its stages are not known either.
+        moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c4, mwse_commit=None)
+        assert not moved and "are not known" in said and "give --mwse" in said and resolve(cover_mge, cover_ref) == c1, said
+        # The round's MWSE commit: --mwse resolved to the full commit, else the installs' records.
+        assert round_mwse(c1[:8], cover_mge) == (c1, None) and round_mwse("no-such-name", cover_mge) == (None, "--mwse no-such-name is no commit of %s" % cover_mge)
+        assert round_mwse(None, cover_mge, lambda: ("f" * 40, None)) == ("f" * 40, None) and round_mwse(None, cover_mge, lambda: (None, "why"))[1] == "why"
         subprocess.run(["git", "-C", cover_mge, "checkout", "-q", "--detach", "HEAD"], check=True, env=git_env())
         moved, said = sibling_move(mge_round, [True] * len(mge_round), sibling_head=c4)
         assert not moved and "on no branch" in said, said
@@ -2099,6 +2135,22 @@ def self_test():
             assert keep_helper_sources(dep_file, list_file, source_roots["plugin"], os.path.join(root, "other"), "a", "b") == 1
         assert "FAIL: no dep-info file" in said.getvalue() and "names no source of %s" % os.path.join(root, "other") in said.getvalue()
         assert read_helper_sources(list_file)[0]["plugin"] == before_moves, "a failed stage wrote the list"
+        # Addendum 10 C5 (test 5): the list is read only when the numidium.exe beside the dep-info file is the set's. A part
+        # that the maker copied from another set passes the stage with a line and keeps the list; the null: the same
+        # numidium.exe writes it.
+        set_list = os.path.join(root, "keep", "set-sources.txt")
+        built_exe, set_exe = os.path.join(root, "numidium.exe"), os.path.join(root, "set-numidium.exe")
+        for path, body in ((built_exe, b"built in the tree"), (set_exe, b"copied from another set")):
+            with open(path, "wb") as file:
+                file.write(body)
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert keep_helper_sources(dep_file, set_list, source_roots["plugin"], source_roots["mge"], "a", "b", set_exe) == 0
+        assert not os.path.exists(set_list) and "is not the build of the maker's tree" in said.getvalue(), said.getvalue()
+        with open(set_exe, "wb") as file:
+            file.write(b"built in the tree")
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert keep_helper_sources(dep_file, set_list, source_roots["plugin"], source_roots["mge"], "a", "b", set_exe) == 0
+        assert read_helper_sources(set_list)[0] == {"plugin": "a", "mge": "b"}, read_helper_sources(set_list)
         # The plant: a list of an ancestor of the base; a change of a listed file plans the gate, and the line names the list.
         helper_paths, line = helper_gate_paths("plugin", moves, inside_tools, list_file)
         assert helper_paths == ("host/src/lib.rs", "src/stream_format.rs") and before_moves[:10] in line, line
@@ -2117,11 +2169,11 @@ def self_test():
         stale, line = helper_gate_paths("plugin", moves, before_moves, list_file)
         assert stale is None and "is not an ancestor of the base %s" % before_moves[:10] in line, line
         assert "replay gate" in [name for name, _, _ in stages_for("plugin", plugin, ["tools/x.py"], helper_paths=None)], "an unknown list plans the gate"
-        # The stage stands after the gate, and is NOT RUN when the build of the gate failed.
+        # The stage stands after the gate, and is NOT RUN when the round's set was not made.
         with open(os.path.join(root, "log-sources.txt"), "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
-            assert run_stages([("build for the gate", root, [sys.executable, "-c", "raise SystemExit(1)"]),
+            assert run_stages([(SET_STAGE, root, [sys.executable, "-c", "raise SystemExit(1)"]),
                                (HELPER_SOURCES_STAGE, root, [sys.executable, "-c", "raise SystemExit(9)"])], log) == [False, False]
-        assert STAGE_WORDS[-1] == (HELPER_SOURCES_STAGE, NOT_RUN_WORD, "its build failed"), STAGE_WORDS
+        assert STAGE_WORDS[-1] == (HELPER_SOURCES_STAGE, NOT_RUN_WORD, "the round's set was not made"), STAGE_WORDS
         # W528 item 3b: a round with a WITHHELD deploy keeps an open deploy until a deploy of the same or newer commits.
         # The scratch repo of the moves stands for both repos: before_moves, out_of_gate and inside_tools in that order.
         deploys = os.path.join(root, "deploys", "deploys.tsv")
@@ -2248,17 +2300,17 @@ def self_test():
         # The base is never the tip.
         assert base_problem("c" * 40, "c" * 40, True, "b" * 40, True).startswith("the base is the commit")
 
-        # The A/B stage does not run on a failed build of the gate or of the base; a failed stage stops no other.
-        with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("build for the gate", root, bad), gate_stage, (BASE_STAGE, root, good), (INSTANCE_STAGE, root, good)], log) == [False, False, True, False]
-        with open(os.path.join(root, "log7.txt"), encoding="utf-8") as log:
+        # The A/B stage does not run when the round's set or the base set was not made; a failed stage stops no other.
+        with open(os.path.join(root, "log7b.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([(SET_STAGE, root, bad), gate_stage, (BASE_STAGE, root, good), (INSTANCE_STAGE, root, good)], log) == [False, False, True, False]
+        with open(os.path.join(root, "log7b.txt"), encoding="utf-8") as log:
             text = log.read()
-        assert "== NOT RUN instance A/B grass: its build failed" in text and "== PASS base build (" in text, text
-        with open(os.path.join(root, "log8.txt"), "w", encoding="utf-8") as log:
-            assert run_stages([("build for the gate", root, good), gate_stage, (BASE_STAGE, root, bad), (INSTANCE_STAGE, root, good)], log) == [True, True, False, False]
-        with open(os.path.join(root, "log8.txt"), encoding="utf-8") as log:
+        assert "== NOT RUN instance A/B grass: the round's set was not made" in text and "== PASS %s (" % BASE_STAGE in text, text
+        with open(os.path.join(root, "log8b.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([(SET_STAGE, root, good), gate_stage, (BASE_STAGE, root, bad), (INSTANCE_STAGE, root, good)], log) == [True, True, False, False]
+        with open(os.path.join(root, "log8b.txt"), encoding="utf-8") as log:
             text = log.read()
-        assert "== NOT RUN instance A/B grass: the base build failed" in text, text
+        assert "== NOT RUN instance A/B grass: the base set was not made" in text, text
 
         # A pass against a named folder does not move the ref.
         assert moves_the_ref(BASELINE) and not moves_the_ref(os.path.join(root, "copy"))
@@ -2428,7 +2480,7 @@ def self_test():
         named = helper_text_stage(plugin, mge, under_test("plugin", "a" * 40, "b" * 40))
         assert named[0] == HELPER_TEXT_STAGE + " (render-link bbbbbbbbbb)" and named[1:] == planned[0][1:], named
         in_round = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], commits=under_test("plugin", "a" * 40, "b" * 40))]
-        assert in_round.index(named[0]) == in_round.index("docs") + 1 < in_round.index("build for the gate"), in_round
+        assert in_round.index(named[0]) == in_round.index("docs") + 1 < in_round.index(SET_STAGE), in_round
         # The stage's wrapper (this file in place of the planted tree's) with a planted output: a test that ran passes,
         # 0 tests fail.
         assert named[2][3] == REQUIRE_TESTS and named[2][:2] == wrapper[:2]
@@ -2855,8 +2907,9 @@ def self_test():
         for kind, repo, paths in (("plugin", plugin, ["tools/x.py"]), ("plugin", plugin, ["mod/MWSE/mods/nirender/main.lua"]),
                                   ("plugin", plugin, ["contract/x"]), ("mge", mge, ["xtask/src/main.rs"]), ("mge", mge, ["d3d8/x.rs"])):
             assert evidence_problem(stages_for(kind, repo, paths)) is None, (kind, paths)
-        with_base = stages_for("plugin", plugin, ["host/src/retained.rs"], tips={"plugin": "a", "mge": "b"}, base_folder="E:\\nirender-keep\\merge-step\\base-x")
-        assert BASE_STAGE in [name for name, _, _ in with_base] and evidence_problem(with_base) is None, "the base build holds the game"
+        with_base = stages_for("plugin", plugin, ["host/src/retained.rs"], tips={"plugin": "a" * 40, "mge": "b" * 40},
+                               mwse_commit="c" * 40, commits={"plugin": "d" * 40, "mge": "e" * 40})
+        assert BASE_STAGE in [name for name, _, _ in with_base] and evidence_problem(with_base) is None, "the base set is made in the round that holds the game"
         for writer in (["robocopy", "x", "E:\\nirender-keep\\x"], ["tool", "--out=E:/nirender-keep/x"], ["cp", "x", "/e/nirender-keep/x"],
                        ["cp", "x", "e:/nirender-keep"], ["cp", "x", "E:"], ["cp", "x", "E:\\"], ["cp", "x", "E:x.txt"]):
             assert evidence_problem([("checks", root, good), ("a copy", root, writer)]), writer
@@ -2909,14 +2962,16 @@ def self_test():
 def main():
     if len(sys.argv) > 2 and sys.argv[1] == REQUIRE_TESTS:
         return require_tests(sys.argv[2:])
-    if len(sys.argv) == 8 and sys.argv[1] == HELPER_SOURCES:
+    if len(sys.argv) in (8, 9) and sys.argv[1] == HELPER_SOURCES:
         return keep_helper_sources(*sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("repo", nargs="?")
     parser.add_argument("commit", nargs="?")
     parser.add_argument("--base", help="the tip of the shared branch before the merge: the diff from it decides the stages")
-    parser.add_argument("--sibling-base", help="the commit of the sibling repo for the base build, an ancestor of its HEAD: for a base with no kept pair; without it, the sibling's commit that passed with --base")
+    parser.add_argument("--sibling-base", help="the commit of the sibling repo for the base set, an ancestor of its HEAD: for a base with no kept pair; without it, the sibling's commit that passed with --base")
     parser.add_argument("--baseline", default=BASELINE, help="the folder that the gate compares with; without it, the accepted folder")
+    parser.add_argument("--mwse", help="the MWSE commit of the round's sets; without it, the commit of the test installs' records (for a "
+                        "plugin that needs an MWSE feature that the installs' MWSE lacks)")
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for the slot")
     parser.add_argument("--dry-run", action="store_true", help="print the stages: no slot, no build")
     parser.add_argument("--evidence", action="append", metavar="STAGE=FILE", help="the evidence file of a FORMAT CHANGE of the stage '%s': with it the stage passes, and the round's close line names the file's md5" % INSTANCE_STAGE)
@@ -2958,7 +3013,9 @@ def main():
     commits = under_test(kind, commit, resolve(sibling_of(kind, repo), "HEAD") if kind and os.path.isdir(sibling_of(kind, repo)) else None)
     if kind:
         say(helper_gate_paths(kind, repo, base)[1])
-    stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, branch, args.sibling_base) if kind else ([], None, None)
+    what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
+    mwse_commit, mwse_why = round_mwse(args.mwse)
+    stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, args.sibling_base, mwse_commit, what, mwse_why) if kind else ([], None, None)
     if why:
         say("FAIL the tree: %s" % why)
         return 1
@@ -2984,10 +3041,12 @@ def main():
     sibling_head = resolve(sibling, "HEAD") if has_sibling else None
     sibling_base_note = ""
     if tips:
-        sibling_base_note = " (base build at %s%s)" % (tips["mge" if kind == "plugin" else "plugin"][:10], ", --sibling-base" if args.sibling_base else ", the kept pair")
+        sibling_base_note = " (base set at %s%s)" % (tips["mge" if kind == "plugin" else "plugin"][:10], ", --sibling-base" if args.sibling_base else ", the kept pair")
     elif args.sibling_base:
-        sibling_base_note = " (--sibling-base unused: no base build in these stages)"
+        sibling_base_note = " (--sibling-base unused: no base set in these stages)"
     say("%s %s, sibling %s%s, baseline %s: %d changed paths from %s; stages: %s" % (os.path.basename(repo), commit[:10], sibling_hash, sibling_base_note, baseline, len(paths), base[:10], ", ".join(name for name, _, _ in stages)))
+    if any(name == SET_STAGE for name, _, _ in stages):
+        say("the round's set: %s (MWSE %s, %s)" % (set_folder_of(round_set(commits, mwse_commit)), mwse_commit[:10], "--mwse" if args.mwse else "the installs' records"))
     # The merges that a pass closes (D183), read before the round so that the warning of a fast-forward comes first.
     plugin_repo, mge_repo = (repo, sibling) if kind == "plugin" else (sibling, repo)
     for line in open_deploy_lines(deploys_open(plugin_repo, mge_repo)):
@@ -3002,7 +3061,6 @@ def main():
         return 0
 
     slots = load_slots()
-    what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
     log_path = log_path_of(commit)
     done = run_round(slots, stages, what, log_path, args.no_wait)
     if done is None:
@@ -3035,7 +3093,7 @@ def main():
     elif written == []:
         say("closes: nothing to write (no new item in the subjects of %d merge(s): %s)" % (len(merges), "; ".join(subject for _, subject in merges)))
     return settle_refs(kind, repo, passed_ref, commit, sibling, sibling_head, stages, results, baseline, commits,
-                       sibling_changed, log_path)
+                       sibling_changed, log_path, mwse_commit)
 
 
 if __name__ == "__main__":

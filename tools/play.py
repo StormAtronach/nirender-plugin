@@ -1,15 +1,19 @@
-"""Starts a game of the testing instance to play by hand, with the wgpu renderer of a build of
-MGE XE, and puts the files of the instance back when the game ends.
+"""Starts a game of the testing instance to play by hand, with the wgpu renderer of a sealed set,
+and puts the files of the instance back when the game ends.
 
-    python tools/play.py [--mge-build DIR] [--reference] [--set "[section] key = value"]
+    python tools/play.py [--mge-build SET] [--reference] [--set "[section] key = value"]
                          [--plugin] [--livecoding FILE] [--stage-only]
                          [--instance DIR --game-dir DIR --profile NAME --config-mod NAME]
 
 The testing instance at rest has the release of MGE XE and of the plugin. This tool does for a
-game by hand what the runners do for a scenario: the mod "Harness - MGE XE" with the d3d8.dll
-and the numidium.exe of the build, and "Harness - config" with mgeXE.toml with the switch
-`renderer_wgpu`, both on for this game only, over the mods of the instance. With --reference:
-MGE XE of the instance on Direct3D 9.
+game by hand what the runner does for a scenario (W521): --mge-build names a sealed set
+(tools/build_set.py makes one), and without it the game takes the current set (MGE_BUILD of
+current.bat). sets.verify checks the set first; no set, or a set that fails the check, stops
+the tool with one line and no game. The files come from the runner's map (sets.stage_files):
+"Harness - MGE XE" with the set's MGE XE files, MWSE.dll, lua51.dll and the MWSE core, and
+"Harness - config" with mgeXE.toml with the switch `renderer_wgpu`, both on for this game only,
+over the mods of the instance. With --reference: the same set with the switch off, on
+Direct3D 9.
 
 --instance runs the game in another Mod Organizer instance, with --game-dir its game folder,
 --profile its profile and --config-mod the mod that holds its mgeXE.toml. For Outlander-test
@@ -17,12 +21,11 @@ play-manual-check-outlander.bat has them (the instance's folder comes from local
 --stage-only puts the mods in place, prints them, and takes them out again without a game: a
 check of the staging in an instance.
 
---plugin puts a plugin DLL and the Lua of mod/ of this repo into "Harness - nirender" for the
-game, over the release of the instance. The DLL comes as in run_own_device.py: --plugin-dll
-(which implies --plugin), else the variable NIRENDER_PLUGIN_DLL, else the plugin copy
-akulakhan-<commit>.dll of the --mge-build folder, else the build of this repo
-(target/.../release/akulakhan.dll). With --mge-build, a WARNING line names a plugin that is not
-the folder's copy: the build of this repo, or a DLL with other bytes than the folder's one copy.
+--plugin puts the set's plugin, its Lua and its test files into "Harness - nirender" for the
+game, over the release of the instance. Without it the game has the instance's release of the
+plugin. --plugin-dll is gone: it stops the tool with a line that names build_set.py. The
+variable NIRENDER_PLUGIN_DLL is read by nothing: a game prints one line and goes on (the runner
+stops on it).
 --livecoding FILE adds the Livecoding mod to "Harness - nirender": its main.lua, read from
 the instance's own Livecoding mod, and FILE as its livecoding.lua (Alt+X in the game loads
 it). The staged copy of FILE is in the Harness mod: an edit there during the game shows at
@@ -47,9 +50,12 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import session  # noqa: E402, F401  (puts the harness on the path)
 import harness  # noqa: E402
-import run_own_device  # noqa: E402  (the plugin rule of a run, W520)
+import run_own_device  # noqa: E402  (the set of a run and its staging, W521)
+import sets  # noqa: E402
 
-MGE_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "MGE-XE-G7-render-link", "bin", "MSVC-Release")
+# The line of a game with no set (D 2.5): the tools that make one and that make it the current set.
+NO_SET_HINT = ("make a set with tools/build_set.py and name it with --mge-build, or make it the current set with "
+               "tools/deploy_rest.py (it writes current.bat)")
 # The testing instance, for files that another instance lacks (the Livecoding mod).
 TESTING_INSTANCE = harness.MO2_ROOT
 
@@ -174,7 +180,7 @@ def self_test():
     assert lines[:3] == ["[runtime]", "renderer_wgpu = true", 'vsync = "default"'], lines
     assert lines[lines.index("far = 5") + 1] == "near = 1", lines
     assert lines[-3:] == ["", "[views]", "full_tier_max = 4"], lines
-    self_test_plugin()
+    self_test_set()
     self_test_not_known()
     print("play self-test: ok")
 
@@ -214,52 +220,77 @@ def self_test_not_known():
         harness.processes, time.sleep = saved_processes, saved_sleep
 
 
-def play_plugin(args, environment, default, listdir=os.listdir):
-    """The plugin DLL of a game, its source and the WARNING line or None, by the rule of run_own_device.py (W520,
-    D489). Only an explicit --mge-build names a run folder: the default folder is the checkout's MGE XE build."""
-    dll, source = run_own_device.plugin_dll_of(args.plugin_dll, environment, default, args.mge_build, listdir)
-    return dll, source, run_own_device.plugin_warning(args.mge_build, dll, source, listdir=listdir)
+def game_files(folder, manifest, plugin):
+    """The files of a game from its set, by the runner's map (F-T-8): ({path in Harness - MGE XE: file in the set},
+    {path in Harness - nirender: file in the set}). The second is empty without `plugin`: the game then has the
+    instance's release of the plugin, and none of the set's Lua over it."""
+    mods = run_own_device.set_mods(folder, manifest, plugin)
+    return mods.get("MGE XE", {}), (mods.get("nirender", {}) if plugin else {})
 
 
-def self_test_plugin():
-    """W520 (D489): the plugin of a game with --mge-build. The null: before W520 play.py took the build of this repo
-    for every game, so the first assert below failed."""
-    with tempfile.TemporaryDirectory(prefix="w520-play-") as scratch:
-        folder, empty = os.path.join(scratch, "f1"), os.path.join(scratch, "f2")
-        os.mkdir(folder)
-        os.mkdir(empty)
-        copy, other = os.path.join(folder, "akulakhan-45b645b.dll"), os.path.join(scratch, "other.dll")
-        for path, data in ((copy, b"copy"), (other, b"other")):
-            with open(path, "wb") as file:
-                file.write(data)
-        checkout = os.path.join(scratch, "akulakhan.dll")
+def open_game_set(args, current=None, verify=sets.verify):
+    """The manifest of the game's set (run_own_device.open_set, with play's line and the tools of D 2.5)."""
+    return run_own_device.open_set(args, current, verify, who="play", hint=NO_SET_HINT)
 
-        def game(mge_build, plugin_dll=None):
-            return argparse.Namespace(mge_build=mge_build, plugin_dll=plugin_dll)
 
-        # The folder's copy, with no line.
-        assert play_plugin(game(folder), {}, checkout) == (copy, run_own_device.FOLDER_PLUGIN_SOURCE, None)
-        # The variable and --plugin-dll stay above the folder's copy, with the WARNING of verdict 444.
-        dll, source, warning = play_plugin(game(folder), {"NIRENDER_PLUGIN_DLL": other}, checkout)
-        assert (dll, source) == (other, "NIRENDER_PLUGIN_DLL") and warning and copy in warning, warning
-        dll, source, warning = play_plugin(game(folder, other), {}, checkout)
-        assert (dll, source) == (other, "--plugin-dll") and (warning or "").startswith("WARNING: "), warning
-        # No copy: the build of this repo, with the WARNING; no --mge-build: no run folder, no line.
-        dll, source, warning = play_plugin(game(empty), {}, checkout)
-        assert (dll, source) == (checkout, run_own_device.CHECKOUT_PLUGIN_SOURCE) and "not the run folder's" in warning, warning
-        assert play_plugin(game(None), {}, checkout) == (checkout, run_own_device.CHECKOUT_PLUGIN_SOURCE, None)
+def gone_problems(args):
+    """The runner's lines for the gone options. The variable NIRENDER_PLUGIN_DLL does not stop a game: the owner's
+    local.bat may set it by hand (verdict 507 addendum 6, change 1), and `plugin_variable_line` names it."""
+    return run_own_device.gone_option_problems(args, environment={})
+
+
+def plugin_variable_line(environment):
+    """The line for a set NIRENDER_PLUGIN_DLL, or None: the game goes on with the set's plugin."""
+    if environment.get("NIRENDER_PLUGIN_DLL"):
+        return "play: NIRENDER_PLUGIN_DLL is set and not read: --plugin loads the set's plugin (W521)"
+    return None
+
+
+def self_test_set():
+    """W521: the game's set and its files. The null of the staging: the runner's own map for a run with the plugin."""
+    # The plugin variable with a foreign value: a line, and no stop (the runner stops on it, Q8).
+    namespace = argparse.Namespace(plugin_dll=None, mwse_dll=None, mwse_commit=None)
+    foreign = {"NIRENDER_PLUGIN_DLL": "E:/nirender-keep/mgebuilds/f308/akulakhan-0f2afbd.dll"}
+    assert gone_problems(namespace) == [] and run_own_device.gone_option_problems(namespace, foreign) != []
+    assert plugin_variable_line(foreign).startswith("play: NIRENDER_PLUGIN_DLL is set and not read") and plugin_variable_line({}) is None
+    with tempfile.TemporaryDirectory(prefix="w521-play-") as scratch:
+        name = "s-6d1b2140-d9741db1-89198b53"
+        folder = os.path.join(scratch, name)
+        for path in ("d3d8.dll", "numidium.exe", "dinput8.dll", "MWSE.dll", "lua51.dll", "akulakhan-6d1b214.dll", sets.PLUGIN_STAGED,
+                     "Data Files/mwse/mods/nirender/main.lua", "Data Files/mwse/core/initialize.lua",
+                     "Data Files/mwse/mods/MGE XE Options/main.lua", "plugin-test/MWSE/mods/nirender/test.lua"):
+            sets.write(os.path.join(folder, *path.split("/")), b"plugin" if "akulakhan" in path else path.encode())
+        manifest = sets.scratch_manifest(folder, name)
+        # The files of a game with --plugin are the runner's, path for path (F-T-8).
+        mge, nirender = game_files(folder, manifest, True)
+        runner = run_own_device.set_mods(folder, manifest, True)
+        assert (mge, nirender) == (runner["MGE XE"], runner["nirender"])
+        assert mge["Root/dinput8.dll"] == os.path.join(folder, "dinput8.dll") and "Root/lua51.dll" in mge and "MWSE/core/initialize.lua" in mge
+        assert nirender[sets.PLUGIN_IN_MOD] == os.path.join(folder, *sets.PLUGIN_STAGED.split("/")) and "MWSE/mods/nirender/test.lua" in nirender
+        # Without --plugin: the MGE XE half, and nothing of the set over the instance's release of the plugin.
+        assert game_files(folder, manifest, False) == (runner["MGE XE"], {})
+        # No set, and a set that fails its check: one line that names both tools, no game (D 2.5).
+        for current, change in ((lambda: None, None), (lambda: name, b"other")):
+            if change:
+                sets.write(os.path.join(folder, "d3d8.dll"), change)
+            try:
+                open_game_set(argparse.Namespace(mge_build=folder if change else None), current)
+                raise AssertionError("a game with no good set was taken")
+            except SystemExit as stop:
+                assert str(stop).startswith("play: ") and "build_set.py" in str(stop) and "deploy_rest.py" in str(stop), stop
+        sets.write(os.path.join(folder, "d3d8.dll"), b"d3d8.dll")
+        args = argparse.Namespace(mge_build=folder)
+        assert open_game_set(args)["name"] == name and args.mge_build == folder
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mge-build", help="the folder with d3d8.dll and numidium.exe of the build, and with --plugin its plugin copy "
-                    "akulakhan-<commit>.dll (default: %s)" % MGE_BUILD)
+    ap.add_argument("--mge-build", help="a sealed set (tools/build_set.py makes one); without this, the current set of current.bat")
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
-    ap.add_argument("--reference", action="store_true", help="MGE XE of the instance on Direct3D 9")
+    ap.add_argument("--reference", action="store_true", help="the set's MGE XE with the switch renderer_wgpu off, on Direct3D 9")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for this game, in its section: \"[section] key = value\"; a section the file lacks is added at the end of this game's copy")
-    ap.add_argument("--plugin", action="store_true", help="a plugin DLL and the Lua of this repo, over the release of the instance")
-    ap.add_argument("--plugin-dll", help="the plugin DLL of the game (implies --plugin; else the variable NIRENDER_PLUGIN_DLL, "
-                    "else the plugin copy of the --mge-build folder, else the build of this repo)")
+    ap.add_argument("--plugin", action="store_true", help="the set's plugin, its Lua and its test files, over the release of the instance")
+    ap.add_argument("--plugin-dll", help="gone (W521): --plugin loads the set's plugin; the option stops the tool with a line")
     ap.add_argument("--livecoding", help="a Lua file to run as the livecoding.lua of the Livecoding mod (Alt+X)")
     ap.add_argument("--instance", help="the folder of another Mod Organizer instance to play in, and not the testing instance")
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
@@ -271,13 +302,16 @@ def main():
         self_test()
         return 0
 
-    plugin_dll = None
-    if args.plugin or args.plugin_dll:
-        plugin_dll, source, warning = play_plugin(args, os.environ, session.DLL)
-        print("plugin DLL: %s (%s)" % (plugin_dll, source), flush=True)
-        if warning:
-            print(warning, flush=True)
-    mge_build = args.mge_build or MGE_BUILD
+    gone = gone_problems(args)
+    if gone:
+        raise SystemExit("play: " + "; ".join(gone))
+    variable_line = plugin_variable_line(os.environ)
+    if variable_line:
+        print(variable_line, flush=True)
+    manifest = open_game_set(args)
+    print("play: " + run_own_device.set_line(args.mge_build, manifest), flush=True)
+    mge_files, plugin_files = game_files(args.mge_build, manifest, args.plugin)
+    print("plugin: %s" % ("the set's, %s" % plugin_files[sets.PLUGIN_IN_MOD] if args.plugin else "the instance's release"), flush=True)
     if args.instance:
         session.use_instance(args.instance, args.game_dir, args.profile)
     toml = os.path.join(harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
@@ -288,32 +322,11 @@ def main():
     switched = os.path.join(tempfile.mkdtemp(prefix="nirender-play-"), "mgeXE.toml")
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
 
-    mods = [(harness.RUN_MOD_PREFIX + "config", {"Root/mgeXE.toml": switched})]
-    if not args.reference:
-        mods.append((harness.RUN_MOD_PREFIX + "MGE XE", {"Root/d3d8.dll": os.path.join(mge_build, "d3d8.dll"),
-                                                         "Root/numidium.exe": os.path.join(mge_build, "numidium.exe")}))
-        # The Lua of the build (the MGE XE Options mod: its menus and the event
-        # distantLandReady) over the release's copy in the instance, as the runner stages it.
-        options = os.path.join(mge_build, "Data Files", "mwse", "mods", "MGE XE Options")
-        for folder, _, names in os.walk(options):
-            for name in names:
-                source = os.path.join(folder, name)
-                mods[-1][1]["MWSE/mods/MGE XE Options/" + os.path.relpath(source, options).replace(os.sep, "/")] = source
+    # The set's files, as the runner stages them (F-T-8); with --reference the same files with the switch off.
+    mods = [(harness.RUN_MOD_PREFIX + "config", {"Root/mgeXE.toml": switched}), (harness.RUN_MOD_PREFIX + "MGE XE", mge_files)]
 
-    if plugin_dll or args.livecoding:
-        files = {}
-        if plugin_dll:
-            mod = os.path.join(session.REPO, "mod")
-            for folder, _, names in os.walk(mod):
-                for name in names:
-                    source = os.path.join(folder, name)
-                    files[os.path.relpath(source, mod).replace(os.sep, "/")] = source
-            files["MWSE/lib/akulakhan.dll"] = plugin_dll
-            # The symbol file of the build: the Harness mod is the staging of a game, never
-            # an install or an archive.
-            pdb = os.path.splitext(plugin_dll)[0] + ".pdb"
-            if os.path.isfile(pdb):
-                files["MWSE/lib/akulakhan.pdb"] = pdb
+    if plugin_files or args.livecoding:
+        files = dict(plugin_files)
         if args.livecoding:
             # The main.lua of the Livecoding mod: the instance's own, or the testing
             # instance's copy for an instance without the mod (Outlander-test has none).

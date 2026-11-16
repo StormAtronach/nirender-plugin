@@ -1,23 +1,26 @@
-"""Runs the game without a Direct3D device: the d3d8.dll of this repository (or of a build of
-MGE XE with --mge-build) takes the place of the one of MGE XE in the game folder for the run,
-and the game gets the Direct3D 8 of the plugin. The host program draws the only picture, in
-the window of the game.
+"""Runs the game on a sealed set (W521): the set's MGE XE takes the place of the one of the
+instance for the run, and the game gets the Direct3D 8 of the set's plugin. The host program
+draws the only picture, in the window of the game.
 
-    python tools/run_own_device.py --label owndevice [--backend vulkan]
-        [--plugin-dll <akulakhan.dll>] [--log <file.txt>]
+    python tools/run_own_device.py --label owndevice [--mge-build <set folder>] [--backend vulkan] [--log <file.txt>]
     python tools/run_own_device.py --label rel --archive <extracted release archive>  # the release check
     python -I tools/run_own_device.py --self-test    # the tests of the argument handling
 
+--mge-build names a sealed set (tools/build_set.py makes one); without it the run takes the
+current set (MGE_BUILD of current.bat). sets.verify checks the set before anything starts: a
+missing, changed or unplaced file stops the run with its name. Every file of the run comes from
+the set, by the one map of sets.py: the d3d8.dll, the helper, MWSE.dll, lua51.dll, the MWSE core,
+the plugin, its Lua and its test files. The runner builds nothing and reads no file of this
+checkout's builds. The options --plugin-dll, --mwse-dll and --mwse-commit are gone: they stop
+the run with a line that names build_set.py. So does the variable NIRENDER_PLUGIN_DLL with any value.
+
 The command of a run takes no variable prefix, redirect or chained command, so that one
-allow rule of a session covers every run: `--plugin-dll` names the plugin DLL of the run
-(the variable `NIRENDER_PLUGIN_DLL` is the fallback, then the plugin copy akulakhan-<commit>.dll
-of the --mge-build folder, then the release build of this repository, with a WARNING line when
-the run has --mge-build; --plugin-dll or the variable with other bytes than the folder's one copy
-gets a WARNING line too), and `--log` names a file that gets the runner's own output, written to the
-console too (the programs the runner starts write to the console only).
+allow rule of a session covers every run: `--log` names a file that gets the runner's own output,
+written to the console too (the programs the runner starts write to the console only).
 
 The files of the run are in mods of the harness that are on for the run only (session.py):
-"Harness - MGE XE" (d3d8.dll, numidium.exe), "Harness - config" (mgeXE.toml of the run) and
+"Harness - MGE XE" (the set's MGE XE and MWSE files), "Harness - nirender" (the set's plugin,
+its Lua and its test files), "Harness - config" (mgeXE.toml of the run) and
 "Harness - exe" (--exe). The result is a picture of the host program after each step of the
 scenario (host-<step>.png), the text of the host program (host.txt) and the lines of the
 plugin about its device. The first lines of progress.log, `[runner]`, and setup.txt say what the
@@ -44,18 +47,15 @@ from ctypes import wintypes
 
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import clean_common  # noqa: E402
 import lua_checks  # noqa: E402
 import session  # noqa: E402
+import sets  # noqa: E402
 import symbols  # noqa: E402
-from common import BUILD_ID_RE, REPO, git_env, part_ids, stage_session_problem  # noqa: E402
-from deploy_rest import CORE_PATH, MWSE_REPO, DeployError, core_of  # noqa: E402
+from common import REPO, stage_session_problem  # noqa: E402
 from make_play_set import PDB_KEEP  # noqa: E402
 
 TAG = "[nirender.owndevice] "
-HOST_DIR = os.path.join(REPO, "host")
-HOST = os.path.join(HOST_DIR, "target", "x86_64-pc-windows-msvc", "release", "nirender-host.exe")
-D3D8_DIR = os.path.join(REPO, "d3d8")
-D3D8 = os.path.join(D3D8_DIR, "target", "i686-pc-windows-msvc", "release", "d3d8.dll")
 # The mods of the harness for the files of a run.
 MGE_MOD = session.harness.RUN_MOD_PREFIX + "MGE XE"
 CONFIG_MOD = session.harness.RUN_MOD_PREFIX + "config"
@@ -97,90 +97,86 @@ def keep_log_in_run(log_path, run_dir, streams):
     return copy_path
 
 
-# The plugin copy of a run build folder (W520, the owner's D488): new_run_folder.py --plugin, deploy_rest.py and
-# make_play_set.py write it as akulakhan-<commit>.dll; an older folder holds a plain akulakhan.dll.
-FOLDER_PLUGIN_RE = re.compile(r"akulakhan(-[0-9a-f]{7,40})?\.dll", re.IGNORECASE)
-FOLDER_PLUGIN_SOURCE = "the run folder's plugin"
-CHECKOUT_PLUGIN_SOURCE = "the release build of this repository"
-
-
-def folder_plugin(mge_build, listdir=os.listdir):
-    """The plugin copy of the run build folder `mge_build`, as (path, fault): (path, None) for its one copy, (None,
-    None) for no copy or no folder, and (None, fault) for two or more copies, of which the run cannot tell its own."""
-    if not mge_build:
-        return None, None
-    try:
-        names = sorted(name for name in listdir(mge_build) if FOLDER_PLUGIN_RE.fullmatch(name))
-    except OSError:
-        return None, None
-    if len(names) > 1:
-        return None, "--mge-build %s holds %d plugin copies (%s): name the run's plugin with --plugin-dll" % (
-            mge_build, len(names), ", ".join(names))
-    return (os.path.join(mge_build, names[0]) if names else None), None
-
-
-def plugin_dll_of(argument, environment, default, mge_build=None, listdir=os.listdir):
-    """The plugin DLL of a run and where it came from: `--plugin-dll`, else the variable
-    `NIRENDER_PLUGIN_DLL`, else the plugin copy of the `--mge-build` folder (`folder_plugin`), else
-    the release build of this repository. A folder with two or more copies stops the run (SystemExit)."""
-    if argument:
-        return argument, "--plugin-dll"
-    if environment.get("NIRENDER_PLUGIN_DLL"):
-        return environment["NIRENDER_PLUGIN_DLL"], "NIRENDER_PLUGIN_DLL"
-    copy, fault = folder_plugin(mge_build, listdir)
-    if fault:
-        raise SystemExit(fault)
-    if copy:
-        return copy, FOLDER_PLUGIN_SOURCE
-    return default, CHECKOUT_PLUGIN_SOURCE
-
-
-def plugin_warning(mge_build, dll, source, md5=None, listdir=os.listdir):
-    """The WARNING line of a run with --mge-build whose plugin is not the run folder's copy, or None (W520). Two cases:
-    the checkout's build, when the folder holds no copy (a merge between two arms of an A/B changes that build without
-    a word); and the variable or --plugin-dll, when the folder holds one copy with other bytes (a shell that ran
-    current.bat takes the current set's plugin on another folder; verdict 444)."""
-    if not mge_build:
-        return None
-    md5 = md5 or symbols.md5_of
-
-    def digest(path):
-        return md5(path) if os.path.isfile(path) else "no file"
-
-    if source == CHECKOUT_PLUGIN_SOURCE:
-        return ("WARNING: the plugin DLL is %s (md5 %s): the checkout's build, not the run folder's (%s holds no "
-                "akulakhan-<commit>.dll); name the plugin with --plugin-dll" % (dll, digest(dll), mge_build))
-    if source == FOLDER_PLUGIN_SOURCE:
-        return None
-    copy, _ = folder_plugin(mge_build, listdir)
-    if not copy or digest(copy) == digest(dll):
-        return None
-    return ("WARNING: the plugin DLL is %s (md5 %s, from %s), not the run folder's copy %s (md5 %s)"
-            % (dll, digest(dll), source, copy, digest(copy)))
-
-
-def run_plugin(args, environment, default, listdir=os.listdir):
-    """The plugin DLL of a run and its source, as `plugin_dll_of` gives them, or (None, None) for a run that loads no
-    plugin: such a run never asks for the folder's copy, so two copies in the folder do not stop it (verdict 444)."""
-    if runs_without_plugin(args):
-        return None, None
-    return plugin_dll_of(args.plugin_dll, environment, default, args.mge_build, listdir)
-
-
 def runs_without_plugin(args):
-    """True for a run that loads no code of the plugin: a reference run without
-    `--reference-plugin`, and a `--plain-case` run without `--plugin-dll` (the cases of the
-    plugin name one)."""
-    reference = args.reference or args.engine_reference
-    return bool((reference and not args.reference_plugin) or (getattr(args, "plain_case", False) and not args.plugin_dll))
+    """True for a run that loads no code of the plugin: a reference run or a `--plain-case` run, without
+    `--reference-plugin` (the cases of the plugin's refusal keep it; the plan's addendum 5). A run on an archive
+    keeps the archive's plugin as before (its --plugin-dll is the archive's)."""
+    if getattr(args, "archive", None):
+        reference = args.reference or args.engine_reference
+        return bool((reference and not args.reference_plugin) or (getattr(args, "plain_case", False) and not args.plugin_dll))
+    without = args.reference or args.engine_reference or getattr(args, "plain_case", False)
+    return bool(without and not args.reference_plugin)
+
+
+# --- the run's set (W521) ---------------------------------------------------------------------------
+MAKE_A_SET = "make a set of the commits with tools/build_set.py and name it with --mge-build"
+GONE_OPTIONS = (("plugin_dll", "--plugin-dll"), ("mwse_dll", "--mwse-dll"), ("mwse_commit", "--mwse-commit"))
+
+
+def gone_option_problems(args, environment=None):
+    """A line for each option of the command that W521 took away, and one for the variable NIRENDER_PLUGIN_DLL with
+    any value: a run takes the plugin, MWSE.dll and the MWSE core of its set. A caller that names a plugin for each arm
+    of an A/B through the variable would get the set's plugin in both arms, so the run stops (Q8, verdict 507
+    addendum 6). Read before `archive_arguments`, which fills two of the options from the archive."""
+    lines = ["%s is gone: a run takes the plugin, MWSE.dll and the MWSE core of its set (W521); %s" % (option, MAKE_A_SET)
+             for name, option in GONE_OPTIONS if getattr(args, name, None)]
+    if (os.environ if environment is None else environment).get("NIRENDER_PLUGIN_DLL"):
+        lines.append("NIRENDER_PLUGIN_DLL is set: a run takes the plugin of its set and no other (W521); unset the variable, "
+                     "and %s" % MAKE_A_SET)
+    return lines
+
+
+def run_set_folder(args, current=None, who="run_own_device", hint=MAKE_A_SET):
+    """The folder of the run's set: --mge-build, else the current set (MGE_BUILD of current.bat, read by
+    clean_common.current_set). No set: SystemExit with the line of `who` that names the tools of `hint`."""
+    if args.mge_build:
+        return args.mge_build
+    name = (current or clean_common.current_set)()
+    if not name:
+        raise SystemExit("%s: no --mge-build and no current set (current.bat of %s); %s" % (who, clean_common.SETS, hint))
+    return os.path.join(clean_common.SETS, name)
+
+
+def open_set(args, current=None, verify=sets.verify, who="run_own_device", hint=MAKE_A_SET):
+    """The manifest of the run's set (`run_set_folder`) after sets.verify. A fault stops the run with the file's name.
+    args.mge_build becomes the set's folder, so that every later reader of it has the set."""
+    folder = run_set_folder(args, current, who, hint)
+    try:
+        manifest = verify(folder)
+    except sets.SetError as error:
+        raise SystemExit("%s: %s; nothing started; %s" % (who, error, hint))
+    args.mge_build = folder
+    return manifest
+
+
+def set_line(folder, manifest, md5=sets.manifest_md5):
+    """The line of a run's set in its header and its record: the name, the three full commits, the manifest's md5."""
+    commits = manifest.get("commits", {})
+    named = ", ".join("%s %s" % (repo, commits.get(repo, {}).get("commit", "unknown")) for repo in sets.REPOS)
+    return "set: %s (%s), manifest md5 %s" % (manifest.get("name"), named, md5(folder))
+
+
+def set_mods(folder, manifest, plugin):
+    """The run's files from the set, by the one map (sets.stage_files): {Harness mod: {path in the mod: file in the
+    set}}, the mods named as in sets.RUN_MOD ("MGE XE", "nirender")."""
+    mods = {}
+    for (mod, dest), path in sets.stage_files(manifest, plugin).items():
+        mods.setdefault(mod, {})[dest] = os.path.join(folder, *path.split("/"))
+    return mods
+
+
+def staged_paths(mods):
+    """The paths in a mod of every staged file of the run, in lower case: --add-file may not take one (2.3), and the
+    overwrite folder may not hold one (F-T-11)."""
+    return {dest.lower() for files in mods.values() for dest in files}
 
 
 # The variables of the run itself, and the option or the place that sets each. `--env` does
 # not take them: the runner is an allowed command (decision D6), so the DLL and the programs
 # that a run loads come only from its own options, never from a free value.
 RUNNER_VARIABLES = {
-    "NIRENDER_PLUGIN_DLL": "--plugin-dll",
-    "NIRENDER_HOST_EXE": "--mge-build (its numidium.exe), or the host build of this repository without it",
+    "NIRENDER_PLUGIN_DLL": "--mge-build (the set's plugin; the variable stops a run)",
+    "NIRENDER_HOST_EXE": "--mge-build (the set's numidium.exe)",
     "NIRENDER_HOST_LOG": "the runner (host.txt in the run folder)",
     "NIRENDER_BACKEND": "--backend",
     "NIRENDER_HOST_ARGS": "--start-frames and --window-shots",
@@ -438,40 +434,20 @@ def batch_lua_problems(path, text):
     return lua_checks.problems(path, text, lua_checks.luajit())
 
 
-def mwse_core_problem(commit, repo=None):
-    """The fault of --mwse-commit, or None: the MWSE repository must hold the core Lua of that commit."""
-    repo = repo or MWSE_REPO
-    done = subprocess.run(["git", "-C", repo, "cat-file", "-e", "%s:%s" % (commit, CORE_PATH)], capture_output=True, env=git_env())
-    if done.returncode != 0:
-        return "--mwse-commit: the MWSE repository %s has no %s at %s" % (repo, CORE_PATH, commit)
-    return None
-
-
-def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ, lua=None, core=None,
-                      default_plugin=None, listdir=os.listdir):
+def argument_problems(args, exists=os.path.exists, read=read_text, environment=os.environ, lua=None, staged=frozenset()):
     """Every fault of the arguments that shows before the run starts anything: the form of
     each value, the files and folders that the run reads, the faults of its Lua files
-    (`lua`, else `batch_lua_problems`), the MWSE commit of --mwse-dll (`core`, else
-    `mwse_core_problem`), and a budget shorter than the walk of its batch. One
+    (`lua`, else `batch_lua_problems`), an --add-file at a path of the run's set (`staged`, from
+    `staged_paths`), and a budget shorter than the walk of its batch. One
     line for each fault; none for a good command. `--check` runs only this (and the check of
-    the save), so that a caller can refuse a bad command before it takes the game slot."""
+    the save and of the set), so that a caller can refuse a bad command before it takes the game slot."""
     lua = lua or batch_lua_problems
-    core = core or mwse_core_problem
     problems = []
-    # D442: an MWSE.dll and its core Lua come from one commit. The MWSE.dll of a release archive goes alone, as in a
-    # player's game.
-    mwse_commit = getattr(args, "mwse_commit", None)
-    if args.mwse_dll and not mwse_commit and not getattr(args, "archive", None):
-        problems.append("--mwse-dll needs --mwse-commit, the MWSE commit of the DLL: its core Lua goes into the run's mod beside it")
-    if mwse_commit and not args.mwse_dll:
-        problems.append("--mwse-commit is the commit of --mwse-dll: give both")
-    core_fault = core(mwse_commit) if mwse_commit else None
-    if core_fault:
-        problems.append(core_fault)
-    if args.reference_plugin and not (args.reference or args.engine_reference):
-        problems.append("--reference-plugin is for a run with --reference or --engine-reference")
-    if getattr(args, "plain_case", False) and (args.reference or args.engine_reference or not args.mge_build):
-        problems.append("--plain-case needs --mge-build, and not --reference or --engine-reference")
+    plain_case = getattr(args, "plain_case", False)
+    if args.reference_plugin and not (args.reference or args.engine_reference or plain_case):
+        problems.append("--reference-plugin is for a run with --reference, --engine-reference or --plain-case")
+    if plain_case and (args.reference or args.engine_reference):
+        problems.append("--plain-case is not for a run with --reference or --engine-reference")
     if args.position is not None:
         parts = args.position.split(",")
         try:
@@ -494,21 +470,13 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
             problems.append("--add-file takes SOURCE=PATH, not %r" % entry)
         elif not exists(source):
             problems.append("--add-file: no file %s" % source)
+        elif path.replace("\\", "/").lower() in staged:
+            problems.append("--add-file: %s is a file of the run's set; another file there is another set (W521); %s" % (path, MAKE_A_SET))
+    # The archive's plugin and MWSE.dll (archive_arguments): the only plugin and MWSE.dll that a command still names.
     for option, path in (("--plugin-dll", args.plugin_dll), ("--shader-batch", args.shader_batch), ("--lua-file", args.lua_file),
                          ("--mwse-dll", args.mwse_dll), ("--exe", args.exe), ("--log", args.log and os.path.dirname(os.path.abspath(args.log)))):
         if path and not exists(path):
             problems.append("%s: no %s" % (option, path))
-    # W493: the plugin DLL that main takes without --plugin-dll (the variable, else the run folder's copy, else the
-    # release build of this repository). A run with --no-build builds nothing, so that file must be there before the
-    # game slot is taken. W520: a run folder with two or more copies stops the run.
-    if not args.plugin_dll and not runs_without_plugin(args):
-        try:
-            dll, source = plugin_dll_of(None, environment, default_plugin or session.DLL, args.mge_build, listdir)
-        except SystemExit as fault:
-            problems.append(str(fault))
-        else:
-            if getattr(args, "no_build", False) and not exists(dll):
-                problems.append("the plugin DLL of this run is missing: %s (%s); name one with --plugin-dll, or build it" % (dll, source))
     # The Lua that the game runs: a fault there ends the run in the game, after its start.
     for option, path in (("--shader-batch", args.shader_batch), ("--lua-file", args.lua_file)):
         if path and exists(path):
@@ -524,10 +492,11 @@ def argument_problems(args, exists=os.path.exists, read=read_text, environment=o
                     problems.append("--lua-file %s: names saveScreenshot in a run on the engine's renderer (--engine-reference, "
                                     "--plain-case), where it reads the game's mge, which takes no picture: a picture belongs "
                                     "to a step or a batch" % path)
-    if args.mge_build:
+    # An archive is not a sealed set (D 2.4): the release's own check of its two binaries.
+    if getattr(args, "archive", None):
         for name in ("d3d8.dll", "numidium.exe"):
-            if not exists(os.path.join(args.mge_build, name)):
-                problems.append("--mge-build: no %s in %s" % (name, args.mge_build))
+            if not exists(os.path.join(args.archive, name)):
+                problems.append("--archive: no %s in %s" % (name, args.archive))
     if args.instance and not exists(args.instance):
         problems.append("--instance: no folder %s" % args.instance)
     walk = walk_budget_problem(args, read, environment) if not args.shader_batch or exists(args.shader_batch) else None
@@ -760,100 +729,11 @@ def weather_note(pinned, lines):
 def launch_run(run, spec, args, mods, facts=()):
     """Starts the run (`session.Run.launch`) with the options of the command line. A refusal of
     the renderer by the plugin ends the run at once, with its cause (`session.Run.refusal`), not at
-    the end of the budget; not in a --plain-case run, which tests the game after that refusal. `facts` are more lines
-    for the record of the run, after the commits."""
+    the end of the budget; not in a --plain-case run, which tests the game after that refusal. `facts` are the lines
+    for the record of the run: the set's line first."""
     stop = None if getattr(args, "plain_case", False) else run.refusal
-    return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=[build_commits(args.mge_build), *facts], full_dump=args.full_dump,
+    return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=list(facts), full_dump=args.full_dump,
                       enable=args.enable_mod, plugins=args.enable_plugin, stop=stop)
-
-
-def build_commits(mge_build):
-    """The line of the record of a run that names the commits of its build, from WHAT.txt of the build
-    folder. A folder that does not say them is named as such: no commit is guessed."""
-    if not mge_build:
-        return "commits: no --mge-build"
-    what = os.path.join(mge_build, "WHAT.txt")
-    try:
-        with open(what, encoding="utf-8", errors="replace") as file:
-            found = re.search(r"nirender \S+ (\w+), render-link \S+ (\w+)", file.read())
-    except OSError:
-        found = None
-    if not found:
-        return "commits: %s does not say them" % mge_build
-    return "commits: nirender %s, render-link %s, from %s" % (found.group(1), found.group(2), what)
-
-
-def plugin_build_id(path):
-    """The commit in the build id of the plugin DLL at `path`, with its "-dirty", or None when it has no single one."""
-    try:
-        with open(path, "rb") as file:
-            found = {m.group(2).decode() + (m.group(3) or b"").decode() for m in BUILD_ID_RE.finditer(file.read()) if m.group(1) == b"nirender"}
-    except OSError:
-        return None
-    return found.pop() if len(found) == 1 else None
-
-
-def dirty_warnings(mge_build, plugin_commit):
-    """A WARNING line for each build id of the run that ends in "-dirty": a build of a work tree with changes, whose
-    commit does not name its code. The parts of `mge_build` and the plugin DLL's commit `plugin_commit`."""
-    commits = dict(part_ids(mge_build)[0]) if mge_build else {}
-    if plugin_commit:
-        commits["the plugin DLL"] = plugin_commit
-    return ["WARNING: %s is %s: a build of a work tree with changes; its commit does not name its code" % (name, commit)
-            for name, commit in sorted(commits.items()) if commit.endswith("-dirty")]
-
-
-def git_out(*args):
-    """The return code and the output of git in this repository."""
-    done = subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=True)
-    return done.returncode, done.stdout
-
-
-def mod_problem(plugin_commit, git=git_out):
-    """Why the nirender Lua mod of the run (mod/ of this repository, as it is) is not the mod of the plugin DLL's commit,
-    and whether that is an error, as (text, error) or None. The DLL and the Lua must come from one commit: the Lua calls
-    the DLL's functions. A dirty or unknown commit cannot be checked: a warning."""
-    if not plugin_commit or plugin_commit == "unknown" or plugin_commit.endswith("-dirty"):
-        return "WARNING: the plugin DLL's commit is %s: the run's Lua mod cannot be checked against it" % (plugin_commit or "not in its build id"), False
-    if git("cat-file", "-e", plugin_commit + "^{commit}")[0] != 0:
-        return "the plugin DLL's commit %s is not in %s: fetch it, or run the runner of the DLL's own tree" % (plugin_commit, REPO), True
-    code, names = git("diff", "--name-only", plugin_commit, "--", "mod")
-    # A new file that git does not track yet is not in the diff, and stage_mod copies it into the run too.
-    code_new, new = git("ls-files", "--others", "--exclude-standard", "--", "mod")
-    if code != 0 or code_new != 0:
-        return "git diff of mod/ against the plugin DLL's commit %s failed" % plugin_commit, True
-    changed = names.split() + new.split()
-    if changed:
-        return ("the run's Lua mod (%s/mod) is not the mod of the plugin DLL's commit %s: %d files differ (%s). Run the runner "
-                "of the DLL's own tree, or build the DLL of this tree" % (REPO, plugin_commit, len(changed), ", ".join(changed[:5]))), True
-    return None
-
-
-def self_test_build_ids():
-    with tempfile.TemporaryDirectory() as root:
-        dll = os.path.join(root, "akulakhan.dll")
-        with open(dll, "wb") as file:
-            file.write(b"\0nirender v0.3.8 abc1234-dirty\0nirender-host v0.3.8 abc1234\0")
-        assert plugin_build_id(dll) == "abc1234-dirty"
-        assert plugin_build_id(os.path.join(root, "none.dll")) is None
-        assert dirty_warnings(None, "abc1234-dirty") == ["WARNING: the plugin DLL is abc1234-dirty: a build of a work tree with changes; its commit does not name its code"]
-        assert dirty_warnings(None, "abc1234") == []
-
-    def git(*args, untracked=""):
-        if args[0] == "cat-file":
-            return (0 if args[2].startswith("abc1234") else 1), ""
-        if args[0] == "ls-files":
-            return 0, untracked
-        return 0, "" if args[2] == "abc1234" else "mod/MWSE/mods/nirender/main.lua\nmod/MWSE/mods/nirender/stream.lua\n"
-    assert mod_problem("abc1234", git) is None
-    # An untracked new file of mod/ is in the run too (the Reviewer's verdict 392).
-    text, error = mod_problem("abc1234", lambda *args: git(*args, untracked="mod/MWSE/mods/nirender/extra.lua\n"))
-    assert error and "1 files differ" in text and "extra.lua" in text, text
-    assert mod_problem("def5678", git)[1] and "not in" in mod_problem("def5678", git)[0]
-    text, error = mod_problem("abc1234f", git)
-    assert error and "2 files differ" in text and "main.lua" in text, text
-    assert mod_problem("abc1234-dirty", git) == ("WARNING: the plugin DLL's commit is abc1234-dirty: the run's Lua mod cannot be checked against it", False)
-    assert mod_problem(None, git)[1] is False
 
 
 class ModuleEntry(ctypes.Structure):
@@ -1106,12 +986,6 @@ def self_test_setup():
         text = harness.setup_text(profile, modlist, plugins, source)
         assert "+High\n" in text and "Ten.esp\n" in text and text.index("+High") < text.index("[plugins]") < text.index("Morrowind.esm"), text
 
-        # The commits: only what the folder of the build says.
-        assert build_commits(None) == "commits: no --mge-build"
-        assert "does not say" in build_commits(root)
-        write(os.path.join(root, "WHAT.txt"), "f1 2026-11-02 15:00: the owner's play set, nirender master abc1, render-link feature/wgpu-renderer def2, no pdb; smoke: pending\n")
-        assert build_commits(root).startswith("commits: nirender abc1, render-link def2, from "), build_commits(root)
-
 
 def self_test_archive_lua():
     """A fake archive and a fake run mod in a temporary folder: the archive's file wins, a file
@@ -1291,45 +1165,18 @@ def self_test_checks():
         namespace(add_file=["E:/a.dll"]),
         namespace(add_file=["E:/none.dll=Root/x.dll"]),
         namespace(shader_batch="E:/none.lua"),
-        namespace(mge_build="E:/c"),
-        namespace(plain_case=True),
+        namespace(archive="E:/c"),
         namespace(plain_case=True, mge_build="E:/b", engine_reference=True),
     ]
     for args in bad:
         assert argument_problems(args, exists), args
-    assert len(argument_problems(namespace(mge_build="E:/c", weather=10), exists)) == 3
+    assert len(argument_problems(namespace(archive="E:/c", weather=10), exists)) == 3
     assert argument_problems(namespace(plain_case=True, mge_build="E:/b", env=["MGE_XE_NATIVE_REFUSE_EVENT=3"]), exists) == []
-    # W493: a run with --no-build and the plugin needs the plugin DLL that main takes; a run that builds, or that has
-    # no plugin, does not.
-    release = "E:/repo/akulakhan.dll"
-    def plugin_lines(args, environment):
-        return [line for line in argument_problems(args, exists, environment=environment, default_plugin=release)
-                if "plugin DLL of this run" in line]
-    lines = plugin_lines(namespace(no_build=True, mge_build="E:/b"), {})
-    assert len(lines) == 1 and release in lines[0] and "the release build of this repository" in lines[0], lines
-    lines = plugin_lines(namespace(no_build=True, mge_build="E:/b"), {"NIRENDER_PLUGIN_DLL": "E:/none.dll"})
-    assert len(lines) == 1 and "E:/none.dll (NIRENDER_PLUGIN_DLL)" in lines[0], lines
-    assert plugin_lines(namespace(no_build=True, mge_build="E:/b"), {"NIRENDER_PLUGIN_DLL": "E:/a.dll"}) == []
-    assert plugin_lines(namespace(no_build=True, mge_build="E:/b", plugin_dll="E:/a.dll"), {}) == []
-    assert plugin_lines(namespace(no_build=False, mge_build="E:/b"), {}) == []
-    assert plugin_lines(namespace(no_build=True, mge_build="E:/b", plain_case=True), {}) == []
-    assert plugin_lines(namespace(no_build=True, engine_reference=True), {}) == []
-    assert len(plugin_lines(namespace(no_build=True, engine_reference=True, reference_plugin=True), {})) == 1
-    assert runs_without_plugin(namespace(plain_case=True)) and not runs_without_plugin(namespace(plain_case=True, plugin_dll="E:/a.dll"))
+    # Addendum 5: --reference-plugin keeps the plugin in a --plain-case run too; alone it is still refused.
+    assert argument_problems(namespace(plain_case=True, reference_plugin=True), exists) == []
+    assert argument_problems(namespace(reference_plugin=True), exists) == [
+        "--reference-plugin is for a run with --reference, --engine-reference or --plain-case"]
     assert runs_without_plugin(namespace(reference=True)) and not runs_without_plugin(namespace())
-    # D442: --mwse-dll needs its commit, and the MWSE repository must hold that commit's core; the MWSE.dll of an archive
-    # goes alone. The fake `core` finds every core.
-    def every_core(commit):
-        return None
-    dll = dict(mwse_dll="E:/a.dll")
-    assert argument_problems(namespace(**dll, mwse_commit="abc1234"), exists, core=every_core) == []
-    assert argument_problems(namespace(**dll), exists, core=every_core) == [
-        "--mwse-dll needs --mwse-commit, the MWSE commit of the DLL: its core Lua goes into the run's mod beside it"]
-    assert argument_problems(namespace(**dll, archive="E:/x"), exists, core=every_core) == []
-    assert argument_problems(namespace(mwse_commit="abc1234"), exists, core=every_core) == ["--mwse-commit is the commit of --mwse-dll: give both"]
-    assert argument_problems(namespace(**dll, mwse_commit="zzz"), exists, core=lambda commit: "no core at " + commit) == ["no core at zzz"]
-    # The real check: the MWSE repository holds no commit of forty zeros.
-    assert "has no %s at %s" % (CORE_PATH, "0" * 40) in mwse_core_problem("0" * 40)
     # The install of the run's mod counts the files of the core in one line, added and removed apart.
     changes = ["MWSE\\mods\\nirender\\main.lua", "MWSE\\core\\init.lua", "MWSE\\core\\lib\\a.lua", "removed MWSE\\core\\old.lua", "removed x.txt"]
     assert session.install_lines(changes) == ["MWSE\\mods\\nirender\\main.lua", "removed x.txt", "2 files of MWSE/core", "removed 1 files of MWSE/core"], session.install_lines(changes)
@@ -1425,10 +1272,16 @@ def self_test_checks():
     assert run_exit_code(True, False, False) == 1
 
     with tempfile.TemporaryDirectory() as root:
-        assert overwrite_problem(root, "MWSE/lib/akulakhan.dll") is None
+        paths = ["MWSE/lib/akulakhan.dll", "Root/d3d8.dll", "MWSE/core/initialize.lua"]
+        assert overwrite_problem(root, paths) is None
         os.makedirs(os.path.join(root, "overwrite", "MWSE", "lib"))
         open(os.path.join(root, "overwrite", "MWSE", "lib", "akulakhan.dll"), "wb").close()
-        assert overwrite_problem(root, "MWSE/lib/akulakhan.dll")
+        assert "1 files of the run" in overwrite_problem(root, paths) and "MWSE/lib/akulakhan.dll" in overwrite_problem(root, paths)
+        # F-T-11: any staged file, not only the plugin; a file that the run does not stage is no fault.
+        os.makedirs(os.path.join(root, "overwrite", "Root"))
+        open(os.path.join(root, "overwrite", "Root", "d3d8.dll"), "wb").close()
+        assert "2 files of the run" in overwrite_problem(root, paths), overwrite_problem(root, paths)
+        assert overwrite_problem(root, ["Root/numidium.exe"]) is None
 
     with tempfile.TemporaryDirectory() as folder:
         dll = os.path.join(folder, "akulakhan.dll")
@@ -1624,10 +1477,16 @@ def self_test_check_command():
         os.makedirs(config)
         with open(os.path.join(config, "mgeXE.toml"), "w", encoding="utf-8") as fh:
             fh.write(TEST_TOML)
+        # The run's sealed set (W521), made for the test.
+        name = "s-6d1b2140-d9741db1-89198b53"
+        folder = os.path.join(instance, "sets", name)
+        for path in ("d3d8.dll", "numidium.exe", "MWSE.dll", "akulakhan-6d1b214.dll", sets.PLUGIN_STAGED, "Data Files/mwse/mods/nirender/main.lua"):
+            sets.write(os.path.join(folder, *path.split("/")), b"plugin" if "akulakhan" in path else path.encode())
+        sets.scratch_manifest(folder, name)
 
         def check(*extra, environment=None):
             command = [sys.executable, "-I", os.path.abspath(__file__), "--check", "--instance", instance, "--game-dir", game,
-                       "--save", "a.ess", *extra]
+                       "--save", "a.ess", "--mge-build", folder, *extra]
             result = subprocess.run(command, capture_output=True, text=True, env=environment)
             return result.returncode, result.stdout + result.stderr
 
@@ -1637,14 +1496,25 @@ def self_test_check_command():
         code, text = check()
         assert code == 0 and "nothing started" in text, text
         assert "--full-dump" not in text, text
-        # W493: a run with --no-build and the plugin, whose plugin DLL is missing, is refused in one plain line; a
-        # reference run without the plugin passes.
-        missing = os.path.join(instance, "no-plugin", "akulakhan.dll")
-        environment = dict(os.environ, NIRENDER_PLUGIN_DLL=missing)
-        code, text = check("--no-build", environment=environment)
-        assert code != 0 and "the plugin DLL of this run is missing: %s (NIRENDER_PLUGIN_DLL)" % missing in text, text
-        code, text = check("--no-build", "--reference", environment=environment)
+        # The set's line: its name and its manifest's md5 (test 4 of the design).
+        assert "set: %s (" % name in text and "manifest md5 %s" % sets.manifest_md5(folder) in text, text
+        # W521: a gone option stops the run with the tool that makes a set; --no-build is taken and does nothing; the
+        # variable NIRENDER_PLUGIN_DLL stops the run with any value, the set's own plugin too (Q8).
+        code, text = check("--plugin-dll", os.path.join(folder, sets.PLUGIN_STAGED))
+        assert code != 0 and "--plugin-dll is gone" in text and "build_set.py" in text, text
+        for value in ("E:/none.dll", os.path.join(folder, sets.PLUGIN_STAGED)):
+            code, text = check("--no-build", environment=dict(os.environ, NIRENDER_PLUGIN_DLL=value))
+            assert code != 0 and "NIRENDER_PLUGIN_DLL is set" in text and "nothing started" in text, text
+        code, text = check("--no-build")
         assert code == 0, text
+        # A changed file of the set stops the command with its name (the design's test 2); the null passes above.
+        sets.write(os.path.join(folder, "numidium.exe"), b"other")
+        code, text = check()
+        assert code != 0 and "numidium.exe has" in text and "nothing started" in text, text
+        sets.write(os.path.join(folder, "numidium.exe"), b"numidium.exe")
+        # --add-file at a path of the set is refused.
+        code, text = check("--add-file", "%s=Root/d3d8.dll" % os.path.join(folder, "MWSE.dll"))
+        assert code != 0 and "Root/d3d8.dll is a file of the run's set" in text, text
         code, text = check("--full-dump")
         assert code == 0 and "--full-dump: a crash of the run writes a dump of about " + FULL_DUMP_SIZE in text, text
         code, text = check("--weather", "10")
@@ -1668,8 +1538,18 @@ def self_test_check_command():
         open(plugin, "wb").close()
         code, text = check("--reference")
         assert code != 0 and "overwrite folder" in text, text
+        # F-T-11: the plugin in overwrite also wins over a run with the plugin; so does any staged file.
+        code, text = check("--reference", "--reference-plugin")
+        assert code != 0 and "overwrite folder" in text and "MWSE/lib/akulakhan.dll" in text, text
+        os.remove(plugin)
         code, text = check("--reference", "--reference-plugin")
         assert code == 0, text
+        helper = os.path.join(instance, "overwrite", "Root", "numidium.exe")
+        os.makedirs(os.path.dirname(helper))
+        open(helper, "wb").close()
+        code, text = check()
+        assert code != 0 and "Root/numidium.exe" in text, text
+        os.remove(helper)
         code, text = check("--reference", "--reference-plugin", "--enable-mod", "Some mod")
         assert code != 0 and "no mod folder" in text, text
         os.makedirs(os.path.join(instance, "mods", "Some mod"))
@@ -2668,22 +2548,100 @@ def self_test_use_instance():
         session.MGE_LOGS = saved_mge
 
 
-def add_symbols(mge_build, plugin_dll, add=symbols.add):
-    """The symbol store (W345): the pdbs of the run's build, beside its binaries or kept by the play set of its name;
-    a timing run puts the add off until its game slot is free (D297). The run's plugin can be of another tree than the
-    build, so it goes in as a build of its own, "plugin-<md5 8>" (W352): the build's name pins only the build's pdbs.
-    A play set's own plugin is in the set's transaction already, and its add is "in the store". A build folder that is
-    not a play set f<N> is named with the md5 of its d3d8.dll (symbols.build_name). Returns the lines."""
+def add_symbols(mge_build, plugin_dll, add=symbols.add, is_set=True):
+    """The symbol store (W345): the pdbs of the run's build, kept in PDB_KEEP/<its name> (a set holds no pdb); a timing
+    run puts the add off until its game slot is free (D297). A sealed set (`is_set`) goes in as one build under its
+    name: its binaries, MWSE's and the plugin among them, are of its commits. An archive's plugin can be of another
+    tree than its build, so it goes in as a build of its own, "plugin-<md5 8>" (W352), and a folder that is not a set is
+    named with the md5 of its d3d8.dll (symbols.build_name). Returns the lines."""
     folder_name = os.path.basename(os.path.normpath(mge_build))
+    keep = [os.path.join(PDB_KEEP, folder_name)]
+    if is_set:
+        binaries = [os.path.join(mge_build, *name.split("/")) for name in sets.SYMBOL_FILES]
+        return [add(symbols.build_name(mge_build), binaries, keep)]
     binaries = [os.path.join(mge_build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")]
-    lines = [add(symbols.build_name(mge_build), binaries, [os.path.join(PDB_KEEP, folder_name)])]
+    lines = [add(symbols.build_name(mge_build), binaries, keep)]
     if plugin_dll and os.path.isfile(plugin_dll):
-        lines.append(add("plugin-" + symbols.md5_of(plugin_dll)[:8], [plugin_dll], [os.path.join(PDB_KEEP, folder_name)]))
+        lines.append(add("plugin-" + symbols.md5_of(plugin_dll)[:8], [plugin_dll], keep))
     return lines
 
 
+def self_test_set():
+    """W521: the gone options, the run's set (--mge-build or the current set), the verify that stops a run, the line of
+    the set, the staging from the one map, --add-file at a set's path, and which runs have the plugin (addendum 5)."""
+    def namespace(**changes):
+        values = dict(plugin_dll=None, mwse_dll=None, mwse_commit=None, mge_build=None, archive=None, reference=False,
+                      engine_reference=False, reference_plugin=False, plain_case=False)
+        values.update(changes)
+        return argparse.Namespace(**values)
+
+    # The gone options: one line each, with the tool that makes a set; the null has none.
+    assert gone_option_problems(namespace(), {}) == []
+    lines = gone_option_problems(namespace(plugin_dll="E:/a.dll", mwse_dll="E:/m.dll", mwse_commit="abc"), {})
+    assert [line.split(" ")[0] for line in lines] == ["--plugin-dll", "--mwse-dll", "--mwse-commit"] and all("build_set.py" in line for line in lines), lines
+    # The plugin variable with any value is a line too (Q8); an empty value is no value.
+    lines = gone_option_problems(namespace(), {"NIRENDER_PLUGIN_DLL": "E:/a.dll"})
+    assert len(lines) == 1 and lines[0].startswith("NIRENDER_PLUGIN_DLL is set") and "build_set.py" in lines[0], lines
+    assert gone_option_problems(namespace(), {"NIRENDER_PLUGIN_DLL": ""}) == []
+    # Which runs load the plugin (addendum 5): a reference run and a --plain-case run only with --reference-plugin.
+    assert not runs_without_plugin(namespace())
+    assert runs_without_plugin(namespace(plain_case=True)) and not runs_without_plugin(namespace(plain_case=True, reference_plugin=True))
+    assert runs_without_plugin(namespace(engine_reference=True)) and not runs_without_plugin(namespace(reference=True, reference_plugin=True))
+    # An archive keeps its old rule: its --plugin-dll (the archive's) keeps the plugin in a --plain-case run.
+    assert not runs_without_plugin(namespace(archive="E:/x", plain_case=True, plugin_dll="E:/x/a.dll"))
+
+    with tempfile.TemporaryDirectory() as root:
+        name = "s-6d1b2140-d9741db1-89198b53"
+        folder = os.path.join(root, name)
+        for path, data in (("d3d8.dll", b"d3d8"), ("numidium.exe", b"helper"), ("MWSE.dll", b"mwse"), ("akulakhan-6d1b214.dll", b"plugin"),
+                           (sets.PLUGIN_STAGED, b"plugin"), ("Data Files/mwse/mods/nirender/main.lua", b"lua"),
+                           ("Data Files/mwse/core/initialize.lua", b"core"), ("plugin-test/MWSE/mods/nirender/test.lua", b"test")):
+            sets.write(os.path.join(folder, *path.split("/")), data)
+        manifest = sets.scratch_manifest(folder, name)
+        manifest["commits"] = {repo: {"commit": repo[0] * 40, "clean": True} for repo in sets.REPOS}
+        # --mge-build first; no --mge-build takes the current set; no current set stops the run with build_set.py.
+        assert run_set_folder(namespace(mge_build=folder), lambda: "other") == folder
+        try:
+            run_set_folder(namespace(), lambda: None)
+            raise AssertionError("a run with no set was taken")
+        except SystemExit as stop:
+            assert "build_set.py" in str(stop), stop
+        assert run_set_folder(namespace(), lambda: name) == os.path.join(clean_common.SETS, name)
+        # verify passes the set and points --mge-build at it; a changed file stops the run with its name.
+        args = namespace()
+        assert open_set(args, lambda: name, lambda path: sets.verify(folder))["name"] == name and args.mge_build == os.path.join(clean_common.SETS, name)
+        sets.write(os.path.join(folder, "d3d8.dll"), b"d3d9")
+        try:
+            open_set(namespace(mge_build=folder))
+            raise AssertionError("a changed set was taken")
+        except SystemExit as stop:
+            assert "d3d8.dll has another md5" in str(stop) and "nothing started" in str(stop), stop
+        sets.write(os.path.join(folder, "d3d8.dll"), b"d3d8")
+        # The set's line: the name, the three full commits, the manifest's md5.
+        line = set_line(folder, manifest, lambda path: "m" * 32)
+        assert line == "set: %s (nirender %s, render-link %s, mwse %s), manifest md5 %s" % (name, "n" * 40, "r" * 40, "m" * 40, "m" * 32), line
+        # The staging: the MGE XE and MWSE files in Harness - MGE XE, the plugin, its Lua and its test files in Harness
+        # - nirender, each from the set's folder; a run without the plugin lacks the DLL only.
+        mods = set_mods(folder, manifest, True)
+        assert mods["MGE XE"]["Root/d3d8.dll"] == os.path.join(folder, "d3d8.dll")
+        assert mods["MGE XE"]["MWSE/core/initialize.lua"] == os.path.join(folder, "Data Files", "mwse", "core", "initialize.lua")
+        assert set(mods["nirender"]) == {sets.PLUGIN_IN_MOD, "MWSE/mods/nirender/main.lua", "MWSE/mods/nirender/test.lua"}, mods["nirender"]
+        assert sets.PLUGIN_IN_MOD not in set_mods(folder, manifest, False)["nirender"]
+        staged = staged_paths(mods)
+        assert "root/mwse.dll" in staged and "mwse/lib/akulakhan.dll" in staged
+        # --add-file at a path of the set is refused; at another path it is taken.
+        present = os.path.join(folder, "d3d8.dll")
+        args = argparse.Namespace(reference_plugin=False, reference=False, engine_reference=False, position=None, hour=None, weather=None,
+                                  env=[], add_file=["%s=Root/MWSE.dll" % present], plugin_dll=None, shader_batch=None, lua_file=None,
+                                  mwse_dll=None, exe=None, log=None, mge_build=folder, instance=None, budget=200)
+        problems = argument_problems(args, staged=staged)
+        assert len(problems) == 1 and "Root/MWSE.dll is a file of the run's set" in problems[0], problems
+        args.add_file = ["%s=textures/test.dds" % present]
+        assert argument_problems(args, staged=staged) == []
+
+
 def self_test_add_symbols():
-    """The two adds of a run: the build under its name, the plugin under its md5."""
+    """A set's one add under its name; an archive's two adds: the build under its name, the plugin under its md5."""
     with tempfile.TemporaryDirectory() as folder:
         plugin = os.path.join(folder, "akulakhan.dll")
         with open(plugin, "wb") as file:
@@ -2694,22 +2652,30 @@ def self_test_add_symbols():
             calls.append(call)
             return "symbols: +0"
 
+        # A set: one build, its plugin, MWSE.dll and lua51.dll among the binaries, the pdbs from PDB_KEEP/<its name>.
+        named = os.path.join(folder, "s-6d1b2140-d9741db1-89198b53")
+        assert add_symbols(named + os.sep, None, add) == ["symbols: +0"]
+        assert calls[0] == ("s-6d1b2140-d9741db1-89198b53", [os.path.join(named, *name.split("/")) for name in sets.SYMBOL_FILES],
+                            [os.path.join(PDB_KEEP, "s-6d1b2140-d9741db1-89198b53")]), calls[0]
+        assert os.path.join(named, "Data Files", "mwse", "lib", "akulakhan.dll") in calls[0][1]
+        calls.clear()
         build = os.path.join(folder, "f231")
-        assert add_symbols(build + os.sep, plugin, add) == ["symbols: +0", "symbols: +0"]
+        assert add_symbols(build + os.sep, plugin, add, is_set=False) == ["symbols: +0", "symbols: +0"]
         assert calls[0] == ("f231", [os.path.join(build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")],
                             [os.path.join(PDB_KEEP, "f231")]), calls[0]
         # A play set's plugin pdb is in the set's pdb folder, not beside its dll (the Reviewer's verdict 204).
         assert calls[1] == ("plugin-90015098", [plugin], [os.path.join(PDB_KEEP, "f231")]), calls[1]
         # A run without the plugin, or with no file at its path, adds the build only.
         calls.clear()
-        assert len(add_symbols(build, None, add)) == 1 and len(add_symbols(build, plugin + "x", add)) == 1 and len(calls) == 2
+        assert len(add_symbols(build, None, add, is_set=False)) == 1 and len(add_symbols(build, plugin + "x", add, is_set=False)) == 1
+        assert len(calls) == 2
         # A build folder that is not a play set is named with its d3d8.dll's md5; its pdb folder keeps the plain name.
         calls.clear()
         other = os.path.join(folder, "build")
         os.makedirs(other)
         with open(os.path.join(other, "d3d8.dll"), "wb") as file:
             file.write(b"abc")
-        add_symbols(other, None, add)
+        add_symbols(other, None, add, is_set=False)
         assert calls[0][0] == "build-90015098" and calls[0][2] == [os.path.join(PDB_KEEP, "build")], calls[0]
 
 
@@ -2725,75 +2691,6 @@ def self_test_mgeview():
     done = subprocess.run([luajit, check, view], capture_output=True, text=True, errors="replace")
     assert done.returncode == 0 and "mgeview check: ok" in done.stdout, done.stdout + done.stderr
 
-
-def self_test_folder_plugin():
-    """W520: the plugin of a run with --mge-build. --plugin-dll wins, then the variable, then the run folder's copy; the
-    checkout's build comes last, with a WARNING line. The null: before W520 a folder with a copy gave the checkout's
-    build, so the first assert of the folder's copy below failed."""
-    checkout = os.path.join("target", "akulakhan.dll")
-    with tempfile.TemporaryDirectory(prefix="w520-") as scratch:
-        with_copy, plain, empty, two = (os.path.join(scratch, name) for name in ("f1", "f2", "f3", "f4"))
-        for folder in (with_copy, plain, empty, two):
-            os.mkdir(folder)
-        for folder, names in ((with_copy, ["akulakhan-45b645b.dll", "akulakhan-rig.dll", "d3d8.dll"]), (plain, ["akulakhan.dll"]),
-                              (two, ["akulakhan-0011e58.dll", "akulakhan-45b645b.dll"])):
-            for name in names:
-                with open(os.path.join(folder, name), "wb") as file:
-                    file.write(name.encode())
-        copy = os.path.join(with_copy, "akulakhan-45b645b.dll")
-        # The run folder's copy: taken without --plugin-dll and the variable; a name that is not a commit is no copy.
-        assert plugin_dll_of(None, {}, checkout, with_copy) == (copy, FOLDER_PLUGIN_SOURCE)
-        assert plugin_dll_of(None, {}, checkout, plain) == (os.path.join(plain, "akulakhan.dll"), FOLDER_PLUGIN_SOURCE)
-        assert plugin_warning(with_copy, copy, FOLDER_PLUGIN_SOURCE) is None
-        # --plugin-dll wins over the variable and the folder; the variable wins over the folder.
-        assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, checkout, with_copy) == ("E:/a.dll", "--plugin-dll")
-        assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, checkout, with_copy) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
-        # No copy: the checkout's build, and the WARNING names the file, its md5 and the fallback.
-        dll, source = plugin_dll_of(None, {}, checkout, empty)
-        assert (dll, source) == (checkout, CHECKOUT_PLUGIN_SOURCE)
-        built = os.path.join(scratch, "akulakhan.dll")
-        with open(built, "wb") as file:
-            file.write(b"abc")
-        warning = plugin_warning(empty, built, source)
-        assert warning.startswith("WARNING: ") and built in warning and "900150983cd24fb0d6963f7d28e17f72" in warning, warning
-        assert "the checkout's build, not the run folder's" in warning and empty in warning, warning
-        assert "md5 no file" in plugin_warning(empty, os.path.join(scratch, "none.dll"), source)
-        assert plugin_warning(None, built, source) is None, "no warning without --mge-build"
-        assert plugin_warning(empty, built, "--plugin-dll") is None
-        # Two copies: the run stops, and --check names them.
-        try:
-            plugin_dll_of(None, {}, checkout, two)
-        except SystemExit as fault:
-            assert "2 plugin copies" in str(fault) and "akulakhan-0011e58.dll, akulakhan-45b645b.dll" in str(fault), fault
-        else:
-            raise AssertionError("two copies did not stop the run")
-        assert plugin_dll_of("E:/a.dll", {}, checkout, two) == ("E:/a.dll", "--plugin-dll"), "--plugin-dll settles two copies"
-        args = argparse.Namespace(reference_plugin=False, reference=False, engine_reference=False, position=None, hour=None,
-                                  weather=None, env=[], add_file=[], plugin_dll=None, shader_batch=None, lua_file=None,
-                                  mwse_dll=None, exe=None, log=None, mge_build=two, instance=None, budget=200, no_build=True)
-        problems = argument_problems(args, exists=lambda path: True, environment={}, default_plugin=checkout)
-        assert any("2 plugin copies" in line for line in problems), problems
-        args.mge_build = with_copy
-        problems = argument_problems(args, exists=lambda path: True, environment={}, default_plugin=checkout)
-        assert not any("plugin" in line for line in problems), problems
-        # Verdict 444: a run without the plugin never asks for the folder's copy, so two copies do not stop it.
-        args.mge_build, args.reference = two, True
-        assert run_plugin(args, {}, checkout) == (None, None), "a reference run on a folder with two copies"
-        args.reference = False
-        assert run_plugin(args, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, checkout) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
-        # The variable or --plugin-dll over a folder with one copy of other bytes: the WARNING names both files.
-        same = os.path.join(scratch, "same.dll")
-        with open(same, "wb") as file:
-            file.write(b"akulakhan-45b645b.dll")
-        warning = plugin_warning(with_copy, built, "NIRENDER_PLUGIN_DLL")
-        assert warning and warning.startswith("WARNING: ") and built in warning and copy in warning and "from NIRENDER_PLUGIN_DLL" in warning, warning
-        assert (plugin_warning(with_copy, built, "--plugin-dll") or "").startswith("WARNING: ")
-        assert plugin_warning(with_copy, same, "--plugin-dll") is None, "the same bytes as the folder's copy"
-        assert plugin_warning(with_copy, copy, "--plugin-dll") is None
-        assert plugin_warning(two, built, "--plugin-dll") is None, "--plugin-dll settles two copies without a warning"
-    # A missing folder holds no copy.
-    assert folder_plugin("E:/no-such-folder-w520") == (None, None)
-    assert folder_plugin(None) == (None, None)
 
 
 def self_test():
@@ -2823,14 +2720,8 @@ def self_test():
     self_test_stage_shaders()
     self_test_run_log()
     self_test_use_instance()
-    self_test_build_ids()
+    self_test_set()
     self_test_mgeview()
-    build = os.path.join("target", "akulakhan.dll")
-    assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
-    assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
-    assert plugin_dll_of(None, {}, build) == (build, "the release build of this repository")
-    assert plugin_dll_of("", {}, build)[0] == build
-    self_test_folder_plugin()
     assert env_of([]) == {}
     assert env_of(["MGE_XE_BOX_SECONDS=90", "A=1=2", "B=", "A=3"]) == {"MGE_XE_BOX_SECONDS": "90", "A": "3", "B": ""}
     for bad in ["NOVALUE", "=1"] + ["%s=E:/x" % name for name in RUNNER_VARIABLES]:
@@ -2895,8 +2786,7 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--label", default="owndevice")
-    ap.add_argument("--plugin-dll", help="the plugin DLL of the run (else the variable NIRENDER_PLUGIN_DLL, else the plugin copy "
-                    "akulakhan-<commit>.dll of the --mge-build folder, else the release build of this repository)")
+    ap.add_argument("--plugin-dll", help="gone (W521): the run takes its set's plugin; the option stops the run with a line")
     ap.add_argument("--log", help="a file that gets the runner's output, written to the console too; no shell redirect needed")
     ap.add_argument("--self-test", action="store_true", help="the tests of the argument handling: no game, no build")
     ap.add_argument("--check", action="store_true", help="check the command and stop: the form of each value, the files it "
@@ -2906,25 +2796,25 @@ def main():
     ap.add_argument("--exterior", default="Balmora")
     ap.add_argument("--backend", default="vulkan")
     ap.add_argument("--start-frames", default="5,100,300,600,900,1040", help="the frames of the start to take a picture of")
-    ap.add_argument("--mge-build", help="a folder with a build of MGE XE that has the switch runtime.renderer_wgpu (its bin/MSVC-Release): "
-                    "the run uses its d3d8.dll and its numidium.exe with the switch on, and not the d3d8.dll and the host program of this repository")
+    ap.add_argument("--mge-build", help="a sealed set (tools/build_set.py makes one; without this, the current set of current.bat): every "
+                    "file of the run comes from it. sets.verify checks it before anything starts")
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="run the same scenario with MGE XE on Direct3D 9, for its frame rate: the "
-                    "MGE XE of the instance, or of --mge-build")
+                    "MGE XE of the run's set")
     ap.add_argument("--engine-reference", action="store_true", help="run the same scenario on the engine's own renderer: `runtime.disabled` in "
                     "the run's mgeXE.toml, so the game has the system's Direct3D 8 and no MGE XE draws. The pictures are eng-<step>.png: the world with no interface, at 2048 x 1024. "
                     "MGE XE of W462 and later installs nothing then; MWSE and the Code Patch apply their own: not the game of 2002")
-    ap.add_argument("--plain-case", action="store_true", help="a run of a case where MGE XE cannot use the renderer (W462): the build of "
-                    "--mge-build with the switch renderer_wgpu on, and a switch of --env that makes the case. The game runs on its own Direct3D 8, "
+    ap.add_argument("--plain-case", action="store_true", help="a run of a case where MGE XE cannot use the renderer (W462): the set "
+                    "with the switch renderer_wgpu on, and a switch of --env that makes the case. The game runs on its own Direct3D 8, "
                     "and the scenario runs as with --engine-reference (nirender/noplugin.lua, eng-<step>.png). MGE XE's fall-back line and the "
                     "plugin's refusal do not stop the run; the run fails with exit code 4 when mgeXE.log has neither the fall-back line nor "
                     "the close after a refusal. A run that ends in that close (the line and the game's exit code 12) has no DONE and exits with 0. "
-                    "Without --plugin-dll the run has no plugin, as a reference run")
-    ap.add_argument("--reference-plugin", action="store_true", help="with --reference or --engine-reference: keep akulakhan.dll in the run, its ports "
-                    "installed in mode off and its recorder on the device, as every reference run before 2026-11-03. Without this a reference "
+                    "Without --reference-plugin the run has no plugin, as a reference run")
+    ap.add_argument("--reference-plugin", action="store_true", help="with --reference, --engine-reference or --plain-case: keep the set's "
+                    "akulakhan.dll in the run. In a reference run its ports are installed in mode off and its recorder is on the device, as "
+                    "every reference run before 2026-11-03; a --plain-case run with it tests the plugin's refusal (W476). Without this such a "
                     "run has no plugin: the run's mod has no DLL, the mods of the instance with one are off, the scenario runs with "
-                    "nirender/noplugin.lua, and the run fails when the game loaded the DLL. Only to repeat an old reference run as it was, "
-                    "or to test the plugin's install on Direct3D 9")
+                    "nirender/noplugin.lua, and the run fails when the game loaded the DLL")
     ap.add_argument("--instance", help="the folder of another Mod Organizer instance to run in, and not the testing instance")
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
     ap.add_argument("--profile", default="Default", help="with --instance: its profile")
@@ -2936,7 +2826,7 @@ def main():
     ap.add_argument("--disable-mod", action="append", default=[], help="a mod of the profile switched off in its modlist.txt for the run, and back after; again for more mods")
     ap.add_argument("--enable-mod", action="append", default=[], metavar="NAME",
                     help="a mod of the instance (a folder under its mods) switched on, first in the mod list after the runner's mods, for the "
-                    "run, and back after; again for more mods. The files of the runner's mods (--add-file, --mwse-dll) win over it. It "
+                    "run, and back after; again for more mods. The files of the runner's mods (the set's, --add-file) win over it. It "
                     "brings the files of the mod, not its plugins: see --enable-plugin")
     ap.add_argument("--enable-plugin", action="append", default=[], metavar="FILE.esp",
                     help="a plugin made active for the run: one GameFile line more in the profile's Morrowind.ini, and the file as it was after; "
@@ -3001,32 +2891,46 @@ def main():
                     "in the mod of the run's mgeXE.toml: live work in another instance without a change to its mods")
     ap.add_argument("--add-file", action="append", default=[], metavar="SOURCE=PATH",
                     help="a file for the run's mod at PATH (from the Data Files folder, or Root/... for the game folder), for this run only: "
-                    "a test texture or mesh; the run's mod wins over the instance's mods")
-    ap.add_argument("--mwse-dll", help="another MWSE.dll for this run only (as --add-file <it>=Root/MWSE.dll): an A/B of an MWSE build "
-                    "without a change to the instance. It needs --mwse-commit")
-    ap.add_argument("--mwse-commit", help="the MWSE commit of --mwse-dll: the core Lua of that commit (%s of the MWSE repository) goes "
-                    "into the run's mod beside the DLL, as MWSE/core (D442)" % CORE_PATH)
+                    "a test texture or mesh; the run's mod wins over the instance's mods. A path that the set's staging holds is "
+                    "refused: another file there is another set")
+    ap.add_argument("--mwse-dll", help="gone (W521): the run takes its set's MWSE.dll; the option stops the run with a line")
+    ap.add_argument("--mwse-commit", help="gone (W521): the run takes its set's MWSE core; the option stops the run with a line")
     ap.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
                     help="a variable for the game's process (the plugin, the helper and MGE XE read it), for this run only; "
                     "again for more. It wins over the runner's default box time (MGE_XE_BOX_SECONDS=5). The variables "
                     "of the run itself are refused, with the option that sets each: " + ", ".join(sorted(RUNNER_VARIABLES)))
-    ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--no-build", action="store_true", help="accepted and does nothing: a run never builds (W521; its callers pass it)")
     ap.add_argument("--archive", help="the release check: a folder with an extracted release archive. The run takes its build, its plugin, its "
-                    "MWSE.dll and its Lua files; a Lua file that the archive loads and lacks is not in the run, as in a player's game")
+                    "MWSE.dll and its Lua files; a Lua file that the archive loads and lacks is not in the run, as in a player's game. "
+                    "An archive is not a set: no --mge-build with it")
     args = ap.parse_args()
-    archive_arguments(args)
     if args.self_test:
         self_test()
         return 0
-    problems = argument_problems(args)
+    gone = gone_option_problems(args)
+    if gone:
+        raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(gone))
+    archive_arguments(args)
+    # The run's set and its staging (W521): an archive keeps its own path (D 2.4).
+    manifest = None if args.archive else open_set(args)
+    no_plugin = runs_without_plugin(args)
+    run_files = set_mods(args.mge_build, manifest, not no_plugin) if manifest else {}
+    problems = argument_problems(args, staged=staged_paths(run_files))
     if problems:
         raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(problems))
+    # The line of the run's build in its header and its record (test 4 of the design).
+    build_line = set_line(args.mge_build, manifest) if manifest else "build: the release archive %s" % args.archive
+    # The paths that the overwrite folder may not hold (F-T-11): every staged file, and the plugin for a run without it.
+    overwrite_paths = sorted({dest for files in run_files.values() for dest in files} if manifest
+                             else set(session.mge_build_files(args.mge_build)))
+    if no_plugin:
+        overwrite_paths.append(session.harness.PLUGIN_FILE)
     if args.check:
         if args.instance:
             session.use_instance(args.instance, args.game_dir, args.profile)
         problem = save_problem(args.save, saves_folder(session.harness.PROFILE, session.harness.GAME_DIR))
-        if not problem and runs_without_plugin(args):
-            problem = overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
+        if not problem:
+            problem = overwrite_problem(session.harness.MO2_ROOT, overwrite_paths)
         session.harness.refuse_stale_backups()
         enable_faults, enable_notes = enable_problems(args, session.harness.MO2_ROOT, session.harness.GAME_DIR, read_profile_ini())
         if not problem and enable_faults:
@@ -3040,13 +2944,9 @@ def main():
         if problem:
             raise SystemExit("run_own_device: " + problem)
         print("run_own_device: the arguments are good; nothing started (--check)")
+        print("run_own_device: " + build_line)
         print("run_own_device: " + shadows)
-        dll, source = run_plugin(args, os.environ, session.DLL)
-        if dll:
-            print("run_own_device: plugin DLL: %s (%s)" % (dll, source))
-            warning = plugin_warning(args.mge_build, dll, source)
-            if warning:
-                print("run_own_device: " + warning)
+        print("run_own_device: plugin: %s" % ("none" if no_plugin else "the archive's" if args.archive else "the set's"))
         for note in enable_notes:
             print("run_own_device: " + note)
         if rebuild_guard_note(args):
@@ -3062,49 +2962,34 @@ def main():
         return 0
     if args.engine_reference:
         args.reference = True
-    no_plugin = runs_without_plugin(args)
-    # The game is started from this process: its variables go into the game's environment.
+    # The game is started from this process: its variables go into the game's environment. The helper of a run is the
+    # set's numidium.exe (beside d3d8.dll in the game folder): a NIRENDER_HOST_EXE of the shell would take its place.
     apply_env(os.environ, args.env)
+    if os.environ.pop("NIRENDER_HOST_EXE", None):
+        print("run_own_device: NIRENDER_HOST_EXE was set; the run takes it out: the helper is the set's numidium.exe", flush=True)
     if args.log:
         # The runner's own lines go to the console and to the file; the file is the one a
         # shell redirect wrote before.
         log = open(args.log, "w", encoding="utf-8", buffering=1)
         sys.stdout = Tee(sys.stdout, log)
         sys.stderr = Tee(sys.stderr, log)
+    print("run_own_device: " + build_line, flush=True)
     if no_plugin:
-        print("plugin DLL: none, a reference run without the plugin (--reference-plugin keeps it)", flush=True)
+        print("plugin DLL: none, a run without the plugin (--reference-plugin keeps it)", flush=True)
+    elif args.archive:
+        session.DLL = args.plugin_dll
+        print("plugin DLL: %s (the archive's)" % session.DLL, flush=True)
     else:
-        session.DLL, source = run_plugin(args, os.environ, session.DLL)
-        print("plugin DLL: %s (%s)" % (session.DLL, source), flush=True)
-        warning = plugin_warning(args.mge_build, session.DLL, source)
-        if warning:
-            print("run_own_device: " + warning, flush=True)
-    plugin_commit = None if no_plugin else plugin_build_id(session.DLL)
-    for line in dirty_warnings(args.mge_build, plugin_commit):
-        print("run_own_device: " + line, flush=True)
-    if not no_plugin and not args.archive:
-        found = mod_problem(plugin_commit)
-        if found and found[1]:
-            raise SystemExit("run_own_device: " + found[0] + "; nothing started")
-        if found:
-            print("run_own_device: " + found[0], flush=True)
+        session.DLL = run_files["nirender"][sets.PLUGIN_IN_MOD]
+        print("plugin DLL: %s (the set's)" % session.DLL, flush=True)
     if weather_warning(args):
         print("run_own_device: " + weather_warning(args), flush=True)
     if weather_pin_warning(args):
         print("run_own_device: " + weather_pin_warning(args), flush=True)
     extra_files = [entry.split("=", 1) for entry in args.add_file]
-    if args.mwse_dll:
+    if args.archive and args.mwse_dll:
+        # The MWSE.dll of a release archive goes alone, as in a player's game (D442).
         extra_files.append((args.mwse_dll, "Root/MWSE.dll"))
-    # D442: the core Lua of the DLL's commit goes beside it. The scratch folder lives until the run's mod is staged.
-    core_scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True) if args.mwse_commit else None
-    extra_trees, mwse_facts = [], []
-    if core_scratch:
-        try:
-            core = core_of(args.mwse_commit, core_scratch.name)
-        except DeployError as error:
-            raise SystemExit("run_own_device: " + str(error))
-        extra_trees.append((core, "MWSE/core"))
-        mwse_facts.append("MWSE: %s with the core of MWSE %s" % (args.mwse_dll, args.mwse_commit))
 
     if args.instance:
         session.use_instance(args.instance, args.game_dir, args.profile)
@@ -3128,17 +3013,12 @@ def main():
     problem = shadow_problem(args, level, shadows)
     if problem:
         raise SystemExit("run_own_device: " + problem)
-    if not args.no_build:
-        cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
-        for folder in (HOST_DIR, D3D8_DIR):
-            subprocess.run([cargo, "build", "--release", "--quiet"], cwd=folder, check=True)
-    problem = no_plugin and overwrite_problem(session.harness.MO2_ROOT, session.harness.PLUGIN_FILE)
+    problem = overwrite_problem(session.harness.MO2_ROOT, overwrite_paths)
     if problem:
         raise SystemExit("run_own_device: " + problem)
-    session.prepare(build=not args.no_build, extra_files=extra_files, archive=args.archive, plugin=not no_plugin,
-                    timing=is_timing_run(args), extra_trees=extra_trees)
-    if core_scratch:
-        core_scratch.cleanup()
+    # A run never builds (W521): every file comes from the set, or from the archive.
+    session.prepare(build=False, extra_files=extra_files, archive=args.archive, plugin=not no_plugin, timing=is_timing_run(args),
+                    set_files=run_files.get("nirender", {}) if manifest else None)
     if no_plugin:
         for name in session.plugin_mods(session.harness.read_modlist()[0]):
             if name not in args.disable_mod:
@@ -3158,8 +3038,6 @@ def main():
                     afterLoadPictures=args.after_load_pictures or None, keepFade=args.keep_fade or None, keepAI=args.keep_ai or None,
                     engineReference=(args.engine_reference or args.plain_case) or None, noPlugin=no_plugin or None)
     # The plugin starts the host program. It reads these from the environment of the game.
-    if not args.mge_build:
-        os.environ["NIRENDER_HOST_EXE"] = HOST
     os.environ["NIRENDER_HOST_LOG"] = run.path("host.txt")
     os.environ["NIRENDER_BACKEND"] = args.backend
     # Pictures of the start of the game, before the scenario can ask for one.
@@ -3178,18 +3056,14 @@ def main():
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
     # The files of the run are in mods of the harness, on for the run over the mods of the
     # instance; Root Builder copies their Root folders into the game folder.
-    mods = [(MGE_MOD, {"Root/d3d8.dll": D3D8}), (CONFIG_MOD, {"Root/mgeXE.toml": switched})]
-    if args.mge_build:
-        # MGE XE with its switch for the wgpu renderer on: its own d3d8.dll gives Direct3D to
-        # the plugin, and its helper is the renderer. With --reference the same build with the
-        # switch off: Direct3D 9 with the d3d8.dll and the helper of that build (the helper as
-        # the IPC host of distant land).
-        mods[0] = (MGE_MOD, session.mge_build_files(args.mge_build))
-        for line in add_symbols(args.mge_build, None if no_plugin else session.DLL):
-            print(line, flush=True)
-    elif args.reference:
-        # MGE XE of the instance on Direct3D 9.
-        mods.pop(0)
+    # The set's MGE XE with its switch for the wgpu renderer on: its own d3d8.dll gives Direct3D to the plugin, and its
+    # helper is the renderer. With --reference the same set with the switch off: Direct3D 9 with the d3d8.dll and the
+    # helper of that set (the helper as the IPC host of distant land). The set's MWSE.dll, lua51.dll and MWSE core go
+    # in the same mod (the one map, sets.stage_files).
+    mge_files = run_files["MGE XE"] if manifest else session.mge_build_files(args.mge_build)
+    mods = [(MGE_MOD, mge_files), (CONFIG_MOD, {"Root/mgeXE.toml": switched})]
+    for line in add_symbols(args.mge_build, None if no_plugin else session.DLL, is_set=bool(manifest)):
+        print(line, flush=True)
     if args.exe:
         mods.append((EXE_MOD, {"Root/Morrowind.exe": args.exe}))
     if args.bridge:
@@ -3201,7 +3075,7 @@ def main():
     # named at its end, and fails unless the command allowed the rebuild.
     land_before = distant_land_state(session.harness.MO2_ROOT)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = launch_run(run, spec, args, mods, facts=[shadows, *mwse_facts])
+        done = launch_run(run, spec, args, mods, facts=[build_line, shadows])
 
     print()
     progress = run.progress_lines(TAG)
@@ -3462,11 +3336,14 @@ def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, 
     return EXIT_ENDED_BY_HAND if ending == ENDED_BY_HAND else 1
 
 
-def overwrite_problem(root, plugin_file):
-    """The overwrite folder of the Mod Organizer instance at `root` serves its files over every
-    mod: with the plugin there, a run without the plugin cannot keep it out."""
-    if os.path.isfile(os.path.join(root, "overwrite", plugin_file)):
-        return "the overwrite folder of the instance has %s: a run without the plugin cannot keep it out" % plugin_file
+def overwrite_problem(root, paths):
+    """The overwrite folder of the Mod Organizer instance at `root` serves its files over every mod (W524 F-T-11):
+    a file there at one of `paths` (paths in a mod: the run's staged files, and the plugin for a run without it)
+    takes the place of the run's own. Returns the fault, or None."""
+    found = sorted(path for path in set(paths) if os.path.isfile(os.path.join(root, "overwrite", *path.replace("\\", "/").split("/"))))
+    if found:
+        return ("the overwrite folder of the instance has %d files of the run, which win over the run's mods: %s; move them "
+                "into a mod" % (len(found), ", ".join(found[:5])))
     return None
 
 

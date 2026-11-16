@@ -18,6 +18,7 @@ import time
 import tomllib
 
 import common  # noqa: E402
+import sets  # noqa: E402
 from common import REPO, docs_place, local, local_file_hint
 
 # The harness of the docs checkout beside the main checkout (common.docs_root), unless the key "harness" names one.
@@ -29,9 +30,9 @@ sys.path.insert(0, HARNESS_DIR)
 import harness  # noqa: E402
 
 MOD_NAME = harness.RUN_MOD_PREFIX + "nirender"
-# The plugin of the run: the build of the repo, or another DLL for one arm of an A/B
-# (`NIRENDER_PLUGIN_DLL`; the "before" of an A/B is built from a commit).
-DLL = os.environ.get("NIRENDER_PLUGIN_DLL") or os.path.join(REPO, "target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
+# The plugin of the rig tools: the build of the repo. A run of run_own_device.py takes its set's plugin (W521), or the
+# archive's. This module does not read the variable NIRENDER_PLUGIN_DLL (W521, the plan's answer to Q1).
+DLL = os.path.join(REPO, "target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
 DIST = os.path.join(REPO, "target", "dist", "nirender")
 RESULTS = os.path.join(REPO, "results")
 # The folders of the run's mod that `prepare` fills from a whole tree, and whose install the output counts in one line.
@@ -149,8 +150,12 @@ def stage_archive_lua(archive, dist):
     return sorted(shipped), sorted(missing)
 
 
-def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, timing=False, extra_trees=()):
+def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, timing=False, extra_trees=(), set_files=None):
     """Builds the plugin, runs the offline tests and installs the mod into the testing instance.
+
+    `set_files` is the staging of a run on a sealed set for this mod, {path in the mod: file in the set}
+    (sets.stage_files): the mod holds those files and the extra files, and nothing of this repository
+    (`stage_set_mod`). A run on a set never builds.
 
     `features` are cargo features of the build: ("rig",) for a run of the comparison rig.
     With `plugin` False the mod gets the Lua files only, no akulakhan.dll: a reference run
@@ -171,7 +176,10 @@ def prepare(build=True, features=(), extra_files=(), archive=None, plugin=True, 
             print("> " + " ".join(command), flush=True)
             if subprocess.run(command, cwd=REPO, env=env).returncode != 0:
                 raise SystemExit("build failed")
-    stage_mod(DIST, DLL, plugin, archive)
+    if set_files is not None:
+        stage_set_mod(DIST, set_files, plugin)
+    else:
+        stage_mod(DIST, DLL, plugin, archive)
     for source, target in extra_files:
         if not os.path.isfile(source):
             raise SystemExit("no file %s for %s" % (source, target))
@@ -233,6 +241,22 @@ def stage_mod(dist, dll, plugin, archive=None):
         shutil.copy2(pdb, os.path.join(lib, "akulakhan.pdb"))
     if not plugin:
         found = [name for name in ("akulakhan.dll", "akulakhan.pdb") if os.path.isfile(os.path.join(lib, name))]
+        if found:
+            raise SystemExit("the mod of a run without the plugin has %s" % ", ".join(found))
+
+
+def stage_set_mod(dist, files, plugin):
+    """The mod of a run on a sealed set, in `dist`: the files of `files` ({path in the mod: file in the set}), and
+    nothing else. No pdb: a profile finds the set's pdbs through the symbol store (run_own_device.add_symbols). Without
+    `plugin` the mod has no file of the plugin: a run without the plugin fails if it has one."""
+    if os.path.isdir(dist):
+        shutil.rmtree(dist)
+    for target, source in sorted(files.items()):
+        destination = os.path.join(dist, *target.split("/"))
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        shutil.copy2(source, destination)
+    if not plugin:
+        found = [target for target in files if target.lower() == sets.PLUGIN_IN_MOD.lower()]
         if found:
             raise SystemExit("the mod of a run without the plugin has %s" % ", ".join(found))
 
