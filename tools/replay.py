@@ -297,6 +297,13 @@ def self_test():
         with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
             code = main(["--run-folder-for", join(game, "walk.png"), "--config-root", source])
         assert code == EXIT_REFUSED and errors.getvalue().startswith("replay: refused: the picture "), errors.getvalue()
+
+        # The variables of --core-mods (W528 item 5): none without the option, "off" reads no core mod, a folder
+        # is given to the helper as an absolute path.
+        assert core_mods_env(None) == {} and core_mods_env("off") == {"MGE_XE_CORE_MODS": "0"}
+        assert core_mods_env(join(temp, "fixtures")) == {"MGE_XE_CORE_MODS_DIR": join(temp, "fixtures")}
+        relative = core_mods_env("fixtures")["MGE_XE_CORE_MODS_DIR"]
+        assert os.path.isabs(relative) and os.path.basename(relative) == "fixtures", relative
     print("replay self-test: ok")
     return 0
 
