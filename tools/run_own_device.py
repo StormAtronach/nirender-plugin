@@ -26,6 +26,7 @@ run ran (`harness.write_setup`).
 import argparse
 import contextlib
 import ctypes
+import hashlib
 import io
 import json
 import math
@@ -240,8 +241,96 @@ def read_text(path):
 
 
 def run_settings(args):
-    """The --set lines of the run: the lines of the command, and the line that --engine-reference adds."""
-    return list(args.set) + (["[runtime] disabled = true"] if args.engine_reference else [])
+    """The --set lines of the run: the lines of the command, the line that --engine-reference adds, and the line
+    that keeps MGE XE from a rebuild of the install's distant land in a run that changes what the game loads
+    ([`rebuild_guard`])."""
+    lines = list(args.set) + (["[runtime] disabled = true"] if args.engine_reference else [])
+    if rebuild_guard(args):
+        lines.append(REBUILD_OFF_LINE)
+    return lines
+
+
+# MGE XE's startup check of the distant land: with this key on (the default, and the testing instance's setting) a
+# game start whose files differ from those of the last generation rebuilds overwrite/distantland by itself, and the
+# rebuilt data stays in the instance after the run. With it off the helper loads the folder as it is, with no
+# check (render-link mgeHost64/src/renderer.rs, `start_check`).
+REBUILD_OFF_LINE = "[distant_land] automatic_rebuild = false"
+
+
+def load_changes(args):
+    """The options of the command that change the files the game loads, and so what the distant land generator
+    reads: a file added under the Data Files folder (--add-file; a Root/ file is of the game folder and is not
+    read by the generator), a mod of the instance switched on or off, a plugin made active. A list of the options,
+    for the run's line; empty for a run with the instance's own files."""
+    changes = []
+    for entry in getattr(args, "add_file", None) or []:
+        path = entry.partition("=")[2].replace("\\", "/")
+        if path and not path.lower().startswith("root/"):
+            changes.append("--add-file " + path)
+    for option, names in (("--enable-mod", "enable_mod"), ("--disable-mod", "disable_mod"), ("--enable-plugin", "enable_plugin")):
+        changes += ["%s %s" % (option, name) for name in getattr(args, names, None) or []]
+    return changes
+
+
+def rebuild_guard(args):
+    """True when the run gets [`REBUILD_OFF_LINE`] by itself: its command changes what the game loads
+    ([`load_changes`]), --allow-distant-land-rebuild is not given, and no --set line of the command names the key
+    (the command's own value stands). 2026-11-16, W535: a run with the game's own 72 meshes by --add-file made MGE
+    XE rebuild the testing instance's distant statics at its start (rebuild_cause "meshes +0/-0/~61"), and every
+    later replay and game start read the rebuilt folder until it was restored."""
+    if getattr(args, "allow_distant_land_rebuild", False) or any("automatic_rebuild" in line for line in args.set):
+        return False
+    return bool(load_changes(args))
+
+
+def rebuild_guard_note(args):
+    """The line of the run's first lines for the guard of the distant land, or None for a run that needs none."""
+    changes = load_changes(args)
+    if not changes:
+        return None
+    named = ", ".join(changes[:4]) + (" and %d more" % (len(changes) - 4) if len(changes) > 4 else "")
+    if rebuild_guard(args):
+        return ("the run changes what the game loads (%s): \"%s\" for the run, so that MGE XE does not rebuild the distant land of "
+                "the instance from the run's files (--allow-distant-land-rebuild lets it)" % (named, REBUILD_OFF_LINE))
+    if getattr(args, "allow_distant_land_rebuild", False):
+        return ("the run changes what the game loads (%s), and --allow-distant-land-rebuild is given: MGE XE can rebuild the distant "
+                "land of the instance at the start, and the instance keeps the rebuilt data" % named)
+    return "the run changes what the game loads (%s); the command's own --set line for automatic_rebuild stands" % named
+
+
+def distant_land_state(root):
+    """The md5 of the generator's state file of the Mod Organizer instance at `root`
+    (overwrite/distantland/generation_state.bin), or None when the instance has none. The generator writes the
+    file anew at each generation, so its md5 before a run and after it says whether the run rebuilt the distant
+    land."""
+    path = os.path.join(root, "overwrite", "distantland", "generation_state.bin")
+    if not os.path.isfile(path):
+        return None
+    digest = hashlib.md5()
+    with open(path, "rb") as file:
+        for block in iter(lambda: file.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def distant_land_line(before, after, allowed):
+    """(the run's line about the distant land of the instance, whether it is an error). The state file's md5 before
+    the game started and after it closed: equal, or the run rebuilt the distant land, which is an error unless the
+    command allowed it."""
+    if before == after:
+        return "distant land: the generator's state file is as before the run (%s)" % (before[:8] if before else "none"), False
+    change = "%s -> %s" % (before[:8] if before else "none", after[:8] if after else "none")
+    if allowed:
+        return "distant land: the run rebuilt it, as --allow-distant-land-rebuild lets it (generation_state.bin %s); the instance keeps the rebuilt data" % change, False
+    return ("the run CHANGED THE DISTANT LAND of the instance (overwrite/distantland/generation_state.bin %s): every later replay and "
+            "game start reads the rebuilt data. Restore the folder, or start the game with the instance's own files so that "
+            "MGE XE rebuilds it again" % change), True
+
+
+def exit_with_distant_land(code, changed):
+    """The run's exit code with the distant land's check: a run that would end with 0 and changed the distant land
+    of the instance ends with 7 (EXIT_DISTANT_LAND_CHANGED); another code stays (the run failed already)."""
+    return EXIT_DISTANT_LAND_CHANGED if changed and code == 0 else code
 
 
 def config_problem(args, root):
@@ -1408,6 +1497,58 @@ def self_test_run_toml():
     assert wgpu_switch(args) is False
     args = argparse.Namespace(set=[], engine_reference=False, reference=False, mge_build="E:/b")
     assert run_settings(args) == [] and wgpu_switch(args) is True
+    # The guard of the distant land (W535): a run that changes what the game loads gets the line by itself.
+    def guarded(**options):
+        values = dict(set=[], engine_reference=False, add_file=[], enable_mod=[], disable_mod=[], enable_plugin=[], allow_distant_land_rebuild=False)
+        values.update(options)
+        return argparse.Namespace(**values)
+
+    assert load_changes(guarded()) == [] and not rebuild_guard(guarded()) and rebuild_guard_note(guarded()) is None
+    mesh = guarded(add_file=["E:/a.nif=meshes/f/a.nif", "E:/b.dll=Root/b.dll", "E:/c.dll=root\\MWSE.dll"])
+    assert load_changes(mesh) == ["--add-file meshes/f/a.nif"], load_changes(mesh)
+    assert rebuild_guard(mesh) and run_settings(mesh) == [REBUILD_OFF_LINE] and mesh.set == []
+    assert "automatic_rebuild = false" in rebuild_guard_note(mesh) and "meshes/f/a.nif" in rebuild_guard_note(mesh)
+    # A file of the game folder alone is no change for the generator.
+    root_only = guarded(add_file=["E:/b.dll=Root/b.dll"])
+    assert load_changes(root_only) == [] and run_settings(root_only) == [] and rebuild_guard_note(root_only) is None
+    for option, text in (("enable_mod", "--enable-mod Trees"), ("disable_mod", "--disable-mod Trees"), ("enable_plugin", "--enable-plugin Trees")):
+        changed = guarded(**{option: ["Trees"]})
+        assert load_changes(changed) == [text] and run_settings(changed) == [REBUILD_OFF_LINE], (option, load_changes(changed))
+    # The command can allow the rebuild, or give the key itself: then no line is added, and the note says which.
+    allowed = guarded(add_file=["E:/a.nif=meshes/a.nif"], allow_distant_land_rebuild=True)
+    assert not rebuild_guard(allowed) and run_settings(allowed) == [] and "--allow-distant-land-rebuild is given" in rebuild_guard_note(allowed)
+    own = guarded(enable_mod=["Trees"], set=["[distant_land] automatic_rebuild = true"])
+    assert not rebuild_guard(own) and run_settings(own) == ["[distant_land] automatic_rebuild = true"] and "stands" in rebuild_guard_note(own)
+    assert run_settings(guarded(enable_mod=["Trees"], engine_reference=True)) == ["[runtime] disabled = true", REBUILD_OFF_LINE]
+    many = guarded(add_file=["E:/%d.nif=meshes/%d.nif" % (index, index) for index in range(72)])
+    assert "and 68 more" in rebuild_guard_note(many) and rebuild_guard_note(many).count("--add-file") == 4
+    # The line goes into the run's mgeXE.toml as any --set line: a key that the section has is changed.
+    assert "automatic_rebuild = false" in lines_of([REBUILD_OFF_LINE], text="[runtime]\nrenderer_wgpu = true\n\n[distant_land]\nautomatic_rebuild = true\n")
+    # The state file of the generator, before a run and after it.
+    with tempfile.TemporaryDirectory() as root:
+        assert distant_land_state(root) is None
+        folder = os.path.join(root, "overwrite", "distantland")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "generation_state.bin"), "wb") as file:
+            file.write(b"one")
+        first = distant_land_state(root)
+        assert first == hashlib.md5(b"one").hexdigest()
+        with open(os.path.join(folder, "generation_state.bin"), "wb") as file:
+            file.write(b"two")
+        second = distant_land_state(root)
+    assert second != first
+    line, error = distant_land_line(first, first, False)
+    assert not error and "as before the run" in line and first[:8] in line
+    line, error = distant_land_line(first, second, False)
+    assert error and "CHANGED THE DISTANT LAND" in line and "%s -> %s" % (first[:8], second[:8]) in line
+    line, error = distant_land_line(first, second, True)
+    assert not error and "--allow-distant-land-rebuild" in line
+    assert distant_land_line(None, None, False) == ("distant land: the generator's state file is as before the run (none)", False)
+    assert distant_land_line(None, first, False)[1] and "none -> " in distant_land_line(None, first, False)[0]
+    # The exit code: a run that would end with 0 and changed the distant land ends with 7; a failed run keeps its code.
+    assert [exit_with_distant_land(code, True) for code in (0, 1, 2, 3, 4, 5, 6)] == [7, 1, 2, 3, 4, 5, 6]
+    assert exit_with_distant_land(0, False) == 0 and EXIT_DISTANT_LAND_CHANGED == 7
+    assert EXIT_DISTANT_LAND_CHANGED not in (EXIT_ENDED_BY_HAND, EXIT_FELL_BACK, EXIT_CRASHED_AFTER_DONE, EXIT_STAGE_SHADERS)
     args.mge_build = None
     assert wgpu_switch(args) is None
 
@@ -2743,6 +2884,12 @@ def main():
     ap.add_argument("--enable-plugin", action="append", default=[], metavar="FILE.esp",
                     help="a plugin made active for the run: one GameFile line more in the profile's Morrowind.ini, and the file as it was after; "
                     "again for more plugins. The file must be in a mod of --enable-mod or in the game's Data Files")
+    ap.add_argument("--allow-distant-land-rebuild", action="store_true",
+                    help="let MGE XE rebuild the distant land of the instance at the game's start. Without this, a run that changes "
+                    "what the game loads (--add-file of a Data Files path, --enable-mod, --disable-mod, --enable-plugin) gets the line "
+                    "\"[distant_land] automatic_rebuild = false\" for the run, so that the instance's distant land is not made anew from "
+                    "the run's files; and any run whose game start rebuilt it ends with the exit code 7. A --set line with "
+                    "automatic_rebuild stands as given")
     ap.add_argument("--find-water", action="store_true", help="after the cell loads, put the player under the water at the "
                     "nearest spot where the land is deep enough (a test of the view from under the water)")
     ap.add_argument("--find-dry", action="store_true", help="after the interior cell loads, put the player on the nearest floor above "
@@ -2845,6 +2992,8 @@ def main():
                 print("run_own_device: " + warning)
         for note in enable_notes:
             print("run_own_device: " + note)
+        if rebuild_guard_note(args):
+            print("run_own_device: " + rebuild_guard_note(args))
         if weather_warning(args):
             print("run_own_device: " + weather_warning(args))
         if weather_pin_warning(args):
@@ -2911,6 +3060,11 @@ def main():
         raise SystemExit("run_own_device: the command has faults; nothing started:\n  " + "\n  ".join(enable_faults))
     for note in enable_notes:
         print("run_own_device: " + note, flush=True)
+    # The guard of the distant land is decided on the command's own options, here: a run without the plugin
+    # switches the instance's plugin mods off below, and that is no change of the files that the generator reads.
+    args.set_for_run = run_settings(args)
+    if rebuild_guard_note(args):
+        print("run_own_device: " + rebuild_guard_note(args), flush=True)
     registry, source = registry_shadows()
     shadows, level = shadow_level_line(registry, ini_shadows(read_profile_ini()), source)
     print("run_own_device: " + shadows, flush=True)
@@ -2962,7 +3116,7 @@ def main():
     # modes compare; with the switch for the wgpu renderer when the run is with it.
     toml = os.path.join(session.harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
     text = open(toml, encoding="utf-8").read()
-    lines = session.run_toml_lines(text, run_settings(args), toml, wgpu_switch(args))
+    lines = session.run_toml_lines(text, args.set_for_run, toml, wgpu_switch(args))
     switched = run.path("mgeXE.toml")
     open(switched, "w", encoding="utf-8").write("".join(line + chr(10) for line in lines))
     # The files of the run are in mods of the harness, on for the run over the mods of the
@@ -2986,6 +3140,9 @@ def main():
         files = next(files for name, files in mods if name == CONFIG_MOD)
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
+    # The generator's state file before the game starts: a run that rebuilt the distant land of the instance is
+    # named at its end, and fails unless the command allowed the rebuild.
+    land_before = distant_land_state(session.harness.MO2_ROOT)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
         done = launch_run(run, spec, args, mods, facts=[shadows, *mwse_facts])
 
@@ -3051,7 +3208,10 @@ def main():
     print_disk_limits()
     if closed:
         print("plain case: the close after the refusal, as designed; the run passes without DONE")
-    return run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed), bool(stage_failed))
+    land_line, land_changed = distant_land_line(land_before, distant_land_state(session.harness.MO2_ROOT), args.allow_distant_land_rebuild)
+    print(("ERROR: " if land_changed else "") + land_line)
+    code = run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed), bool(stage_failed))
+    return exit_with_distant_land(code, land_changed)
 
 
 # The endings of a run (W372): DONE came; the game closed by itself without DONE, after a step started, with exit code
@@ -3071,6 +3231,10 @@ EXIT_CRASHED_AFTER_DONE = 5
 # the draws, so the pictures are right and only the helper's report line shows it. The helper never ends a live
 # session for this; the runner fails the run at its end.
 EXIT_STAGE_SHADERS = 6
+# A run that would end with 0 and whose game start rebuilt the distant land of the instance (the generator's state
+# file has another md5 after the run), without --allow-distant-land-rebuild: the run's own results can be right,
+# and the instance is not as it was (W535, 2026-11-16).
+EXIT_DISTANT_LAND_CHANGED = 7
 CLOSE_LINE = re.compile(r"^\[runner\] game closed in \d+ s, without /F, exit code (.+)$")
 # The copy of the --log stream in the run folder, from the run folder's start on: a --log file of the same name in a
 # later run does not take it (W417).
