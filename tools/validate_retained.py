@@ -55,7 +55,9 @@ Stages (capture, baseline and only by default, in this order):
   weathers a run that measures the frame rate of each of the ten weathers of the game in
            turn, at each place.
 
---disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod).
+--disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod). Both arms have the
+instance's distant land: the runner keeps MGE XE from a rebuild of it in a run that changes what the game loads
+(run_own_device.py, the guard of W535), so the arm without the mod draws the distant land that was made with it.
 
 --weather N pins the weather of the runs and holds it (the runner's --weather): 0, clear, by
 default, so that a capture or a rate is made in a known weather. Each capture and rate stage

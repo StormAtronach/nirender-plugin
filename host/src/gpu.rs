@@ -89,6 +89,21 @@ pub fn test_loss(device: &wgpu::Device) {
     }
 }
 
+/// Makes a GPU object under two error scopes, `Validation` and `Internal`, and gives it with the
+/// first error that either scope took, or None (W317). A shader that passes naga can still fail
+/// in the back end: naga's SPIR-V or HLSL writer, or DXC, at the pipeline. wgpu gives that error
+/// the type `Internal`, so a scope of `Validation` alone does not take it, and the object is
+/// invalid with no word to its maker. A failure of the Vulkan driver's own compile is not taken
+/// by any scope: wgpu loses the device.
+pub fn guarded<T>(device: &wgpu::Device, make: impl FnOnce() -> T) -> (T, Option<String>) {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let made = make();
+    let internal_error = pollster::block_on(internal.pop());
+    let validation_error = pollster::block_on(validation.pop());
+    (made, validation_error.or(internal_error).map(|error| error.to_string()))
+}
+
 /// `queue.submit`, counted.
 pub fn submit<I: IntoIterator<Item = wgpu::CommandBuffer>>(queue: &wgpu::Queue, buffers: I) -> wgpu::SubmissionIndex {
     let start = Instant::now();

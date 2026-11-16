@@ -314,6 +314,10 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 - `MGE_XE_STAGE_SHADERS=0`: no fragment shader for each stage state of the draws
   (`host/src/stage_shaders.rs`); the world shader's own `fs` (the uber-shader) draws every
   draw. On by default; the A/B and the look test of W293 compare the two.
+- `MGE_XE_CORE_MOD_FAULT=world key` (W317's test): the pipeline of the first world key fails
+  whatever the world shader's text, a fault that is no core mod's (`world_key_fault` in
+  `host/src/lib.rs`). The build of that key with the extension's built-in text fails too, and
+  the extension drops no core mod. The other values of the switch are MGE XE's (RENDERER.md).
 - `MGE_XE_PIPELINE_LIST=<file>`: the list of the stage pipelines of a live session, in place of
   `%LOCALAPPDATA%\MGE XE\numidium-stage-pipelines.txt`. The next start makes the pipelines of
   the list on the helper's thread before they are needed; a list that is missing, of another
