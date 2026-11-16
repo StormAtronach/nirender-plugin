@@ -578,6 +578,7 @@ def self_test():
         assert bare(real) == real_bare, "core.bare of %s changed from %r to %r" % (real, real_bare, bare(real))
     parts_test()
     stage_test()
+    deploys_test()
     print("common self-test: passed")
 
 
@@ -803,6 +804,85 @@ PORT_RE = re.compile(r"port_(?:thiscall|cdecl)!\(\s*(\w+),\s*0x([0-9A-Fa-f]+),.*
 
 def is_renderer_function(name):
     return bool(FUNC_RE.search(name)) and not FUNC_SKIP.search(name)
+
+
+# The open deploys (W528): a merge round whose deploy is WITHHELD appends a WITHHELD line, and deploy_rest.py appends a
+# DEPLOYED line after each deploy of a build. A WITHHELD line stays open until a DEPLOYED line names the same commits or
+# newer ones of both repos. Tab-separated, CRLF, ASCII, with a header; written by merge_step.py and deploy_rest.py only.
+DEPLOYS_FILE = "E:\\nirender-keep\\merge-step\\deploys.tsv"
+DEPLOYS_HEADER = "time\tword\tplugin\tmge\twhat"
+DEPLOY_WITHHELD, DEPLOY_DONE = "WITHHELD", "DEPLOYED"
+
+
+def deploys_line(when, word, plugin, mge, what):
+    """One line of the deploys file. A tab or a line end in `what` becomes a space."""
+    return "\t".join((when, word, plugin or "unknown", mge or "unknown", " ".join(what.split())))
+
+
+def append_deploys(path, line):
+    """Appends `line` to the deploys file at `path`, with the header first when the file is new. An OSError goes to the
+    caller: the writer says it and goes on, as a missed line must not fail a round or a deploy."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    new = not os.path.exists(path)
+    with open(path, "a", encoding="ascii", errors="replace", newline="\r\n") as file:
+        if new:
+            file.write(DEPLOYS_HEADER + "\n")
+        file.write(line + "\n")
+
+
+def open_deploys(lines, is_newer):
+    """The WITHHELD rows of `lines` (the deploys file) that no later DEPLOYED row closes, oldest first, as (time, plugin,
+    mge, what). A DEPLOYED row closes a WITHHELD row when, for each repo, its commit is the same or newer:
+    `is_newer(kind, older, newer)` with the kind "plugin" or "mge". An unknown commit is never newer."""
+    rows = [line.rstrip("\r\n").split("\t") for line in lines]
+    rows = [row for row in rows if len(row) == 5 and row[1] in (DEPLOY_WITHHELD, DEPLOY_DONE)]
+    still = []
+    for index, (when, word, plugin, mge, what) in enumerate(rows):
+        if word != DEPLOY_WITHHELD:
+            continue
+        later = [row for row in rows[index + 1:] if row[1] == DEPLOY_DONE]
+        if not any("unknown" not in (plugin, mge, done[2], done[3]) and is_newer("plugin", plugin, done[2]) and is_newer("mge", mge, done[3])
+                   for done in later):
+            still.append((when, plugin, mge, what))
+    return still
+
+
+def open_deploys_text(still):
+    """The machine answer of the close line: "open deploys: K", with the oldest when K > 0."""
+    if not still:
+        return "open deploys: 0"
+    when, plugin, mge, _ = still[0]
+    return "open deploys: %d (the oldest %s: plugin %s, mge %s)" % (len(still), when, plugin[:10], mge[:10])
+
+
+def deploys_test():
+    """The tests of the deploys file (W528), on a scratch file."""
+    import tempfile
+
+    order = ["p1", "p2", "p3"]
+
+    def is_newer(kind, older, newer):
+        return order.index(older.replace("m", "p")) <= order.index(newer.replace("m", "p"))
+
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "keep", "deploys.tsv")
+        append_deploys(path, deploys_line("t1", DEPLOY_WITHHELD, "p1", "m1", "a game\truns"))
+        with open(path, "rb") as file:
+            assert file.read() == ("%s\r\nt1\tWITHHELD\tp1\tm1\ta game runs\r\n" % DEPLOYS_HEADER).encode("ascii")
+        with open(path, encoding="ascii") as file:
+            lines = file.readlines()
+        # The plant: a WITHHELD row with no DEPLOYED row is open.
+        assert open_deploys(lines, is_newer) == [("t1", "p1", "m1", "a game runs")]
+        assert open_deploys_text(open_deploys(lines, is_newer)) == "open deploys: 1 (the oldest t1: plugin p1, mge m1)"
+        # A DEPLOYED row of an older plugin, of an unknown commit, or before the WITHHELD row closes nothing.
+        older = [deploys_line("t0", DEPLOY_DONE, "p3", "m3", "A, B")] + lines + [deploys_line("t2", DEPLOY_DONE, "p1", "unknown", "A")]
+        assert len(open_deploys(older, is_newer)) == 1
+        mixed = lines + [deploys_line("t2", DEPLOY_DONE, "p2", "m1", "A")]
+        assert len(open_deploys(mixed, is_newer)) == 0, "the same mge and a newer plugin close it"
+        # The null: a DEPLOYED row of the same or newer commits closes it.
+        for done in (deploys_line("t2", DEPLOY_DONE, "p1", "m1", "A, B"), deploys_line("t2", DEPLOY_DONE, "p3", "m2", "A, B")):
+            assert open_deploys(lines + [done], is_newer) == [] and open_deploys_text([]) == "open deploys: 0"
+        assert len(open_deploys(lines + ["a short line\n"], is_newer)) == 1, "a line of another form is no row"
 
 
 def read_report(path):
