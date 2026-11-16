@@ -144,6 +144,68 @@ def capture_format_in(output):
     return next((line.strip() for line in output.splitlines() if line.strip().startswith(CAPTURE_FORMAT)), "")
 
 
+# The helper's exit code of a replay whose stage shaders failed (EXIT_REPLAY_STAGE_SHADERS of src/stream_format.rs;
+# the self-test reads the value there), and the start of the line that the helper prints before it
+# (host/src/stage_shaders.rs, `replay_fault`). The replay made its pictures and its report first, and the pictures are
+# right: the uber-shader drew the draws. Only this code and this line show the fault (W523).
+EXIT_REPLAY_STAGE_SHADERS = 40
+STAGE_FAULT_START = "stage shaders: a fault of the replay: "
+# The start of the line that replay.py adds to such a fault.
+STAGE_SHADERS = "STAGE SHADERS"
+STAGE_FAULT_COUNTS = re.compile(r"; (\d+) pipelines failed.*; the uber-shader drew (\d+) draws that have a stage key .*; (\d+) draws past the cap")
+# The first failed rewrite of the helper's line: its key, the part that refused and the count of the part's matches.
+STAGE_FIRST_REFUSAL = re.compile(r"rewrites failed \((stage key \d+: .*? wanted)")
+# The helper's report line of the stage shaders at the end of a replay or of a live session (`report` there).
+STAGE_REPORT = re.compile(r"^stage shaders: (?:on|off) \((made [^)]*)\), .*?; (\d+) rewrites failed.*?; (\d+) pipelines failed.*?; draws on the uber-shader with a stage key: "
+                          r"(\d+) after a failed rewrite, (\d+) after a failed pipeline, (\d+) with a pipeline not made; (\d+) draws past the cap, \d+ draws with no key", re.M)
+
+
+def stage_fault_summary(output):
+    """The short form of the helper's fault line of a replay in `output`, or "": each count, and the first failed
+    rewrite. The helper's line has every failed key, so it can be thousands of characters long."""
+    line = next((line for line in output.splitlines() if line.startswith(STAGE_FAULT_START)), "")
+    rewrites, counts = re.match(re.escape(STAGE_FAULT_START) + r"(\d+) rewrites failed", line), STAGE_FAULT_COUNTS.search(line)
+    if not rewrites or not counts:
+        return ""
+    first = STAGE_FIRST_REFUSAL.search(line)
+    return "%s rewrites failed%s, %s pipelines failed, %s draws on the uber-shader with a stage key, %s draws past the cap of the keys" % (
+        rewrites.group(1), " (the first: %s)" % first.group(1) if first else "", counts.group(1), counts.group(2), counts.group(3))
+
+
+def stage_fault_line(capture, code, output):
+    """For a replay that ended with the fault of the stage shaders, the line that names the capture and the fault, or
+    "". A tool that keeps only the end of a replay's output still has this line: replay.py writes it last."""
+    if code != EXIT_REPLAY_STAGE_SHADERS:
+        return ""
+    summary = stage_fault_summary(output) or "the helper's line of the fault is not in the output"
+    return "%s: the replay of %s failed with exit code %d: %s. The pictures are right; the speed of the stage shaders is lost" % (STAGE_SHADERS, capture, code, summary)
+
+
+def stage_fault_in(output):
+    """The STAGE SHADERS line of replay.py in `output`, or ""."""
+    return next((line.strip() for line in output.splitlines() if line.strip().startswith(STAGE_SHADERS + ": ")), "")
+
+
+def stage_session_problem(host_text):
+    """The stage shaders of a live session, from the text of its helper (host.txt): (line, problem). The line is the
+    summary of the helper's last report line, or the reason why there is none. The problem is the text of a failed
+    rewrite or a failed pipeline, else None. A draw on the uber-shader with a pipeline not made is no problem in a
+    live session: a thread makes the pipelines behind the draws, and the line names how they were made."""
+    found = None
+    for found in STAGE_REPORT.finditer(host_text):
+        pass
+    if not found:
+        return "stage shaders: no report line of W523 in the helper's text (a helper from before it, or one that did not end in order): not checked", None
+    made, rewrites, pipelines, after_rewrite, after_pipeline, not_made, past_cap = found.groups()
+    line = "stage shaders: %s; %s rewrites failed, %s pipelines failed; draws on the uber-shader with a stage key: %s after a failed rewrite, %s after a failed pipeline, %s with a pipeline not made; %s past the cap" % (
+        made, rewrites, pipelines, after_rewrite, after_pipeline, not_made, past_cap)
+    if rewrites == "0" and pipelines == "0":
+        return line, None
+    first = STAGE_FIRST_REFUSAL.search(found.group(0))
+    return line, "the stage shaders failed in the session: %s rewrites failed%s, %s pipelines failed. The pictures are right; the speed of the stage shaders is lost" % (
+        rewrites, " (the first: %s)" % first.group(1) if first else "", pipelines)
+
+
 def git_env():
     """The environment for a git call about a folder of our choice: without the GIT_ names, with
     which a git hook points git at its own repository (GIT_DIR, GIT_INDEX_FILE and others). A hook
@@ -398,7 +460,62 @@ def self_test():
     if real:
         assert bare(real) == real_bare, "core.bare of %s changed from %r to %r" % (real, real_bare, bare(real))
     parts_test()
+    stage_test()
     print("common self-test: passed")
+
+
+def stage_test():
+    """The tests of the stage shaders' lines (W523): the fault of a replay, replay.py's line of it, and the report line
+    of a live session. The texts are the helper's; the first checks fail when the helper's code changes their fixed
+    parts or the exit code, so that these readers cannot go blind without a failed check."""
+    rust = open(os.path.join(REPO, "host", "src", "stage_shaders.rs"), encoding="utf-8").read()
+    for part in ('"' + STAGE_FAULT_START + "{}; {}; the uber-shader drew {uber_draws} draws that have a stage key ({} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made); {} draws past the cap of {MAX_KEYS} keys\"",
+                 '"stage shaders: {} ({made}), ', "; {}; {}; draws on the uber-shader with a stage key: {} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made; {} draws past the cap, {} draws with no key\"",
+                 '"{} rewrites failed"', '"0 pipelines failed"', '"{} pipelines failed (stage keys {})"', '"stage key {id}: {refusal}"', '"{}: {} in the text, {}"', '"1 wanted"', '"1 or more wanted"',
+                 '"made at the first use"', '"made on a thread, with no list: a cold start"', '"made on a thread, with a list"'):
+        assert part in rust, "host/src/stage_shaders.rs no longer has %s: change the readers of common.py with it" % part
+    codes = open(os.path.join(REPO, "src", "stream_format.rs"), encoding="utf-8").read()
+    assert "pub const EXIT_REPLAY_STAGE_SHADERS: u32 = %d;" % EXIT_REPLAY_STAGE_SHADERS in codes, "EXIT_REPLAY_STAGE_SHADERS of src/stream_format.rs is not %d" % EXIT_REPLAY_STAGE_SHADERS
+
+    refusal = "the end mark of the stage loop: 0 in the text, 1 wanted"
+    fault = (STAGE_FAULT_START + "2 rewrites failed (stage key 1: %s; stage key 2: %s); 0 pipelines failed; the uber-shader drew 5120 draws that have a stage key "
+             "(5120 after a failed rewrite, 0 after a failed pipeline, 0 with a pipeline not made); 0 draws past the cap of 256 keys" % (refusal, refusal))
+    output = "frames 60\n" + fault + "\n"
+    summary = stage_fault_summary(output)
+    assert summary == "2 rewrites failed (the first: stage key 1: %s), 0 pipelines failed, 5120 draws on the uber-shader with a stage key, 0 draws past the cap of the keys" % refusal, summary
+    line = stage_fault_line("narsis.nircap", EXIT_REPLAY_STAGE_SHADERS, output)
+    assert line.startswith(STAGE_SHADERS + ": the replay of narsis.nircap failed with exit code 40: 2 rewrites failed (the first: stage key 1: "), line
+    assert stage_fault_in("x\n  " + line + "\ny") == line and stage_fault_in(output) == "", "the helper's own line is not replay.py's line"
+    # Only failed pipelines: no first refusal. Only draws: the counts.
+    pipelines = STAGE_FAULT_START + ("0 rewrites failed; 2 pipelines failed (stage keys 3, 9); the uber-shader drew 7 draws that have a stage key "
+                                     "(0 after a failed rewrite, 7 after a failed pipeline, 0 with a pipeline not made); 1 draws past the cap of 256 keys")
+    assert stage_fault_summary(pipelines) == "0 rewrites failed, 2 pipelines failed, 7 draws on the uber-shader with a stage key, 1 draws past the cap of the keys", stage_fault_summary(pipelines)
+    # Another exit code: no line. The code with no line of the helper: a line that says so.
+    assert stage_fault_line("x.nircap", 0, output) == "" and stage_fault_line("x.nircap", 20, output) == ""
+    assert "the helper's line of the fault is not in the output" in stage_fault_line("x.nircap", EXIT_REPLAY_STAGE_SHADERS, "panic")
+
+    def report(made, rewrites, pipelines, draws):
+        return ("stage shaders: on (%s), 37 stage keys (cap 256), 52 pipelines made (40 sent from the list, 0 of the list left out past its share of the cap); %s; %s; "
+                "draws on the uber-shader with a stage key: %d after a failed rewrite, %d after a failed pipeline, %d with a pipeline not made; 0 draws past the cap, 12 draws with no key" % ((made, rewrites, pipelines) + draws))
+
+    clean = report("made on a thread, with a list", "0 rewrites failed", "0 pipelines failed", (0, 0, 31))
+    line, problem = stage_session_problem("shapes: 1\n" + clean + "\nstage key facts: 3 with a plane\n")
+    assert problem is None and line == ("stage shaders: made on a thread, with a list; 0 rewrites failed, 0 pipelines failed; draws on the uber-shader with a stage key: "
+                                        "0 after a failed rewrite, 0 after a failed pipeline, 31 with a pipeline not made; 0 past the cap"), line
+    # A cold start with draws on the uber-shader: reported, not failed.
+    assert stage_session_problem(report("made on a thread, with no list: a cold start", "0 rewrites failed", "0 pipelines failed", (0, 0, 9000)))[1] is None
+    # A failed rewrite and a failed pipeline each fail; the last report line of the text counts.
+    refused = report("made on a thread, with a list", "37 rewrites failed (stage key 1: %s; stage key 2: %s)" % (refusal, refusal), "0 pipelines failed", (900, 0, 0))
+    line, problem = stage_session_problem(clean + "\n" + refused + "\n")
+    assert problem == "the stage shaders failed in the session: 37 rewrites failed (the first: stage key 1: %s), 0 pipelines failed. The pictures are right; the speed of the stage shaders is lost" % refusal, problem
+    assert stage_session_problem(refused + "\n" + clean + "\n")[1] is None
+    failed = report("made on a thread, with a list", "0 rewrites failed", "1 pipelines failed (stage keys 4)", (0, 3, 0))
+    assert "0 rewrites failed, 1 pipelines failed." in stage_session_problem(failed)[1], stage_session_problem(failed)
+    # The line of a helper from before W523, and a text with no line: not checked, and it says so.
+    old = "stage shaders: on, 37 keys (cap 256), 52 pipelines made, 0 failed, 0 draws on the uber-shader while their pipeline was not made"
+    for text in (old, "", "gpu error: lost"):
+        line, problem = stage_session_problem(text)
+        assert problem is None and line.endswith("not checked"), (text, line)
 
 
 def fake_parts(build, plugin="79c752d", host="79c752d", mge="c610f3b", d3d8=None):

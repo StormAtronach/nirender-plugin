@@ -28,7 +28,7 @@ import subprocess
 import sys
 
 import session
-from common import SIBLINGS, build_missing, capture_format_line, local
+from common import SIBLINGS, build_missing, capture_format_line, local, stage_fault_line
 
 MGE_BUILD = local("mge_build", os.path.join(SIBLINGS, "MGE-XE-G7-render-link", "bin", "MSVC-Release"))
 CONFIG_ROOT = local("config_root", os.path.join(session.harness.MO2_ROOT, "mods", "Configuration", "Root"))
@@ -84,6 +84,10 @@ def main():
     sys.stderr.write(result.stderr)
     # The helper's refusal names the parts of a game; in a replay the capture is the other part.
     line = capture_format_line(os.path.basename(args.capture), result.returncode, result.stdout + result.stderr)
+    if line:
+        sys.stderr.write(line + "\n")
+    # The fault of the stage shaders (W523): the helper's line has every failed key; this one is short, and the last.
+    line = stage_fault_line(os.path.basename(args.capture), result.returncode, result.stdout)
     if line:
         sys.stderr.write(line + "\n")
     return result.returncode
