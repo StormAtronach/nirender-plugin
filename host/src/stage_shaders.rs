@@ -1329,6 +1329,23 @@ impl StageShaders {
         ))
     }
 
+    /// The stage shaders as a check ([`crate::checks`]): the stage keys judged, and the faults.
+    /// A failed rewrite and a failed pipeline are faults in every session. In a replay, which
+    /// makes each pipeline at its first use, a draw with a stage key on the uber-shader and a
+    /// draw past the cap are faults too ([`StageShaders::replay_fault`]).
+    pub(crate) fn check(&self) -> crate::checks::Check {
+        let failed = (self.refused.len() + self.failed_pipelines.len()) as u64;
+        let of_a_replay = match self.sync {
+            true => self.draws_refused + self.draws_failed + self.draws_not_made + self.past_cap,
+            false => 0,
+        };
+        crate::checks::Check::new(
+            crate::checks::STAGE_SHADERS,
+            (self.keys.len() - 1) as u64,
+            failed + of_a_replay,
+        )
+    }
+
     /// "N rewrites failed", with each key and the refusal of each.
     fn refused_text(&self) -> String {
         let mut text = format!("{} rewrites failed", self.refused.len());

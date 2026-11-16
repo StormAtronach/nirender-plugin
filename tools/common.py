@@ -244,6 +244,65 @@ def stage_fault_in(output):
     return next((line.strip() for line in output.splitlines() if line.strip().startswith(STAGE_SHADERS + ": ")), "")
 
 
+# The checks of the helper (W526; host/src/checks.rs): the facts that a tool judges. The helper prints one line for
+# each at the end of its report, always: "check <name>: <judged> judged, <faults> faults". `judged` says whether the
+# check could judge at all. This is the ONE reader of these lines; a tool takes no verdict from another sentence of
+# the helper. The self-test holds the form and the names against the Rust file.
+CHECK_LINE = re.compile(r"^check ([a-z]+(?: [a-z]+)*): (\d+) judged, (\d+) faults\r?$", re.M)
+EARLY_WORLD_DRAWS, OWN_VIEWS, READS_PAST_END = "early world draws", "views of their own", "reads past the end"
+UNKNOWN_RECORDS, GPU_ERRORS, STAGE_SHADERS_CHECK = "unknown records", "gpu errors", "stage shaders"
+CHECK_NAMES = (EARLY_WORLD_DRAWS, OWN_VIEWS, READS_PAST_END, UNKNOWN_RECORDS, GPU_ERRORS, STAGE_SHADERS_CHECK)
+# The helper's exit code of a replay with a fault of a check that can change a picture (EXIT_REPLAY_CHECKS of
+# src/stream_format.rs), also when the stage shaders have a fault too; the start of the helper's line before it
+# (host/src/checks.rs, `replay_fault`); and the start of the line that replay.py adds.
+EXIT_REPLAY_CHECKS = 41
+CHECKS_FAULT_START = "checks: a fault of the replay: "
+CHECKS = "CHECKS"
+
+
+def helper_checks(output):
+    """The checks of a helper's output: {name: (judged, faults)}, from its last line of each name. A name that the
+    output does not have is not in the result: the helper did not end in order, or is from before the checks."""
+    return {name: (int(judged), int(faults)) for name, judged, faults in CHECK_LINE.findall(output)}
+
+
+def check_problems(output, names=CHECK_NAMES, may_judge_nothing=()):
+    """What the checks `names` of a helper's output say against it: (not judged, failed), two lists of texts. Not
+    judged (NOT RUN, never a pass): the output has no line of the check, so nothing is known; or the check judged 0
+    things, so it found no fault in nothing. Failed: the check found faults. A caller for which 0 things is right
+    for a check names it in `may_judge_nothing` and judges that case itself: a capture with no view of its own
+    has no place of such a view to judge."""
+    found = helper_checks(output)
+    not_judged = ["the helper's output has no line of the check \"%s\"" % name for name in names if name not in found]
+    not_judged += ["the check \"%s\" judged nothing" % name for name in names if name in found and found[name][0] == 0 and name not in may_judge_nothing]
+    failed = ["the check \"%s\": %d faults of %d judged" % (name, found[name][1], found[name][0]) for name in names if name in found and found[name][1]]
+    return not_judged, failed
+
+
+def checks_fault_line(capture, code, output):
+    """For a replay that ended with the code of the checks, the line that names the capture and the checks with
+    faults, or "". replay.py writes it last, as the line of the stage shaders."""
+    if code != EXIT_REPLAY_CHECKS:
+        return ""
+    line = next((line for line in output.splitlines() if line.startswith(CHECKS_FAULT_START)), "")
+    body = line[len(CHECKS_FAULT_START):] if line else "the helper's line of the fault is not in the output"
+    stage = stage_fault_summary(output)
+    return "%s: the replay of %s failed with exit code %d: %s%s" % (CHECKS, capture, code, body, "; and the stage shaders: " + stage if stage else "")
+
+
+def replay_fault_line(capture, code, output):
+    """The line that replay.py adds to a replay that ended with a fault code of its own (the stage shaders' 40, the
+    checks' 41), or ""."""
+    return stage_fault_line(capture, code, output) or checks_fault_line(capture, code, output)
+
+
+def replay_fault_in(output):
+    """The line of replay.py in `output` for a replay that ended with a fault code of its own (STAGE SHADERS or
+    CHECKS), or ""."""
+    starts = (STAGE_SHADERS + ": ", CHECKS + ": ")
+    return next((line.strip() for line in output.splitlines() if line.strip().startswith(starts)), "")
+
+
 def stage_session_problem(host_text):
     """The stage shaders of a live session, from the text of its helper (host.txt): (line, problem). The line is the
     summary of the helper's last report line, or the reason why there is none. The problem is the text of a failed
@@ -523,6 +582,61 @@ def self_test():
     print("common self-test: passed")
 
 
+def checks_test(rust_codes):
+    """The tests of the one reader of the helper's check lines (W526). The first part holds the form of the line, the
+    names and the exit code against the Rust files: a change there fails here, so the reader cannot go blind."""
+    rust = open(os.path.join(REPO, "host", "src", "checks.rs"), encoding="utf-8").read()
+    assert 'format!("check {}: {} judged, {} faults", self.name, self.judged, self.faults)' in rust, "host/src/checks.rs has another form of the check line"
+    assert 'format!("checks: a fault of the replay: {}", faults.join("; "))' in rust and '"{}: {} faults of {} judged"' in rust, "host/src/checks.rs has another fault line"
+    in_rust = set(re.findall(r'^pub\(crate\) const [A-Z_]+: &str = "([a-z ]+)";$', rust, re.M))
+    assert in_rust == set(CHECK_NAMES), "the names of host/src/checks.rs are %s, and common.py has %s" % (sorted(in_rust), sorted(CHECK_NAMES))
+    report = open(os.path.join(REPO, "host", "src", "player", "report.rs"), encoding="utf-8").read()
+    assert "for check in self.checks() {" in report and 'println!("{}", check.line());' in report, "the report no longer prints each check's line"
+    assert "pub const EXIT_REPLAY_CHECKS: u32 = %d;" % EXIT_REPLAY_CHECKS in rust_codes, "EXIT_REPLAY_CHECKS of src/stream_format.rs is not %d" % EXIT_REPLAY_CHECKS
+
+    def lines(**faults):
+        judged = {EARLY_WORLD_DRAWS: 12, OWN_VIEWS: 97, READS_PAST_END: 5000, UNKNOWN_RECORDS: 5000, GPU_ERRORS: 30, STAGE_SHADERS_CHECK: 13}
+        return "".join("check %s: %d judged, %d faults\n" % (name, judged[name], faults.get(name.replace(" ", "_"), 0)) for name in CHECK_NAMES)
+
+    clean = "shapes: 1\n" + lines() + "statics report end: x\n"
+    assert helper_checks(clean) == {EARLY_WORLD_DRAWS: (12, 0), OWN_VIEWS: (97, 0), READS_PAST_END: (5000, 0), UNKNOWN_RECORDS: (5000, 0), GPU_ERRORS: (30, 0), STAGE_SHADERS_CHECK: (13, 0)}
+    assert check_problems(clean) == ([], [])
+    # A text with Windows line ends has the same checks: a pattern that ends at "\n" alone found 0 of 6 there (the
+    # Reviewer's plant, verdict 470), which is a NOT RUN for a helper that printed every line.
+    assert helper_checks(clean.replace("\n", "\r\n")) == helper_checks(clean), helper_checks(clean.replace("\n", "\r\n"))
+    # Rob's plant of F-G-1: a line with one word moved, and no line at all, are "not judged", never a pass.
+    for text in (clean.replace("check early world draws: 12 judged", "check early draws of a world: 12 checked"), clean.replace("check early world draws: 12 judged, 0 faults\n", ""), ""):
+        missing, failed = check_problems(text, (EARLY_WORLD_DRAWS,))
+        assert missing == ['the helper\'s output has no line of the check "early world draws"'] and failed == [], (text[:60], missing, failed)
+    # The helper's sentences of before are no check line: a tool cannot fall back on them.
+    old = "early world draws: 12 starts of a world for the extension checked, 0 scenes with draws of their world already in the target, 0 draws\n"
+    assert helper_checks(old) == {} and check_problems(old, (EARLY_WORLD_DRAWS,))[0] != []
+    # Faults: named with their counts. 0 judged is in neither list.
+    faulty = lines(early_world_draws=5, gpu_errors=2)
+    assert check_problems(faulty) == ([], ['the check "early world draws": 5 faults of 12 judged', 'the check "gpu errors": 2 faults of 30 judged']), check_problems(faulty)
+    # A check that judged nothing is not judged (W524: 0 things judged is no pass), but for a caller that names it.
+    idle = "check views of their own: 0 judged, 0 faults\n"
+    assert check_problems(idle, (OWN_VIEWS,)) == (['the check "views of their own" judged nothing'], [])
+    assert check_problems(idle, (OWN_VIEWS,), may_judge_nothing=(OWN_VIEWS,)) == ([], [])
+    assert check_problems("check gpu errors: 0 judged, 2 faults\n", (GPU_ERRORS,)) == (['the check "gpu errors" judged nothing'], ['the check "gpu errors": 2 faults of 0 judged'])
+    # The last line of a name counts (a live helper's text can hold the report of an earlier start).
+    assert helper_checks(faulty + clean)[GPU_ERRORS] == (30, 0) and helper_checks(clean + faulty)[GPU_ERRORS] == (30, 2)
+    # replay.py's line for the code of the checks, alone and with a fault of the stage shaders; no line for another code.
+    fault = CHECKS_FAULT_START + "early world draws: 5 faults of 12 judged; gpu errors: 2 faults of 30 judged"
+    line = checks_fault_line("seyda.nircap", EXIT_REPLAY_CHECKS, faulty + fault + "\n")
+    assert line == "CHECKS: the replay of seyda.nircap failed with exit code 41: early world draws: 5 faults of 12 judged; gpu errors: 2 faults of 30 judged", line
+    both = STAGE_FAULT_START + ("1 rewrites failed (stage key 1: the end mark of the stage loop: 0 in the text, 1 wanted); 0 pipelines failed; the uber-shader drew 9 draws that have a stage key "
+                               "(9 after a failed rewrite, 0 after a failed pipeline, 0 with a pipeline not made); 0 draws past the cap of 256 keys\n") + fault + "\n"
+    line = replay_fault_line("seyda.nircap", EXIT_REPLAY_CHECKS, both)
+    assert line.startswith("CHECKS: the replay of seyda.nircap failed with exit code 41: early world draws: 5 faults") and "; and the stage shaders: 1 rewrites failed (the first: stage key 1: " in line, line
+    assert replay_fault_line("seyda.nircap", EXIT_REPLAY_STAGE_SHADERS, both).startswith(STAGE_SHADERS + ": the replay of seyda.nircap failed with exit code 40: ")
+    assert replay_fault_line("seyda.nircap", 0, both) == "" and replay_fault_line("seyda.nircap", 20, both) == ""
+    assert "the helper's line of the fault is not in the output" in checks_fault_line("x.nircap", EXIT_REPLAY_CHECKS, "panic")
+    assert replay_fault_in("x\n  " + line + "\ny") == line and replay_fault_in(both) == "", "the helper's own lines are not replay.py's line"
+    stage_line = stage_fault_line("a.nircap", EXIT_REPLAY_STAGE_SHADERS, both)
+    assert replay_fault_in(stage_line + "\n") == stage_line
+
+
 def stage_test():
     """The tests of the stage shaders' lines (W523): the fault of a replay, replay.py's line of it, and the report line
     of a live session. The texts are the helper's; the first checks fail when the helper's code changes their fixed
@@ -575,6 +689,7 @@ def stage_test():
     for text in (old, "", "gpu error: lost"):
         line, problem = stage_session_problem(text)
         assert problem is None and line.endswith("not checked"), (text, line)
+    checks_test(rust_codes=codes)
     # The kept output of a replay: beside the picture, with the exit code first; no folder, no file and no stop.
     import tempfile
     with tempfile.TemporaryDirectory() as folder:

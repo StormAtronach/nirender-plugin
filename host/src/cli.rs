@@ -123,7 +123,7 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
     // (the frames count from 0, as `--frame`). One start of the helper for a capture of many
     // stops, in place of one for each.
     let frames_at: Vec<usize> = option(&args, "--frames-at")
-        .map(|text| text.split(',').filter_map(|n| n.trim().parse().ok()).collect())
+        .map(|text| frames_named(&text, frames))
         .unwrap_or_default();
     // `--marks-every N`: a mark after every N frames (the helper's time for each frame by
     // part), and a wait for the GPU after each frame, for the bench of a long capture
@@ -247,12 +247,34 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         }
     }
     player.print_counts();
-    // A replay whose stage shaders failed has the right pictures and the wrong speed. Nothing else
-    // shows it, so the replay ends with a code of its own, after its pictures and its report.
+    // A replay with a fault of a check ends with a code of its own, after its pictures and its
+    // report: a failed stage shader has the right pictures and the wrong speed, and a fault of
+    // the draw order can leave frame 1 equal. Each fault has its line.
+    let checks = player.checks();
     if let Some(fault) = player.renderer.stage_shaders.replay_fault() {
         println!("{fault}");
-        std::process::exit(crate::stream_format::EXIT_REPLAY_STAGE_SHADERS as i32);
     }
+    if let Some(fault) = crate::checks::replay_fault(&checks) {
+        println!("{fault}");
+    }
+    // The extension prints its last lines when it is dropped with the player: the code comes
+    // after them.
+    drop(player);
+    if let Some(code) = crate::checks::replay_exit_code(&checks) {
+        std::process::exit(code as i32);
+    }
+}
+
+/// The frames of `--frames-at`: numbers with commas, counted from 0, and the word `last` for the
+/// last frame of a capture of `frames` frames. A part that is no number and not `last` is left
+/// out, as before.
+fn frames_named(text: &str, frames: usize) -> Vec<usize> {
+    text.split(',')
+        .filter_map(|part| match part.trim() {
+            "last" => frames.checked_sub(1),
+            number => number.parse().ok(),
+        })
+        .collect()
 }
 
 /// The head of the stream of a capture: its first record. A capture whose first record is not
@@ -274,6 +296,15 @@ fn capture_header<'a>(records: &[(u32, &'a [u8])], reader: &str) -> Result<&'a [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--frames-at` takes numbers and the word `last`; a capture with no frame has no last one.
+    #[test]
+    fn frames_at_takes_numbers_and_the_last_frame() {
+        assert_eq!(frames_named("1,last", 30), vec![1, 29]);
+        assert_eq!(frames_named(" 0 , 7,x, last ", 8), vec![0, 7, 7]);
+        assert_eq!(frames_named("last", 0), Vec::<usize>::new());
+        assert_eq!(frames_named("3", 0), vec![3]);
+    }
 
     /// A `HEADER` record of a 1920 x 1080 picture in the stream format `format`.
     fn header(format: u32) -> Vec<u8> {
