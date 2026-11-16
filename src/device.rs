@@ -892,7 +892,8 @@ mod tests {
 
     /// The same decision on a real device of the Direct3D 8 of Windows: it makes a windowed
     /// device on the desktop window and reads its `Release`, as `attach` does. Without a device
-    /// it prints "NOT SHOWN" and passes.
+    /// it prints "NOT SHOWN" and passes, and fails in a merge round
+    /// ([`crate::switches::input_missing`]).
     ///
     /// The first start of a new exe file runs with a compatibility layer: `Release` and
     /// `Direct3DCreate8` are then code of apphelp.dll. A test that asks for a module name
@@ -925,7 +926,10 @@ mod tests {
             path[length..length + name.len()].copy_from_slice(name);
             let loaded = LoadLibraryA(path.as_ptr());
             if loaded.is_null() {
-                println!("skipped: LoadLibraryA failed, error {}", GetLastError());
+                crate::switches::input_missing(&format!(
+                    "no d3d8.dll of Windows: LoadLibraryA failed, error {}",
+                    GetLastError()
+                ));
                 return;
             }
             let create = crate::win::GetProcAddress(loaded, b"Direct3DCreate8\0".as_ptr());
@@ -943,7 +947,7 @@ mod tests {
             let create: unsafe extern "system" fn(u32) -> usize = core::mem::transmute(create);
             let direct3d = create(220);
             if direct3d == 0 {
-                println!("skipped: Direct3DCreate8 gave no object");
+                crate::switches::input_missing("no Direct3D 8: Direct3DCreate8 gave no object");
                 return;
             }
             let slot = |object: usize, index: usize| *(*(object as *const *const usize)).add(index);
@@ -969,8 +973,10 @@ mod tests {
                 shown
             };
             if made < 0 || device == 0 {
-                println!("skipped, NOT SHOWN: no device, display mode {shown:#x}, CreateDevice {made:#x}");
                 release_direct3d(direct3d);
+                crate::switches::input_missing(&format!(
+                    "NOT SHOWN: no device, display mode {shown:#x}, CreateDevice {made:#x}"
+                ));
                 return;
             }
             let release = slot(device, 2);

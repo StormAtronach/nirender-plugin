@@ -161,7 +161,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import MD5, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, docs_place, git_env, tests_ran  # noqa: E402
+from common import FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, docs_place, git_env, local, tests_ran  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 from mwse_tree import fallback_checks  # noqa: E402
 
@@ -303,7 +303,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     tool = lambda name, *args: [python, "-I", os.path.join("tools", name), *args]  # noqa: E731
     on_base = ["--base", base] if base else []
     if kind == "plugin":
-        stages = [("plugin tests", plugin, ["cargo", "test", "--quiet"]),
+        stages = [(TESTS_STAGE, plugin, ["cargo", "test", "--quiet"]),
                   ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
                   (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["_in_this_process"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
@@ -412,9 +412,37 @@ def base_problem(base, commit, is_ancestor, tip_before, within_tip_before, last_
     return None
 
 
-def stage_env(environ):
-    env = {name: value for name, value in environ.items() if name not in BUILD_MOVERS}
+def stage_env(environ, name=None, inputs=None):
+    """The environment of the stage `name`: the shell's without BUILD_MOVERS, with cargo's folder first in PATH. The plugin's
+    tests also get the switch NIRENDER_TESTS_NEED_INPUTS and their inputs (tests_inputs)."""
+    env = {key: value for key, value in environ.items() if key not in BUILD_MOVERS}
     env["PATH"] = os.path.join(os.path.expanduser("~"), ".cargo", "bin") + os.pathsep + environ["PATH"]
+    if name == TESTS_STAGE:
+        env.update(tests_inputs() if inputs is None else inputs)
+    return env
+
+
+# The stage of the plugin's unit tests. In a round a test of it that lacks its input fails, in place of a skip (W527).
+TESTS_STAGE = "plugin tests"
+TESTS_NEED_INPUTS = "NIRENDER_TESTS_NEED_INPUTS"
+# The inputs of those tests: the switch and the key of local.json that names each.
+TESTS_INPUT_KEYS = (("NIRENDER_MCPATCH", "mcpatch_root"), ("NIRENDER_VANILLA_EXE", "vanilla_exe"))
+TESTS_MWSE_DLL = "NIRENDER_MWSE_DLL"
+
+
+def tests_inputs(read=None, deploys=None):
+    """The variables of the plugin's tests in a round: the switch on, the places of local.json (the tree's, else the main
+    checkout's), and the MWSE.dll of the first test install (the installs hold one MWSE, D107; the MWSE stages check that).
+    A key that local.json does not have stays unset, and its test fails "NOT RUN in a round"."""
+    read = read or (lambda key: local(key, None))
+    deploys = MWSE_DEPLOYS if deploys is None else deploys
+    env = {TESTS_NEED_INPUTS: "1"}
+    for switch, key in TESTS_INPUT_KEYS:
+        place = read(key)
+        if place:
+            env[switch] = place
+    if deploys:
+        env[TESTS_MWSE_DLL] = next(iter(deploys.values()))
     return env
 
 
@@ -569,7 +597,7 @@ def run_stage(name, folder, command, log):
     log.write("\n== %s: %s in %s\n" % (name, " ".join(command), folder))
     log.flush()
     start = log.tell()
-    code = subprocess.run(command, cwd=folder, env=stage_env(os.environ), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
+    code = subprocess.run(command, cwd=folder, env=stage_env(os.environ, name), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
     failure = ""
     if code == NOT_RUN_CODE:
         output = output_since(log, start)
@@ -1308,6 +1336,14 @@ def self_test():
         # A stage's build stays in its tree.
         moved = stage_env({"PATH": "p", "OTHER": "o", "CARGO_TARGET_DIR": "t", "CARGO_BUILD_TARGET_DIR": "t", "NIRENDER_PLUGIN_DIR": "d"})
         assert moved["OTHER"] == "o" and moved["PATH"].endswith(os.pathsep + "p") and not set(BUILD_MOVERS) & set(moved)
+        # The plugin's tests in a round get the switch and their inputs (W527); no other stage does (the null).
+        keys = {"mcpatch_root": "D:/m", "vanilla_exe": "D:/v.exe"}
+        inputs = tests_inputs(keys.get, {"first": "D:/a/MWSE.dll", "second": "D:/b/MWSE.dll"})
+        assert inputs == {TESTS_NEED_INPUTS: "1", "NIRENDER_MCPATCH": "D:/m", "NIRENDER_VANILLA_EXE": "D:/v.exe", TESTS_MWSE_DLL: "D:/a/MWSE.dll"}, inputs
+        assert tests_inputs({}.get, {}) == {TESTS_NEED_INPUTS: "1"}, "a missing key stays unset, and its test fails"
+        assert stage_env({"PATH": "p"}, TESTS_STAGE, inputs)[TESTS_NEED_INPUTS] == "1"
+        assert TESTS_NEED_INPUTS not in stage_env({"PATH": "p"}, "host tests", inputs)
+        assert stages_for("plugin", plugin, ["src/lib.rs"])[0][0] == TESTS_STAGE
 
         # A stage's own exit code decides its line, and the log has its output.
         with open(os.path.join(root, "log.txt"), "w", encoding="utf-8") as log:
