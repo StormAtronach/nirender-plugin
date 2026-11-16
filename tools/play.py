@@ -17,8 +17,12 @@ play-manual-check-outlander.bat has them (the instance's folder comes from local
 --stage-only puts the mods in place, prints them, and takes them out again without a game: a
 check of the staging in an instance.
 
---plugin puts the plugin build of this repo (target/.../release/akulakhan.dll and the Lua of
-mod/) into "Harness - nirender" for the game, over the release of the instance.
+--plugin puts a plugin DLL and the Lua of mod/ of this repo into "Harness - nirender" for the
+game, over the release of the instance. The DLL comes as in run_own_device.py: --plugin-dll
+(which implies --plugin), else the variable NIRENDER_PLUGIN_DLL, else the plugin copy
+akulakhan-<commit>.dll of the --mge-build folder, else the build of this repo
+(target/.../release/akulakhan.dll). With --mge-build, a WARNING line names a plugin that is not
+the folder's copy: the build of this repo, or a DLL with other bytes than the folder's one copy.
 --livecoding FILE adds the Livecoding mod to "Harness - nirender": its main.lua, read from
 the instance's own Livecoding mod, and FILE as its livecoding.lua (Alt+X in the game loads
 it). The staged copy of FILE is in the Harness mod: an edit there during the game shows at
@@ -43,6 +47,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import session  # noqa: E402, F401  (puts the harness on the path)
 import harness  # noqa: E402
+import run_own_device  # noqa: E402  (the plugin rule of a run, W520)
 
 MGE_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "MGE-XE-G7-render-link", "bin", "MSVC-Release")
 # The testing instance, for files that another instance lacks (the Livecoding mod).
@@ -144,16 +149,56 @@ def self_test():
     assert lines[:3] == ["[runtime]", "renderer_wgpu = true", 'vsync = "default"'], lines
     assert lines[lines.index("far = 5") + 1] == "near = 1", lines
     assert lines[-3:] == ["", "[views]", "full_tier_max = 4"], lines
+    self_test_plugin()
     print("play self-test: ok")
+
+
+def play_plugin(args, environment, default, listdir=os.listdir):
+    """The plugin DLL of a game, its source and the WARNING line or None, by the rule of run_own_device.py (W520,
+    D489). Only an explicit --mge-build names a run folder: the default folder is the checkout's MGE XE build."""
+    dll, source = run_own_device.plugin_dll_of(args.plugin_dll, environment, default, args.mge_build, listdir)
+    return dll, source, run_own_device.plugin_warning(args.mge_build, dll, source, listdir=listdir)
+
+
+def self_test_plugin():
+    """W520 (D489): the plugin of a game with --mge-build. The null: before W520 play.py took the build of this repo
+    for every game, so the first assert below failed."""
+    with tempfile.TemporaryDirectory(prefix="w520-play-") as scratch:
+        folder, empty = os.path.join(scratch, "f1"), os.path.join(scratch, "f2")
+        os.mkdir(folder)
+        os.mkdir(empty)
+        copy, other = os.path.join(folder, "akulakhan-45b645b.dll"), os.path.join(scratch, "other.dll")
+        for path, data in ((copy, b"copy"), (other, b"other")):
+            with open(path, "wb") as file:
+                file.write(data)
+        checkout = os.path.join(scratch, "akulakhan.dll")
+
+        def game(mge_build, plugin_dll=None):
+            return argparse.Namespace(mge_build=mge_build, plugin_dll=plugin_dll)
+
+        # The folder's copy, with no line.
+        assert play_plugin(game(folder), {}, checkout) == (copy, run_own_device.FOLDER_PLUGIN_SOURCE, None)
+        # The variable and --plugin-dll stay above the folder's copy, with the WARNING of verdict 444.
+        dll, source, warning = play_plugin(game(folder), {"NIRENDER_PLUGIN_DLL": other}, checkout)
+        assert (dll, source) == (other, "NIRENDER_PLUGIN_DLL") and warning and copy in warning, warning
+        dll, source, warning = play_plugin(game(folder, other), {}, checkout)
+        assert (dll, source) == (other, "--plugin-dll") and (warning or "").startswith("WARNING: "), warning
+        # No copy: the build of this repo, with the WARNING; no --mge-build: no run folder, no line.
+        dll, source, warning = play_plugin(game(empty), {}, checkout)
+        assert (dll, source) == (checkout, run_own_device.CHECKOUT_PLUGIN_SOURCE) and "not the run folder's" in warning, warning
+        assert play_plugin(game(None), {}, checkout) == (checkout, run_own_device.CHECKOUT_PLUGIN_SOURCE, None)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mge-build", default=MGE_BUILD, help="the folder with d3d8.dll and numidium.exe of the build")
+    ap.add_argument("--mge-build", help="the folder with d3d8.dll and numidium.exe of the build, and with --plugin its plugin copy "
+                    "akulakhan-<commit>.dll (default: %s)" % MGE_BUILD)
     ap.add_argument("--config-mod", default="Configuration", help="the mod of the testing instance with mgeXE.toml")
     ap.add_argument("--reference", action="store_true", help="MGE XE of the instance on Direct3D 9")
     ap.add_argument("--set", action="append", default=[], help="a line of mgeXE.toml for this game, in its section: \"[section] key = value\"; a section the file lacks is added at the end of this game's copy")
-    ap.add_argument("--plugin", action="store_true", help="the plugin build of this repo, over the release of the instance")
+    ap.add_argument("--plugin", action="store_true", help="a plugin DLL and the Lua of this repo, over the release of the instance")
+    ap.add_argument("--plugin-dll", help="the plugin DLL of the game (implies --plugin; else the variable NIRENDER_PLUGIN_DLL, "
+                    "else the plugin copy of the --mge-build folder, else the build of this repo)")
     ap.add_argument("--livecoding", help="a Lua file to run as the livecoding.lua of the Livecoding mod (Alt+X)")
     ap.add_argument("--instance", help="the folder of another Mod Organizer instance to play in, and not the testing instance")
     ap.add_argument("--game-dir", help="with --instance: the game folder of that instance")
@@ -165,6 +210,13 @@ def main():
         self_test()
         return 0
 
+    plugin_dll = None
+    if args.plugin or args.plugin_dll:
+        plugin_dll, source, warning = play_plugin(args, os.environ, session.DLL)
+        print("plugin DLL: %s (%s)" % (plugin_dll, source), flush=True)
+        if warning:
+            print(warning, flush=True)
+    mge_build = args.mge_build or MGE_BUILD
     if args.instance:
         session.use_instance(args.instance, args.game_dir, args.profile)
     toml = os.path.join(harness.MO2_ROOT, "mods", args.config_mod, "Root", "mgeXE.toml")
@@ -177,28 +229,28 @@ def main():
 
     mods = [(harness.RUN_MOD_PREFIX + "config", {"Root/mgeXE.toml": switched})]
     if not args.reference:
-        mods.append((harness.RUN_MOD_PREFIX + "MGE XE", {"Root/d3d8.dll": os.path.join(args.mge_build, "d3d8.dll"),
-                                                         "Root/numidium.exe": os.path.join(args.mge_build, "numidium.exe")}))
+        mods.append((harness.RUN_MOD_PREFIX + "MGE XE", {"Root/d3d8.dll": os.path.join(mge_build, "d3d8.dll"),
+                                                         "Root/numidium.exe": os.path.join(mge_build, "numidium.exe")}))
         # The Lua of the build (the MGE XE Options mod: its menus and the event
         # distantLandReady) over the release's copy in the instance, as the runner stages it.
-        options = os.path.join(args.mge_build, "Data Files", "mwse", "mods", "MGE XE Options")
+        options = os.path.join(mge_build, "Data Files", "mwse", "mods", "MGE XE Options")
         for folder, _, names in os.walk(options):
             for name in names:
                 source = os.path.join(folder, name)
                 mods[-1][1]["MWSE/mods/MGE XE Options/" + os.path.relpath(source, options).replace(os.sep, "/")] = source
 
-    if args.plugin or args.livecoding:
+    if plugin_dll or args.livecoding:
         files = {}
-        if args.plugin:
+        if plugin_dll:
             mod = os.path.join(session.REPO, "mod")
             for folder, _, names in os.walk(mod):
                 for name in names:
                     source = os.path.join(folder, name)
                     files[os.path.relpath(source, mod).replace(os.sep, "/")] = source
-            files["MWSE/lib/akulakhan.dll"] = session.DLL
+            files["MWSE/lib/akulakhan.dll"] = plugin_dll
             # The symbol file of the build: the Harness mod is the staging of a game, never
             # an install or an archive.
-            pdb = os.path.splitext(session.DLL)[0] + ".pdb"
+            pdb = os.path.splitext(plugin_dll)[0] + ".pdb"
             if os.path.isfile(pdb):
                 files["MWSE/lib/akulakhan.pdb"] = pdb
         if args.livecoding:
