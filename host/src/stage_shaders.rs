@@ -88,6 +88,16 @@ const STENCIL_INCREMENT: [u32; 7] = [1, 1, 4, 1, 8, u32::MAX, u32::MAX];
 const STENCIL_DECREMENT: [u32; 7] = [1, 1, 5, 1, 8, u32::MAX, u32::MAX];
 /// The test passes where the value is not the reference; nothing is written.
 const STENCIL_NOT_EQUAL: [u32; 7] = [1, 1, 1, 1, 6, u32::MAX, u32::MAX];
+
+/// The first key of [`UBER_SET`] with `frame_samples`: the key whose pipeline shows that a world
+/// shader's text holds on the device (W317, `Renderer::settle_world_shader`).
+pub(crate) fn first_world_key(frame_samples: u32) -> PipelineKey {
+    PipelineKey {
+        samples: frame_samples,
+        ..UBER_SET[0]
+    }
+}
+
 /// The fixed set of the uber-shader's pipelines (D306), in their order of first use: the keys that the frame thread
 /// made of the uber-shader in a live start with no list (run 20261111-193018-d306-step1: the test interior, Seyda
 /// Neen, the Census and Excise Office, Vivec). [`StageShaders::start`] sends them to the thread before the list, so

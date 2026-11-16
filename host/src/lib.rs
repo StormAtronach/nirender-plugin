@@ -396,6 +396,11 @@ pub const CORNER_LIGHT_BIT: u32 = 1 << 14;
 /// no other draw's shader has the function's code.
 pub const CLOUDS_HOOK_BIT: u32 = 1 << 10;
 
+/// A line of WGSL that an extension puts into its text only for W317's test of a core mod that
+/// fails in the driver: each world pipeline of a text with it names a fragment entry point that
+/// the module lacks, so the pipeline fails with an error of the device, after naga.
+pub const CORE_MOD_FAULT_PLANT: &str = "// core mod fault plant: each world pipeline of this text fails (W317)";
+
 /// The lines `early world draws: ...` of a run: one for each scene whose world draws reached the
 /// target before its world began, for the first ones only.
 pub(crate) const EARLY_DRAW_LINES: u64 = 16;
@@ -718,6 +723,9 @@ struct Renderer {
     depth_merge: Option<depth_merge::DepthMerge>,
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
+    /// Where the world shader's text stands: the text of a core mod that fails in the driver
+    /// gives way to another (W317).
+    world: renderer::WorldShader,
     /// The records of the draws of the frame ([`DrawData`] each; `draws` in the shader): the
     /// buffer and its room, the data of the records made so far, how many of them are on
     /// the GPU, and the copies made while the frame draws (`record_now`), which take the

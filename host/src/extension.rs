@@ -639,7 +639,8 @@ pub trait Extension {
     }
 
     /// WGSL source with the sky functions of the extension, or [`None`]. The renderer
-    /// asks one time, before it makes its shader, and puts the source at the end of it:
+    /// asks one time, before it makes its shader, and puts the source at the end of it (a text
+    /// that fails on the device gives way to [`Extension::shader_fallback`]'s):
     ///
     /// - `fn extension_sky_position(position: vec3f) -> vec3f`: the position of a vertex of
     ///   the sky dome in its model, for a dome of another shape.
@@ -684,6 +685,30 @@ pub trait Extension {
     /// The functions read the uniform of the draw as `draw` (see [`DrawData`]); the colour of
     /// such a draw is not kept between 0 and 1 after the stages.
     fn draw_shader(&self) -> Option<String> {
+        None
+    }
+
+    /// The next text to try for the world shader after its text failed on the device, or
+    /// [`None`] when the extension has no other (W317). The text of [`Extension::sky_shader`]
+    /// and [`Extension::draw_shader`] failed: a core mod's function that passes naga can still
+    /// fail in the back end or the driver. `attempt` counts from 1 since that text; `error` is
+    /// the device's. The renderer makes the world shader of the text between two frames and tries
+    /// it as it tried the first. An extension that holds no code of others has no other text.
+    fn shader_fallback(&mut self, _attempt: u32, _error: &str) -> Option<ShaderText> {
+        None
+    }
+
+    /// The world shader of a text holds on the device: its module and a first pipeline were made
+    /// with no error. `attempt` is 0 for the text of the start (or of the last
+    /// [`Extension::world_shader_changed`]), else the attempt of [`Extension::shader_fallback`]
+    /// that gave it. Called once for each text that holds.
+    fn world_shader_held(&mut self, _attempt: u32) {}
+
+    /// A new text for the world shader that the extension wants from the next frame on, or
+    /// [`None`]: a core mod that failed in one of the extension's own shaders is dropped from the
+    /// world shader too. Asked at the start of each frame; the renderer tries the text as the
+    /// first one ([`Extension::world_shader_held`] with `attempt` 0 when it holds).
+    fn world_shader_changed(&mut self) -> Option<ShaderText> {
         None
     }
 
@@ -919,16 +944,41 @@ pub trait Extension {
     }
 }
 
+/// A text of the extension for the world shader, in the form of [`Extension::sky_shader`] and
+/// [`Extension::draw_shader`], with a name for the log (W317).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShaderText {
+    pub sky: Option<String>,
+    pub draw: Option<String>,
+    /// Names the text in the log, for example "without XE Mod Sky.wgsl".
+    pub label: String,
+}
+
+/// The sky functions of a world shader whose extension has none: they change nothing.
+pub(crate) const PLAIN_SKY: &str = "fn extension_sky_position(position: vec3f) -> vec3f { return position; }\nfn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f { return vec3f(0.0); }\n";
+
+/// The draw functions of a world shader whose extension has none: they change nothing.
+pub(crate) const PLAIN_DRAW: &str = "fn extension_shade(in: VertexOut) -> vec4f { return in.vertex_color; }\nfn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f { return vec4f(fogged(color, clear), alpha); }\n";
+
+impl ShaderText {
+    /// The WGSL at the end of the world shader: the sky functions and the draw functions of this
+    /// text, or those that change nothing.
+    pub(crate) fn extension_text(&self) -> String {
+        let sky = self.sky.as_deref().unwrap_or(PLAIN_SKY);
+        let draw = self.draw.as_deref().unwrap_or(PLAIN_DRAW);
+        format!("{sky}\n{draw}\n")
+    }
+}
+
 /// The WGSL of the extension at the end of the shader: its sky functions and its draw
 /// functions, or those that change nothing.
 pub(crate) fn extension_shaders(extension: Option<&dyn Extension>) -> String {
-    let sky = extension.and_then(|extension| extension.sky_shader()).unwrap_or_else(|| {
-        "fn extension_sky_position(position: vec3f) -> vec3f { return position; }\nfn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f { return vec3f(0.0); }\n".to_string()
-    });
-    let draw = extension.and_then(|extension| extension.draw_shader()).unwrap_or_else(|| {
-        "fn extension_shade(in: VertexOut) -> vec4f { return in.vertex_color; }\nfn extension_finish(color: vec3f, alpha: f32, clear: f32) -> vec4f { return vec4f(fogged(color, clear), alpha); }\n".to_string()
-    });
-    format!("{sky}\n{draw}\n")
+    ShaderText {
+        sky: extension.and_then(|extension| extension.sky_shader()),
+        draw: extension.and_then(|extension| extension.draw_shader()),
+        label: String::new(),
+    }
+    .extension_text()
 }
 
 #[cfg(test)]
