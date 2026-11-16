@@ -442,16 +442,8 @@ impl Renderer {
         let multisample =
             (samples > 1).then(|| multisample::Multisample::new(&device, target_format, depth_format, samples));
         let wireframe = device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
-        let source = request::world_shader_source(&extension_shader);
-        let source = if tier == request::TextureTier::C {
-            request::tier_c_shader_source(&source)
-        } else {
-            source
-        };
-        let shader = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("shader.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(source.clone().into()),
-        });
+        let source = world_source_of(&extension_shader, tier);
+        let (shader, world_fault) = world_module(&device, &source);
         let texture_entry = |binding: u32, count| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -744,12 +736,18 @@ impl Renderer {
             target_format,
             depth_format,
             wireframe,
+            planted: source.contains(crate::CORE_MOD_FAULT_PLANT),
+            fault_key: crate::world_key_fault().then(|| crate::stage_shaders::first_world_key(samples)),
             times: Default::default(),
         };
         let stage_shaders = crate::stage_shaders::StageShaders::new(switches().stage_shaders, &source);
         let renderer = Renderer {
             maker,
             stage_shaders,
+            world: WorldShader {
+                fault: world_fault,
+                ..WorldShader::default()
+            },
             frame_layout,
             frame_uniform,
             clusters,
@@ -2145,7 +2143,22 @@ impl Renderer {
         attributes(key.fvf, key.stride)?;
         let _long = crate::LongStep::begin();
         let built = if key.debug == 0 {
-            self.maker.general(key, &self.shader)
+            // While the extension may still give another text, a fault waits for the settle
+            // between two frames (`Renderer::settle_world_shader`), and no other pipeline of the
+            // text is built until then: its draws wait too. Once no other text is left, a failed
+            // key is kept as it is, as before W317.
+            if self.world.fault.is_some() && !self.world.exhausted {
+                return None;
+            }
+            let (built, error) = self.maker.guarded_build(key, &self.shader, &[], Making::GeneralPipeline);
+            if let Some(error) = error {
+                if !self.world.exhausted {
+                    self.world.fault = Some(error);
+                    self.world.fault_key = Some(key);
+                    return None;
+                }
+            }
+            built
         } else {
             // A variant without its module draws as normal play.
             let Some(fragment) = self.variant_shader() else {
@@ -2194,9 +2207,177 @@ impl Renderer {
         self.variant_shader.clone().flatten()
     }
 
-    /// Starts the thread of the stage pipelines: a live session makes them away from the frame.
+    /// A live session makes the stage pipelines away from the frame, on a thread. The thread starts
+    /// once the world shader's text has settled ([`Renderer::settle_world_shader`]), so that the
+    /// first pipelines of a text are built alone, inside the extension's build marker.
     pub(crate) fn start_stage_shaders(&mut self) {
-        self.stage_shaders.start(self.maker.clone(), self.samples);
+        self.world.stages_wanted = true;
+    }
+
+    /// Starts the thread of the stage pipelines of the text now, when a live session wants it.
+    fn start_wanted_stage_shaders(&mut self) {
+        if self.world.stages_wanted && !self.world.stages_running {
+            self.stage_shaders.start(self.maker.clone(), self.samples);
+            self.world.stages_running = true;
+        }
+    }
+
+    /// Settles the world shader's text between two frames (W317). A text of the extension holds
+    /// when its module, the pipeline of [`crate::stage_shaders::first_world_key`] and the pipeline
+    /// of the key that failed (when a key failed) are made with no error; then the extension hears
+    /// it ([`Extension::world_shader_held`]). The extension hears of each such build before it
+    /// starts ([`Extension::world_shader_building`]).
+    ///
+    /// A text fails at that test, or later at the pipeline of a key ([`Renderer::pipeline`]). Then
+    /// the key that failed is built one time with the extension's built-in text
+    /// ([`Extension::built_in_text`]): when it fails with that text too, the fault is no fault of
+    /// the code of others, and the text and the key are kept as they are
+    /// ([`Extension::world_shader_kept`]). Else the extension gives the next text to try
+    /// ([`Extension::shader_fallback`]) until one holds or none is left. A change of the
+    /// extension's own ([`Extension::world_shader_changed`]) is tried the same way.
+    ///
+    /// With no extension, the first call keeps a failed key as it is. Once the text settled, this
+    /// costs one call of the extension a frame.
+    pub(crate) fn settle_world_shader(&mut self, extension: Option<&mut (dyn Extension + '_)>) {
+        let Some(extension) = extension else {
+            if !self.world.held {
+                self.world.held = true;
+                self.world.exhausted = true;
+                self.start_wanted_stage_shaders();
+            }
+            return;
+        };
+        if let Some(text) = extension.world_shader_changed() {
+            println!("core mods: the world shader takes the text {} of the extension", text.label);
+            self.switch_world_shader(&text);
+            self.world.attempt = 0;
+            self.world.trial_key = None;
+        }
+        loop {
+            if self.world.fault.is_none() {
+                if self.world.held {
+                    return;
+                }
+                extension.world_shader_building(self.world.attempt);
+                if let Some((error, key)) = self.hold_test() {
+                    self.world.fault = Some(error);
+                    self.world.fault_key = Some(key);
+                } else {
+                    self.world.held = true;
+                    extension.world_shader_held(self.world.attempt);
+                    // A later fault starts its own walk from the extension's text now.
+                    self.world.attempt = 0;
+                    self.world.trial_key = None;
+                    self.start_wanted_stage_shaders();
+                    return;
+                }
+            }
+            let Some(error) = self.world.fault.take() else {
+                continue;
+            };
+            let key = self
+                .world
+                .fault_key
+                .take()
+                .unwrap_or_else(|| crate::stage_shaders::first_world_key(self.samples));
+            if self.world.attempt == 0 {
+                self.world.trial_key = Some(key);
+                if let Some(probe_error) = self.probe_built_in(&mut *extension, key) {
+                    println!(
+                        "core mods: the world shader's pipeline failed with the built-in text too ({probe_error}); \
+                         no core mod is dropped"
+                    );
+                    extension.world_shader_kept(&probe_error);
+                    self.keep_failed_pipelines();
+                    return;
+                }
+            }
+            self.world.attempt += 1;
+            match extension.shader_fallback(self.world.attempt, &error) {
+                Some(text) => {
+                    println!(
+                        "core mods: the world shader failed ({error}); it tries the text {}",
+                        text.label
+                    );
+                    self.switch_world_shader(&text);
+                }
+                None => {
+                    println!(
+                        "core mods: the world shader failed ({error}); the extension has no other text, so a failed \
+                         pipeline is kept as it is"
+                    );
+                    self.keep_failed_pipelines();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// No other text is tried: a pipeline that fails is kept as it is, as before W317.
+    fn keep_failed_pipelines(&mut self) {
+        self.world.exhausted = true;
+        self.world.held = true;
+        self.world.trial_key = None;
+        self.start_wanted_stage_shaders();
+    }
+
+    /// The error of `key` built one time with the extension's built-in text, or None when it
+    /// builds or the extension has no such text. The session's text stays.
+    fn probe_built_in(&self, extension: &mut (dyn Extension + '_), key: PipelineKey) -> Option<String> {
+        let text = extension.built_in_text()?;
+        let source = world_source_of(&text.extension_text(), self.tier);
+        let (module, module_error) = world_module(&self.maker.device, &source);
+        if module_error.is_some() {
+            return module_error;
+        }
+        let probe = PipelineMaker {
+            vertex: module.clone(),
+            planted: false,
+            ..self.maker.clone()
+        };
+        probe.guarded_build(key, &module, &[], Making::GeneralPipeline).1
+    }
+
+    /// The pipelines of the first key of the world and of the key of the walk, made and kept: None
+    /// when they hold, else the error of the device and the key that failed.
+    fn hold_test(&mut self) -> Option<(String, PipelineKey)> {
+        let first = crate::stage_shaders::first_world_key(self.samples);
+        let keys = std::iter::once(first).chain(self.world.trial_key.filter(|key| *key != first));
+        for key in keys {
+            let (pipeline, error) = self.maker.guarded_build(key, &self.shader, &[], Making::GeneralPipeline);
+            if let Some(error) = error {
+                return Some((error, key));
+            }
+            if let Some(pipeline) = pipeline {
+                self.pipelines.insert(key, Rc::new(pipeline));
+            }
+        }
+        None
+    }
+
+    /// Makes the world shader of `text` and drops every pipeline and stage shader of the text
+    /// before: the next draws build theirs from the new module. The fault of the new module, if
+    /// any, waits in `self.world.fault` for [`Renderer::settle_world_shader`].
+    fn switch_world_shader(&mut self, text: &ShaderText) {
+        let source = world_source_of(&text.extension_text(), self.tier);
+        let (shader, fault) = world_module(&self.maker.device, &source);
+        self.maker.vertex = shader.clone();
+        self.maker.planted = source.contains(crate::CORE_MOD_FAULT_PLANT);
+        self.shader = shader;
+        self.pipelines.clear();
+        self.variant_shader = None;
+        let variant = self.debug_variant;
+        let before = std::mem::replace(&mut self.stage_shaders, crate::stage_shaders::StageShaders::new(false, ""));
+        // The session's last report line has only the new text's counts: this line keeps the old text's.
+        println!("world shader switch: the text before: {}", before.report());
+        self.stage_shaders = before.switched(&source);
+        self.stage_shaders.set_variant(variant);
+        // The new thread starts once the new text settles.
+        self.world.stages_running = false;
+        self.world.fault = fault;
+        self.world.fault_key = None;
+        self.world.held = false;
+        self.world.exhausted = false;
     }
 
     /// The start of a frame: the stage pipelines that the thread made, and the list's write.
@@ -2213,7 +2394,7 @@ impl Renderer {
 
 /// What a [`PipelineMaker`] makes, for its times.
 #[derive(Clone, Copy)]
-enum Making {
+pub(crate) enum Making {
     /// A fragment module of a stage key or a world variant.
     Module,
     /// The pipeline of a key with a stage key.
@@ -2269,6 +2450,51 @@ impl MakingTimes {
     }
 }
 
+/// The world shader's text with the extension's text, in the form of the device's texture tier.
+fn world_source_of(extension_text: &str, tier: request::TextureTier) -> String {
+    let source = request::world_shader_source(extension_text);
+    if tier == request::TextureTier::C {
+        request::tier_c_shader_source(&source)
+    } else {
+        source
+    }
+}
+
+/// The world shader's module, made under [`gpu::guarded`], and its error.
+fn world_module(device: &wgpu::Device, source: &str) -> (wgpu::ShaderModule, Option<String>) {
+    gpu::guarded(device, || {
+        device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shader.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        })
+    })
+}
+
+/// Where the world shader's text stands (W317, [`Renderer::settle_world_shader`]).
+#[derive(Default)]
+pub(crate) struct WorldShader {
+    /// The text of the extension that the world shader has: 0 the text of the start or of the
+    /// extension's last change, n the n-th text of [`Extension::shader_fallback`].
+    attempt: u32,
+    /// The text held, and the extension heard it; or the extension had no other text.
+    held: bool,
+    /// The first error of the world shader's module or of a pipeline since the last switch.
+    fault: Option<String>,
+    /// The key of the pipeline of `fault`; None for an error of the module, which the first world
+    /// key stands for.
+    fault_key: Option<PipelineKey>,
+    /// The key whose fault started the walk of the extension's texts: each text of the walk holds
+    /// only when this key builds with it too.
+    trial_key: Option<PipelineKey>,
+    /// The extension had no other text, or the fault is no core mod's: a pipeline that fails is
+    /// kept as it is, as before W317.
+    exhausted: bool,
+    /// A live session wants the thread of the stage pipelines ([`Renderer::start_stage_shaders`]).
+    stages_wanted: bool,
+    /// The thread of the stage pipelines of the text now runs.
+    stages_running: bool,
+}
+
 /// What a pipeline of the world needs besides its key: the device, the layout, the vertex
 /// module and the formats of the targets. A clone goes to the thread of the stage shaders
 /// (`crate::stage_shaders`).
@@ -2280,6 +2506,14 @@ pub(crate) struct PipelineMaker {
     target_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
     wireframe: bool,
+    /// The world shader's text has [`crate::CORE_MOD_FAULT_PLANT`]: each pipeline names a fragment
+    /// entry point that the module lacks, so that it fails at the pipeline as a core mod that
+    /// fails in the driver does (W317's test).
+    planted: bool,
+    /// `MGE_XE_CORE_MOD_FAULT=world key`: the pipeline of this key fails in the same way whatever
+    /// the text, a fault that is no core mod's (the null of the probe of
+    /// [`Renderer::settle_world_shader`]).
+    fault_key: Option<PipelineKey>,
     /// The times of the work of this maker and its clones.
     times: std::sync::Arc<MakingTimes>,
 }
@@ -2289,12 +2523,12 @@ impl PipelineMaker {
     /// `label` names the module and starts the line of its error.
     pub(crate) fn module(&self, label: &str, source: &str) -> Option<wgpu::ShaderModule> {
         let clock = ticks::Clock::now();
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = self.device.counted_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(label),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
+        let (module, error) = crate::gpu::guarded(&self.device, || {
+            self.device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            })
         });
-        let error = pollster::block_on(scope.pop());
         self.times.add(Making::Module, clock.elapsed());
         match error {
             None => Some(module),
@@ -2314,26 +2548,37 @@ impl PipelineMaker {
         fragment: &wgpu::ShaderModule,
         constants: &[(&str, f64)],
     ) -> Option<wgpu::RenderPipeline> {
-        let clock = ticks::Clock::now();
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let pipeline = self.build(key, fragment, constants);
-        let error = pollster::block_on(scope.pop());
         let making = match key.stages {
             0 => Making::GeneralPipeline,
             _ => Making::StagePipeline,
         };
-        self.times.add(making, clock.elapsed());
-        match error {
-            None => pipeline,
-            Some(error) => {
+        match self.guarded_build(key, fragment, constants, making) {
+            (pipeline, None) => pipeline,
+            (_, Some(error)) => {
                 println!("stage shaders: a pipeline failed: {error}");
                 None
             }
         }
     }
 
-    /// The pipeline of a key with the general text or a world variant's, made at its first draw
-    /// on the frame's thread.
+    /// [`PipelineMaker::build`] under the error scopes of [`crate::gpu::guarded`], its time added
+    /// to `making`: the pipeline, or None for a key that has no pipeline, and the error of the
+    /// device. A pipeline with an error is invalid: each draw with it fails.
+    pub(crate) fn guarded_build(
+        &self,
+        key: PipelineKey,
+        fragment: &wgpu::ShaderModule,
+        constants: &[(&str, f64)],
+        making: Making,
+    ) -> (Option<wgpu::RenderPipeline>, Option<String>) {
+        let clock = ticks::Clock::now();
+        let built = crate::gpu::guarded(&self.device, || self.build(key, fragment, constants));
+        self.times.add(making, clock.elapsed());
+        built
+    }
+
+    /// The pipeline of a key with a world variant's text, made at its first draw on the frame's
+    /// thread. An error goes to the device's handler, as the numbered GPU errors.
     fn general(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
         let clock = ticks::Clock::now();
         let pipeline = self.build(key, fragment, &[]);
@@ -2480,7 +2725,11 @@ impl PipelineMaker {
             },
             fragment: Some(wgpu::FragmentState {
                 module: fragment,
-                entry_point: Some("fs"),
+                entry_point: Some(if self.planted || self.fault_key == Some(key) {
+                    "fs_core_mod_fault_plant"
+                } else {
+                    "fs"
+                }),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants,
                     ..Default::default()
@@ -2577,6 +2826,245 @@ mod array_change_tests {
 
         assert_eq!(renderer.frame_sampler_slot(states), slot);
         assert_eq!(crate::objects::take_noted_change(), None);
+    }
+}
+
+#[cfg(test)]
+mod world_fallback_tests {
+    use super::*;
+    use crate::extension::{PLAIN_DRAW, PLAIN_SKY};
+
+    /// An extension with a list of fallback texts and a built-in text, which notes what the
+    /// renderer asked and heard.
+    #[derive(Default)]
+    struct Texts {
+        fallbacks: Vec<ShaderText>,
+        built_in: Option<ShaderText>,
+        asked: Vec<u32>,
+        building: Vec<u32>,
+        held: Vec<u32>,
+        kept: Vec<String>,
+    }
+
+    impl Extension for Texts {
+        fn before_world(&mut self, _: &SceneView, _: &mut wgpu::RenderPass<'static>, _: &mut dyn Replay) -> bool {
+            false
+        }
+
+        fn shader_fallback(&mut self, attempt: u32, _error: &str) -> Option<ShaderText> {
+            self.asked.push(attempt);
+            self.fallbacks.get(attempt as usize - 1).cloned()
+        }
+
+        fn world_shader_held(&mut self, attempt: u32) {
+            self.held.push(attempt);
+        }
+
+        fn world_shader_building(&mut self, attempt: u32) {
+            self.building.push(attempt);
+        }
+
+        fn built_in_text(&mut self) -> Option<ShaderText> {
+            self.built_in.clone()
+        }
+
+        fn world_shader_kept(&mut self, error: &str) {
+            self.kept.push(error.to_string());
+        }
+    }
+
+    /// A text with the plant: each of its world pipelines fails on the device.
+    fn planted(label: &str) -> ShaderText {
+        ShaderText {
+            sky: Some(format!("{CORE_MOD_FAULT_PLANT}\n{PLAIN_SKY}")),
+            draw: Some(PLAIN_DRAW.to_string()),
+            label: label.to_string(),
+        }
+    }
+
+    fn plain(label: &str) -> ShaderText {
+        ShaderText {
+            label: label.to_string(),
+            ..ShaderText::default()
+        }
+    }
+
+    fn renderer_of(text: &ShaderText) -> Renderer {
+        let (renderer, _) = Renderer::new(
+            wgpu::Backends::all(),
+            None,
+            wgpu::TextureFormat::Rgba8Unorm,
+            text.extension_text(),
+            0,
+            1,
+        )
+        .expect("a device");
+        renderer
+    }
+
+    /// The plant fails a pipeline with an error of the device that the guard takes; the null: the
+    /// same text without the plant makes the pipeline. Needs a GPU:
+    /// `cargo test -p nirender-host -- --ignored world_fallback --test-threads=1`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn world_fallback_the_guard_takes_a_failed_world_pipeline() {
+        let failed = renderer_of(&planted("planted")).hold_test();
+        assert!(
+            failed
+                .as_ref()
+                .is_some_and(|(error, _)| error.contains("fs_core_mod_fault_plant")),
+            "{failed:?}"
+        );
+        assert_eq!(renderer_of(&plain("plain")).hold_test(), None);
+    }
+
+    /// A text holds only when the key that started the walk builds with it too. The null: with no
+    /// key of a walk, the same renderer holds on the first world key.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn world_fallback_a_text_holds_only_when_the_key_of_the_walk_builds() {
+        let mut renderer = renderer_of(&plain("plain"));
+        let first = crate::stage_shaders::first_world_key(renderer.samples);
+        let other = PipelineKey { color_write: 0, ..first };
+        renderer.maker.fault_key = Some(other);
+        assert_eq!(renderer.hold_test(), None);
+        renderer.world.trial_key = Some(other);
+        assert!(renderer.hold_test().is_some_and(|(_, key)| key == other));
+    }
+
+    /// A key that fails with the built-in text too is no core mod's fault: the extension hears it,
+    /// no text is asked for, and the failed key is kept. The null: the same plant of a text (a
+    /// core mod's fault) passes the probe, and the walk drops the text.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn world_fallback_a_fault_of_the_built_in_text_too_drops_nothing() {
+        let mut renderer = renderer_of(&plain("start"));
+        let first = crate::stage_shaders::first_world_key(renderer.samples);
+        renderer.maker.fault_key = Some(first);
+        let mut extension = Texts {
+            fallbacks: vec![plain("without A")],
+            built_in: Some(plain("built in")),
+            ..Texts::default()
+        };
+        renderer.settle_world_shader(Some(&mut extension));
+        assert_eq!((extension.asked.as_slice(), extension.held.as_slice()), (&[][..], &[][..]));
+        assert_eq!(extension.kept.len(), 1, "{:?}", extension.kept);
+        assert!(renderer.world.exhausted && renderer.world.held);
+        assert!(renderer.pipeline(first).is_some(), "the failed pipeline is kept");
+
+        let mut renderer = renderer_of(&planted("start"));
+        let mut extension = Texts {
+            fallbacks: vec![plain("without A")],
+            built_in: Some(plain("built in")),
+            ..Texts::default()
+        };
+        renderer.settle_world_shader(Some(&mut extension));
+        assert_eq!((extension.asked.as_slice(), extension.held.as_slice()), (&[1][..], &[1][..]));
+        assert!(extension.kept.is_empty());
+    }
+
+    /// While a fault waits for the settle, no other world pipeline is built: the fault keeps the
+    /// key of the first build that failed. The null: after the settle the other key builds.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn world_fallback_no_pipeline_is_built_while_a_fault_waits() {
+        let mut renderer = renderer_of(&planted("start"));
+        let first = crate::stage_shaders::first_world_key(renderer.samples);
+        let other = PipelineKey { color_write: 0, ..first };
+        assert!(renderer.pipeline(first).is_none());
+        assert!(renderer.pipeline(other).is_none());
+        assert_eq!(renderer.world.fault_key, Some(first));
+        let mut extension = Texts {
+            fallbacks: vec![plain("all built in")],
+            ..Texts::default()
+        };
+        renderer.settle_world_shader(Some(&mut extension));
+        assert!(renderer.pipeline(other).is_some());
+    }
+
+    /// With no extension the first settle keeps a failed key as it is, as before W317.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn world_fallback_with_no_extension_keeps_the_failed_pipeline() {
+        let mut renderer = renderer_of(&planted("start"));
+        renderer.settle_world_shader(None);
+        assert!(renderer.world.exhausted && renderer.world.held);
+        let first = crate::stage_shaders::first_world_key(renderer.samples);
+        assert!(renderer.pipeline(first).is_some(), "the failed pipeline is kept");
+        assert!(renderer.pipelines.contains_key(&first));
+    }
+
+    /// A text that fails gives way to the extension's next ones until one holds; the extension
+    /// hears which. The null: a text that holds asks for none.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn world_fallback_tries_the_texts_until_one_holds() {
+        let mut renderer = renderer_of(&planted("start"));
+        let mut extension = Texts {
+            fallbacks: vec![planted("without A"), plain("without B"), plain("all built in")],
+            ..Texts::default()
+        };
+        renderer.settle_world_shader(Some(&mut extension));
+        assert_eq!(
+            (extension.asked.as_slice(), extension.held.as_slice()),
+            (&[1, 2][..], &[2][..])
+        );
+        assert_eq!(extension.building, [0, 1, 2]);
+        assert!(renderer.world.held && !renderer.world.exhausted && !renderer.maker.planted);
+        // A later fault starts its own walk.
+        assert_eq!(renderer.world.attempt, 0);
+        let key = crate::stage_shaders::first_world_key(renderer.samples);
+        assert!(renderer.pipelines.contains_key(&key));
+        // A settled text costs nothing more.
+        renderer.settle_world_shader(Some(&mut extension));
+        assert_eq!(extension.asked, [1, 2]);
+
+        let mut renderer = renderer_of(&plain("start"));
+        let mut extension = Texts::default();
+        renderer.settle_world_shader(Some(&mut extension));
+        assert_eq!((extension.asked.as_slice(), extension.held.as_slice()), (&[][..], &[0][..]));
+    }
+
+    /// With no text left, the renderer keeps a failed pipeline as before W317 and asks no more.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn world_fallback_with_no_text_left_keeps_the_failed_pipeline() {
+        let mut renderer = renderer_of(&planted("start"));
+        let mut extension = Texts::default();
+        renderer.settle_world_shader(Some(&mut extension));
+        assert_eq!((extension.asked.as_slice(), extension.held.as_slice()), (&[1][..], &[][..]));
+        assert!(renderer.world.exhausted && renderer.world.held);
+        let key = crate::stage_shaders::first_world_key(renderer.samples);
+        assert!(renderer.pipeline(key).is_some(), "the failed pipeline is kept");
+        renderer.settle_world_shader(Some(&mut extension));
+        assert_eq!(extension.asked, [1]);
+    }
+
+    /// A key that fails while the extension may still give a text draws nothing and waits for the
+    /// next frame's switch.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn world_fallback_a_failed_key_waits_for_the_switch() {
+        let mut renderer = renderer_of(&planted("start"));
+        let key = crate::stage_shaders::first_world_key(renderer.samples);
+        assert!(renderer.pipeline(key).is_none());
+        assert!(renderer.world.fault.is_some());
+        let mut extension = Texts {
+            fallbacks: vec![plain("all built in")],
+            ..Texts::default()
+        };
+        renderer.settle_world_shader(Some(&mut extension));
+        assert_eq!(extension.held, [1]);
+        assert!(renderer.pipeline(key).is_some());
+    }
+
+    #[test]
+    fn the_text_of_an_extension_without_functions_is_the_plain_text() {
+        assert_eq!(ShaderText::default().extension_text(), format!("{PLAIN_SKY}\n{PLAIN_DRAW}\n"));
+        assert_eq!(
+            crate::extension::extension_shaders(None),
+            ShaderText::default().extension_text()
+        );
     }
 }
 

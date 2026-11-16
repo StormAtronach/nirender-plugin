@@ -376,6 +376,9 @@ impl Player {
         if let Some(line) = self.first_world_frames.frame_start(std::time::Instant::now(), world_before) {
             println!("{line}");
         }
+        // A text of the world shader that failed gives way to the extension's next one here,
+        // between two frames (W317).
+        self.renderer.settle_world_shader(self.extension.as_deref_mut());
         self.renderer.begin_frame_stage_shaders();
         self.items.clear();
         self.frame_lights.clear();

@@ -102,6 +102,16 @@ const STENCIL_INCREMENT: [u32; 7] = [1, 1, 4, 1, 8, u32::MAX, u32::MAX];
 const STENCIL_DECREMENT: [u32; 7] = [1, 1, 5, 1, 8, u32::MAX, u32::MAX];
 /// The test passes where the value is not the reference; nothing is written.
 const STENCIL_NOT_EQUAL: [u32; 7] = [1, 1, 1, 1, 6, u32::MAX, u32::MAX];
+
+/// The first key of [`UBER_SET`] with `frame_samples`: the key whose pipeline shows that a world
+/// shader's text holds on the device (W317, `Renderer::settle_world_shader`).
+pub(crate) fn first_world_key(frame_samples: u32) -> PipelineKey {
+    PipelineKey {
+        samples: frame_samples,
+        ..UBER_SET[0]
+    }
+}
+
 /// The fixed set of the uber-shader's pipelines (D306), in their order of first use: the keys that the frame thread
 /// made of the uber-shader in a live start with no list (run 20261111-193018-d306-step1: the test interior, Seyda
 /// Neen, the Census and Excise Office, Vivec). [`StageShaders::start`] sends them to the thread before the list, so
@@ -844,6 +854,22 @@ impl StageShaders {
             again_view: 0,
             not_ready: HashSet::new(),
         }
+    }
+
+    /// The stage shaders of a new world text in the same session (W317's switch of the world shader).
+    /// The stage keys keep their ids: the retained table keeps the id of each shape for its life. The
+    /// counts of the key table go with it: a shape that got id 0 past the cap or with no key keeps the
+    /// 0 and does not ask again. All that comes from the text starts again: the modules, the refusals,
+    /// the list and the thread. The old value drops here, and its drop saves the old text's list.
+    pub(crate) fn switched(mut self, world_source: &str) -> StageShaders {
+        // StageShaders has a Drop, so a struct update cannot move fields out of a value: each kept field is
+        // set on the new value.
+        let mut next = StageShaders::new(self.on, world_source);
+        next.ids = std::mem::take(&mut self.ids);
+        next.keys = std::mem::take(&mut self.keys);
+        next.past_cap = self.past_cap;
+        next.no_key = self.no_key;
+        next
     }
 
     /// The id of the stage key of a record that took a plane after its key: the split copy of a draw, or a draw of a
@@ -1799,6 +1825,46 @@ mod tests {
         let mut expected: Vec<(String, String)> = known.iter().map(|&(f, l)| (f.to_string(), l.to_string())).collect();
         expected.sort();
         assert_eq!(found, expected);
+    }
+
+    /// A switch of the world text keeps each stage key at its id, so that an id the retained table kept
+    /// still names its key and the rewrite finds it (live run G3 of 2026-11-16: "the stage key of the id: 0 in
+    /// the text, 1 wanted" after the switch). The stage parts of the old text start again: the key's module
+    /// is the part of the new text. The null: stage shaders made new for the text lose the id.
+    #[test]
+    fn a_switch_of_the_world_text_keeps_the_ids_of_the_stage_keys() {
+        let mut data = DrawData::zeroed();
+        data.counts[3] = 1 | 128;
+        data.flags = [1, 1, 0, 0];
+        let mut shaders = StageShaders::new(true, &world());
+        let id = shaders.id_of(&data);
+        assert_ne!(id, 0);
+        let module = shaders.module_of(&pipeline_key(id, 0));
+        assert!(shaders.source_of(module).is_ok());
+        shaders.past_cap = 3;
+        shaders.no_key = 2;
+
+        let switched_text = format!("{}\n// switched\n", world());
+        let mut switched = shaders.switched(&switched_text);
+        assert_eq!(
+            (switched.parts.len(), switched.part_ids.len()),
+            (1, 0),
+            "the parts start again"
+        );
+        let switched_module = switched.module_of(&pipeline_key(id, 0));
+        assert_eq!(switched_module, (1, 0), "the key's part is the first part of the new text");
+        assert!(switched.source_of(switched_module).is_ok());
+        assert_eq!(switched.id_of(&data), id);
+        let mut fresh = StageShaders::new(true, &switched_text);
+        let fresh_module = fresh.module_of(&pipeline_key(id, 0));
+        assert!(fresh.source_of(fresh_module).is_err());
+
+        // The counts of the key table go with the keys: the shapes that got id 0 do not ask again.
+        assert_eq!((switched.past_cap, switched.no_key), (3, 2));
+
+        // A key that is new after the switch takes the next id.
+        data.light_range[3] = crate::ADDS_BIT;
+        assert_eq!(switched.id_of(&data), id + 1);
     }
 
     #[test]
