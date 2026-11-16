@@ -83,6 +83,9 @@ CARGO_PARTS = {"plugin", "plugin-lua", "render-link", "numidium"}
 # The pdbs of the MWSE part: (path in the set, the pdb in the tree).
 MWSE_PDBS = (("MWSE.dll", os.path.join(MWSE_BUILT, "MWSE.pdb")),)
 NOTE_SECONDS = 60
+# The least free space on the disk of the trees before each build step (the Coordinator, 2026-11-16: three cold trees
+# can take C: from 35 GB to under 20).
+LEAST_FREE_BYTES = 20 * 10**9
 EXIT_FAULT = 1
 EXIT_REFUSED = 3
 
@@ -308,17 +311,48 @@ def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, 
 class Trees:
     """The real builds, in clean detached trees in `root`."""
 
-    def __init__(self, root=TREES):
+    def __init__(self, root=TREES, gate=e_gate, disk_usage=shutil.disk_usage):
         self.root = root
         self.log = os.path.join(root, "build_set.log")
         self.trees = {}
         self.applied = []
+        self.gate = gate
+        self.disk_usage = disk_usage
+
+    def on_project_disk(self):
+        """The trees are on the disk of the sets (E:): each build step there is a write to E: (D297)."""
+        return os.path.splitdrive(os.path.abspath(self.root))[0].lower() == os.path.splitdrive(os.path.abspath(sets.SETS))[0].lower()
+
+    def room(self, what):
+        """Stops before `what` when the disk of the trees has less than LEAST_FREE_BYTES free, or when the trees are on
+        E: and the E: gate says no."""
+        free = self.disk_usage(os.path.splitdrive(os.path.abspath(self.root))[0] + os.sep).free
+        if free < LEAST_FREE_BYTES:
+            raise SetFault("no room for %s: the disk of %s has %.1f GB free, and the floor is %.0f GB" % (
+                what, self.root, free / 1e9, LEAST_FREE_BYTES / 1e9), EXIT_REFUSED)
+        if self.on_project_disk():
+            allowed, line = self.gate()
+            if not allowed:
+                raise SetFault("no build on E: now: %s" % line, EXIT_REFUSED)
+
+    def size_lines(self):
+        """The bytes and the files of each tree, for the cost of a cold set."""
+        lines = []
+        for repo, tree in sorted(self.trees.items()):
+            total = count = 0
+            for base, _, names in os.walk(tree):
+                for name in names:
+                    with contextlib.suppress(OSError):
+                        total += os.path.getsize(os.path.join(base, name))
+                        count += 1
+            lines.append("tree %s: %s, %d bytes in %d files" % (repo, tree.replace("\\", "/"), total, count))
+        return lines
 
     def ready(self, repo, commit):
         """A detached tree of `repo` at `commit`; a tree with changes stops the set."""
         tree = os.path.join(self.root, TREE_NAMES[repo])
         if not os.path.exists(os.path.join(tree, ".git")):
-            os.makedirs(self.root, exist_ok=True)
+            self.room("the tree %s" % tree)
             git(SOURCE_REPOS[repo], "worktree", "add", "--detach", tree, commit)
         else:
             changed = git(tree, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=untracked")
@@ -351,6 +385,7 @@ class Trees:
         return git(SOURCE_REPOS[repo], "rev-parse", "%s:%s" % (commit, folder))
 
     def step(self, command, folder, env=None):
+        self.room(" ".join(os.path.basename(part) for part in command[:2]))
         env = dict(env or os.environ)
         env.pop("CARGO_TARGET_DIR", None)
         say("building: %s in %s" % (" ".join(command), folder))
@@ -404,6 +439,7 @@ class Trees:
     def probe(self, dll):
         """The probe of deploy_rest.py, in the tree at the set's nirender commit: (exit code, output)."""
         tree = self.trees["nirender"]
+        self.room("the probe (it compiles the plugin's tests)")
         command = [sys.executable, "-I", os.path.join(tree, "tools", "check_mwse_sites.py"), "--features", "--mge", self.trees["render-link"], dll]
         done = subprocess.run(command, cwd=tree, capture_output=True, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
         return done.returncode, done.stdout + done.stderr
@@ -511,8 +547,9 @@ def make(commits, patches, kind, builder, root=sets.SETS, gate=e_gate, hold=None
                             pdbs[path] = os.path.join(source, os.path.splitext(os.path.basename(path))[0] + ".pdb")
             pdbs = {path: pdb for path, pdb in pdbs.items() if not sets.PLUGIN_COPY_RE.fullmatch(path)}
             lines += ["pdb: " + line for line in keep_pdbs(name, making, pdbs, keep, root)]
+            lines += builder.size_lines()
     except SetFault as fault:
-        return fault.code, lines + [str(fault)]
+        return fault.code, lines + builder.size_lines() + [str(fault)]
     finally:
         builder.unpatch()
     parts_from = {part: found[part][0] if found[part] else "built" for part in sets.PARTS}
@@ -583,6 +620,9 @@ class FakeBuilder:
 
     def pdb_sources(self, parts_built):
         return {}
+
+    def size_lines(self):
+        return []
 
     def probe(self, dll):
         self.probed.append(dll)
@@ -731,6 +771,24 @@ def self_test():
         finally:
             SOURCE_REPOS["nirender"] = saved
             git(repo, "worktree", "remove", "--force", tree)
+        # The floor of free space, and the E: gate for trees on the disk of the sets.
+        usage = lambda free: (lambda path: shutil._ntuple_diskusage(0, 0, free))  # noqa: E731
+        low = Trees(os.path.join(scratch, "low"), gate=yes, disk_usage=usage(LEAST_FREE_BYTES - 1))
+        try:
+            low.room("a test")
+            raise AssertionError("a disk under the floor was taken")
+        except SetFault as fault:
+            assert fault.code == EXIT_REFUSED and "the floor is 20 GB" in str(fault), fault
+        Trees(os.path.join(scratch, "high"), gate=yes, disk_usage=usage(LEAST_FREE_BYTES)).room("a test")
+        asked = []
+        on_e = Trees(os.path.join(os.path.splitdrive(sets.SETS)[0] + os.sep, "no-such-folder-of-a-test"),
+                     gate=lambda: asked.append(1) or (False, "a timing run holds the game"), disk_usage=usage(LEAST_FREE_BYTES))
+        assert on_e.on_project_disk() and not Trees(os.path.join(scratch, "c")).on_project_disk()
+        try:
+            on_e.room("a test")
+            raise AssertionError("a build on E: went on while the E: gate said no")
+        except SetFault as fault:
+            assert fault.code == EXIT_REFUSED and "no build on E: now" in str(fault) and asked == [1], fault
     sets.self_test()
     print("build_set self-test: ok")
     return 0
@@ -742,6 +800,7 @@ def main():
     parser.add_argument("--render-link", help="the render-link commit (default: feature/wgpu-renderer)")
     parser.add_argument("--mwse", help="the MWSE commit (default: the commit that the test installs run)")
     parser.add_argument("--patch", action="append", default=[], help="REPO=FILE: one patch on that repo's commit")
+    parser.add_argument("--trees", default=TREES, help="the folder of the build trees (default %s); on E: each build step waits for e-ok" % TREES)
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 when the build slot is not free")
     parser.add_argument("--self-test", action="store_true", help="the tests on scratch folders: no build, no slot, no write to E:")
     args = parser.parse_args()
@@ -766,7 +825,7 @@ def main():
 
     slots = load_slots()
     label = "build_set: %s" % sets.set_name(commits, {repo: md5 for repo, (_, md5) in patches.items()})
-    code, lines = make(commits, patches, sets.KIND_USUAL, Trees(), hold=lambda: build_hold(slots, label, args.no_wait))
+    code, lines = make(commits, patches, sets.KIND_USUAL, Trees(args.trees), hold=lambda: build_hold(slots, label, args.no_wait))
     for line in lines:
         say(line)
     return code
