@@ -1560,7 +1560,7 @@ def self_test():
         # W528 item 5: a change of a hook fixture plans the gate, whose second pass reads the fixtures.
         assert names("plugin", plugin, "tools/hook-fixtures/XE Mod Water.wgsl")[-len(gate_tail):] == gate_tail, names("plugin", plugin, "tools/hook-fixtures/XE Mod Water.wgsl")
         assert not names("plugin", plugin, "tools/merge_step.py")[-len(gate_tail):] == gate_tail, "the null: another tool plans no gate"
-        mge_base =["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
+        mge_base = ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("mge", mge, "xtask/src/main.rs") == mge_base + ["build of the dist"]
         # A render-link round deploys the sibling's plugin with its build: the probe stands before the build there too.
         for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):

@@ -872,13 +872,15 @@ def self_test_baseline():
         # W528 item 5: the pass of the hook fixtures, after the plain pass, with its own variables and accepted state.
         with tempfile.TemporaryDirectory() as folder:
             fixtures, good = route_plant(folder)
-            envs = []
+            envs, markers_there = [], []
 
             def with_route(tool, lines=good):
                 def run(command, env=None):
                     code, output = tool(command, env)
                     if command[1].endswith("replay.py"):
                         envs.append(env)
+                        if "MGE_XE_CORE_MOD_MARKERS" in env:
+                            markers_there.append(os.path.isdir(env["MGE_XE_CORE_MOD_MARKERS"]))
                     return code, output + ("".join(line + "\r\n" for line in lines) if "MGE_XE_CORE_MODS_DIR" in (env or {}) else "")
                 return run
 
@@ -889,7 +891,10 @@ def self_test_baseline():
             assert sorted(f for f in os.listdir(os.path.join(folder, HOOKS_ACCEPTED)) if not f.endswith(".replay.txt")) == ["a-last.png", "a.checks.txt", "a.png"]
             plain, hooked = [env for env in envs if "MGE_XE_CORE_MODS_DIR" not in env], [env for env in envs if "MGE_XE_CORE_MODS_DIR" in env]
             assert plain and all(env == GATE_ENV for env in plain), plain
-            assert hooked and all(env["MGE_XE_CORE_MODS_DIR"] == fixtures and "MGE_XE_CORE_MODS" not in env and os.path.isdir(env["MGE_XE_CORE_MOD_MARKERS"]) for env in hooked), hooked
+            assert hooked and all(env["MGE_XE_CORE_MODS_DIR"] == fixtures and "MGE_XE_CORE_MODS" not in env for env in hooked), hooked
+            # The markers folder is there while the pass replays, and gone when the pass ends (verdict 504).
+            assert markers_there and all(markers_there), markers_there
+            assert not any(os.path.exists(env["MGE_XE_CORE_MOD_MARKERS"]) for env in hooked), [env["MGE_XE_CORE_MOD_MARKERS"] for env in hooked]
             del objects_calls[:]
             passed, said, _code = stage(folder, with_route(plant()), hooks=fixtures)
             assert passed and "ok   2 of 2 pictures equal" in said and "ok   hook fixtures: 2 of 2 pictures equal" in said, said
@@ -1162,13 +1167,15 @@ def hooks_pass(baseline, captures, accept, mge_build, out, add, hooks):
     `hooks` (MGE_XE_CORE_MODS_DIR), against the accepted state in HOOKS_ACCEPTED of the baseline folder. The plain
     pass replays with no core mod, so only this pass judges the helper's path that joins a hook file into its
     shaders. Each replay must show the route ([`route_problems`]). The build markers go to a new folder of this pass,
-    never to the user's. A folder with no fixture is a FAIL: the pass is never left out without a line."""
+    never to the user's, and the folder is removed when the pass ends. A folder with no fixture is a FAIL: the pass is
+    never left out without a line."""
     fixtures = hook_fixtures(hooks)
     if not fixtures:
         return check(False, "hook fixtures: %s has no XE Mod *.wgsl file: the gate cannot judge the path of a hook file" % hooks)
     print("hook fixtures %s: %s" % (hooks, ", ".join(sorted(fixtures))), flush=True)
-    env = hooks_env(hooks, tempfile.mkdtemp(prefix="gate-hook-markers-"))
-    return baseline_pass(baseline, captures, accept, mge_build, out, add, env=env, accepted=os.path.join(baseline, HOOKS_ACCEPTED), route=(hooks, fixtures))
+    with tempfile.TemporaryDirectory(prefix="gate-hook-markers-") as markers:
+        env = hooks_env(hooks, markers)
+        return baseline_pass(baseline, captures, accept, mge_build, out, add, env=env, accepted=os.path.join(baseline, HOOKS_ACCEPTED), route=(hooks, fixtures))
 
 
 def baseline_pass(baseline, captures, accept, mge_build, out, add, env=None, accepted=None, route=None, tour_out=None):
