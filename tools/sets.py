@@ -240,6 +240,119 @@ def check(folder):
     return manifest
 
 
+# --- the one map of placing (the plan's addendum 1 A4) ----------------------------------------------
+#
+# Where each file of a set goes, for a run's Harness mods and for the deploy's install mods alike: (kind, path in the
+# mod). The kinds: "mge" (the MGE XE mod), "nirender" (the plugin and its Lua), "mwse" (MWSE.dll, lua51.dll and the MWSE
+# core), and "test" (the part plugin-test, which only a run places). A file that the map cannot place is a fault, so a
+# set with a new kind of file stops both a run and a deploy (W524 F-T-4), and the two never place different files
+# (F-T-8).
+DATA_FILES = "data files/"
+MGE_ROOT_FILES = ("d3d8.dll", "dinput8.dll", "numidium.exe", "mgexegui.exe")
+MGE_DATA_FOLDERS = ("meshes/", "textures/", "shaders/", "mwse/mods/mge xe options/")
+MWSE_ROOT_FILES = ("mwse.dll", "lua51.dll")
+KINDS = ("mge", "nirender", "mwse", "test")
+# The kinds that a deploy places: no test files go into an install.
+DEPLOY_KINDS = ("mge", "nirender", "mwse")
+
+
+def never_placed(path):
+    """Why the set's file `path` is placed by no run and no deploy, or None. The set's own files (the manifest, the
+    patches, the plugin copy in the root), and what no deploy writes: a pdb, an esp or esm (it changes the load order),
+    the user's mgeXE.toml, a d3d9.dll."""
+    low = path.lower()
+    name = low.rsplit("/", 1)[-1]
+    if low == MANIFEST.lower() or low.startswith(PATCHES + "/") or PLUGIN_COPY_RE.fullmatch(low):
+        return "the set's own file"
+    if name.endswith((".pdb", ".esp", ".esm")) or name in ("mgexe.toml", "d3d9.dll"):
+        return "no deploy writes it"
+    return None
+
+
+def place_of(path):
+    """(kind, path in the mod) of the set's file `path`, or None when the map has no place for it. The case of the path
+    below a known folder is kept."""
+    low = path.lower()
+    folder, _, name = low.rpartition("/")
+    if low.startswith(PLUGIN_TEST + "/"):
+        return "test", path[len(PLUGIN_TEST) + 1:]
+    if folder == "":
+        if name in MGE_ROOT_FILES or name.endswith(".md"):
+            return "mge", "Root/" + path
+        if name in MWSE_ROOT_FILES:
+            return "mwse", "Root/" + path
+        return None
+    if folder == "mge3" and name.endswith(".toml"):
+        return "mge", "Root/" + path
+    if not low.startswith(DATA_FILES):
+        return None
+    below, low_below = path[len(DATA_FILES):], low[len(DATA_FILES):]
+    if low_below == "mwse/lib/akulakhan.dll":
+        return "nirender", "MWSE/lib/akulakhan.dll"
+    if low_below.startswith("mwse/mods/nirender/") and "/" not in low_below[len("mwse/mods/nirender/"):]:
+        return "nirender", "MWSE/mods/nirender/" + below[len("mwse/mods/nirender/"):]
+    if low_below.startswith("mwse/core/"):
+        return "mwse", "MWSE/core/" + below[len("mwse/core/"):]
+    if low_below.startswith(MGE_DATA_FOLDERS):
+        return "mge", below
+    return None
+
+
+def placing(manifest, kinds=KINDS):
+    """The one map of a set: ({set path: (kind, path in the mod)} for the kinds `kinds`, {set path: why it is never
+    placed}, [the set paths that the map cannot place]). A run takes every kind (KINDS, less "nirender" and "test" when
+    it loads no plugin); a deploy takes DEPLOY_KINDS."""
+    placed, never, unplaced = {}, {}, []
+    for path in sorted(manifest.get("files", {})):
+        why = never_placed(path)
+        if why:
+            never[path] = why
+            continue
+        place = place_of(path)
+        if place is None:
+            unplaced.append(path)
+        elif place[0] in kinds:
+            placed[path] = place
+    return placed, never, unplaced
+
+
+# The Harness mod of a run that takes each kind, by the name after the prefix "Harness - " (harness.RUN_MOD_PREFIX).
+RUN_MOD = {"mge": "MGE XE", "mwse": "MGE XE", "nirender": "nirender", "test": "nirender"}
+RUN_KINDS_NO_PLUGIN = ("mge", "mwse")
+
+
+def stage_files(manifest, plugin):
+    """The staging of a run from the set's manifest: {(Harness mod, path in the mod): set path}. A run that loads the
+    plugin (`plugin`) takes every kind; a run that loads no plugin takes the MGE XE half only."""
+    placed, _, _ = placing(manifest, KINDS if plugin else RUN_KINDS_NO_PLUGIN)
+    return {(RUN_MOD[kind], dest): path for path, (kind, dest) in placed.items()}
+
+
+def placing_faults(manifest):
+    """The faults of the map for this set: a file with no place, and two files with one place in a mod (the case of a
+    path does not count on Windows)."""
+    placed, _, unplaced = placing(manifest)
+    faults = ["the file %s has no place in a run or a deploy (sets.place_of)" % path for path in unplaced]
+    targets = {}
+    for path, (kind, dest) in placed.items():
+        target = (RUN_MOD[kind], dest.lower())
+        if target in targets:
+            faults.append("the files %s and %s have one place, %s in Harness - %s" % (targets[target], path, dest, target[0]))
+        else:
+            targets[target] = path
+    return faults
+
+
+def verify(folder):
+    """The manifest of the sealed set `folder`, after check(folder) and the faults of the map. Raises SetError with every
+    fault found. A run and a deploy read a set only through this."""
+    manifest = check(folder)
+    faults = placing_faults(manifest)
+    if faults:
+        raise SetError("%s cannot be placed: %s" % (folder, "; ".join(faults)))
+    return manifest
+
+
 def plugin_copy(manifest):
     """The path of the plugin copy in the root of a set, from its manifest."""
     return next(path for path in manifest["files"] if PLUGIN_COPY_RE.fullmatch(path))
@@ -341,8 +454,53 @@ def self_test_e_gate():
     assert e_gate(broken, 1.0)[0] is False
 
 
+def self_test_placing():
+    # The files of a set of each group that the real set s-a7b9d1c6-8fd46faf-89198b53 holds, and plugin-test.
+    paths = ["MANIFEST.json", "akulakhan-a7b9d1c.dll", "d3d8.dll", "dinput8.dll", "numidium.exe", "MGEXEgui.exe",
+             "README.md", "mge3/main.toml", "MWSE.dll", "lua51.dll", "patches/render-link.patch",
+             "Data Files/XE Sky Variations.esp", "Data Files/meshes/f/sky.nif", "Data Files/mwse/core/initialize.lua",
+             "Data Files/mwse/lib/akulakhan.dll", "Data Files/mwse/mods/nirender/main.lua",
+             "Data Files/mwse/mods/MGE XE Options/main.lua", "Data Files/shaders/core/a.fx",
+             "Data Files/shaders/XEshaders/b.fx", "Data Files/textures/MGE/c.dds",
+             "plugin-test/MWSE/mods/nirender/test_views.lua", "plugin-test/meshes/@_nifx/a.nif"]
+    manifest = {"files": {path: {} for path in paths}}
+    placed, never, unplaced = placing(manifest)
+    assert unplaced == [], unplaced
+    assert set(never) == {"MANIFEST.json", "akulakhan-a7b9d1c.dll", "patches/render-link.patch",
+                          "Data Files/XE Sky Variations.esp"}, never
+    assert set(placed) | set(never) == set(paths)
+    assert placed["d3d8.dll"] == ("mge", "Root/d3d8.dll") and placed["mge3/main.toml"] == ("mge", "Root/mge3/main.toml")
+    assert placed["MWSE.dll"] == ("mwse", "Root/MWSE.dll") and placed["lua51.dll"] == ("mwse", "Root/lua51.dll")
+    assert placed["Data Files/mwse/core/initialize.lua"] == ("mwse", "MWSE/core/initialize.lua")
+    assert placed["Data Files/mwse/lib/akulakhan.dll"] == ("nirender", "MWSE/lib/akulakhan.dll")
+    assert placed["Data Files/mwse/mods/nirender/main.lua"] == ("nirender", "MWSE/mods/nirender/main.lua")
+    assert placed["Data Files/mwse/mods/MGE XE Options/main.lua"] == ("mge", "mwse/mods/MGE XE Options/main.lua")
+    assert placed["plugin-test/meshes/@_nifx/a.nif"] == ("test", "meshes/@_nifx/a.nif")
+    # The run's map less plugin-test is the deploy's map, path for path (addendum 1 A4).
+    deploy, _, _ = placing(manifest, DEPLOY_KINDS)
+    assert {path: place for path, place in placed.items() if place[0] != "test"} == deploy
+    assert not any(path.lower().startswith(PLUGIN_TEST + "/") for path in deploy)
+    # The staging of a run with the plugin and without it.
+    with_plugin = stage_files(manifest, True)
+    assert with_plugin[("MGE XE", "Root/MWSE.dll")] == "MWSE.dll"
+    assert with_plugin[("nirender", "MWSE/mods/nirender/test_views.lua")] == "plugin-test/MWSE/mods/nirender/test_views.lua"
+    without = stage_files(manifest, False)
+    assert {mod for mod, _ in without} == {"MGE XE"} and ("MGE XE", "Root/dinput8.dll") in without
+    assert len(with_plugin) == len(placed) and placing_faults(manifest) == []
+    # Faults: a file of a new kind, a Lua folder below the plugin's Lua, a plugin-test file in the plugin-lua's place.
+    for odd in ("tool.exe", "Data Files/Icons/a.dds", "Data Files/mwse/mods/nirender/sub/a.lua", "other/a.txt"):
+        assert placing_faults({"files": dict(manifest["files"], **{odd: {}})}) == [
+            "the file %s has no place in a run or a deploy (sets.place_of)" % odd], odd
+    twin = dict(manifest["files"], **{"plugin-test/MWSE/mods/nirender/Main.lua": {}})
+    assert "have one place" in placing_faults({"files": twin})[0], placing_faults({"files": twin})
+    # Never placed: a pdb, an esm, mgeXE.toml and d3d9.dll; a pdb in the plugin's folder too.
+    for withheld in ("d3d8.pdb", "Data Files/a.esm", "mge3/mgeXE.toml", "d3d9.dll", "Data Files/mwse/lib/akulakhan.pdb"):
+        assert never_placed(withheld) == "no deploy writes it", withheld
+
+
 def self_test():
     self_test_e_gate()
+    self_test_placing()
     commits = {"nirender": "6d1b214" + "0" * 33, "render-link": "d9741db" + "1" * 33, "mwse": "89198b53f0" + "2" * 30}
     assert set_name(commits) == "s-6d1b2140-d9741db1-89198b53"
     assert set_name(commits, {"render-link": "abcdef0123456789"}, "rig") == "s-6d1b2140-d9741db1+pabcdef01-89198b53-rig"
@@ -396,6 +554,18 @@ def self_test():
         os.remove(os.path.join(folder, "d3d8.pdb"))
         scratch_manifest(folder, name)
         assert faults_of(folder) == ""
+        # verify: the null passes; a sealed file with no place stops it, and check alone does not see it.
+        assert verify(folder)["name"] == name
+        write(os.path.join(folder, "tool.exe"), b"x")
+        scratch_manifest(folder, name)
+        assert faults_of(folder) == ""
+        try:
+            verify(folder)
+            raise AssertionError("verify took a file with no place")
+        except SetError as error:
+            assert "the file tool.exe has no place" in str(error), error
+        os.remove(os.path.join(folder, "tool.exe"))
+        scratch_manifest(folder, name)
         # A junction inside: named, and not entered.
         target = os.path.join(root, "elsewhere")
         os.mkdir(target)
