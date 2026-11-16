@@ -2305,12 +2305,18 @@ impl PipelineMaker {
         }
     }
 
-    /// The pipeline of a key with a fragment module of a stage key, or None when it fails. The
-    /// keys of the uber set (`stage_shaders::UBER_SET`) come here too, with the general text.
-    pub(crate) fn make(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
+    /// The pipeline of a key with a fragment module of a stage part and the constants of the key's
+    /// facts ([`crate::stage_shaders::StageKey::constants`]), or None when it fails. The keys of the
+    /// uber set (`stage_shaders::UBER_SET`) come here too, with the general text and no constants.
+    pub(crate) fn make(
+        &self,
+        key: PipelineKey,
+        fragment: &wgpu::ShaderModule,
+        constants: &[(&str, f64)],
+    ) -> Option<wgpu::RenderPipeline> {
         let clock = ticks::Clock::now();
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let pipeline = self.build(key, fragment);
+        let pipeline = self.build(key, fragment, constants);
         let error = pollster::block_on(scope.pop());
         let making = match key.stages {
             0 => Making::GeneralPipeline,
@@ -2330,13 +2336,20 @@ impl PipelineMaker {
     /// on the frame's thread.
     fn general(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
         let clock = ticks::Clock::now();
-        let pipeline = self.build(key, fragment);
+        let pipeline = self.build(key, fragment, &[]);
         self.times.add(Making::GeneralPipeline, clock.elapsed());
         pipeline
     }
 
-    /// The pipeline of a key, with the world shader's `vs` and the `fs` of `fragment`.
-    fn build(&self, key: PipelineKey, fragment: &wgpu::ShaderModule) -> Option<wgpu::RenderPipeline> {
+    /// The pipeline of a key, with the world shader's `vs` and the `fs` of `fragment`. The
+    /// constants go to the fragment stage only: the vertex stage is the general module, which
+    /// declares no override (the Architect's section 6.2).
+    fn build(
+        &self,
+        key: PipelineKey,
+        fragment: &wgpu::ShaderModule,
+        constants: &[(&str, f64)],
+    ) -> Option<wgpu::RenderPipeline> {
         let present = attributes(key.fvf, key.stride)?;
         let topology = match key.topology {
             1 => wgpu::PrimitiveTopology::PointList,
@@ -2468,7 +2481,10 @@ impl PipelineMaker {
             fragment: Some(wgpu::FragmentState {
                 module: fragment,
                 entry_point: Some("fs"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants,
+                    ..Default::default()
+                },
                 targets: &[Some(wgpu::ColorTargetState {
                     format: self.target_format,
                     blend,

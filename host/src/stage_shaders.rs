@@ -5,10 +5,12 @@
 //! alpha test function), and the facts of the draw that choose the branches of `fs` and of the
 //! extension's shade (the bits of `counts.w` in [`SHADE_BITS`], the lighting and normal flags,
 //! whether the draw takes the scene's values, whether it adds to the picture, whether it is
-//! flat-shaded, and whether it has a plane). For each key
-//! the helper makes a fragment shader from the world shader's own text, with those codes and
-//! facts as constants and the reads of the stages past the count left out. The arithmetic is the
-//! same; the switches, the branches that the key's draws cannot take and the record loads go.
+//! flat-shaded, and whether it has a plane). For each set of stage codes (a [`StagePart`]) the
+//! helper makes a fragment module from the world shader's own text, with the codes as constants
+//! and the reads of the stages past the count left out. The facts are the module's override
+//! constants, which each key's pipeline gives ([`StageKey::constants`], W530), so two keys that
+//! differ only in facts share a module. The arithmetic is the same; the switches, the branches
+//! that the key's draws cannot take and the record loads go.
 //!
 //! The world shader stays as the uber-shader: it draws a key until that key's pipeline is made,
 //! when a pipeline fails, past the cap on the keys, and with `MGE_XE_STAGE_SHADERS=0`. It is
@@ -167,8 +169,8 @@ const SHADE_BITS: u32 =
     1 | 2 | SKY_BITS | 16 | 32 | 128 | 512 | crate::CLOUDS_HOOK_BIT | crate::CORNER_LIGHT_BIT | crate::NO_LIGHTS_BIT;
 /// The sky's bits of `counts.w`: 4 the dome, 8 the shadow of a moon. Only the stream sets them
 /// (`stream::sky_bits`). The scene's bits of a table's kind never have them (`retained::apply_shade`
-/// takes them out), so the key's text takes them out of the scene's part too ([`fixed_once`]),
-/// and a table's draw has them as constants.
+/// takes them out), so a stage pipeline's `draw_counts_w` takes them out of the scene's part too,
+/// and a table's draw has them as constants ([`StageKey::constants`]).
 pub(crate) const SKY_BITS: u32 = 4 | 8;
 const _: () = assert!(SHADE_BITS <= u16::MAX as u32, "the stage key keeps the shade bits in a u16");
 
@@ -235,6 +237,33 @@ impl StageKey {
         Some(key)
     }
 
+    /// The part of the key that a stage module's text holds: the count and the codes of the stages.
+    fn part(&self) -> StagePart {
+        StagePart {
+            count: self.count,
+            color: self.color,
+            alpha: self.alpha,
+        }
+    }
+
+    /// The constants of the fragment stage of the key's pipeline: `FIXED` true and each fact of the
+    /// key, by its name in the stage facts' block of `shader.wgsl` ([`FACT_NAMES`]).
+    pub(crate) fn constants(&self) -> StageConstants {
+        let flag = |fact: bool| f64::from(u8::from(fact));
+        let values = [
+            1.0,
+            f64::from(self.shade),
+            f64::from(self.lit),
+            f64::from(self.normal),
+            flag(self.scene),
+            flag(self.flat),
+            flag(self.adds),
+            flag(self.plane),
+            f64::from(self.alpha_test),
+        ];
+        std::array::from_fn(|index| (FACT_NAMES[index], values[index]))
+    }
+
     /// The key as a line of numbers for the list.
     fn words(&self) -> Vec<u32> {
         let mut words = vec![
@@ -297,18 +326,45 @@ impl StageKey {
     }
 }
 
-/// The world shader's `fs` for one key, made from the world shader's text: the reads of the
-/// stages at and past the count give white, the stage loop becomes one step for each stage with
-/// its codes as constants, the alpha test has its function as a constant, and the draw's facts
-/// of the key are constants ([`fixed_once`], [`fixed_reads`]). A [`RewriteRefusal`] when the text does
-/// not have a part that this rewrite expects (then the uber-shader draws the key).
+/// The part of a stage key that a stage module's text holds: the count and the codes of the
+/// stages ([`fragment_source`]). Two keys that differ only in facts share it, and so share their
+/// module (the Architect's section 6.2, point 5).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub(crate) struct StagePart {
+    count: u8,
+    color: [[u8; 4]; STAGES],
+    alpha: [[u8; 3]; STAGES],
+}
+
+/// The names of the facts in the stage facts' block of `shader.wgsl`, in the order of
+/// [`StageKey::constants`].
+const FACT_NAMES: [&str; 9] = [
+    "FIXED",
+    "FIXED_SHADE",
+    "FIXED_LIT",
+    "FIXED_NORMAL",
+    "FIXED_SCENE",
+    "FIXED_FLAT",
+    "FIXED_ADDS",
+    "FIXED_PLANE",
+    "FIXED_ALPHA_TEST",
+];
+
+/// The constants of a stage pipeline's fragment stage ([`StageKey::constants`]).
+pub(crate) type StageConstants = [(&'static str, f64); FACT_NAMES.len()];
+
+/// The world shader's `fs` for one stage part, made from the world shader's text: the reads of
+/// the stages at and past the count give white, the stage loop becomes one step for each stage
+/// with its codes as constants, and the facts of the stage facts' block are override constants,
+/// which the pipeline of each key gives ([`stage_facts_as_overrides`]). A [`RewriteRefusal`] when
+/// the text does not have a part that this rewrite expects (then the uber-shader draws the key).
 ///
 /// The parts that the rewrite needs one time are searched in the crate's own part of the text
 /// only: the text before [`crate::request::EXTENSION_BEGIN`]. The text of an extension or of a
 /// mod's file is not ours, and a second copy of such a part in it changes nothing. The first
 /// such line is the boundary, so a copy of the line itself in a mod's text changes nothing
 /// either. A text with no such line is the crate's own as a whole.
-pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Result<String, RewriteRefusal> {
+pub(crate) fn fragment_source(world: &str, part: &StagePart) -> Result<String, RewriteRefusal> {
     let (own, extension) = match world.split_once(crate::request::EXTENSION_BEGIN) {
         Some((own, extension)) => (own, Some(extension)),
         None => (world, None),
@@ -316,7 +372,7 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Result<String, Rew
     let mut source = own.to_string();
     // The reads: each stage's line starts so; stage 0's read is kept (a draw with no stage has no
     // use for it, and the compiler drops it).
-    for stage in (key.count as usize).max(1)..STAGES {
+    for stage in (part.count as usize).max(1)..STAGES {
         let start = format!("    texels[{stage}] = bump_light(");
         let at = one(&source, &start, || format!("the read of stage {stage}"))?;
         let end = at + line_length(&source[at..]);
@@ -324,9 +380,9 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Result<String, Rew
     }
     // The reads below the count: after a stage that is no bump stage (22, 23), `bump_light` gives
     // the texel and `bump_move` gives no move, so the read is the texture's own.
-    for stage in 1..key.count as usize {
+    for stage in 1..part.count as usize {
         let before = stage - 1;
-        if matches!(key.color[before][0], 22 | 23) {
+        if matches!(part.color[before][0], 22 | 23) {
             continue;
         }
         let start = format!("    texels[{stage}] = bump_light({before}u, texels[{before}], ");
@@ -364,9 +420,9 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Result<String, Rew
         });
     }
     let mut steps = String::new();
-    for stage in 0..key.count as usize {
-        let [op, a1, a2, a0] = key.color[stage];
-        let [alpha_op, alpha1, alpha2] = key.alpha[stage];
+    for stage in 0..part.count as usize {
+        let [op, a1, a2, a0] = part.color[stage];
+        let [alpha_op, alpha1, alpha2] = part.alpha[stage];
         steps.push_str(&format!("    {{\n        let texel = texels[{stage}];\n"));
         steps.push_str(&format!(
             "        let color = operation({op}u, argument({a1}u, diffuse, current, texel), argument({a2}u, diffuse, current, texel), argument({a0}u, diffuse, current, texel), diffuse, current, texel);\n"
@@ -383,25 +439,11 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Result<String, Rew
     }
     source.replace_range(start..end, &steps);
 
-    // The alpha test: the draw's, and the same test on the colour of the clouds hook.
-    for (indent, value, part) in [
-        ("    ", "current", "the alpha test of the draw"),
-        ("        ", "cloud", "the alpha test of the clouds hook"),
-    ] {
-        let test = format!("{indent}if draws[record].more.z != 0u && !compare(draws[record].more.z, floor({value}.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n{indent}    discard;\n{indent}}}\n");
-        one(&source, &test, || part.to_string())?;
-        let fixed_test = match key.alpha_test {
-            0 => String::new(),
-            function => format!("{indent}if !compare({function}u, floor({value}.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n{indent}    discard;\n{indent}}}\n"),
-        };
-        source = source.replacen(&test, &fixed_test, 1);
-    }
-    let own = fixed_once(&source, key)?;
-    let whole = match extension {
+    let own = stage_facts_as_overrides(&source)?;
+    Ok(match extension {
         Some(extension) => format!("{own}{}{extension}", crate::request::EXTENSION_BEGIN),
         None => own,
-    };
-    fixed_reads(&whole, key)
+    })
 }
 
 /// Why the rewrite of a stage key's text failed: the part of the world shader's text that the
@@ -418,8 +460,6 @@ pub struct RewriteRefusal {
 
 /// The rewrite wanted the part one time.
 const ONE: &str = "1 wanted";
-/// The rewrite wanted the part one time or more.
-const SOME: &str = "1 or more wanted";
 
 impl RewriteRefusal {
     fn count(part: String, found: usize, wanted: &'static str) -> RewriteRefusal {
@@ -446,87 +486,56 @@ fn line_length(text: &str) -> usize {
     text.find('\n').unwrap_or(text.len())
 }
 
-/// The crate's own text with the facts of the key that the text tests at one place as constants,
-/// so that the compiler leaves out the branches that the key's draws cannot take: `from_scene`
-/// returns the key's scene bit, the test of `fogged` for a draw that adds to the picture is the
-/// key's add bit, the plane's test of `fs` is false for a key without a plane, and the scene's
-/// part of `draw_counts_w` never has [`SKY_BITS`]. A [`RewriteRefusal`] when the text does not have one
-/// of these parts one time.
-fn fixed_once(source: &str, key: &StageKey) -> Result<String, RewriteRefusal> {
-    let scene_test = "fn from_scene() -> bool {\n    return (draws[record].light_range.w & 4u) != 0u;\n}\n";
-    one(source, scene_test, || "the function from_scene".to_string())?;
-    let source = source.replacen(
-        scene_test,
-        &format!("fn from_scene() -> bool {{\n    return {};\n}}\n", key.scene),
-        1,
-    );
+/// The mark before the stage facts' block of the world shader's text, and the line after it.
+const STAGE_FACTS_BEGIN: &str = "// STAGE FACTS BEGIN";
+const STAGE_FACTS_END: &str = "// STAGE FACTS END\n";
 
-    // The one test of the add bit is in `fogged`, which `fs` and the extension's finish call.
-    let adds_test = format!("(draws[record].light_range.w & {}u) != 0u", crate::ADDS_BIT);
-    one(&source, &adds_test, || "the test of the add bit in fogged".to_string())?;
-    let source = source.replacen(&adds_test, &key.adds.to_string(), 1);
-
-    // The plane's test of `fs`: a draw without a plane keeps no read, test or `discard` of it.
-    let plane_test = "any(clip_plane != vec4f(0.0))";
-    one(&source, plane_test, || "the plane's test of fs".to_string())?;
-    let source = if key.plane {
-        source
-    } else {
-        source.replacen(plane_test, "false", 1)
-    };
-
-    // The scene's part of `draw_counts_w` never has the sky's bits.
-    let scene_part = "scene.counts[k >> 2u][k & 3u]";
-    one(&source, scene_part, || "the scene's part of draw_counts_w".to_string())?;
-    Ok(source.replacen(scene_part, &format!("({scene_part} & {}u)", !SKY_BITS), 1))
-}
-
-/// The whole text, the extension's part too, with the facts of the key that the text reads at
-/// many places as constants: each read of the flat bit is the key's, a read of the record's
-/// `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits of a retained
-/// draw stay values of the frame), and the reads of `flags.x` and `flags.y` are the key's values.
-/// Each read is replaced on purpose, so a copy in the extension's text is a constant too. A
-/// [`RewriteRefusal`] when the text has no such read at all.
-fn fixed_reads(source: &str, key: &StageKey) -> Result<String, RewriteRefusal> {
-    // Each read of the flat bit: the start of `fs`, and the vertex stage's and the extension's
-    // tests of a draw with no lights.
-    let flat_read = "draws[record].light_range.w & 16u";
-    if !source.contains(flat_read) {
-        return Err(RewriteRefusal::count("a read of the flat bit".to_string(), 0, SOME));
+/// The crate's own text with each fact of the stage facts' block declared as an `override` in
+/// place of a `const`: the text of a stage module (the Architect's section 6.2). The general text
+/// keeps the block as it is, so the general shader and every vertex stage declare no override,
+/// and wgpu compiles them one time. Each name of [`FACT_NAMES`] must have one `const` line in the
+/// block, and the block no other `const` line.
+fn stage_facts_as_overrides(own: &str) -> Result<String, RewriteRefusal> {
+    let begin = one(own, STAGE_FACTS_BEGIN, || "the begin mark of the stage facts".to_string())?;
+    let end = one(own, STAGE_FACTS_END, || "the end mark of the stage facts".to_string())?;
+    let start = (begin + line_length(&own[begin..]) + 1).min(own.len());
+    if start > end {
+        return Err(RewriteRefusal::count(
+            "the end mark of the stage facts after its begin mark".to_string(),
+            0,
+            ONE,
+        ));
     }
-    let source = source.replace(flat_read, &format!("{}u", if key.flat { 16 } else { 0 }));
-
-    let counts_w = "draws[record].counts.w";
-    if !source.contains(counts_w) {
-        return Err(RewriteRefusal::count("a read of counts.w".to_string(), 0, SOME));
+    let block = &own[start..end];
+    let declarations: Vec<&str> = block.lines().filter_map(|line| line.strip_prefix("const ")).collect();
+    for name in FACT_NAMES {
+        let declared = declarations
+            .iter()
+            .filter(|declaration| declaration.strip_prefix(name).is_some_and(|rest| rest.starts_with(':')))
+            .count();
+        if declared != 1 {
+            return Err(RewriteRefusal::count(
+                format!("the declaration of {name} in the stage facts"),
+                declared,
+                ONE,
+            ));
+        }
     }
-    let source = source.replace(
-        counts_w,
-        &format!("((draws[record].counts.w & {}u) | {}u)", !SHADE_BITS, key.shade),
-    );
-
-    let no_read = |field: &str| RewriteRefusal::count(format!("a read of {field}"), 0, SOME);
-    let source =
-        replace_field(&source, "draws[record].flags.x", &format!("{}u", key.lit)).ok_or_else(|| no_read("flags.x"))?;
-    replace_field(&source, "draws[record].flags.y", &format!("{}u", key.normal)).ok_or_else(|| no_read("flags.y"))
-}
-
-/// The text with each read of a field replaced (a read, not a longer name that starts with it,
-/// such as a swizzle); None when the text has no read of it.
-fn replace_field(source: &str, field: &str, value: &str) -> Option<String> {
-    let mut out = String::with_capacity(source.len());
-    let mut rest = source;
-    let mut found = false;
-    while let Some(at) = rest.find(field) {
-        let after = &rest[at + field.len()..];
-        let whole = !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
-        out.push_str(&rest[..at]);
-        out.push_str(if whole { value } else { field });
-        found |= whole;
-        rest = after;
+    if declarations.len() != FACT_NAMES.len() {
+        return Err(RewriteRefusal::count(
+            "a declaration in the stage facts that is no fact".to_string(),
+            declarations.len() - FACT_NAMES.len(),
+            "0 wanted",
+        ));
     }
-    out.push_str(rest);
-    found.then_some(out)
+    let overrides: String = block
+        .lines()
+        .map(|line| match line.strip_prefix("const ") {
+            Some(declaration) => format!("override {declaration}\n"),
+            None => format!("{line}\n"),
+        })
+        .collect();
+    Ok(format!("{}{overrides}{}", &own[..start], &own[end..]))
 }
 
 /// The code of the stage loop of the world shader's `fs` without its comments, as the steps of
@@ -572,8 +581,9 @@ fn stage_loop_range(source: &str) -> Result<(usize, usize), RewriteRefusal> {
     Ok((start, end))
 }
 
-/// The kinds of stage key that [`stage_rewrite_refusals`] tries, each with its name: one key for
-/// each fact that changes the rewrite's steps, and one with every bit of [`SHADE_BITS`].
+/// The kinds of stage key that [`stage_rewrite_refusals`] tries, each with its name: keys with
+/// no stage, with every stage and an alpha test, one key for each fact, and one with every bit of
+/// [`SHADE_BITS`]. The facts no longer change the text; their keys test the constants.
 fn kinds() -> Vec<(&'static str, StageKey)> {
     let mut plain = StageKey {
         count: 1,
@@ -626,7 +636,7 @@ pub fn stage_rewrite_refusals(world_source: &str) -> Vec<String> {
     kinds()
         .into_iter()
         .filter_map(|(kind, key)| {
-            fragment_source(world_source, &key)
+            fragment_source(world_source, &key.part())
                 .err()
                 .map(|refusal| format!("{kind}: {refusal}"))
         })
@@ -685,19 +695,27 @@ fn pipeline_from_words(words: &[u32]) -> Option<PipelineKey> {
 /// The name of the thread that makes the pipelines of a live session ([`StageShaders::start`]).
 pub(crate) const THREAD_NAME: &str = "stage pipelines";
 
-/// The name of a fragment module: the id of its stage key and its world variant
-/// (`PipelineKey::stages`, `PipelineKey::debug`).
+/// The name of a fragment module: the id of its stage part in this text's table of parts
+/// ([`StageShaders::module_of`]; 0 is the general text) and its world variant
+/// (`PipelineKey::debug`).
 type ModuleId = (u32, u32);
 
-fn module_id(key: &PipelineKey) -> ModuleId {
-    (key.stages, key.debug)
-}
+/// The module of the uber set: the general text of normal play.
+const UBER_MODULE: ModuleId = (0, 0);
 
-/// A pipeline to make on the thread: its key, and the fragment module's text when the thread
-/// has no module of its stage key and variant yet.
+/// A pipeline to make on the thread: its key, its module, the module's text when the thread has
+/// no such module yet, and the constants of its fragment stage (a stage key's; none for the uber
+/// set).
 struct Job {
     key: PipelineKey,
+    module: ModuleId,
     source: Option<String>,
+    constants: Option<StageConstants>,
+}
+
+/// The constants of a job or a pipeline as the slice that the pipeline takes.
+fn constants_slice(constants: &Option<StageConstants>) -> &[(&'static str, f64)] {
+    constants.as_ref().map_or(&[], |constants| &constants[..])
 }
 
 struct Done {
@@ -719,6 +737,11 @@ pub(crate) struct StageShaders {
     ids: HashMap<StageKey, u32>,
     /// The keys by id; id 0 is the uber-shader.
     keys: Vec<StageKey>,
+    /// The stage parts of this text's modules by id, and the id of each ([`StageShaders::module_of`]);
+    /// id 0 is the general text. They come from the text: a new world text starts them again, while
+    /// the keys keep their ids.
+    parts: Vec<StagePart>,
+    part_ids: HashMap<StagePart, u32>,
     /// The fragment modules of a replay; None for a module that failed.
     modules: HashMap<ModuleId, Option<wgpu::ShaderModule>>,
     /// The modules that the thread has.
@@ -788,6 +811,8 @@ impl StageShaders {
             variant_source: None,
             ids: HashMap::new(),
             keys: vec![StageKey::default()],
+            parts: vec![StagePart::default()],
+            part_ids: HashMap::new(),
             modules: HashMap::new(),
             sent_modules: HashSet::new(),
             failed_sources: HashSet::new(),
@@ -874,8 +899,41 @@ impl StageShaders {
         let world = self
             .world_text(variant)
             .ok_or_else(|| absent("the world shader's text of the variant"))?;
-        let key = self.keys.get(id as usize).ok_or_else(|| absent("the stage key of the id"))?;
-        fragment_source(world, key)
+        let part = self
+            .parts
+            .get(id as usize)
+            .filter(|_| id != 0)
+            .ok_or_else(|| absent("the stage part of the id"))?;
+        fragment_source(world, part)
+    }
+
+    /// The module of a key's pipeline: the general text for a key of the uber-shader, else the id
+    /// of the stage key's part, which this text's table gives at the first ask. Two keys that differ
+    /// only in facts share it.
+    fn module_of(&mut self, key: &PipelineKey) -> ModuleId {
+        if key.stages == 0 {
+            return (0, key.debug);
+        }
+        // An id past the keys has no part, and the text of its module is refused (`source_of`).
+        let Some(stage) = self.keys.get(key.stages as usize) else {
+            return (u32::MAX, key.debug);
+        };
+        let part = stage.part();
+        let next = self.parts.len() as u32;
+        let id = *self.part_ids.entry(part).or_insert(next);
+        if id == next {
+            self.parts.push(part);
+        }
+        (id, key.debug)
+    }
+
+    /// The constants of the fragment stage of a key's pipeline: its stage key's facts; none for a
+    /// key of the uber-shader.
+    fn constants_of(&self, key: &PipelineKey) -> Option<StageConstants> {
+        match key.stages {
+            0 => None,
+            id => self.keys.get(id as usize).map(StageKey::constants),
+        }
     }
 
     /// The world variant of the frames ([`crate::debug_lines::world_variant`]). A change drops
@@ -922,7 +980,7 @@ impl StageShaders {
         let spawned = std::thread::Builder::new().name(THREAD_NAME.into()).spawn(move || {
             let mut modules: HashMap<ModuleId, Option<wgpu::ShaderModule>> = HashMap::new();
             while let Ok(job) = job_receiver.recv() {
-                let id = module_id(&job.key);
+                let id = job.module;
                 if let Some(source) = job.source {
                     // The first module of a variant drops the modules of the variant before it.
                     let variant = id.1;
@@ -934,7 +992,7 @@ impl StageShaders {
                 let pipeline = modules
                     .get(&id)
                     .and_then(|module| module.as_ref())
-                    .and_then(|module| maker.make(job.key, module));
+                    .and_then(|module| maker.make(job.key, module, constants_slice(&job.constants)));
                 if done_sender.send(Done { key: job.key, pipeline }).is_err() {
                     break;
                 }
@@ -980,7 +1038,9 @@ impl StageShaders {
             if jobs
                 .send(Job {
                     key,
+                    module: UBER_MODULE,
                     source: source.take(),
+                    constants: None,
                 })
                 .is_err()
             {
@@ -988,7 +1048,7 @@ impl StageShaders {
             }
             self.pending.insert(key);
         }
-        self.sent_modules.insert(module_id(&UBER));
+        self.sent_modules.insert(UBER_MODULE);
     }
 
     /// The pipeline of a key of the uber-shader in normal play, when the thread made it as a key
@@ -1080,9 +1140,9 @@ impl StageShaders {
 
     /// Sends a pipeline to the thread; false when the thread is gone.
     fn send(&mut self, key: PipelineKey) -> bool {
-        // The module's text goes with the first pipeline of its stage key and variant; a key
+        // The module's text goes with the first pipeline of its stage part and variant; a key
         // whose text the rewrite cannot make is not sent.
-        let id = module_id(&key);
+        let id = self.module_of(&key);
         let source = if self.sent_modules.contains(&id) {
             None
         } else if self.failed_sources.contains(&id) {
@@ -1091,13 +1151,22 @@ impl StageShaders {
             match self.source_of(id) {
                 Ok(source) => Some(source),
                 Err(refusal) => {
-                    self.note_refusal(id, &refusal);
+                    self.note_refusal(id, key.stages, &refusal);
                     return false;
                 }
             }
         };
+        let constants = self.constants_of(&key);
         let Some(jobs) = &self.jobs else { return false };
-        if jobs.send(Job { key, source }).is_err() {
+        if jobs
+            .send(Job {
+                key,
+                module: id,
+                source,
+                constants,
+            })
+            .is_err()
+        {
             return false;
         }
         self.sent_modules.insert(id);
@@ -1153,22 +1222,20 @@ impl StageShaders {
         self.send_queued();
     }
 
-    /// A stage key whose text the rewrite cannot make: the uber-shader draws it. One line for each key and
-    /// variant, with the part that refused.
-    fn note_refusal(&mut self, id: ModuleId, refusal: &RewriteRefusal) {
+    /// A module whose text the rewrite cannot make: the uber-shader draws its keys. One line for each
+    /// stage part and variant, named by the stage key that asked first (`key`), with the part that refused.
+    fn note_refusal(&mut self, id: ModuleId, key: u32, refusal: &RewriteRefusal) {
         if self.failed_sources.insert(id) {
-            self.refused.entry(id.0).or_insert_with(|| refusal.to_string());
-            println!(
-                "stage shaders: the rewrite of stage key {} failed ({refusal}); the uber-shader draws it",
-                id.0
-            );
+            self.refused.entry(key).or_insert_with(|| refusal.to_string());
+            println!("stage shaders: the rewrite of stage key {key} failed ({refusal}); the uber-shader draws it");
         }
     }
 
     /// A pipeline of a stage key that failed: the uber-shader draws it. A key whose rewrite failed has its own
     /// line and count ([`StageShaders::note_refusal`]); this is a key that has a text.
     fn note_failed_pipeline(&mut self, key: PipelineKey) {
-        if self.failed.insert(key) && !self.failed_sources.contains(&module_id(&key)) {
+        let id = self.module_of(&key);
+        if self.failed.insert(key) && !self.failed_sources.contains(&id) {
             self.failed_pipelines.insert(key.stages);
             println!(
                 "stage shaders: the pipeline of stage key {} failed; the uber-shader draws it",
@@ -1179,7 +1246,8 @@ impl StageShaders {
 
     /// Counts a draw with a stage key that the uber-shader draws, by its cause.
     fn count_uber_draw(&mut self, key: &PipelineKey) {
-        if self.failed_sources.contains(&module_id(key)) {
+        let id = self.module_of(key);
+        if self.failed_sources.contains(&id) {
             self.draws_refused += 1;
         } else if self.failed.contains(key) {
             self.draws_failed += 1;
@@ -1204,22 +1272,23 @@ impl StageShaders {
             return None;
         }
         if self.sync {
-            let id = module_id(&key);
+            let id = self.module_of(&key);
             if !self.modules.contains_key(&id) {
                 let module = match self.source_of(id) {
                     Ok(source) => maker.module("stage shaders", &source),
                     Err(refusal) => {
-                        self.note_refusal(id, &refusal);
+                        self.note_refusal(id, key.stages, &refusal);
                         None
                     }
                 };
                 self.modules.insert(id, module);
             }
+            let constants = self.constants_of(&key);
             let pipeline = self
                 .modules
                 .get(&id)
                 .and_then(|module| module.as_ref())
-                .and_then(|module| maker.make(key, module));
+                .and_then(|module| maker.make(key, module, constants_slice(&constants)));
             let Some(pipeline) = pipeline else {
                 self.note_failed_pipeline(key);
                 self.count_uber_draw(&key);
@@ -1455,65 +1524,144 @@ mod tests {
     fn each_key_gives_valid_wgsl() {
         let world = world();
         for (count, test) in [(0, 0), (1, 0), (1, 5), (2, 0), (6, 7)] {
-            let source = fragment_source(&world, &key(count, test)).expect("the rewrite finds its parts");
+            let source = fragment_source(&world, &key(count, test).part()).expect("the rewrite finds its parts");
             crate::assert_wgsl("stage shader", &source);
         }
     }
 
+    /// The overrides of a stage module with a key's constants, as wgpu gives them to naga at a
+    /// pipeline's making: Ok, or naga's error.
+    fn with_constants(source: &str, constants: &[(&str, f64)]) -> Result<(), String> {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(source).map_err(|error| error.emit_to_string(source))?;
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .map_err(|error| error.emit_to_string(source))?;
+        let mut values = naga::back::PipelineConstants::default();
+        for &(name, value) in constants {
+            values.insert(name.to_string(), value);
+        }
+        naga::back::pipeline_constants::process_overrides(&module, &info, Some((naga::ShaderStage::Fragment, "fs")), &values)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// The constants of a key's pipeline are the facts of its key, by their names in the stage
+    /// facts' block, for each kind of key; naga takes them with each kind's module, as wgpu gives
+    /// them at a pipeline's making. The null: the general text declares no override, so it takes no
+    /// constant.
     #[test]
-    fn each_set_of_facts_gives_valid_wgsl() {
+    fn the_constants_of_a_pipeline_are_the_facts_of_its_key() {
         let world = world();
-        for (shade, lit, normal, scene, adds) in [
-            (0, 0, 0, false, false),
-            (SHADE_BITS as u16, 1, 1, true, true),
-            (1 | 32 | 128, 1, 0, false, true),
-            (2 | 16 | 512, 0, 1, true, false),
-            (crate::CLOUDS_HOOK_BIT as u16, 1, 0, false, false),
-        ] {
-            let key = StageKey {
-                shade,
-                lit,
-                normal,
-                scene,
-                adds,
-                ..key(1, 0)
-            };
-            let source = fragment_source(&world, &key).expect("the rewrite finds its parts");
-            crate::assert_wgsl("stage shader", &source);
+        let flag = |fact: bool| if fact { 1.0 } else { 0.0 };
+        for (kind, key) in kinds() {
+            let constants = key.constants();
+            let expected = [
+                ("FIXED", 1.0),
+                ("FIXED_SHADE", f64::from(key.shade)),
+                ("FIXED_LIT", f64::from(key.lit)),
+                ("FIXED_NORMAL", f64::from(key.normal)),
+                ("FIXED_SCENE", flag(key.scene)),
+                ("FIXED_FLAT", flag(key.flat)),
+                ("FIXED_ADDS", flag(key.adds)),
+                ("FIXED_PLANE", flag(key.plane)),
+                ("FIXED_ALPHA_TEST", f64::from(key.alpha_test)),
+            ];
+            assert_eq!(constants, expected, "{kind}");
+            let source = fragment_source(&world, &key.part()).unwrap();
+            with_constants(&source, &constants).unwrap_or_else(|error| panic!("{kind}: {error}"));
         }
+        let error = with_constants(&world, &key(1, 0).constants()).unwrap_err();
+        assert!(error.contains("not found in the shader"), "{error}");
     }
 
+    /// The shader's bits of the facts are the key's: the shade bits, the sky's bits and the bits
+    /// of `light_range.w` that a key holds (scene 4, flat 16, adds).
     #[test]
-    fn the_facts_of_the_key_are_constants() {
-        let key = StageKey {
-            shade: 1 | 32,
-            lit: 1,
-            normal: 0,
-            scene: false,
-            ..key(1, 0)
-        };
-        let source = fragment_source(&world(), &key).unwrap();
-        assert!(source.contains("fn from_scene() -> bool {\n    return false;\n}\n"));
-        assert!(!source.contains("light_range.w & 64u"));
-        assert!(!source.contains("draws[record].flags.x"));
-        assert!(!source.contains("draws[record].flags.y"));
-        let masked = format!("((draws[record].counts.w & {}u) | 33u)", !SHADE_BITS);
-        assert!(source.contains(&masked));
-        assert_eq!(
-            source.matches("draws[record].counts.w").count(),
-            source.matches(&masked).count(),
-            "a read of counts.w without the key's bits"
-        );
+    fn the_shaders_bits_of_the_facts_are_the_keys() {
+        let shader = include_str!("shader.wgsl");
+        assert!(shader.contains(&format!("\nconst SHADE_BITS: u32 = {SHADE_BITS}u;\n")));
+        assert!(shader.contains(&format!("\nconst SKY_BITS: u32 = {SKY_BITS}u;\n")));
+        let light_facts = 4 | 16 | crate::ADDS_BIT;
+        assert!(shader.contains(&format!("\nconst LIGHT_FACT_BITS: u32 = {light_facts}u;\n")));
     }
 
+    /// Keys that differ only in facts share one module; a key with other codes has its own. The
+    /// general text is module 0.
     #[test]
-    fn a_field_read_is_replaced_and_a_longer_name_is_not() {
-        let text = "a = d.flags.x; b = d.flags.xy; c = d.flags.x_2; e = d.flags.x\n";
+    fn keys_that_differ_only_in_facts_share_a_module() {
+        let mut shaders = StageShaders::new(true, &world());
+        let plain = key(1, 0);
+        let mut shared = Vec::new();
+        let mut others = Vec::new();
+        for (kind, stage) in kinds() {
+            let id = shaders.intern(stage);
+            let module = shaders.module_of(&pipeline_key(id, 0));
+            if stage.part() == plain.part() {
+                shared.push((kind, module));
+            } else {
+                others.push((kind, module));
+            }
+        }
+        assert!(shared.len() >= 10, "{shared:?}");
+        assert!(shared.iter().all(|&(_, module)| module == (1, 0)), "{shared:?}");
+        assert_eq!(others.len(), 2, "{others:?}");
+        assert!(others.iter().all(|&(_, module)| module.0 > 1), "{others:?}");
+        assert_ne!(others[0].1, others[1].1);
+        assert_eq!(shaders.module_of(&pipeline_key(0, 0)), UBER_MODULE);
+        assert_eq!(shaders.parts.len(), 1 + 1 + others.len());
+        // A variant of the same part is a module of its own.
+        let id = shaders.intern(plain);
+        assert_eq!(shaders.module_of(&pipeline_key(id, view_id::LIGHTS)), (1, view_id::LIGHTS));
+    }
+
+    /// A stage module's text is the general text with the stage facts' block as overrides: no fact
+    /// is searched or replaced, and the facts are read through their functions. The null: the
+    /// general text keeps the block as `const`.
+    #[test]
+    fn a_stage_text_declares_the_facts_as_overrides() {
+        let world = world();
+        let source = fragment_source(&world, &key(1, 0).part()).unwrap();
+        for name in FACT_NAMES {
+            assert_eq!(source.matches(&format!("\noverride {name}: ")).count(), 1, "{name}");
+            assert_eq!(source.matches(&format!("\nconst {name}: ")).count(), 0, "{name}");
+            assert_eq!(world.matches(&format!("\nconst {name}: ")).count(), 1, "{name}");
+            assert_eq!(world.matches(&format!("\noverride {name}: ")).count(), 0, "{name}");
+        }
+        for read in [
+            "fn from_scene() -> bool {\n    if FIXED { return FIXED_SCENE; }\n",
+            "fn draw_flat() -> bool {\n    if FIXED { return FIXED_FLAT; }\n",
+            "    if draw_adds() { return color * clear; }\n",
+            "draw_has_plane(clip_plane)",
+            "    if draw_flat() {\n        inp.color = inp.color_flat;",
+            "(draw_counts_w() & 32768u) != 0u && !draw_flat()",
+            "    if draw_alpha_test() != 0u && !compare(draw_alpha_test(), floor(current.a * 255.0 + 0.5), ",
+        ] {
+            assert_eq!(source.matches(read).count(), 1, "{read}");
+            assert_eq!(world.matches(read).count(), 1, "{read}");
+        }
+        crate::assert_wgsl("stage shader", &source);
+    }
+
+    /// A block of the stage facts that is not as the rewrite needs it is named with its count; no key
+    /// gets a text.
+    #[test]
+    fn a_broken_block_of_the_stage_facts_is_named() {
+        let world = world();
+        let refusal = |text: &str| fragment_source(text, &key(1, 0).part()).unwrap_err().to_string();
         assert_eq!(
-            replace_field(text, "d.flags.x", "1u").as_deref(),
-            Some("a = 1u; b = d.flags.xy; c = d.flags.x_2; e = 1u\n")
+            refusal(&world.replacen(STAGE_FACTS_BEGIN, "// gone", 1)),
+            "the begin mark of the stage facts: 0 in the text, 1 wanted"
         );
-        assert_eq!(replace_field("d.flags.xy", "d.flags.x", "1u"), None);
+        assert_eq!(
+            refusal(&world.replacen("const FIXED_FLAT: bool = false;\n", "", 1)),
+            "the declaration of FIXED_FLAT in the stage facts: 0 in the text, 1 wanted"
+        );
+        let extra = world.replacen(STAGE_FACTS_END, &format!("const FIXED_MORE: u32 = 0u;\n{STAGE_FACTS_END}"), 1);
+        assert_eq!(
+            refusal(&extra),
+            "a declaration in the stage facts that is no fact: 1 in the text, 0 wanted"
+        );
     }
 
     #[test]
@@ -1550,88 +1698,33 @@ mod tests {
         assert!(!StageKey::of(&data).unwrap().plane);
     }
 
-    #[test]
-    fn the_flat_the_plane_and_the_sky_are_constants_of_the_text() {
-        let world = world();
-        for (flat, bit) in [(false, 0), (true, 16)] {
-            let source = fragment_source(&world, &StageKey { flat, ..key(1, 0) }).unwrap();
-            assert!(!source.contains("light_range.w & 16u"));
-            assert!(
-                source.contains(&format!("    if ({bit}u) != 0u {{\n        inp.color = inp.color_flat;")),
-                "{flat}"
-            );
-            // The vertex stage's test of a draw with no lights takes the key's flat bit too.
-            assert!(
-                source.contains(&format!("(draw_counts_w() & 32768u) != 0u && ({bit}u) == 0u")),
-                "{flat}"
-            );
-        }
-        let without = fragment_source(&world, &key(1, 0)).unwrap();
-        assert!(!without.contains("any(clip_plane != vec4f(0.0))"));
-        assert!(without.contains("== 0u && false && dot(inp.world_position, clip_plane.xyz)"));
-        let with = fragment_source(
-            &world,
-            &StageKey {
-                plane: true,
-                ..key(1, 0)
-            },
-        )
-        .unwrap();
-        assert!(with.contains("== 0u && any(clip_plane != vec4f(0.0)) && dot("));
-        for source in [&without, &with] {
-            crate::assert_wgsl("stage shader", source);
-        }
-        let all = StageKey {
-            flat: true,
-            plane: true,
-            shade: SHADE_BITS as u16,
-            ..key(2, 0)
-        };
-        crate::assert_wgsl("stage shader", &fragment_source(&world, &all).unwrap());
-        // The scene's part of the bits has no sky bit, in each key.
-        for source in [&without, &with] {
-            let masked = format!("(scene.counts[k >> 2u][k & 3u] & {}u)", !SKY_BITS);
-            assert_eq!(source.matches(&masked).count(), 1);
-            assert_eq!(source.matches("scene.counts[").count(), 1);
-        }
-    }
-
-    /// No capture of the play set has a flat-shaded draw or the shadow of a moon. So the text is
-    /// their test: the text of a key with the bit and of the same key without it differ only in
-    /// the bit's constants, and nothing else of the text changes.
+    /// No capture of the play set has a flat-shaded draw or the shadow of a moon. So the key is
+    /// their test: a key with the bit and the same key without it share their module, and their
+    /// constants differ only in the bit's fact.
     #[test]
     fn the_flat_bit_and_the_moon_bit_change_only_their_constants() {
-        let world = world();
-
-        // The flat bit: each read of it is the constant 0u or 16u (the start of `fs`, the
-        // vertex stage's and the extension's tests of a draw with no lights).
-        let smooth = fragment_source(&world, &key(1, 0)).unwrap();
-        let flat = fragment_source(&world, &StageKey { flat: true, ..key(1, 0) }).unwrap();
-        assert_eq!(smooth.lines().count(), flat.lines().count());
-        let mut changed = 0;
-        for (without, with) in smooth.lines().zip(flat.lines()) {
-            if without != with {
-                assert_eq!(without.replace("(0u)", "(16u)"), with);
-                changed += 1;
-            }
-        }
-        assert!(changed >= 2, "{changed} lines changed");
-
-        // The shadow of a moon, bit 8 of the shade: the key's bits in each read of `counts.w`.
         let base = key(1, 0);
+        let flat = StageKey { flat: true, ..base };
         let moon = StageKey {
             shade: base.shade | 8,
             ..base
         };
-        let without = fragment_source(&world, &base).unwrap();
-        let with = fragment_source(&world, &moon).unwrap();
-        let (from, to) = (format!("| {}u)", base.shade), format!("| {}u)", moon.shade));
-        assert!(without.contains(&from));
-        assert_eq!(without.replace(&from, &to), with);
-        assert!(with.contains("(draw_counts_w() & 1036u) != 0u"));
-        for source in [&smooth, &flat, &with] {
-            crate::assert_wgsl("stage shader", source);
+        for (other, changed) in [
+            (flat, ("FIXED_FLAT", 1.0)),
+            (moon, ("FIXED_SHADE", f64::from(base.shade | 8))),
+        ] {
+            assert_eq!(other.part(), base.part());
+            let differ: Vec<(&str, f64)> = base
+                .constants()
+                .iter()
+                .zip(other.constants())
+                .filter(|(before, after)| **before != *after)
+                .map(|(_, after)| after)
+                .collect();
+            assert_eq!(differ, [changed]);
         }
+        // The shader tests the moon's bit in the bits that `draw_counts_w` gives.
+        assert_eq!(world().matches("(draw_counts_w() & 1036u) != 0u").count(), 1);
     }
 
     #[test]
@@ -1693,8 +1786,8 @@ mod tests {
 
     #[test]
     fn the_add_bit_is_a_constant_of_the_key() {
-        // A draw that adds and one that does not take two keys, and each key's `fogged` has the
-        // test as a constant: the code of a draw that does not add has no branch on the bit (W287).
+        // A draw that adds and one that does not take two keys with one module; the add bit is a
+        // constant of each key's pipeline, which `fogged` reads through `draw_adds` (W287).
         let mut data = DrawData::zeroed();
         data.counts[3] = 1 | 128;
         data.flags = [1, 1, 0, 0];
@@ -1702,15 +1795,19 @@ mod tests {
         data.light_range[3] = crate::ADDS_BIT;
         let adding = StageKey::of(&data).unwrap();
         assert_ne!(other, adding);
+        assert_eq!(other.part(), adding.part());
+        let adds = |key: &StageKey| {
+            key.constants()
+                .iter()
+                .find(|(name, _)| *name == "FIXED_ADDS")
+                .map(|&(_, value)| value)
+        };
+        assert_eq!((adds(&other), adds(&adding)), (Some(0.0), Some(1.0)));
 
         let world = world();
-        for (key, constant) in [(other, "if false {"), (adding, "if true {")] {
-            let source = fragment_source(&world, &key).unwrap();
-            let fogged = &source[source.find("fn fogged(").unwrap()..];
-            let fogged = &fogged[..fogged.find("\n}\n").unwrap()];
-            assert!(fogged.contains(constant), "{fogged}");
-            assert!(!source.contains("light_range.w & 64u"));
-        }
+        let fogged = &world[world.find("fn fogged(").unwrap()..];
+        let fogged = &fogged[..fogged.find("\n}\n").unwrap()];
+        assert!(fogged.contains("if draw_adds() {"), "{fogged}");
     }
 
     #[test]
@@ -1739,7 +1836,7 @@ mod tests {
 
     #[test]
     fn the_rewrite_leaves_no_loop_and_no_unused_read() {
-        let source = fragment_source(&world(), &key(2, 0)).unwrap();
+        let source = fragment_source(&world(), &key(2, 0).part()).unwrap();
         assert!(!source.contains("for (var i = 0u; i < draws[record].counts.y; i++)"));
         assert!(source.contains("    texels[2] = vec4f(1.0);"));
         assert!(!source.contains("draws[record].more.z != 0u && !compare"));
@@ -1755,7 +1852,7 @@ mod tests {
             let mut bump = key(3, 0);
             bump.color[1] = [op, 2, 1, 1];
             bump.color[2] = [4, 2, 0, 1];
-            let source = fragment_source(&world, &bump).unwrap();
+            let source = fragment_source(&world, &bump.part()).unwrap();
             crate::assert_wgsl("stage shader", &source);
             assert!(source.contains("    texels[2] = bump_light(1u, texels[1], textureSample("));
             assert!(source.contains(" + bump_move(1u, texels[1])));\n"));
@@ -1773,7 +1870,7 @@ mod tests {
         assert_eq!(stage_loop_range(&planted), stage_loop_range(&world));
         assert_eq!(stage_rewrite_refusals(&planted), Vec::<String>::new());
         for (_, key) in kinds() {
-            let source = fragment_source(&planted, &key).unwrap();
+            let source = fragment_source(&planted, &key.part()).unwrap();
             assert_eq!(source.matches("    current = current * 1.0;\n").count(), 1);
         }
     }
@@ -1803,10 +1900,10 @@ mod tests {
     fn a_broken_mark_of_the_stage_loop_is_named() {
         let world = world();
         let no_end = world.replacen(STAGE_LOOP_END, "", 1);
-        let refusal = fragment_source(&no_end, &key(1, 0)).unwrap_err();
+        let refusal = fragment_source(&no_end, &key(1, 0).part()).unwrap_err();
         assert_eq!((refusal.part.as_str(), refusal.found), ("the end mark of the stage loop", 0));
         let two_begins = world.replacen(STAGE_LOOP_END, &format!("{STAGE_LOOP_END}{STAGE_LOOP_BEGIN}\n"), 1);
-        let refusal = fragment_source(&two_begins, &key(1, 0)).unwrap_err();
+        let refusal = fragment_source(&two_begins, &key(1, 0).part()).unwrap_err();
         assert_eq!(
             (refusal.part.as_str(), refusal.found),
             ("the begin mark of the stage loop", 2)
@@ -1835,11 +1932,10 @@ mod tests {
             "    for (var i = 0u; i < draws[record].counts.y; i++) {\n",
             "    if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {\n        discard;\n    }\n",
             "        if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(cloud.a * 255.0 + 0.5), f32(draws[record].more.w)) {\n            discard;\n        }\n",
-            "fn from_scene() -> bool {\n    return (draws[record].light_range.w & 4u) != 0u;\n}\n",
-            "(draws[record].light_range.w & 64u) != 0u\n",
-            "any(clip_plane != vec4f(0.0))\n",
-            "scene.counts[k >> 2u][k & 3u]\n",
             "    texels[1] = bump_light(\n",
+            "// STAGE FACTS BEGIN\n",
+            "const FIXED: bool = false;\n",
+            "// STAGE FACTS END\n",
             "// EXTENSION TEXT BEGIN: the crate's own text ends here.\n",
         ];
         // The mod's text here is not code that compiles: the rewrite works on the text and does not read WGSL.
@@ -1847,7 +1943,7 @@ mod tests {
         let own = crate::extension::extension_shaders(None);
         let world = crate::request::world_shader_source(&format!("{own}{mod_text}"));
         assert_eq!(stage_rewrite_refusals(&world), Vec::<String>::new());
-        let source = fragment_source(&world, &key(2, 5)).unwrap();
+        let source = fragment_source(&world, &key(2, 5).part()).unwrap();
         for copy in &copies[..copies.len() - 1] {
             assert!(source.contains(copy), "the copy is as the mod wrote it: {copy}");
         }
@@ -1887,7 +1983,7 @@ mod tests {
             1,
         );
         assert_eq!(
-            fragment_source(&planted, &key(2, 0)).unwrap_err().wanted,
+            fragment_source(&planted, &key(2, 0).part()).unwrap_err().wanted,
             "its code is not the code that the steps copy"
         );
         // A new comment is not a change of the code.
@@ -1896,7 +1992,7 @@ mod tests {
             "        var alpha = current;\n        // A note.\n",
             1,
         );
-        assert!(fragment_source(&commented, &key(2, 0)).is_ok());
+        assert!(fragment_source(&commented, &key(2, 0).part()).is_ok());
     }
 
     #[test]
@@ -1924,7 +2020,7 @@ mod tests {
     #[test]
     fn the_tier_c_text_rewrites_too() {
         let world = crate::request::tier_c_shader_source(&world());
-        assert!(fragment_source(&world, &key(2, 0)).is_ok());
+        assert!(fragment_source(&world, &key(2, 0).part()).is_ok());
     }
 
     #[test]
@@ -2289,5 +2385,190 @@ mod tests {
             )),
             "{report}"
         );
+    }
+
+    /// Each kind of key makes its pipeline with its constants through the renderer's maker: naga
+    /// checks the values of the overrides only when a pipeline is made. The null: a constant that the
+    /// module does not declare fails the pipeline. Needs a GPU:
+    /// `cargo test -- --ignored one_pipeline_for_each_kind --test-threads=1` in `host`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn one_pipeline_for_each_kind_of_key() {
+        let (renderer, _) = crate::Renderer::new(
+            wgpu::Backends::all(),
+            None,
+            wgpu::TextureFormat::Rgba8Unorm,
+            crate::extension::extension_shaders(None),
+            0,
+            1,
+        )
+        .expect("a device");
+        let world = renderer.stage_shaders.world_source.clone();
+        let pipeline = PipelineKey {
+            samples: 1,
+            stages: 1,
+            ..UBER_SET[0]
+        };
+        for (kind, key) in kinds() {
+            let source = fragment_source(&world, &key.part()).unwrap();
+            let module = renderer
+                .maker
+                .module(kind, &source)
+                .unwrap_or_else(|| panic!("{kind}: the module"));
+            assert!(renderer.maker.make(pipeline, &module, &key.constants()).is_some(), "{kind}");
+        }
+        let source = fragment_source(&world, &key(1, 0).part()).unwrap();
+        let module = renderer.maker.module("the null", &source).unwrap();
+        assert!(renderer.maker.make(pipeline, &module, &[("FIXED_GONE", 1.0)]).is_none());
+    }
+
+    /// The null of the constants (the Architect's section 6.5): pictures cannot tell "the
+    /// constants are in effect" from "`FIXED` is false everywhere". A pipeline whose constant
+    /// differs from the draw's record on purpose writes the constant's value into its one pixel;
+    /// the same module with no constant given, and the general text, write the record's. The text
+    /// is the crate's stage facts' block, as the general text and as a stage module has it
+    /// ([`stage_facts_as_overrides`]), and the crate's own `draw_alpha_test`, over a record with
+    /// one field. Needs a GPU: `cargo test -- --ignored a_constant_in_effect` in `host`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_constant_in_effect_shows_in_the_pixel_and_no_constant_shows_the_record() {
+        use crate::objects::{Create, CreateView};
+        let shader = include_str!("shader.wgsl");
+        let block = &shader[shader.find(STAGE_FACTS_BEGIN).unwrap()..];
+        let block = &block[..block.find(STAGE_FACTS_END).unwrap() + STAGE_FACTS_END.len()];
+        let function = &shader[shader.find("fn draw_alpha_test() -> u32 {").unwrap()..];
+        let function = &function[..function.find("\n}\n").unwrap() + 3];
+        let general = format!(
+            "struct Draw {{ more: vec4u }}\n\
+             @group(0) @binding(0) var<storage, read> draws: array<Draw>;\n\
+             var<private> record: u32;\n\
+             {block}{function}\
+             @vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {{\n\
+             \x20   let corner = vec2f(f32((index << 1u) & 2u), f32(index & 2u)) * 2.0 - 1.0;\n\
+             \x20   return vec4f(corner, 0.0, 1.0);\n\
+             }}\n\
+             @fragment fn fs() -> @location(0) vec4u {{ return vec4u(draw_alpha_test(), 0u, 0u, 1u); }}\n"
+        );
+        let stage = stage_facts_as_overrides(&general).unwrap();
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
+        // The record's alpha test is 3; the key's constant says 5.
+        let record = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("the record"),
+            contents: bytemuck::cast_slice(&[0u32, 0, 3, 0]),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let target = device.counted_texture(&wgpu::TextureDescriptor {
+            label: Some("one pixel"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let read = device.counted_buffer(&wgpu::BufferDescriptor {
+            label: Some("the pixel"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let pixel = |source: &str, constants: &[(&str, f64)]| -> u32 {
+            let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("the null"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+            let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("the null"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants,
+                        ..Default::default()
+                    },
+                    targets: &[Some(wgpu::TextureFormat::R32Uint.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            let group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("the null"),
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: record.as_entire_binding(),
+                }],
+            });
+            let view = target.counted_view(&Default::default());
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("the null"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &read,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: None,
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            read.slice(..).map_async(wgpu::MapMode::Read, |result| result.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let value = bytemuck::cast_slice::<u8, u32>(&read.slice(..).get_mapped_range().expect("the pixel")[..4])[0];
+            read.unmap();
+            value
+        };
+
+        let key = StageKey {
+            alpha_test: 5,
+            ..key(1, 0)
+        };
+        assert_eq!(pixel(&stage, &key.constants()), 5, "the constant");
+        assert_eq!(pixel(&stage, &[]), 3, "no constant: the record");
+        assert_eq!(pixel(&general, &[]), 3, "the general text: the record");
     }
 }

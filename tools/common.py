@@ -529,7 +529,7 @@ def stage_test():
     rust = open(os.path.join(REPO, "host", "src", "stage_shaders.rs"), encoding="utf-8").read()
     for part in ('"' + STAGE_FAULT_START + "{}; {}; the uber-shader drew {uber_draws} draws that have a stage key ({} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made); {} draws past the cap of {MAX_KEYS} keys\"",
                  '"stage shaders: {} ({made}), ', "; {}; {}; draws on the uber-shader with a stage key: {} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made; {} draws past the cap, {} draws with no key\"",
-                 '"{} rewrites failed"', '"0 pipelines failed"', '"{} pipelines failed (stage keys {})"', '"stage key {id}: {refusal}"', '"{}: {} in the text, {}"', '"1 wanted"', '"1 or more wanted"',
+                 '"{} rewrites failed"', '"0 pipelines failed"', '"{} pipelines failed (stage keys {})"', '"stage key {id}: {refusal}"', '"{}: {} in the text, {}"', '"1 wanted"', '"0 wanted"',
                  '"made at the first use"', '"made on a thread, with no list: a cold start"', '"made on a thread, with a list"'):
         assert part in rust, "host/src/stage_shaders.rs no longer has %s: change the readers of common.py with it" % part
     codes = open(os.path.join(REPO, "src", "stream_format.rs"), encoding="utf-8").read()

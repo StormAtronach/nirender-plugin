@@ -168,8 +168,72 @@ struct Scene {
 @group(0) @binding(14) var<storage, read> effect_entries: array<mat4x4f>;
 @group(0) @binding(11) var<storage, read> lights_retained: array<Light>;
 
+// The facts of a stage key (W530). This text declares them as `const`, with FIXED false: each
+// function below reads the fact from the draw's record. It is the general shader and the vertex
+// module of every pipeline. The fragment module of a stage pipeline is made from this text with
+// each `const` of the block as an `override` (`stage_shaders::stage_facts_as_overrides`), and the
+// pipeline gives FIXED true and its key's facts (`stage_shaders::StageKey::constants`). The
+// compiler drops the branch that FIXED cannot take.
+// STAGE FACTS BEGIN: one declaration on each line between the marks.
+const FIXED: bool = false;
+// The bits of SHADE_BITS of the record's `counts.w`.
+const FIXED_SHADE: u32 = 0u;
+// `flags.x` (the lighting) and `flags.y` (the vertex has a normal).
+const FIXED_LIT: u32 = 0u;
+const FIXED_NORMAL: u32 = 0u;
+// Bits 4 (the scene's values), 16 (flat-shaded) and 64 (adds to the picture) of `light_range.w`.
+const FIXED_SCENE: bool = false;
+const FIXED_FLAT: bool = false;
+const FIXED_ADDS: bool = false;
+// The draw has a plane of its own.
+const FIXED_PLANE: bool = false;
+// The alpha test's function, 0 for none (`more.z`).
+const FIXED_ALPHA_TEST: u32 = 0u;
+// STAGE FACTS END
+// The bits of `counts.w` that a stage key holds (`stage_shaders::SHADE_BITS`), and the sky's bits
+// among them, which the scene's part never has (`stage_shaders::SKY_BITS`).
+const SHADE_BITS: u32 = 50879u;
+const SKY_BITS: u32 = 12u;
+// The bits of `light_range.w` that a stage key holds: 4, 16 and 64.
+const LIGHT_FACT_BITS: u32 = 84u;
+
 fn from_scene() -> bool {
+    if FIXED { return FIXED_SCENE; }
     return (draws[record].light_range.w & 4u) != 0u;
+}
+fn draw_flat() -> bool {
+    if FIXED { return FIXED_FLAT; }
+    return (draws[record].light_range.w & 16u) != 0u;
+}
+fn draw_adds() -> bool {
+    if FIXED { return FIXED_ADDS; }
+    return (draws[record].light_range.w & 64u) != 0u;
+}
+fn draw_lit() -> u32 {
+    if FIXED { return FIXED_LIT; }
+    return draws[record].flags.x;
+}
+fn draw_normal() -> u32 {
+    if FIXED { return FIXED_NORMAL; }
+    return draws[record].flags.y;
+}
+fn draw_alpha_test() -> u32 {
+    if FIXED { return FIXED_ALPHA_TEST; }
+    return draws[record].more.z;
+}
+// Whether the plane `plane` of the draw can clip: a key without a plane has none.
+fn draw_has_plane(plane: vec4f) -> bool {
+    if FIXED && !FIXED_PLANE { return false; }
+    return any(plane != vec4f(0.0));
+}
+// The record's `light_range.w` with the key's facts in their bits, for the extension's
+// `draw.light_range.w` (`retained::rewrite_extension_text`).
+fn draw_light_range_w() -> u32 {
+    let word = draws[record].light_range.w;
+    if FIXED {
+        return (word & ~LIGHT_FACT_BITS) | select(0u, 4u, FIXED_SCENE) | select(0u, 16u, FIXED_FLAT) | select(0u, 64u, FIXED_ADDS);
+    }
+    return word;
 }
 fn draw_view() -> mat4x4f {
     if from_scene() { return scene.view; }
@@ -213,7 +277,7 @@ fn draw_fog() -> vec4f {
 // (bit 64 of `light_range.w`, `adds_to_picture`) gets darker and takes no fog colour, as
 // MGE XE's Direct3D 9 FFE does; any other draw goes toward the fog colour.
 fn fogged(color: vec3f, clear: f32) -> vec3f {
-    if (draws[record].light_range.w & 64u) != 0u { return color * clear; }
+    if draw_adds() { return color * clear; }
     return mix(draw_fog_color().rgb, color, clear);
 }
 fn draw_clip_plane() -> vec4f {
@@ -223,11 +287,19 @@ fn draw_clip_plane() -> vec4f {
 // The bits of the extension's shade for the kind of draw (`light_range.z`, the index of
 // `slot_kind`), as the extension sets them for a draw of the stream.
 fn draw_counts_w() -> u32 {
+    var own = draws[record].counts.w;
+    if FIXED {
+        own = (own & ~SHADE_BITS) | FIXED_SHADE;
+    }
     if from_scene() {
         let k = draws[record].light_range.z;
-        return draws[record].counts.w | scene.counts[k >> 2u][k & 3u];
+        var kind = scene.counts[k >> 2u][k & 3u];
+        if FIXED {
+            kind = kind & ~SKY_BITS;
+        }
+        return own | kind;
     }
-    return draws[record].counts.w;
+    return own;
 }
 fn draw_extension(i: u32) -> vec4f {
     if from_scene() {
@@ -536,7 +608,7 @@ fn vs(in: VertexIn) -> VertexOut {
     // With bit 128 the extension makes the light for each pixel, and this stage makes none.
     // A draw that the extension only finishes (bit 1 alone: its fog, its shadow) keeps the
     // light of this stage.
-    if draws[record].flags.x == 0u || (draw_counts_w() & 128u) != 0u {
+    if draw_lit() == 0u || (draw_counts_w() & 128u) != 0u {
         out.color = vertex_color;
     } else {
         var diffuse = draws[record].material_diffuse;
@@ -554,7 +626,7 @@ fn vs(in: VertexIn) -> VertexOut {
         // A lit draw without normals: the fixed function takes a zero normal, so the lights
         // give it their ambient light and no diffuse light.
         var normal = vec3f(0.0);
-        if draws[record].flags.y != 0u {
+        if draw_normal() != 0u {
             normal = normalize(world_normal);
         }
         var sum = emissive + ambient * draw_scene_ambient().rgb;
@@ -593,7 +665,7 @@ fn vs(in: VertexIn) -> VertexOut {
     // light has no part that changes over a triangle, so the extension makes its colour here
     // (`extension_no_lights_shade`), and the fragment stage takes it. Both bits are facts of
     // the stage key. A flat-shaded one is lit in the fragment stage.
-    if (draw_counts_w() & 32768u) != 0u && (draws[record].light_range.w & 16u) == 0u {
+    if (draw_counts_w() & 32768u) != 0u && !draw_flat() {
         out.color = extension_no_lights_shade(vertex_color, out.color);
     }
 
@@ -713,7 +785,7 @@ fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
 fn fs(in: VertexOut) -> @location(0) vec4f {
     record = in.record;
     var inp = in;
-    if (draws[record].light_range.w & 16u) != 0u {
+    if draw_flat() {
         inp.color = inp.color_flat;
         inp.world_normal = inp.world_normal_flat;
     }
@@ -735,14 +807,14 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         // final, as a pixel shader's on the fixed-function state; the alpha test of the draw
         // still acts on them.
         let cloud = extension_clouds_color(CloudPixel(final_coordinate(0u, inp.coordinate0), inp.vertex_color, normalize(inp.world_position), inp.clip.xy));
-        if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(cloud.a * 255.0 + 0.5), f32(draws[record].more.w)) {
+        if draw_alpha_test() != 0u && !compare(draw_alpha_test(), floor(cloud.a * 255.0 + 0.5), f32(draws[record].more.w)) {
             discard;
         }
         return cloud;
     }
     // A sky draw has a direction in `world_position`, and is above the water in any case.
     let clip_plane = draw_clip_plane();
-    if (draw_counts_w() & 12u) == 0u && any(clip_plane != vec4f(0.0)) && dot(inp.world_position, clip_plane.xyz) + clip_plane.w < 0.0 {
+    if (draw_counts_w() & 12u) == 0u && draw_has_plane(clip_plane) && dot(inp.world_position, clip_plane.xyz) + clip_plane.w < 0.0 {
         discard;
     }
     let shaded = (draw_counts_w() & 1u) != 0u;
@@ -777,7 +849,7 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     }
     // STAGE LOOP END
 
-    if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {
+    if draw_alpha_test() != 0u && !compare(draw_alpha_test(), floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {
         discard;
     }
     var clear = 1.0;

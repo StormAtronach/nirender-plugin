@@ -3829,6 +3829,21 @@ mod order_tests {
             "let a = light_at(idx[i]).diffuse + draw_extension(k).x; let v = draw_view();"
         );
     }
+
+    /// The four fact words of a stage key go through their functions, each a whole read only
+    /// (W530): a longer name that starts with one stays as it is, a read of the record.
+    #[test]
+    fn the_extension_text_reads_the_facts_of_a_stage_key_through_functions() {
+        let text = "a = draws[record].counts.w; b = draws[record].flags.x; c = draws[record].flags.y;\n\
+                    d = draws[record].light_range.w & 16u; e = draws[record].flags.xy; f = draws[record].flags.x_2;\n\
+                    g = draws[record].light_range.wz;";
+        assert_eq!(
+            rewrite_extension_text(text),
+            "a = draw_counts_w(); b = draw_lit(); c = draw_normal();\n\
+             d = draw_light_range_w() & 16u; e = draws[record].flags.xy; f = draws[record].flags.x_2;\n\
+             g = draws[record].light_range.wz;"
+        );
+    }
 }
 
 impl Retained {
@@ -3859,6 +3874,12 @@ impl Retained {
 /// The text of the shader of the extension with the reads of the record of the draw that a
 /// retained draw takes from its scene or its light indexes (`draw.view` is already
 /// `draws[record].view` here) sent through the functions of `shader.wgsl`.
+///
+/// The reads of the facts of a stage key go through their functions too: `counts.w`, and each
+/// whole read of `flags.x`, `flags.y` and `light_range.w` (W530). In a stage pipeline those
+/// functions give the key's constants. A read that is not sent there (a longer name such as
+/// `flags.xy`, or a text that writes `draws[record]` itself) stays a read of the record, which
+/// holds the same fact: the picture is the same, and only that read keeps its cost.
 pub fn rewrite_extension_text(text: &str) -> String {
     let s = text
         .replace("draws[record].view", "draw_view()")
@@ -3869,8 +3890,27 @@ pub fn rewrite_extension_text(text: &str) -> String {
         .replace("draws[record].fog.", "draw_fog().")
         .replace("draws[record].clip_plane", "draw_clip_plane()")
         .replace("draws[record].counts.w", "draw_counts_w()");
+    let s = replace_whole_field(&s, "draws[record].flags.x", "draw_lit()");
+    let s = replace_whole_field(&s, "draws[record].flags.y", "draw_normal()");
+    let s = replace_whole_field(&s, "draws[record].light_range.w", "draw_light_range_w()");
     let s = rewrite_index(&s, "draws[record].extension[", "draw_extension(");
     rewrite_index(&s, "lights[", "light_at(")
+}
+
+/// The text with each read of `field` replaced by `call`: a read, not a longer name that starts
+/// with it (the next character is no letter, digit or underscore).
+fn replace_whole_field(text: &str, field: &str, call: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(field) {
+        let after = &rest[at + field.len()..];
+        let whole = !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        out.push_str(&rest[..at]);
+        out.push_str(if whole { call } else { field });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Replaces each `open ... ]` (the bracket that matches) with `call ... )`.
