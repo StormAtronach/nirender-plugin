@@ -99,6 +99,31 @@ def close_lines(logs, since):
     return ["MWSE.log: CRASH at line %d of %s" % (at + 1, path)] + ["  " + line for line in details[:10]]
 
 
+def wait_for_start(seconds):
+    """True when a Morrowind.exe runs within `seconds`. A read of the processes that fails is not "no game": the wait
+    goes on, and its last line says that the list was not known (W524 F-T-13)."""
+    deadline = time.time() + seconds
+    not_known = None
+    while True:
+        try:
+            if harness.processes("Morrowind.exe"):
+                return True
+            not_known = None
+        except harness.ProcessesNotKnown as error:
+            not_known = error
+        if time.time() >= deadline:
+            print("the start of the game is not known after %d s: %s" % (seconds, not_known) if not_known else "no game after %d s" % seconds)
+            return False
+        time.sleep(2)
+
+
+def wait_for_end():
+    """Returns when no Morrowind.exe runs, by a list that was read. A failed read counts as a game that runs
+    (harness.any_running): the files of the instance must not go back under the owner's game (W524 F-T-13)."""
+    while harness.any_running("Morrowind.exe"):
+        time.sleep(2)
+
+
 def report_close(handle, started):
     """Prints how the game closed. This only reads, and no fault here may stop the owner's close."""
     try:
@@ -150,7 +175,43 @@ def self_test():
     assert lines[lines.index("far = 5") + 1] == "near = 1", lines
     assert lines[-3:] == ["", "[views]", "full_tier_max = 4"], lines
     self_test_plugin()
+    self_test_not_known()
     print("play self-test: ok")
+
+
+def self_test_not_known():
+    """W524 F-T-13: a failed read of the processes ends no wait of a game. The plant: the reads fail three times, then
+    say that no game runs. The null: before F-T-13 a failed read was an empty list, so the wait for the end stopped at
+    its first read, while the owner's game could run."""
+    saved_processes, saved_sleep = harness.processes, time.sleep
+    reads = []
+
+    def failing_reads(failures):
+        def read(name, tries=3):
+            reads.append(name)
+            if len(reads) <= failures:
+                raise harness.ProcessesNotKnown("the list of the %s processes was not read (planted)" % name)
+            return []
+        return read
+
+    try:
+        time.sleep = lambda seconds: None
+        harness.processes = failing_reads(3)
+        wait_for_end()
+        assert len(reads) == 4, reads
+        # The null: the reads of the harness before F-T-13, an empty list at once.
+        reads.clear()
+        harness.processes = failing_reads(0)
+        wait_for_end()
+        assert len(reads) == 1, reads
+        # The start: reads that fail are no game, and the wait ends at its limit with the "not known" line.
+        reads.clear()
+        harness.processes = failing_reads(10 ** 6)
+        assert wait_for_start(0) is False and len(reads) == 1, len(reads)
+        harness.processes = lambda name, tries=3: [(12, "Morrowind.exe")]
+        assert wait_for_start(0) is True
+    finally:
+        harness.processes, time.sleep = saved_processes, saved_sleep
 
 
 def play_plugin(args, environment, default, listdir=os.listdir):
@@ -273,28 +334,24 @@ def main():
             return 0
         subprocess.Popen(harness.launch_command(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print("starting the game", flush=True)
-        deadline = time.time() + 180
-        while not harness.processes("Morrowind.exe"):
-            if time.time() > deadline:
-                print("no game after 180 s")
-                return 1
-            time.sleep(2)
+        if not wait_for_start(180):
+            return 1
         print("the game runs; leave it by its menu when you are done", flush=True)
         started = time.time()
         # A fault here costs only the exit code of the report.
         with contextlib.suppress(Exception):
             handle = game_handle(harness.processes("Morrowind.exe")[0][0])
-        while harness.processes("Morrowind.exe"):
-            time.sleep(2)
+        wait_for_end()
         print("the game ended")
         game_ended = True
     finally:
         harness.close_mo2()
-        deployment.restore()
+        restored = deployment.restore()
         if os.path.isfile(switched):
             os.remove(switched)
         os.rmdir(os.path.dirname(switched))
-        print("the mod list of the instance is back")
+        if restored:
+            print("the mod list of the instance is back")
     # After Mod Organizer has closed: it moves the game's log to overwrite/Root.
     if game_ended:
         report_close(handle, started)
