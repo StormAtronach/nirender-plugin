@@ -282,6 +282,14 @@ pub const EXIT_HELPER_TOO_OLD: u32 = 32;
 /// picture shows. Only a replay ends with it, after its pictures and its report. A live session
 /// never ends for this: there the uber-shader draws and the log has the line.
 pub const EXIT_REPLAY_STAGE_SHADERS: u32 = 40;
+/// A replay found a fault of a check that can change a picture: draws of a world before the
+/// extension's parts, a place of a view of its own with no view, a read past the end of a record,
+/// a record of an unknown tag, an error of the GPU's device (the helper's `checks: a fault of
+/// the replay` line names each check with its counts; the `check <name>: N judged, M faults`
+/// lines of the report have every check). Only a replay ends with it, after its pictures and
+/// its report, and also when the stage shaders have a fault too. A live session never ends for
+/// a check.
+pub const EXIT_REPLAY_CHECKS: u32 = 41;
 /// The seconds without a step of the frame thread after which the watchdog ends the helper.
 pub const STALL_SECONDS: u64 = 5;
 /// The seconds a step may take while the extension of the helper loads (the distant land
