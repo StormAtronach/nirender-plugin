@@ -248,7 +248,7 @@ def stage_fault_in(output):
 # each at the end of its report, always: "check <name>: <judged> judged, <faults> faults". `judged` says whether the
 # check could judge at all. This is the ONE reader of these lines; a tool takes no verdict from another sentence of
 # the helper. The self-test holds the form and the names against the Rust file.
-CHECK_LINE = re.compile(r"^check ([a-z]+(?: [a-z]+)*): (\d+) judged, (\d+) faults$", re.M)
+CHECK_LINE = re.compile(r"^check ([a-z]+(?: [a-z]+)*): (\d+) judged, (\d+) faults\r?$", re.M)
 EARLY_WORLD_DRAWS, OWN_VIEWS, READS_PAST_END = "early world draws", "views of their own", "reads past the end"
 UNKNOWN_RECORDS, GPU_ERRORS, STAGE_SHADERS_CHECK = "unknown records", "gpu errors", "stage shaders"
 CHECK_NAMES = (EARLY_WORLD_DRAWS, OWN_VIEWS, READS_PAST_END, UNKNOWN_RECORDS, GPU_ERRORS, STAGE_SHADERS_CHECK)
@@ -601,6 +601,9 @@ def checks_test(rust_codes):
     clean = "shapes: 1\n" + lines() + "statics report end: x\n"
     assert helper_checks(clean) == {EARLY_WORLD_DRAWS: (12, 0), OWN_VIEWS: (97, 0), READS_PAST_END: (5000, 0), UNKNOWN_RECORDS: (5000, 0), GPU_ERRORS: (30, 0), STAGE_SHADERS_CHECK: (13, 0)}
     assert check_problems(clean) == ([], [])
+    # A text with Windows line ends has the same checks: a pattern that ends at "\n" alone found 0 of 6 there (the
+    # Reviewer's plant, verdict 470), which is a NOT RUN for a helper that printed every line.
+    assert helper_checks(clean.replace("\n", "\r\n")) == helper_checks(clean), helper_checks(clean.replace("\n", "\r\n"))
     # Rob's plant of F-G-1: a line with one word moved, and no line at all, are "not judged", never a pass.
     for text in (clean.replace("check early world draws: 12 judged", "check early draws of a world: 12 checked"), clean.replace("check early world draws: 12 judged, 0 faults\n", ""), ""):
         missing, failed = check_problems(text, (EARLY_WORLD_DRAWS,))
