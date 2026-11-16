@@ -36,9 +36,9 @@ picture was checked, so the set did not fail, and it does not become the play se
   terminal, and each instance's mod list must be as before.
 
 This is the smoke of f185 with two changes: a batch replaces the live bridge, as a script cannot call it,
-and the gate is added. A crash when the game closes, after the last step, fails nothing: it is the parked
-fault at exit. The runner's exit code 5 (W417) names it, and the set's note gets an ERROR line for it, so a
-set that crashed at exit does not reach the owner unseen. A new fault at exit reads the same.
+and the gate is added. A crash when the game closes, after the last step, fails the set: the runner's exit
+code 5 (W417) names it, and the set's note says FAILED with the run (since W431 closed, D462). A crash at the
+close that only MWSE.log shows, with the runner's exit code 0, stays a note.
 
 Only on a pass, it writes current.bat in E:/nirender-keep/mgebuilds with the same writer as deploy_rest.py
 (`new_run_folder.write_current_bat`, W500, the owner's D461): MGE_BUILD and NIRENDER_PLUGIN_DLL of the set. The
@@ -303,11 +303,11 @@ def closing_crash(mwse_log):
 
 
 # The runner's exit code of a run whose game crashed in its close after DONE (run_own_device.EXIT_CRASHED_AFTER_DONE,
-# W417), the copy of its log in the run folder (run_own_device.RUN_LOG), and the start of the set's note for it. The
-# self-test checks the two values against the runner.
+# W417), the copy of its log in the run folder (run_own_device.RUN_LOG), and the start of the ERROR line that fails the
+# set for it (W513). The self-test checks the two values against the runner.
 RUNNER_CRASHED_AFTER_DONE = 5
 RUNNER_LOG = "runner-log.txt"
-CRASH_AFTER_DONE_NOTE = "ERROR: crash after DONE in"
+CRASH_AFTER_DONE_LINE = "ERROR: crash after DONE in"
 
 
 # --- the slots -----------------------------------------------------------------------------
@@ -592,10 +592,10 @@ def keep_run(run):
     return target
 
 
-def run_runner(tree, label, folder, plugin_dll, notes, budget, *args):
+def run_runner(tree, label, folder, plugin_dll, budget, *args):
     """Runs the runner of the tree, whose Lua and tools are of the built commit. Returns the run folder, kept
     also when the run failed, as a failed set's reason names it. A run whose game crashed in its close after DONE
-    (the runner's RUNNER_CRASHED_AFTER_DONE, W417) passes with an ERROR in `notes`, which go into the set's note."""
+    (the runner's RUNNER_CRASHED_AFTER_DONE, W417) fails the set with an ERROR line that names the run (D462)."""
     wait_clean()
     log = os.path.join(tree, "results", label + ".txt")
     say("smoke: %s" % label)
@@ -611,15 +611,18 @@ def run_runner(tree, label, folder, plugin_dll, notes, budget, *args):
     if digest:
         SMOKE_MWSE.add(digest)
     if done.returncode == RUNNER_CRASHED_AFTER_DONE:
-        notes.append(crash_after_done_note(run))
-    elif done.returncode != 0:
+        line = crash_after_done_line(run)
+        say(line)
+        raise SmokeFailed(line)
+    if done.returncode != 0:
         raise SmokeFailed("the runner of %s gave exit code %d: %s" % (label, done.returncode, run))
     return run
 
 
-def crash_after_done_note(run):
-    """The note of a smoke run whose game crashed in its close after DONE: its ERROR line in the runner's log."""
-    return "%s %s: the runner's exit code %d (see %s)" % (CRASH_AFTER_DONE_NOTE, os.path.basename(run), RUNNER_CRASHED_AFTER_DONE, RUNNER_LOG)
+def crash_after_done_line(run):
+    """The ERROR line of a smoke run whose game crashed in its close after DONE; the runner's log names the exit code
+    and the dumps."""
+    return "%s %s: the runner's exit code %d (see %s)" % (CRASH_AFTER_DONE_LINE, os.path.basename(run), RUNNER_CRASHED_AFTER_DONE, RUNNER_LOG)
 
 
 def read_text(path):
@@ -628,15 +631,15 @@ def read_text(path):
 
 
 def check_run_files(run, notes):
-    """The checks of every run: no GPU error, and a crash counts only before the last step ended."""
+    """The checks of every run: no GPU error, and a note for a crash at the close that only MWSE.log shows."""
     gpu_errors = read_text(os.path.join(run, "host.txt")).count("gpu error")
     if gpu_errors:
         raise SmokeFailed("%d gpu errors in %s" % (gpu_errors, run))
-    # The runner's exit code 0 or 5 says that the last step ended, so a crash in this log came at the close. A run
-    # with the runner's ERROR note has its crash named already.
-    named = any(note.startswith("%s %s:" % (CRASH_AFTER_DONE_NOTE, os.path.basename(run))) for note in notes)
-    if not named and closing_crash(read_text(os.path.join(run, "MWSE.log"))):
-        notes.append("crash at the close of %s: the parked fault at exit, or a new one, as this cannot tell" % os.path.basename(run))
+    # The runner's exit code 0 says that the last step ended and that the runner saw no crash at the close (no exit
+    # code that is not 0, no dump: its exit code 5 fails the set in run_runner), so a crash in this log came at the
+    # close and left no dump.
+    if closing_crash(read_text(os.path.join(run, "MWSE.log"))):
+        notes.append("crash at the close of %s: MWSE.log says so, and the runner saw no exit code that is not 0 and no dump" % os.path.basename(run))
 
 
 def picture_is_black(path):
@@ -649,7 +652,7 @@ def picture_is_black(path):
 
 
 def smoke_live(tree, folder, plugin_dll, notes):
-    run = run_runner(tree, "playset-live", folder, plugin_dll, notes, 400, "--steps", "exterior,shaders", "--exterior", "Balmora",
+    run = run_runner(tree, "playset-live", folder, plugin_dll, 400, "--steps", "exterior,shaders", "--exterior", "Balmora",
                      "--hour", "12", "--weather", "0", "--shader-batch", BATCH)
     check_run_files(run, notes)
     faults = live_faults(read_text(os.path.join(run, "progress.log")))
@@ -695,7 +698,7 @@ def smoke_gate(tree, folder, slots):
 def smoke_tour(tree, folder, plugin_dll, notes, slots):
     """The tour in a game, then its replays under the set's hold of the whole build side, which it gives back after
     them: they are the last replays of the smoke."""
-    run = run_runner(tree, "playset-tour", folder, plugin_dll, notes, 900, "--steps", "tour", "--tour-cells", TOUR_CELLS, "--tour-dual")
+    run = run_runner(tree, "playset-tour", folder, plugin_dll, 900, "--steps", "tour", "--tour-cells", TOUR_CELLS, "--tour-dual")
     check_run_files(run, notes)
     keep_set_hold(slots, "the tour's replays of the next set")
     done = subprocess.run([sys.executable, "tools/validate_tour.py", run, "--mge-build", folder, "--jobs", "3"],
@@ -845,6 +848,57 @@ def current_set_test():
             assert form_gives("the call alone")[0] is None, "a failed set is no current set"
             open(os.path.join(sets, "f186", "akulakhan-0000000.dll"), "wb").close()
             assert form_gives("the call alone")[1] is None, "two plugins in a set"
+
+
+def run_runner_test():
+    """W513: the runner's exit code 5 (a crash after DONE, W417) fails the smoke with the ERROR line that names the run;
+    0 passes; another code fails as before. The runner, the wait and the kept copy are stand-ins. Also: the runner's
+    values, and the MWSE.log note of a crash at the close that the runner did not see (exit code 0)."""
+    import io
+    import run_own_device
+    assert (RUNNER_CRASHED_AFTER_DONE, RUNNER_LOG) == (run_own_device.EXIT_CRASHED_AFTER_DONE, run_own_device.RUN_LOG)
+    module = sys.modules[__name__]
+    names = ("wait_clean", "newest_run", "keep_run")
+    real = {name: getattr(module, name) for name in names}
+    real_run = subprocess.run
+    with tempfile.TemporaryDirectory() as folder:
+        run = os.path.join(folder, "20261115-224947-playset-live")
+        os.mkdir(run)
+        with open(os.path.join(run, "progress.log"), "w", encoding="ascii") as file:
+            file.write("[runner] MWSE.dll aae6\n")
+        code = [0]
+        try:
+            module.wait_clean = lambda: None
+            module.newest_run = lambda tree, label, since: run
+            module.keep_run = lambda path: path
+            subprocess.run = lambda *args, **kwargs: types.SimpleNamespace(returncode=code[0])
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                assert run_runner("t", "playset-live", "f", "p.dll", 400) == run, "exit code 0 passes"
+                code[0] = RUNNER_CRASHED_AFTER_DONE
+                try:
+                    run_runner("t", "playset-live", "f", "p.dll", 400)
+                    raise AssertionError("a crash after DONE passed the smoke")
+                except SmokeFailed as failure:
+                    line = str(failure)
+                assert line == "ERROR: crash after DONE in 20261115-224947-playset-live: the runner's exit code 5 (see runner-log.txt)", line
+                assert line in said.getvalue(), "the ERROR line is said"
+                code[0] = 1
+                try:
+                    run_runner("t", "playset-live", "f", "p.dll", 400)
+                    raise AssertionError("exit code 1 passed the smoke")
+                except SmokeFailed as failure:
+                    assert "gave exit code 1" in str(failure), failure
+        finally:
+            subprocess.run = real_run
+            for name, value in real.items():
+                setattr(module, name, value)
+        with open(os.path.join(run, "host.txt"), "w", encoding="ascii") as file:
+            file.write("frames 10\n")
+        with open(os.path.join(run, "MWSE.log"), "w", encoding="ascii") as file:
+            file.write("Morrowind has crashed! To help improve game stability, send MWSE_Minidump.dmp\n")
+        notes = []
+        check_run_files(run, notes)
+        assert len(notes) == 1 and notes[0].startswith("crash at the close of 20261115-224947-playset-live"), notes
 
 
 def smoke_wiring_test(fake_slots):
@@ -1240,25 +1294,7 @@ def self_test():
     assert run_mwse("[runner] instance D:\\m, profile Default\n[runner] MWSE.dll aae6\n[t] MWSE.dll zz\n") == "aae6"
     assert run_mwse("[t] MWSE.dll zz\n") is None
 
-    # W417: the runner's code and log name of a crash after DONE are the runner's own; its ERROR note goes into the
-    # set's note once, and the MWSE.log line of the same crash adds no second note. The null: a run with no note of the
-    # runner gets the MWSE.log note as before.
-    import run_own_device
-    assert (RUNNER_CRASHED_AFTER_DONE, RUNNER_LOG) == (run_own_device.EXIT_CRASHED_AFTER_DONE, run_own_device.RUN_LOG)
-    with tempfile.TemporaryDirectory() as folder:
-        run = os.path.join(folder, "20261115-224947-playset-live")
-        os.mkdir(run)
-        with open(os.path.join(run, "host.txt"), "w", encoding="ascii") as file:
-            file.write("frames 10\n")
-        with open(os.path.join(run, "MWSE.log"), "w", encoding="ascii") as file:
-            file.write("Morrowind has crashed! To help improve game stability, send MWSE_Minidump.dmp\n")
-        notes = [crash_after_done_note(run)]
-        check_run_files(run, notes)
-        assert notes == ["ERROR: crash after DONE in 20261115-224947-playset-live: the runner's exit code 5 (see runner-log.txt)"], notes
-        notes = []
-        check_run_files(run, notes)
-        assert len(notes) == 1 and notes[0].startswith("crash at the close of 20261115-224947-playset-live"), notes
-        assert "smoke: passed" in set_note("f186", "abc", "def", "passed (a, b, 2 of 2 bats); " + crash_after_done_note(run))
+    run_runner_test()
 
     # A second run stops, in another process as the lock is per handle, and the lock goes with the first.
     with tempfile.TemporaryDirectory() as folder:
