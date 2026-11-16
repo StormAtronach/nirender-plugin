@@ -134,8 +134,8 @@ reference and not an acceptance. The first line names it. A pass against a named
 writes nothing in it: its pictures go to <plugin>/target/merge-step-now, which each gate of this tool clears first, under the
 build slot, so that a stale picture cannot compare.
 
-All stages run, also after a failure. Exit code 1 on any failure. The output of each stage, the PASS, FAIL or NOT RUN line of
-each stage and the closing "N of N stages passed" line are in
+All stages run, also after a failure. Exit code 1 on any failure. The output of each stage, the PASS, FAIL, NOT RUN or WITHHELD
+line of each stage and the closing "P passed, W withheld of N stages" line are in
 E:\\nirender-keep\\merge-step\\merge-step-<commit>.log, where the data rule on build output does not reach. A rerun for the same
 commit writes merge-step-<commit>-2.log, then -3, and so on: it never overwrites the log of an earlier round. It pushes nothing.
 
@@ -800,8 +800,16 @@ def stages_column(words):
     return " ".join("; ".join(column).split("\t"))
 
 
-def summary_line(results, log_path):
-    return "%d of %d stages passed; the output is in %s" % (sum(results), len(results), log_path)
+def summary_line(results, log_path, words=None):
+    """The last line of a round: the stages that passed and those WITHHELD, apart, of all (W528, verdict 467: a WITHHELD
+    stage counts as passed, but it deployed nothing). `words` are STAGE_WORDS by default; when their count is not the
+    count of the results, the line gives the passes alone."""
+    words = STAGE_WORDS if words is None else words
+    if len(words) != len(results):
+        return "%d of %d stages passed; the output is in %s" % (sum(results), len(results), log_path)
+    said = [word for _, word, _ in words]
+    return "%d passed, %d withheld of %d stages; the output is in %s" % (
+        said.count(PASS_WORD), said.count(WITHHELD_WORD), len(results), log_path)
 
 
 def moves_the_ref(baseline):
@@ -1650,7 +1658,11 @@ def self_test():
         assert "== PASS good (" in text and "== FAIL bad (" in text and ": exit code 4" in text, text
         assert "refused" not in text, "a stage with no refusal names none"
         assert "FALLBACK" not in text, "a stage with no MWSE fallback names none"
-        assert summary_line([True, False, True], "x.log") == "2 of 3 stages passed; the output is in x.log"
+        assert summary_line([True, False, True], "x.log", []) == "2 of 3 stages passed; the output is in x.log", "words not known"
+        # Verdict 467: a WITHHELD stage is not counted as a pass.
+        words = [("a", PASS_WORD, ""), ("b", FAIL_WORD, "x"), ("c", WITHHELD_WORD, "a game runs")]
+        assert summary_line([True, False, True], "x.log", words) == "1 passed, 1 withheld of 3 stages; the output is in x.log"
+        assert summary_line([True], "x.log", [("a", PASS_WORD, "")]) == "1 passed, 0 withheld of 1 stages; the output is in x.log"
 
         # W527 (W524 F-G-5): the checks stages run checks.py --strict, whose NOT RUN code fails the round. The null: before
         # W527 the stages had no --strict, so checks.py skipped a check that could not run and exited with 0.
