@@ -29,6 +29,12 @@ Stages (capture, baseline and only by default, in this order):
            a fixed word: SAME, OTHER (another adapter: the pictures can differ by the
            GPU) or UNKNOWN (no adapter printed or recorded). release.py reads the word.
            The replays run with MGE_XE_CORE_MODS=0: no core mod joins the shaders.
+           Then a second pass, the hook fixtures (W528 item 5): the same captures with our hook
+           files, one for each kind of hook, read only from --hook-fixtures (tools/hook-fixtures;
+           MGE_XE_CORE_MODS_DIR), against `accepted-hooks/` of the baseline folder, with the
+           objects check and no tour. Each replay must show the route: the helper names the
+           folder, reads each fixture and no other file, uses each with all of its hooks, and
+           prints no other line of the core mods (a dropped file, a failed home, a marker).
            Last, the objects check (D288): each capture again to its last frame, plain (no GPU
            time, no marks: nothing waits for the GPU), on vulkan and on dx12. A steady frame (no
            record that can need a new GPU object, no change of the extension) that made a GPU
@@ -83,6 +89,26 @@ PY = sys.executable
 # the replay's folder joins the shaders, so the accepted pictures do not depend on what is
 # installed.
 GATE_ENV = {"MGE_XE_CORE_MODS": "0"}
+# W528 item 5 (F-G-12): our hook files, one for each kind of hook, are fixtures of a second pass of the baseline stage
+# (`hooks_pass`), read by the helper from this folder only (MGE_XE_CORE_MODS_DIR, W317). Their accepted state is in the
+# folder HOOKS_ACCEPTED of the baseline folder.
+HOOK_FIXTURES = os.path.join(HERE, "hook-fixtures")
+HOOKS_ACCEPTED = "accepted-hooks"
+# A fixture is a file "XE Mod <name>.wgsl" of the folder; the README of the folder is not one.
+HOOK_FIXTURE_NAME = re.compile(r"XE Mod .+\.wgsl")
+# A hook of a fixture: a function at the start of a line whose name does not start with `mod_` (a helper of the file).
+HOOK_DEFINITION = re.compile(r"^fn (?!mod_)(\w+)\(", re.M)
+# The lines of the core mods in a replay's output that show the route (the helper's core_mods.rs and renderer.rs).
+ROUTE_FOLDER = re.compile(r"core mods: only the folder (.+) \(MGE_XE_CORE_MODS_DIR\)")
+ROUTE_READ = re.compile(r"core mods: read (.+)")
+ROUTE_USED = re.compile(r"core mods: (XE Mod .+) \(interface mge-xe-core 1\)")
+ROUTE_USED_FILE = re.compile(r"(XE Mod [^(]+?\.wgsl) \(([^)]*)\)")
+# The other lines of the core mods that a fixture in use prints. Any other line of the core mods fails the route: a
+# dropped file, a failed home or pipeline, a marker of a start before, a plant, a switch of the world text
+# (verdict 480: a list of the lines that are fine, so that a new fault line of the helper fails too).
+ROUTE_FINE = ("core mod: XE Mod Water.wgsl: the plane of the water takes its hooks; ",
+              "core mod: XE Mod Water.wgsl: the debug view water shows the terms of the built-in colour",
+              "core mod: XE Mod Sky.wgsl: the clouds take its clouds_color where the sky of MGE XE is drawn")
 PLACES = {
     "seyda": ["--exterior", "Seyda Neen", "--position=-12288,-69632,74", "--yaw", "0"],
     "narsis": ["--exterior", "Narsis"],
@@ -558,7 +584,7 @@ def self_test():
                     file.write(stream_rule.plant(frames))
                 calls.clear()
                 with contextlib.redirect_stdout(io.StringIO()):
-                    assert not stage_baseline(folder, accept, "no build", os.path.join(folder, "now"))
+                    assert not stage_baseline(folder, accept, "no build", os.path.join(folder, "now"), hooks=None)
             assert len(calls) == (0 if name == "wrong" else 1), (name, accept, calls)
         assert "replay.py" in calls[0][0][1]
         # The replays of the gate run with the core mods off.
@@ -633,6 +659,7 @@ def self_test():
         passed, text = clusters_verdict(numbers)
         assert not passed and said in text and text.endswith("go to the Architect before a limit moves)"), (numbers, text)
     assert clusters_verdict({"problem": "the sizes differ"}) == (False, "replay with the clusters against the lights of the draws: the sizes differ")
+    self_test_route()
     self_test_baseline()
     self_test_tour_stage()
     print("validate_retained self-test: ok")
@@ -667,6 +694,72 @@ def self_test_tour_stage():
         del NOT_RUN_LINES[:]
 
 
+def route_plant(root):
+    """A planted folder of hook fixtures in `root` (two files of code with a helper of their own, a file of values and
+    a README), and the lines of a replay that shows their route: (folder, lines)."""
+    folder = os.path.join(root, "fixtures")
+    os.makedirs(folder)
+    texts = {"XE Mod Shadow.wgsl": "//! interface: mge-xe-core 1\nfn shadow_delta(s0: vec3f, s1: vec3f) -> f32 {\n    return mod_far();\n}\n"
+                                   "fn shadow_esm(dz: f32) -> f32 {\n    return 0.5;\n}\nfn mod_far() -> f32 {\n    return 1e-6;\n}\n",
+             "XE Mod Shadow Data.wgsl": "//! interface: mge-xe-core 1\n//! values: shade = 0.6\n",
+             "XE Mod Water.wgsl": "//! interface: mge-xe-core 1\nfn water_normal(texcoords: vec4f, distance: f32, world_xy: vec2f) -> vec3f {\n    return vec3f(0.0, 0.0, 1.0);\n}\n",
+             "README.md": "fn not_a_hook() {}\n"}
+    for name, text in texts.items():
+        with open(os.path.join(folder, name), "w", encoding="utf-8", newline="\n") as file:
+            file.write(text)
+    read = ["core mods: read " + os.path.join(folder, name) for name in ("XE Mod Shadow.wgsl", "XE Mod Shadow Data.wgsl", "XE Mod Water.wgsl")]
+    lines = ["core mods: only the folder %s (MGE_XE_CORE_MODS_DIR)" % folder] + read + read[:2] + [
+        "core mod: XE Mod Water.wgsl: the plane of the water takes its hooks; the water volumes and the dry spaces keep the built-in water",
+        "core mods: XE Mod Shadow.wgsl (shadow_delta, shadow_esm), XE Mod Shadow Data.wgsl (shade = 0.6), XE Mod Water.wgsl (water_normal) (interface mge-xe-core 1)"]
+    return folder, lines
+
+
+def self_test_route():
+    """W528 item 5: the route check of the hook fixtures on planted outputs. The right output passes, with Windows line
+    ends and the files read two times; each plant fails with its own text (verdict 480, points 1, 3 and 4)."""
+    assert GATE_ENV == {"MGE_XE_CORE_MODS": "0"}, "the plain pass keeps the core mods off"
+    with tempfile.TemporaryDirectory() as root:
+        folder, good = route_plant(root)
+        fixtures = hook_fixtures(folder)
+        assert fixtures == {"XE Mod Shadow.wgsl": {"shadow_delta", "shadow_esm"}, "XE Mod Shadow Data.wgsl": set(), "XE Mod Water.wgsl": {"water_normal"}}, fixtures
+        assert hook_fixtures(os.path.join(root, "missing")) == {}
+        env = hooks_env(folder, os.path.join(root, "markers"))
+        assert env == {"MGE_XE_CORE_MODS_DIR": folder, "MGE_XE_CORE_MOD_MARKERS": os.path.join(root, "markers")}, env
+        assert route_problems("".join(line + "\r\n" for line in good), folder, fixtures) == []
+        used = good[-1]
+        water_read = "core mods: read " + os.path.join(folder, "XE Mod Water.wgsl")
+        plants = {
+            "no folder line": ([line for line in good if "only the folder" not in line], "does not read the core mods from the folder"),
+            "another folder": ([line.replace(folder, folder + "2") if "only the folder" in line else line for line in good], "does not read the core mods from the folder"),
+            "a missing read": ([line for line in good if line != water_read], "XE Mod Water.wgsl is not read"),
+            "the README read": (good + ["core mods: read " + os.path.join(folder, "README.md")], "a file that is not a fixture is read"),
+            "a dropped file": ([line for line in good if line != used] + [used.replace(", XE Mod Water.wgsl (water_normal)", ""),
+                                "core mod: XE Mod Water.wgsl: no hook of interface 1; the built-in water is used"], "XE Mod Water.wgsl is not in use"),
+            "a used line short of a hook": ([line for line in good if line != used] + [used.replace("shadow_delta, shadow_esm", "shadow_delta")],
+                                            "XE Mod Shadow.wgsl is in use with the hooks shadow_delta, not shadow_delta, shadow_esm"),
+            "none used": ([line for line in good if line != used] + ["core mods: none used (Data Files/shaders/core-mods, interface mge-xe-core 1)"], "XE Mod Shadow.wgsl is not in use"),
+            "a device failure": (good + ["core mod: XE Mod Shadow.wgsl: the world shader failed with it on the device (x); the built-in hooks are used"], "a line of the core mods that a fixture in use does not print"),
+            "the built-in text too": (good + ["core mods: the world shader's pipeline failed with the built-in text too (x); the key stays"], "a line of the core mods that a fixture in use does not print"),
+            "a marker": (good + ["core mod: XE Mod Water.wgsl: a start before ended in the build of the water plane with it; it is not used until it changes"], "a line of the core mods that a fixture in use does not print"),
+            "the core mods off": (["core mods: off (MGE_XE_CORE_MODS=0)"], "does not read the core mods from the folder"),
+        }
+        for plant, (lines, said) in plants.items():
+            problems = route_problems("\n".join(lines) + "\n", folder, fixtures)
+            assert any(said in problem for problem in problems), (plant, problems)
+        # The dropped file also fails by its line, and a fault line also by itself when all else is right.
+        assert any(problem.startswith("a line of the core mods") for problem in route_problems("\n".join(plants["a dropped file"][0]), folder, fixtures))
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert check_route("a.nircap", "\n".join(good), folder, fixtures)
+            assert not check_route("a.nircap", "\n".join(plants["a marker"][0]), folder, fixtures)
+        assert "ok   a.nircap: the route of the hook fixtures: 3 files read and in use" in said.getvalue(), said.getvalue()
+        FAILS[0] = 0
+    # replay.py --core-mods: the route of W525's replays with a core-mod file and with none.
+    import replay
+    assert replay.core_mods_env(None) == {}
+    assert replay.core_mods_env("off") == {"MGE_XE_CORE_MODS": "0"}
+    assert replay.core_mods_env(HOOK_FIXTURES) == {"MGE_XE_CORE_MODS_DIR": HOOK_FIXTURES}
+
+
 def self_test_baseline():
     """W526: the baseline stage on planted baseline folders with planted replays (no build, no replay, no GPU). Each
     plant of the audit must fail the stage: a check line that is not there (F-G-1), a capture with no accepted picture
@@ -699,18 +792,24 @@ def self_test_baseline():
 
         return run
 
-    def stage(folder, tool, accept=False, add=False):
+    def stage(folder, tool, accept=False, add=False, hooks=None):
         """(passed, printed, exit code of a stage that did not pass) of the stage on `folder` with the plant `tool`."""
         global run_code
         run_code = tool
         FAILS[0] = 0
         del NOT_RUN_LINES[:]
         with contextlib.redirect_stdout(io.StringIO()) as printed:
-            passed = stage_baseline(folder, accept, "no build", None if accept else os.path.join(folder, "now"), add)
+            passed = stage_baseline(folder, accept, "no build", None if accept else os.path.join(folder, "now"), add, hooks)
             code = 0 if passed else baseline_failure_code()
         return passed, printed.getvalue(), code
 
-    build_missing, check_stream_rule, stage_objects = (lambda _build: []), (lambda _folder: True), (lambda _baseline, _build, keep=None: True)
+    objects_calls = []
+
+    def objects(_baseline, _build, keep=None, env=None, route=None):
+        objects_calls.append((env, route))
+        return True
+
+    build_missing, check_stream_rule, stage_objects = (lambda _build: []), (lambda _folder: True), objects
     try:
         with tempfile.TemporaryDirectory() as folder:
             kept = os.path.join(folder, "accepted")
@@ -770,6 +869,45 @@ def self_test_baseline():
             passed, said, code = stage(folder, plant({"new": {1: other, 29: other}, "b": {1: grey}}))
             assert not passed and "FAIL the accepted picture gone.png has no capture" in said and "FAIL the accepted picture b-last.png has no capture" in said, said
             assert "ok   b.nircap: frame 1 (the capture has no later frame)" in said, said
+        # W528 item 5: the pass of the hook fixtures, after the plain pass, with its own variables and accepted state.
+        with tempfile.TemporaryDirectory() as folder:
+            fixtures, good = route_plant(folder)
+            envs = []
+
+            def with_route(tool, lines=good):
+                def run(command, env=None):
+                    code, output = tool(command, env)
+                    if command[1].endswith("replay.py"):
+                        envs.append(env)
+                    return code, output + ("".join(line + "\r\n" for line in lines) if "MGE_XE_CORE_MODS_DIR" in (env or {}) else "")
+                return run
+
+            open(os.path.join(folder, "a.nircap"), "wb").close()
+            passed, said, _code = stage(folder, with_route(plant()), accept=True, hooks=fixtures)
+            assert passed and "ok   hook fixtures: 1 captures accepted (2 pictures) in " in said, said
+            assert "ok   hook fixtures: a.nircap: the route of the hook fixtures: 3 files read and in use" in said, said
+            assert sorted(f for f in os.listdir(os.path.join(folder, HOOKS_ACCEPTED)) if not f.endswith(".replay.txt")) == ["a-last.png", "a.checks.txt", "a.png"]
+            plain, hooked = [env for env in envs if "MGE_XE_CORE_MODS_DIR" not in env], [env for env in envs if "MGE_XE_CORE_MODS_DIR" in env]
+            assert plain and all(env == GATE_ENV for env in plain), plain
+            assert hooked and all(env["MGE_XE_CORE_MODS_DIR"] == fixtures and "MGE_XE_CORE_MODS" not in env and os.path.isdir(env["MGE_XE_CORE_MOD_MARKERS"]) for env in hooked), hooked
+            del objects_calls[:]
+            passed, said, _code = stage(folder, with_route(plant()), hooks=fixtures)
+            assert passed and "ok   2 of 2 pictures equal" in said and "ok   hook fixtures: 2 of 2 pictures equal" in said, said
+            # The objects stage runs in both passes, the second with the variables and the route of the fixtures (verdict 480).
+            assert [route for _env, route in objects_calls] == [None, (fixtures, hook_fixtures(fixtures))], objects_calls
+            assert objects_calls[1][0]["MGE_XE_CORE_MODS_DIR"] == fixtures, objects_calls
+            # A hook path that draws another picture fails the second pass only.
+            turns = iter([{1: grey, 29: grey}, {1: other, 29: grey}])
+            passed, said, code = stage(folder, with_route(plant({"a": lambda: next(turns)})), hooks=fixtures)
+            assert not passed and code == 1 and "ok   2 of 2 pictures equal" in said and "FAIL hook fixtures: 1 of 2 pictures equal" in said, said
+            # A replay that does not show the route fails, whatever its pictures.
+            passed, said, code = stage(folder, with_route(plant(), [line for line in good if not line.endswith("XE Mod Water.wgsl")]), hooks=fixtures)
+            assert not passed and code == 1 and "FAIL hook fixtures: a.nircap: the route of the hook fixtures: XE Mod Water.wgsl is not read" in said, said
+            # A folder with no fixture fails by name: the pass is never left out without a line.
+            empty = os.path.join(folder, "empty")
+            os.makedirs(empty)
+            passed, said, code = stage(folder, with_route(plant()), hooks=empty)
+            assert not passed and "FAIL hook fixtures: %s has no XE Mod *.wgsl file" % empty in said, said
     finally:
         run_code, build_missing, check_stream_rule, stage_objects = real
         FAILS[0] = 0
@@ -853,6 +991,74 @@ GATE_FRAMES = "1,last"
 FLOOR_CHECKS = (EARLY_WORLD_DRAWS, OWN_VIEWS)
 
 
+def hook_fixtures(folder):
+    """The fixtures of a folder, {file name: the set of its hooks}; a file of values only (XE Mod Shadow Data) has
+    an empty set. {} when the folder is not there."""
+    if not os.path.isdir(folder):
+        return {}
+    fixtures = {}
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        if HOOK_FIXTURE_NAME.fullmatch(name) and os.path.isfile(path):
+            with open(path, encoding="utf-8") as file:
+                fixtures[name] = set(HOOK_DEFINITION.findall(file.read()))
+    return fixtures
+
+
+def hooks_env(folder, markers):
+    """The variables of the hook fixtures' pass: the core mods only from `folder`, the build markers in `markers`.
+    No MGE_XE_CORE_MODS=0."""
+    return {"MGE_XE_CORE_MODS_DIR": folder, "MGE_XE_CORE_MOD_MARKERS": markers}
+
+
+def same_path(a, b):
+    return os.path.normcase(os.path.normpath(os.path.abspath(a))) == os.path.normcase(os.path.normpath(os.path.abspath(b)))
+
+
+def route_problems(output, folder, fixtures):
+    """Why a replay's output does not show the route of the hook fixtures of `folder` ({file: hooks},
+    [`hook_fixtures`]), as texts (the plan of W528 item 5 with verdict 480):
+    a. the helper names the folder of MGE_XE_CORE_MODS_DIR;
+    b. the paths of its "read" lines are the fixtures of the folder, no more and no fewer (the helper reads some files
+       two times: the set counts, not the lines);
+    c. its line of the core mods in use names each fixture, with all the hooks of a file of code;
+    d. no other line of the core mods than those of ROUTE_FINE."""
+    lines = [line.rstrip("\r") for line in output.split("\n")]
+    problems = []
+    folders = [found.group(1) for found in map(ROUTE_FOLDER.fullmatch, lines) if found]
+    if not any(same_path(shown, folder) for shown in folders):
+        problems.append("the helper does not read the core mods from the folder %s only (no line \"core mods: only the folder\")" % folder)
+    read = {os.path.normcase(os.path.normpath(found.group(1))) for found in map(ROUTE_READ.fullmatch, lines) if found}
+    wanted = {os.path.normcase(os.path.normpath(os.path.join(folder, name))): name for name in fixtures}
+    for path in sorted(set(wanted) - read):
+        problems.append("%s is not read" % wanted[path])
+    for path in sorted(read - set(wanted)):
+        problems.append("a file that is not a fixture is read: %s" % path)
+    used = [found.group(1) for found in map(ROUTE_USED.fullmatch, lines) if found]
+    in_use = {name: {hook.strip() for hook in hooks.split(",")} for line in used for name, hooks in ROUTE_USED_FILE.findall(line)}
+    for name, hooks in sorted(fixtures.items()):
+        if name not in in_use:
+            problems.append("%s is not in use" % name)
+        elif hooks and in_use[name] != hooks:
+            problems.append("%s is in use with the hooks %s, not %s" % (name, ", ".join(sorted(in_use[name])), ", ".join(sorted(hooks))))
+    for line in lines:
+        if not line.startswith(("core mod: ", "core mods: ")):
+            continue
+        if ROUTE_FOLDER.fullmatch(line) or ROUTE_READ.fullmatch(line) or ROUTE_USED.fullmatch(line) or line.startswith(ROUTE_FINE):
+            continue
+        problems.append("a line of the core mods that a fixture in use does not print: %s" % line)
+    return problems
+
+
+def check_route(what, output, folder, fixtures):
+    """The route of the hook fixtures in one replay's output ([`route_problems`]): a FAIL line for each problem, or
+    one ok line."""
+    problems = route_problems(output, folder, fixtures)
+    for problem in problems:
+        check(False, "%s: the route of the hook fixtures: %s" % (what, problem))
+    return problems == [] and check(True, "%s: the route of the hook fixtures: %d files read and in use" % (what, len(fixtures)))
+
+
 def replay_frames(capture, prefix, mge_build, env):
     """One replay of a capture for the gate: frame 1 into <prefix>.png and the last frame into <prefix>-last.png.
     Returns (code, output, last frame or None). A capture whose last frame is frame 1 or before has no later
@@ -925,14 +1131,15 @@ def steady_problems(capture, name, pictures, mge_build, env):
     return problems
 
 
-def stage_baseline(baseline, accept, mge_build, now=None, add=False):
+def stage_baseline(baseline, accept, mge_build, now=None, add=False, hooks=HOOK_FIXTURES):
     """The captures of the baseline folder against their accepted state, in the order of the draws of the game, as
     a player has them. Each capture is judged, and what cannot be judged is said (W526): its checks (a missing line
     is NOT RUN, a fault is a FAIL, a check that judged at the accept and judges nothing now is a FAIL); its frame 1
     and its last frame against their accepted pictures (a capture with no accepted picture is a FAIL by name, and
     so is an accepted picture with no capture). `accept` writes the accepted state of every capture again; `add`
     (--accept-new) writes only the state that a capture lacks, after the compare of what it has, and replaces
-    nothing. Both accept a picture only when a second replay gives it again."""
+    nothing. Both accept a picture only when a second replay gives it again. Then the same captures with the hook
+    fixtures of the folder `hooks` ([`hooks_pass`]); None leaves that pass out."""
     print("baseline %s" % baseline, flush=True)
     missing = build_missing(mge_build)
     if missing:
@@ -942,9 +1149,37 @@ def stage_baseline(baseline, accept, mge_build, now=None, add=False):
         return check(False, "no capture in the baseline folder")
     if not check_stream_rule(baseline):
         return False
-    env = dict(GATE_ENV)
-    accepted = os.path.join(baseline, "accepted")
     out, tour_out = picture_folders(baseline, accept, now)
+    ok = baseline_pass(baseline, captures, accept, mge_build, out, add, tour_out=tour_out)
+    if hooks is None:
+        return ok
+    hooks_out = os.path.join(baseline, HOOKS_ACCEPTED) if accept else os.path.join(now, "hooks")
+    return hooks_pass(baseline, captures, accept, mge_build, hooks_out, add, hooks) and ok
+
+
+def hooks_pass(baseline, captures, accept, mge_build, out, add, hooks):
+    """W528 item 5 (F-G-12): the captures again with our hook files, one for each kind of hook, from the folder
+    `hooks` (MGE_XE_CORE_MODS_DIR), against the accepted state in HOOKS_ACCEPTED of the baseline folder. The plain
+    pass replays with no core mod, so only this pass judges the helper's path that joins a hook file into its
+    shaders. Each replay must show the route ([`route_problems`]). The build markers go to a new folder of this pass,
+    never to the user's. A folder with no fixture is a FAIL: the pass is never left out without a line."""
+    fixtures = hook_fixtures(hooks)
+    if not fixtures:
+        return check(False, "hook fixtures: %s has no XE Mod *.wgsl file: the gate cannot judge the path of a hook file" % hooks)
+    print("hook fixtures %s: %s" % (hooks, ", ".join(sorted(fixtures))), flush=True)
+    env = hooks_env(hooks, tempfile.mkdtemp(prefix="gate-hook-markers-"))
+    return baseline_pass(baseline, captures, accept, mge_build, out, add, env=env, accepted=os.path.join(baseline, HOOKS_ACCEPTED), route=(hooks, fixtures))
+
+
+def baseline_pass(baseline, captures, accept, mge_build, out, add, env=None, accepted=None, route=None, tour_out=None):
+    """One pass of the baseline stage over `captures` with the variables `env` (GATE_ENV by default), its pictures
+    in `out`, against `accepted` (the folder `accepted` of the baseline by default). The plain pass (`route` None)
+    also judges the tour and names the adapter. The hook fixtures' pass gives `route`, (folder, fixtures): each
+    replay must show that route."""
+    plain = route is None
+    env = dict(GATE_ENV if env is None else env)
+    accepted = accepted or os.path.join(baseline, "accepted")
+    title = "" if plain else "hook fixtures: "
     os.makedirs(out, exist_ok=True)
     adapter = None
     ok = True
@@ -958,16 +1193,18 @@ def stage_baseline(baseline, accept, mge_build, now=None, add=False):
         adapter = adapter or adapter_of(output)
         # The two checks of the floor can have nothing to judge in a capture: its accepted counts and the floor say
         # whether that is right. Each other check must judge (records, frames, stage keys).
-        ok &= judge_checks(capture, output, may_judge_nothing=FLOOR_CHECKS)
+        ok &= judge_checks(title + capture, output, may_judge_nothing=FLOOR_CHECKS)
+        if not plain:
+            ok &= check_route(title + capture, output, *route)
         pictures = {suffix: os.path.join(out, name + suffix + ".png") for suffix in ("", LAST)}
         pictures = {suffix: picture for suffix, picture in pictures.items() if os.path.isfile(picture)}
-        ok &= check("" in pictures, "%s: %s" % (capture, "frame 1 and frame %d (the last)" % last if last else "frame 1 (the capture has no later frame)") if "" in pictures else "%s: the replay made no picture of frame 1" % capture)
+        ok &= check("" in pictures, "%s%s: %s" % (title, capture, "frame 1 and frame %d (the last)" % last if last else "frame 1 (the capture has no later frame)") if "" in pictures else "%s%s: the replay made no picture of frame 1" % (title, capture))
         now_state[name] = (helper_checks(output), pictures)
     for check_name in FLOOR_CHECKS:
         if not any(checks.get(check_name, (0, 0))[0] for checks, _pictures in now_state.values()):
-            ok &= not_run("no capture of the baseline judges the check \"%s\": the stage cannot show it" % check_name)
-    tour = os.path.join(baseline, "tour")
-    if os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
+            ok &= not_run("%sno capture of the baseline judges the check \"%s\": the stage cannot show it" % (title, check_name))
+    tour = os.path.join(baseline, "tour") if plain else None
+    if tour and os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
         return False
     adapter_path = os.path.join(accepted, ADAPTER_FILE)
     if accept:
@@ -975,20 +1212,25 @@ def stage_baseline(baseline, accept, mge_build, now=None, add=False):
             for problem in steady_problems(os.path.join(baseline, name + ".nircap"), name, pictures, mge_build, env):
                 ok &= check(False, "%s.nircap: %s: the accepted folder holds a picture that the gate cannot repeat" % (name, problem))
             write_judged(os.path.join(accepted, name + JUDGED), checks)
+        made = sum(len(pictures) for _checks, pictures in now_state.values())
+        if not plain:
+            return check(ok, "%s%d captures accepted (%d pictures) in %s" % (title, len(captures), made, accepted))
         if adapter:
             with open(adapter_path, "w", encoding="utf-8", newline="\n") as out_file:
                 out_file.write(adapter + "\n")
         elif os.path.isfile(adapter_path):
             # No adapter printed this time: an old record would name the wrong one.
             os.remove(adapter_path)
-        return check(ok, "%d captures accepted (%d pictures)%s, on %s" % (len(captures), sum(len(pictures) for _checks, pictures in now_state.values()), ", and the tour" if os.path.isdir(tour) else "", adapter or "an adapter the helper did not print"))
-    recorded = open(adapter_path, encoding="utf-8").read().strip() if os.path.isfile(adapter_path) else None
-    print("       " + adapter_note(recorded, adapter), flush=True)
+        return check(ok, "%d captures accepted (%d pictures)%s, on %s" % (len(captures), made, ", and the tour" if os.path.isdir(tour) else "", adapter or "an adapter the helper did not print"))
+    if plain:
+        recorded = open(adapter_path, encoding="utf-8").read().strip() if os.path.isfile(adapter_path) else None
+        print("       " + adapter_note(recorded, adapter), flush=True)
     sys.path.insert(0, HERE)
 
     equal, wanted, added = 0, 0, []
     for name, (checks, pictures) in sorted(now_state.items()):
         capture = name + ".nircap"
+        what = title + capture
         lacks = []
         fine = True
         for suffix, picture in sorted(pictures.items()):
@@ -1004,17 +1246,17 @@ def stage_baseline(baseline, accept, mge_build, now=None, add=False):
                 print("       %-40s %s" % (os.path.basename(kept), said), flush=True)
         judged = read_judged(os.path.join(accepted, name + JUDGED))
         for problem in stopped_judging(judged or {}, checks):
-            fine &= check(False, "%s: %s" % (capture, problem))
+            fine &= check(False, "%s: %s" % (what, problem))
         if not add:
             for suffix in lacks:
-                fine &= check(False, "%s has no accepted picture of %s: the gate cannot judge it (accept it with --accept-new)" % (capture, "frame 1" if suffix == "" else "its last frame"))
+                fine &= check(False, "%s has no accepted picture of %s: the gate cannot judge it (accept it with --accept-new)" % (what, "frame 1" if suffix == "" else "its last frame"))
             if judged is None:
-                fine &= check(False, "%s has no accepted counts of its checks (%s): the gate cannot tell a check that stopped judging (accept it with --accept-new)" % (capture, name + JUDGED))
+                fine &= check(False, "%s has no accepted counts of its checks (%s): the gate cannot tell a check that stopped judging (accept it with --accept-new)" % (what, name + JUDGED))
         elif fine and (lacks or judged is None):
             # Only what the capture lacks, and only when what it has is equal: nothing is replaced.
             problems = steady_problems(os.path.join(baseline, capture), name, {suffix: pictures[suffix] for suffix in lacks}, mge_build, env) if lacks else []
             for problem in problems:
-                fine &= check(False, "%s: %s: not accepted" % (capture, problem))
+                fine &= check(False, "%s: %s: not accepted" % (what, problem))
             if not problems:
                 os.makedirs(accepted, exist_ok=True)
                 for suffix in lacks:
@@ -1029,12 +1271,12 @@ def stage_baseline(baseline, accept, mge_build, now=None, add=False):
     known = {name + suffix + ".png" for name, (_checks, pictures) in now_state.items() for suffix in pictures}
     strays = sorted(f for f in os.listdir(accepted) if f.endswith(".png") and f not in known) if os.path.isdir(accepted) else []
     for stray in strays:
-        ok &= check(False, "the accepted picture %s has no capture and no frame of this run: the gate judged nothing with it" % stray)
+        ok &= check(False, "%sthe accepted picture %s has no capture and no frame of this run: the gate judged nothing with it" % (title, stray))
     if add:
-        print("       accepted new: %s" % (", ".join(added) or "nothing: each capture has its accepted state"), flush=True)
-    ok &= check(wanted != 0 and equal == wanted and not strays, "%d of %d pictures equal to the accepted ones in %s" % (equal, wanted, out))
+        print("       %saccepted new: %s" % (title, ", ".join(added) or "nothing: each capture has its accepted state"), flush=True)
+    ok &= check(wanted != 0 and equal == wanted and not strays, "%s%d of %d pictures equal to the accepted ones in %s" % (title, equal, wanted, out))
     print("       %d captures: frame 1 of each, and the last frame of %d" % (len(now_state), sum(LAST in pictures for _checks, pictures in now_state.values())), flush=True)
-    if os.path.isdir(tour):
+    if tour and os.path.isdir(tour):
         kept_tour = os.path.join(tour, "accepted")
         names = sorted(f for f in os.listdir(kept_tour) if f.endswith(".png")) if os.path.isdir(kept_tour) else []
         equal = 0
@@ -1047,7 +1289,7 @@ def stage_baseline(baseline, accept, mge_build, now=None, add=False):
             if not same:
                 print("       %-40s %s" % (name, said), flush=True)
         ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s" % (equal, len(names), tour_out))
-    return stage_objects(baseline, mge_build, out) and ok
+    return stage_objects(baseline, mge_build, out, env=env, route=route) and ok
 
 
 OBJECTS_LINE = re.compile(r"^gpu objects: (\d+) made in (\d+) frames; (\d+) steady frames, (\d+) of them made objects \((\d+) objects\)", re.M)
@@ -1109,14 +1351,18 @@ def replay_end(code, output):
     return " (replay.py ended with the code %d%s)" % (code, ": " + fault if fault else "")
 
 
-def stage_objects(baseline, mge_build, keep=None):
+def stage_objects(baseline, mge_build, keep=None, env=None, route=None):
     """Each capture of the baseline folder to its last frame, plain, on each backend of
     OBJECT_BACKENDS: no steady frame (no new content, no change of the extension) may make a GPU
     object, and no device may be lost (D288). A steady frame that made objects warns while
     OBJECTS_STRICT is False. A capture with no steady frame warns; a backend with no capture that
     has a steady frame fails. The stage compares no picture, so its pictures go to a temporary
     folder; the output of each replay stays in `keep` (the folder of the gate's pictures) as
-    objects-<backend>-<capture>.replay.txt."""
+    objects-<backend>-<capture>.replay.txt. `env` is GATE_ENV by default; the hook fixtures' pass
+    gives its own, and `route` (folder, fixtures): each replay must show that route too, as a
+    hook that is dropped tests no object of its path (verdict 480)."""
+    title = "" if route is None else "hook fixtures: "
+    env = dict(GATE_ENV if env is None else env)
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "objects: no capture in the baseline folder")
@@ -1125,18 +1371,20 @@ def stage_objects(baseline, mge_build, keep=None):
     for backend in OBJECT_BACKENDS:
         steady_seen = False
         for capture in captures:
-            code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], dict(GATE_ENV))
+            code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], env)
             if keep:
                 keep_replay_output(os.path.join(keep, "objects-%s-%s" % (backend, capture[:-7])), code, output)
+            if route is not None:
+                ok &= check_route("%sobjects, %s, %s" % (title, backend, capture), output, *route)
             verdict, text = objects_verdict(output)
-            line = "objects, %s, %s: %s%s" % (backend, capture, text, replay_end(code, output))
+            line = "%sobjects, %s, %s: %s%s" % (title, backend, capture, text, replay_end(code, output))
             steady_seen |= verdict in ("ok", "sites")
             if code == 0 and (verdict == "idle" or (verdict == "sites" and not OBJECTS_STRICT)):
                 ok &= warn(line)
             else:
                 ok &= check(verdict == "ok" and code == 0, line)
         if not steady_seen:
-            ok &= check(False, "objects, %s: no capture has a steady frame: the stage cannot show the rule" % backend)
+            ok &= check(False, "%sobjects, %s: no capture has a steady frame: the stage cannot show the rule" % (title, backend))
     return ok
 
 
@@ -1299,6 +1547,7 @@ def main():
     ap.add_argument("--accept-new", action="store_true", help="the baseline stage compares, and then accepts only what a capture lacks (a picture of frame 1 or of its last frame, "
                     "the counts of its checks); it replaces nothing")
     ap.add_argument("--now", default=None, help="the folder of the baseline stage's pictures, outside the baseline folder; without it, a run folder of its own in results")
+    ap.add_argument("--hook-fixtures", default=HOOK_FIXTURES, help="the folder of the hook fixtures of the baseline stage's second pass (tools/hook-fixtures by default)")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
     ap.add_argument("--weather", default="0", help="the weather of the runs, pinned and held: 0 clear (the default) to 9 blizzard; any: the game's, not pinned")
@@ -1337,7 +1586,7 @@ def main():
                 if not stage_capture(place, args.mge_build):
                     return 1
         elif stage == "baseline":
-            if not stage_baseline(args.baseline, args.accept, args.mge_build, args.now, args.accept_new):
+            if not stage_baseline(args.baseline, args.accept, args.mge_build, args.now, args.accept_new, os.path.abspath(args.hook_fixtures)):
                 return baseline_failure_code()
         elif stage == "only":
             for place in places:
