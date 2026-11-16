@@ -829,14 +829,19 @@ impl StageShaders {
     }
 
     /// The stage shaders of a new world text in the same session (W317's switch of the world shader).
-    /// The stage keys keep their ids: the retained table keeps the id of each shape for its life. All
-    /// that comes from the text starts again: the modules, the refusals, the list and the thread.
-    pub(crate) fn switched(self, world_source: &str) -> StageShaders {
-        StageShaders {
-            ids: self.ids,
-            keys: self.keys,
-            ..StageShaders::new(self.on, world_source)
-        }
+    /// The stage keys keep their ids: the retained table keeps the id of each shape for its life. The
+    /// counts of the key table go with it: a shape that got id 0 past the cap or with no key keeps the
+    /// 0 and does not ask again. All that comes from the text starts again: the modules, the refusals,
+    /// the list and the thread. The old value drops here, and its drop saves the old text's list.
+    pub(crate) fn switched(mut self, world_source: &str) -> StageShaders {
+        // StageShaders has a Drop, so a struct update cannot move fields out of a value: each kept field is
+        // set on the new value.
+        let mut next = StageShaders::new(self.on, world_source);
+        next.ids = std::mem::take(&mut self.ids);
+        next.keys = std::mem::take(&mut self.keys);
+        next.past_cap = self.past_cap;
+        next.no_key = self.no_key;
+        next
     }
 
     /// The id of the stage key of a record that took a plane after its key: the split copy of a draw, or a draw of a
@@ -1720,12 +1725,21 @@ mod tests {
         let mut shaders = StageShaders::new(true, &world());
         let id = shaders.id_of(&data);
         assert_ne!(id, 0);
+        shaders.past_cap = 3;
+        shaders.no_key = 2;
 
         let switched_text = format!("{}\n// switched\n", world());
         let mut switched = shaders.switched(&switched_text);
         assert!(switched.source_of((id, 0)).is_ok());
         assert_eq!(switched.id_of(&data), id);
         assert!(StageShaders::new(true, &switched_text).source_of((id, 0)).is_err());
+
+        // The counts of the key table go with the keys: the shapes that got id 0 do not ask again.
+        assert_eq!((switched.past_cap, switched.no_key), (3, 2));
+
+        // A key that is new after the switch takes the next id.
+        data.light_range[3] = crate::ADDS_BIT;
+        assert_eq!(switched.id_of(&data), id + 1);
     }
 
     #[test]
