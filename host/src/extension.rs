@@ -184,6 +184,11 @@ pub struct FrameParameters {
     /// texture) gets its shape and its colour from the functions, and the shadow of a moon
     /// gets its colour from them and keeps its alpha.
     pub sky: Option<[[f32; 4]; 8]>,
+    /// True when the sky text of the extension ([`Extension::sky_shader`]) has
+    /// `extension_clouds_color` for the clouds of this frame. With [`FrameParameters::sky`]
+    /// values too, a draw of the clouds gets [`crate::CLOUDS_HOOK_BIT`] and its colour from
+    /// that function. False: the clouds go through the texture stages and the shade as any draw.
+    pub clouds: bool,
     /// True when the extension wants the call [`Extension::blend`] in this frame.
     pub blend: bool,
     /// The classes of the game (MGE_LINK_CLASS_*, one bit for each) whose draws into the
@@ -633,7 +638,7 @@ pub trait Extension {
         false
     }
 
-    /// WGSL source with the two sky functions of the extension, or [`None`]. The renderer
+    /// WGSL source with the sky functions of the extension, or [`None`]. The renderer
     /// asks one time, before it makes its shader, and puts the source at the end of it:
     ///
     /// - `fn extension_sky_position(position: vec3f) -> vec3f`: the position of a vertex of
@@ -641,6 +646,16 @@ pub trait Extension {
     /// - `fn extension_sky_color(direction: vec3f, pixel: vec2f) -> vec3f`: the colour of
     ///   the sky in a direction from the camera (length 1, in the space of the world), for
     ///   the pixel at these coordinates.
+    ///
+    /// - Optional: `fn extension_clouds_color(p: CloudPixel) -> vec4f`: the colour and the alpha
+    ///   of a pixel of the clouds, for a frame with [`FrameParameters::clouds`]. The draw keeps
+    ///   its blend, depth and stencil state and its alpha test; nothing changes the result after
+    ///   the test. `CloudPixel` (in the shader) has `texcoords` (the coordinate of the first
+    ///   texture stage), `color` (the colour of the vertex), `direction` (from the camera,
+    ///   length 1, in the space of the world) and `pixel` (the screen pixel). The shader's
+    ///   `fn cloud_texture(uv: vec2f) -> vec4f` reads the draw's first texture with its sampler
+    ///   at level 0, so it may be called in a branch. Without the function, the clouds' colour
+    ///   is the vertex colour times `cloud_texture(texcoords)`.
     ///
     /// The source reads the values of [`FrameParameters::sky`] as `draw.extension[0]` to
     /// `draw.extension[7]`.
@@ -677,9 +692,10 @@ pub trait Extension {
     /// world of the game into the back buffer with a perspective projection, when
     /// [`FrameParameters::shade`] is true. The extension sets bit 1 of `counts[3]` for a draw
     /// that its shader functions shade; bit 2 and the bits from 16 are its own, but
-    /// [`crate::NO_LIGHTS_BIT`] and [`crate::CORNER_LIGHT_BIT`], which the renderer sets after
-    /// this call: a draw lit for each pixel with no lights (its shader may leave its light loop
-    /// out), and a particle that takes its lights at its corners.
+    /// [`crate::NO_LIGHTS_BIT`], [`crate::CORNER_LIGHT_BIT`] and [`crate::CLOUDS_HOOK_BIT`], which
+    /// the renderer sets: a draw lit for each pixel with no lights (its shader may leave its
+    /// light loop out), a particle that takes its lights at its corners, and a draw of the clouds
+    /// with the extension's colour.
     fn shade(&mut self, _draw: &mut DrawData, _lights: &mut [LightData], _facts: &DrawFacts) {}
 
     /// The shade of the retained table for a frame, one time at the start of its world, when

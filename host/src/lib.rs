@@ -387,6 +387,15 @@ pub const NO_LIGHTS_BIT: u32 = 1 << 15;
 /// the colour that the vertex stage made (`extension_corner_shade`). The picture changes.
 pub const CORNER_LIGHT_BIT: u32 = 1 << 14;
 
+/// Bit 1024 of `counts.w`, set by this crate: a draw of the clouds of the sky
+/// (MGE_LINK_CLASS_SKY_CLOUDS) whose colour comes from `extension_clouds_color`, when the
+/// frame has sky values and the extension says that it has the function
+/// ([`FrameParameters::clouds`]). The fragment stage gives the function's colour and alpha
+/// after the draw's alpha test, with no shade, no texture stages and no finish; the vertex
+/// stage gives it the direction from the camera, as for the sky dome. A fact of the stage key:
+/// no other draw's shader has the function's code.
+pub const CLOUDS_HOOK_BIT: u32 = 1 << 10;
+
 /// The lines `early world draws: ...` of a run: one for each scene whose world draws reached the
 /// target before its world began, for the first ones only.
 pub(crate) const EARLY_DRAW_LINES: u64 = 16;

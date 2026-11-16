@@ -26,6 +26,8 @@ pub(crate) const CLASS_SKY_FIRST: u32 = 1;
 pub(crate) const CLASS_SKY_LAST: u32 = 8;
 /// The sky dome: the shapes under the weather's sky dome node.
 pub(crate) const CLASS_SKY_DOME: u32 = 1;
+/// The clouds: the shapes under the weather's clouds node (`WeatherController::sgSkyClouds`).
+pub(crate) const CLASS_SKY_CLOUDS: u32 = 3;
 /// The moon shadow: the one shape "Moon Shadow" under the "Shadow Node" of each moon
 /// (`Moon::ctor` 0x4443B0), the disc that keeps the stars out of the moon.
 pub(crate) const CLASS_SKY_MOON_SHADOW: u32 = 6;

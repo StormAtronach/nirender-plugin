@@ -34,6 +34,7 @@ impl Player {
                 fog_range: None,
                 object_class: 0,
                 sky: None,
+                clouds: false,
                 // D3DFILL_SOLID is 3.
                 shape: ShapeFacts {
                     geometry: 0,

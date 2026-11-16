@@ -124,7 +124,8 @@ impl TextureTier {
 /// The world shader of tier C: the source of tier A with the two binding arrays of group 1
 /// replaced by 6 textures (`t0` to `t5`, bindings 0 to 5) and 6 samplers (`s0` to `s5`,
 /// bindings 6 to 11), and each stage sampling its own pair. Every stage of a draw samples
-/// its pair: an unused stage has the white texture and a plain sampler in its group.
+/// its pair: an unused stage has the white texture and a plain sampler in its group. A
+/// stage's pair may be read in more than one place (`cloud_texture` reads the first).
 pub fn tier_c_shader_source(source: &str) -> String {
     let mut out = source.replacen("enable wgpu_binding_array;\n", "", 1);
     let arrays = "@group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;\n@group(1) @binding(1) var samplers: binding_array<sampler>;\n";
@@ -143,12 +144,8 @@ pub fn tier_c_shader_source(source: &str) -> String {
     for stage in 0..STAGES {
         let indexed =
             format!("textures[draws[record].stages[{stage}].slots.x], samplers[draws[record].stages[{stage}].slots.y]");
-        assert_eq!(
-            out.matches(&indexed).count(),
-            1,
-            "stage {stage} does not sample the arrays once"
-        );
-        out = out.replacen(&indexed, &format!("t{stage}, s{stage}"), 1);
+        assert!(out.contains(&indexed), "stage {stage} does not sample the arrays");
+        out = out.replace(&indexed, &format!("t{stage}, s{stage}"));
     }
     assert!(
         !out.contains("textures[") && !out.contains("samplers["),
@@ -168,8 +165,13 @@ pub fn world_shader_source(extension_text: &str) -> String {
     } else {
         NO_CORNER_SHADE
     };
+    let clouds = if extension.contains("fn extension_clouds_color(") {
+        ""
+    } else {
+        PLAIN_CLOUDS_COLOR
+    };
     format!(
-        "{}\n{}\n{}\n{extension}\n{corner}",
+        "{}\n{}\n{}\n{extension}\n{corner}{clouds}",
         include_str!("shader.wgsl"),
         depth::wgsl(),
         crate::spot::WGSL
@@ -192,6 +194,11 @@ pub fn world_variant_source(source: &str, variant: u32) -> Option<String> {
 /// `extension_corner_shade` of an extension that lights no particle at its corners: the vertex
 /// stage's colour stays ([`crate::CORNER_LIGHT_BIT`]).
 const NO_CORNER_SHADE: &str = "fn extension_corner_shade(world_position: vec3f, world_normal: vec3f, vertex_color: vec4f, color: vec4f) -> CornerShade { return CornerShade(color, vec3f(0.0)); }\n";
+
+/// `extension_clouds_color` of an extension that has none: the colour of the vertex times the
+/// first texture ([`crate::CLOUDS_HOOK_BIT`]).
+const PLAIN_CLOUDS_COLOR: &str =
+    "fn extension_clouds_color(p: CloudPixel) -> vec4f { return p.color * cloud_texture(p.texcoords); }\n";
 
 fn array_features() -> wgpu::Features {
     wgpu::Features::TEXTURE_BINDING_ARRAY
@@ -1436,5 +1443,27 @@ mod tests {
         assert_eq!(with_own.matches("fn extension_corner_shade(").count(), 1);
         assert!(!with_own.contains(NO_CORNER_SHADE));
         crate::assert_wgsl("shader.wgsl with a corner shade", &with_own);
+    }
+
+    /// The fragment stage calls `extension_clouds_color` for the clouds with CLOUDS_HOOK_BIT:
+    /// the world shader has one, the extension's own or the plain one; both pass naga, in tier A
+    /// and in tier C, where `cloud_texture` reads the first stage's own pair.
+    #[test]
+    fn the_world_shader_has_one_clouds_color() {
+        let defaults = crate::extension::extension_shaders(None);
+        let plain = world_shader_source(&defaults);
+        assert_eq!(plain.matches("fn extension_clouds_color(").count(), 1);
+        assert!(plain.contains(PLAIN_CLOUDS_COLOR));
+        let own = "fn extension_clouds_color(p: CloudPixel) -> vec4f { return vec4f(p.direction, 1.0) * cloud_texture(p.texcoords + p.pixel * 0.001); }\n";
+        let with_own = world_shader_source(&format!("{defaults}{own}"));
+        assert_eq!(with_own.matches("fn extension_clouds_color(").count(), 1);
+        assert!(!with_own.contains(PLAIN_CLOUDS_COLOR));
+        crate::assert_wgsl("shader.wgsl with a clouds colour", &with_own);
+        let tier_c = tier_c_shader_source(&with_own);
+        assert!(tier_c.contains("return textureSampleLevel(t0, s0, uv, 0.0);"));
+        crate::assert_wgsl("shader.wgsl of tier C with a clouds colour", &tier_c);
+        // The bit has one value in the crate and in the shader.
+        assert_eq!(crate::CLOUDS_HOOK_BIT, 1024);
+        assert!(plain.contains("(draw_counts_w() & 1024u) != 0u") && plain.contains("(draw_counts_w() & 1036u) != 0u"));
     }
 }
