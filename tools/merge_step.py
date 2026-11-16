@@ -514,6 +514,23 @@ def cite_lines(kind, base, commit, tool=None, run=subprocess.run):
     return ["cites: %s" % line for line in lines]
 
 
+# The start of the last line of check_cites.py --merge, the frame map count of the close line (W528, D502).
+FRAME_MAP = "frame map: "
+
+
+def frame_map_of(cites):
+    """The frame map part of a close line: the line of `cites` (cite_lines) that check_cites.py gives as
+    "frame map: N cites moved, M steps touched". This tool does not count the cites itself. A cite check that did not
+    run, or that gave no such line (an older check_cites.py), is "frame map: NOT RUN (<why>)": the docs pass takes the
+    frame map as due then too."""
+    for line in reversed(cites):
+        text = line[len("cites: "):] if line.startswith("cites: ") else line
+        if text.startswith(FRAME_MAP):
+            return text
+    why = next((line[len("cites: "):] for line in cites if line.startswith("cites: not checked")), "the cite check gave no frame map line")
+    return "%sNOT RUN (%s)" % (FRAME_MAP, why)
+
+
 # The start of the refusal of slot.py's `refuse_build_tool`, which replay.py calls for each replay of the gate.
 SLOT_REFUSAL = "Refused by the slot check: "
 
@@ -2617,6 +2634,12 @@ def self_test():
             raise subprocess.TimeoutExpired(command, options["timeout"])
 
         assert cite_lines("plugin", "a", "b", tool, slow)[0].startswith("cites: not checked: Command"), "a timeout is a line"
+        # W528 item 4: the close line takes check_cites' own frame map line; a check that did not run is NOT RUN.
+        counted = cite_lines("mge", "1", "2", tool, ran(0, "cites of render-link: 9 checked, 1 changed\nframe map: 1 cites moved, steps touched: not marked\n"))
+        assert frame_map_of(counted) == "frame map: 1 cites moved, steps touched: not marked", counted
+        assert frame_map_of(cite_lines("plugin", "a", "b", missing)) == "frame map: NOT RUN (not checked: no %s)" % missing
+        assert frame_map_of(said) == "frame map: NOT RUN (the cite check gave no frame map line)", "an older check_cites.py"
+        assert frame_map_of(["cites: cite changed by the merge (OK -> MOVED): frame map: x"]).startswith("frame map: NOT RUN"), "only a line that starts with it"
     print("merge_step self-test: ok")
 
 
@@ -2722,8 +2745,9 @@ def main():
     for line in NOT_DEPLOYED:
         say(line)
     # The cites of the Frame Map that the merge changes (D362): in the log too, and never a failure of the round.
+    cites = cite_lines(kind, base, commit)
     with open(log_path, "a", encoding="utf-8") as log:
-        for line in cite_lines(kind, base, commit):
+        for line in cites:
             say(line)
             log.write(line + "\n")
         # Said before the round; in the log too, beside the close that it explains.
@@ -2738,7 +2762,7 @@ def main():
     still = open_deploy_lines(deploys_open(plugin_repo, mge_repo))
     written = close_after(results, baseline, merges,
                           lambda merges, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), merges, stages, log_path),
-                          extra=still[:1])
+                          extra=[frame_map_of(cites)] + still[:1])
     if written:
         say("closes: %s in %s" % (", ".join(line.split("\t")[1] for line in written), CLOSES_FILE))
     elif written == []:
