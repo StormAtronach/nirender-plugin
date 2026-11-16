@@ -30,16 +30,15 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import BUILD_ID_RE, docs_place  # noqa: E402
+from common import BUILD_ID_RE  # noqa: E402
+from sets import SETS, e_gate, this_session  # noqa: E402  (W521: their home is sets.py)
 
-SETS = "E:/nirender-keep/mgebuilds"
 # The batch file in SETS that names the current set (W500, the owner's D461): deploy_rest.py after a kept deploy and
 # make_play_set.py after a set that passed write it (`write_current_bat`); clean_common.current_set reads it, and the
 # owner's local.bat calls it. The tries of its rename while a reader holds it, and the wait between them.
 CURRENT_BAT = "current.bat"
 CURRENT_BAT_TRIES = 5
 CURRENT_BAT_WAIT_SECONDS = 0.5
-HARNESS = docs_place("docs", "scripts", "test-harness-2026-10-03")
 NOTE = "WHAT.txt"
 EXIT_REFUSED = 1
 
@@ -87,34 +86,6 @@ def write_current_bat(sets, name, plugin_commit):
                 raise
             time.sleep(CURRENT_BAT_WAIT_SECONDS)
     return path
-
-
-def slot_tool():
-    sys.path.insert(0, HARNESS)
-    import slot
-    return slot
-
-
-def e_gate():
-    """(True, line) when no timing run holds the game (`slot.py e-ok`, D297), else (False, line)."""
-    try:
-        slot = slot_tool()
-        reply = slot.e_ok()
-    except Exception as error:  # noqa: BLE001 - any fault of the slot tool means no write
-        return False, "the slot tool did not answer: %s" % error
-    return reply.code == slot.DONE, reply.text
-
-
-def this_session():
-    """The session of this process for the note: its id and, when slot.py finds it, its name."""
-    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if not session:
-        return "no session (a terminal)"
-    try:
-        name = slot_tool().session_name(session)
-    except Exception:  # noqa: BLE001 - the name is only for the note
-        name = None
-    return "%s (%s)" % (name, session) if name else session
 
 
 def note_text(what, session, now, plugin_line=None):

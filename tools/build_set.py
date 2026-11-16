@@ -56,7 +56,7 @@ from common import BUILD_ID_RE, REPO, docs_place, git_env, local, main_checkout,
 from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_REPO  # noqa: E402
 from make_play_set import MGE_BRANCH, PDBS, PDB_KEEP, PLUGIN_BRANCH, hold_run_lock, inside, say  # noqa: E402
-from new_run_folder import e_gate, this_session  # noqa: E402
+from sets import e_gate, this_session  # noqa: E402
 import symbols  # noqa: E402
 
 TREES = "C:/tmp/buildset"

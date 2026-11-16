@@ -37,8 +37,11 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from new_run_folder import SETS  # noqa: E402,F401  (the root of the sets: the root of the f<N> folders)
+from common import docs_place  # noqa: E402
 
+# The root of the sets (and of the older f<N> folders).
+SETS = "E:/nirender-keep/mgebuilds"
+HARNESS = docs_place("docs", "scripts", "test-harness-2026-10-03")
 MANIFEST = "MANIFEST.json"
 # The form of the manifest. A reader refuses another form (D126: no code for an old form).
 FORM = 1
@@ -60,6 +63,34 @@ MWSE_PATHS = ("mwse.dll", "data files/mwse/core/")
 
 class SetError(Exception):
     """A folder is not a sealed set; the message names the fault."""
+
+
+def slot_tool():
+    sys.path.insert(0, HARNESS)
+    import slot
+    return slot
+
+
+def e_gate():
+    """(True, line) when no timing run holds the game (`slot.py e-ok`, D297), else (False, line)."""
+    try:
+        slot = slot_tool()
+        reply = slot.e_ok()
+    except Exception as error:  # noqa: BLE001 - any fault of the slot tool means no write
+        return False, "the slot tool did not answer: %s" % error
+    return reply.code == slot.DONE, reply.text
+
+
+def this_session():
+    """The session of this process for the note: its id and, when slot.py finds it, its name."""
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not session:
+        return "no session (a terminal)"
+    try:
+        name = slot_tool().session_name(session)
+    except Exception:  # noqa: BLE001 - the name is only for the note
+        name = None
+    return "%s (%s)" % (name, session) if name else session
 
 
 def md5_of(path):
