@@ -117,6 +117,11 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   runs also when the replay gate or the A/B stages fail: only the stages before it decide (the gate is red until the owner
   accepts a new baseline, and the owner tests the latest build, D193). The round holds the game slot (deploy rest is one
   of GAME_STAGES), so that the write to E: is allowed (evidence_problem);
+- the helper's sources (W528): after the gate, the stage "helper sources" keeps the source files of numidium.exe of
+  each repo, read from the dep-info file of the gate's build (target/x86_64-pc-windows-msvc/release/numidium.d), with
+  the two commits, in E:\\nirender-keep\\merge-step\\helper-sources.txt. A later round plans the gate for a change of a
+  listed file of its repo, beside the fixed list of gate paths. The plan prints the list's commits; with no list, or a
+  list whose commit is not an ancestor of the base, it plans the gate and says why;
 - the open deploys (W528): a round that passes with its deploy WITHHELD appends a WITHHELD line with both commits to
   E:\\nirender-keep\\merge-step\\deploys.tsv, at the same gate as its close; deploy_rest.py appends a DEPLOYED line after
   each deploy of a build. A WITHHELD line stays open until a DEPLOYED line names the same or newer commits of both
@@ -275,6 +280,21 @@ FEATURES_STAGE = "mwse features "
 # D442): in every round that deploys, after the probes. A failure fails the round, so nothing is deployed.
 MWSE_CORE_STAGE = "mwse core"
 BUILD_FOR_DEPLOY = "build for the deploy"
+# W528 item 1 (F-G-4): the helper's own source files plan the gate, beside GATE_PATHS. After the build of the gate, the
+# stage HELPER_SOURCES_STAGE reads the dep-info file that cargo writes beside numidium.exe and keeps the source files
+# of each repo in HELPER_SOURCES_PATH, with the two commits of the build. GATE_PATHS keeps what dep-info does not name:
+# the shaders under assets/, the manifests and lock files, the toolchain files. A new source file is declared in a
+# file that is on the list (a mod line, an include, a path dependency), so its diff touches a listed path; neither
+# build.rs of the helper (mgeHost64, host) reads a glob: they read the commit only.
+HELPER_SOURCES_STAGE = "helper sources"
+HELPER_SOURCES = "--helper-sources"
+HELPER_SOURCES_PATH = os.path.join(LOG_FOLDER, "helper-sources.txt")
+# The list that a plan reads: HELPER_SOURCES_PATH, or None in the self-test, whose scratch repos read no real list.
+HELPER_SOURCES_FILE = HELPER_SOURCES_PATH
+HELPER_DEP_INFO = os.path.join("target", "x86_64-pc-windows-msvc", "release", "numidium.d")
+HELPER_COMMITS = "commits"
+# The parts of a repo that are no source of the helper, though dep-info can name them: the build's own output and git.
+NOT_SOURCES = ("target/", ".git/")
 HARNESS_MOD = re.compile(r"[/\\]mods[/\\]Harness - [^/\\]*[/\\]", re.IGNORECASE)
 # These move a build out of its tree. Cargo then returns 0, and the gate replays the old file of the build folder.
 BUILD_MOVERS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "NIRENDER_PLUGIN_DIR")
@@ -331,12 +351,14 @@ def helper_text_stage(plugin, mge, commits=None):
     return name, mge, [sys.executable, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64"]
 
 
-def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None, commits=None, base=None):
+def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None, commits=None, base=None, helper_paths=()):
     """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `base` is the base
     commit of the round: the checks stage compares with it (checks.py --base), as the tree is at the merge. `tips` are the
     commits of the base build, {"plugin": sha, "mge": sha}, and `base_folder` holds it: with both, the gate is followed by
     the A/B stages. `mwse_dlls` are the (instance, MWSE.dll) of the "mwse sites" stages, by default those deployed now.
-    `commits` are the commits under test, {"plugin": sha, "mge": sha}: the parts of the deployed build must be those."""
+    `commits` are the commits under test, {"plugin": sha, "mge": sha}: the parts of the deployed build must be those.
+    `helper_paths` are the helper's source files of this repo (helper_gate_paths), which plan the gate too; None plans
+    it always."""
     python = sys.executable
     plugin = repo if kind == "plugin" else sibling_of(kind, repo)
     mge = repo if kind == "mge" else sibling_of(kind, repo)
@@ -363,7 +385,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     if touches(paths, D3D8_PATHS[kind]):
         stages.append(("d3d8 build", mge, ["cargo", "build", "--quiet", "-p", "d3d8", "--profile", "release-dll"]))
         stages.append(("contract", plugin, tool("check_contract.py", "--mge", mge)))
-    gate = touches(paths, GATE_PATHS[kind])
+    gate = touches(paths, GATE_PATHS[kind]) or helper_paths is None or touches(paths, helper_paths)
     deploys = gate or touches(paths, DEPLOY_PATHS[kind])
     staging = os.path.join(mge, "target", "dist-staging")
     # The commits under test, not the HEADs at the time of the stage: a merge can move a HEAD during the round.
@@ -377,6 +399,10 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
         stages.append(("build for the gate", mge, ["cargo", "xtask", "dist"]))
         stages.append(deploy)
         stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", staging, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
+        under_test = commits or {}
+        stages.append((HELPER_SOURCES_STAGE, plugin, [python, "-I", os.path.join(plugin, "tools", "merge_step.py"), HELPER_SOURCES,
+                                                      os.path.join(mge, HELPER_DEP_INFO), HELPER_SOURCES_PATH, plugin, mge,
+                                                      under_test.get("plugin", "unknown"), under_test.get("mge", "unknown")]))
         if tips and base_folder:
             stages.append((BASE_STAGE, plugin, tool("instance_ab.py", "base-build", "--plugin-repo", plugin, "--mge-repo", mge, "--plugin-tip", tips["plugin"], "--mge-tip", tips["mge"], "--out", base_folder)))
             stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", os.path.join(base_folder, "build"), "--now-build", staging, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
@@ -739,7 +765,7 @@ def run_stages(stages, log, note_stage=lambda: None):
         return noted(name, NOT_RUN_WORD, reason)
 
     for name, folder, command in stages:
-        if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
+        if name in ("replay gate", INSTANCE_STAGE, HELPER_SOURCES_STAGE) and not results.get("build for the gate", True):
             results[name] = not_run(name, "its build failed")
             continue
         if name == INSTANCE_STAGE and not results.get(BASE_STAGE, True):
@@ -1250,11 +1276,99 @@ def tips_for(kind, repo, base, sibling_base=None):
     return {kind: base, other: sibling_commit}, None
 
 
+def dep_info_paths(text):
+    """The files of the first rule of a dep-info file of cargo ("<target>: <file> <file> ..."). A space in a path is
+    written "\\ "."""
+    first = text.split("\n", 1)[0].rstrip("\r")
+    _, colon, files = first.partition(": ")
+    if not colon:
+        return []
+    return [part.replace("\\ ", " ") for part in re.split(r"(?<!\\) ", files) if part]
+
+
+def sources_by_repo(paths, roots):
+    """{kind: the sorted paths of `paths` under the folder roots[kind], relative to it with "/"}. A path under no root,
+    or under a part of NOT_SOURCES, is left out."""
+    found = {kind: set() for kind in roots}
+    for path in paths:
+        full = os.path.abspath(path)
+        for kind, root in roots.items():
+            top = os.path.abspath(root) + os.sep
+            if os.path.normcase(full).startswith(os.path.normcase(top)):
+                relative = full[len(top):].replace(os.sep, "/")
+                if not relative.startswith(NOT_SOURCES):
+                    found[kind].add(relative)
+                break
+    return {kind: sorted(names) for kind, names in found.items()}
+
+
+def keep_helper_sources(dep_info, out, plugin, mge, plugin_commit, mge_commit):
+    """The stage HELPER_SOURCES_STAGE: writes the helper's source files of each repo, read from the dep-info file of
+    the gate's build, to `out`, with the two commits of the build. Exit 0, or 1 with a FAIL line when the file is
+    missing or names no source of a repo: the plans would then not know the helper's sources."""
+    try:
+        with open(dep_info, encoding="utf-8") as file:
+            text = file.read()
+    except OSError as error:
+        say("FAIL: no dep-info file of the helper: %s" % error)
+        return 1
+    sources = sources_by_repo(dep_info_paths(text), {"plugin": plugin, "mge": mge})
+    empty = [kind for kind, names in sources.items() if not names]
+    if empty:
+        say("FAIL: %s names no source of %s" % (dep_info, " or ".join(plugin if kind == "plugin" else mge for kind in empty)))
+        return 1
+    lines = ["%s\tplugin=%s\tmge=%s" % (HELPER_COMMITS, plugin_commit, mge_commit)]
+    lines += ["%s\t%s" % (kind, name) for kind in ("plugin", "mge") for name in sources[kind]]
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out + ".new", "w", encoding="ascii", errors="backslashreplace", newline="\n") as file:
+        file.write("".join(line + "\n" for line in lines))
+    os.replace(out + ".new", out)
+    say("helper sources: %d of nirender-plugin and %d of render-link, of plugin %s and mge %s, in %s"
+        % (len(sources["plugin"]), len(sources["mge"]), plugin_commit[:10], mge_commit[:10], out))
+    return 0
+
+
+def read_helper_sources(path):
+    """(commits {kind: sha}, {kind: tuple of paths}) of a list that keep_helper_sources wrote, or None when the file is
+    missing or not in its form."""
+    try:
+        with open(path, encoding="ascii", errors="replace") as file:
+            rows = [line.rstrip("\r\n").split("\t") for line in file]
+    except OSError:
+        return None
+    if not rows or rows[0][0] != HELPER_COMMITS or len(rows[0]) != 3:
+        return None
+    commits = dict(part.split("=", 1) for part in rows[0][1:] if "=" in part)
+    if set(commits) != {"plugin", "mge"} or any(len(row) != 2 or row[0] not in commits for row in rows[1:]):
+        return None
+    return commits, {kind: tuple(name for row_kind, name in rows[1:] if row_kind == kind) for kind in commits}
+
+
+def helper_gate_paths(kind, repo, base, path=None):
+    """The helper's source files of the repo of `kind` that plan the gate, and one line for the plan. In place of the
+    files, None when the list is not known to hold every source at `base`: no list, a list not in the form, or a list
+    of a commit that is not an ancestor of `base`. The round then plans the gate, and its build writes the list."""
+    path = HELPER_SOURCES_FILE if path is None else path
+    if path is None:
+        return (), "helper sources: not read (the self-test)"
+    kept = read_helper_sources(path)
+    if kept is None:
+        return None, "helper sources: no list in %s: the round plans the gate, and its build writes the list" % path
+    commits, sources = kept
+    listed = commits[kind]
+    if resolve(repo, listed) is None or not is_ancestor(repo, listed, base):
+        return None, ("helper sources: the list in %s is of the commit %s, which is not an ancestor of the base %s: the "
+                      "round plans the gate" % (path, listed[:10], base[:10]))
+    return sources[kind], ("helper sources: the list of plugin %s and mge %s; %d files of this repo plan the gate"
+                           % (commits["plugin"][:10], commits["mge"][:10], len(sources[kind])))
+
+
 def planned_stages(kind, repo, paths, baseline, commits, base, branch, sibling_base=None):
     """The stages of a check of `paths` from `base`, as main() runs them: with the replay gate, also the base build of
     tips_for and the A/B. (stages, tips, None); (stages, None, why) when the gate needs a base build that tips_for
-    cannot give."""
-    stages = stages_for(kind, repo, paths, baseline, commits=commits, base=base)
+    cannot give. The helper's sources (helper_gate_paths) plan the gate too."""
+    helper_paths, _ = helper_gate_paths(kind, repo, base)
+    stages = stages_for(kind, repo, paths, baseline, commits=commits, base=base, helper_paths=helper_paths)
     if not any(name == "replay gate" for name, _, _ in stages):
         return stages, None, None
     if not branch:
@@ -1262,7 +1376,7 @@ def planned_stages(kind, repo, paths, baseline, commits, base, branch, sibling_b
     tips, why = tips_for(kind, repo, base, sibling_base)
     if why:
         return stages, None, why
-    return stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits, base=base), tips, None
+    return stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits, base=base, helper_paths=helper_paths), tips, None
 
 
 def stage_key(stage):
@@ -1356,6 +1470,8 @@ def scratch_slots(state):
 
 
 def self_test():
+    global HELPER_SOURCES_FILE
+    HELPER_SOURCES_FILE = None
     with tempfile.TemporaryDirectory() as root:
         plugin = os.path.join(root, PLUGIN_NAME)
         mge = os.path.join(root, MGE_NAME)
@@ -1373,7 +1489,7 @@ def self_test():
         # its build, and then checks the MWSE core of each install (D442). A round of the plugin DLL or the mod's Lua builds
         # the dist and deploys it without the gate.
         features = [FEATURES_STAGE + name for name in MWSE_DEPLOYS] + [MWSE_CORE_STAGE]
-        gate_tail = features + ["build for the gate", DEPLOY_STAGE, "replay gate"]
+        gate_tail = features + ["build for the gate", DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE]
         deploy_tail = features + [BUILD_FOR_DEPLOY, DEPLOY_STAGE]
         assert len(features) == 3
         assert names("plugin", plugin, "tools/x.py") == base and names("plugin", plugin, "README.md") == base, "a change of no deployed part deployed"
@@ -1471,7 +1587,7 @@ def self_test():
 
         # The gate compares with the folder that it is given, and neither the accepted folder nor a copy takes its pictures.
         for folder, given in ((BASELINE, ()), (os.path.join(root, "copy"), (os.path.join(root, "copy"),))):
-            command = stages_for("plugin", plugin, ["host/src/shader.wgsl"], *given)[-1][2]
+            command = {name: command for name, _, command in stages_for("plugin", plugin, ["host/src/shader.wgsl"], *given)}["replay gate"]
             assert command[command.index("--baseline") + 1] == folder and "--accept" not in command
             assert not command[command.index("--now") + 1].startswith(folder + os.sep), folder
 
@@ -1726,7 +1842,7 @@ def self_test():
         tips = {"plugin": "p" * 40, "mge": "m" * 40}
         kept = os.path.join(root, "kept")
         with_tips = stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips, kept)
-        assert [name for name, _, _ in with_tips][-5:] == ["build for the gate", DEPLOY_STAGE, "replay gate", BASE_STAGE, INSTANCE_STAGE]
+        assert [name for name, _, _ in with_tips][-6:] == ["build for the gate", DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE, BASE_STAGE, INSTANCE_STAGE]
         by_name = {name: (folder, command) for name, folder, command in with_tips}
         build = by_name[BASE_STAGE][1]
         assert build[build.index("--plugin-tip") + 1] == "p" * 40 and build[build.index("--mge-tip") + 1] == "m" * 40 and build[build.index("--out") + 1] == kept
@@ -1741,7 +1857,7 @@ def self_test():
         deploy = {name: command for name, _, command in stages_for("plugin", plugin, ["host/src/retained.rs"], commits=under_test("plugin", "a" * 40, "b" * 40))}[DEPLOY_STAGE]
         assert deploy[deploy.index("--plugin-commit") + 1] == "a" * 40 and deploy[deploy.index("--mge-commit") + 1] == "b" * 40, deploy
         assert "--plugin-repo" not in deploy and "--plugin-commit" not in by_name[DEPLOY_STAGE][1], by_name[DEPLOY_STAGE][1]
-        assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips)][-1] == "replay gate", "no folder, no A/B stage"
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips)][-1] == HELPER_SOURCES_STAGE, "no folder, no A/B stage"
         assert base_folder_of("feature/wgpu-renderer") == os.path.join(LOG_FOLDER, "base-feature-wgpu-renderer") and base_folder_of("master").endswith("base-master")
         assert tips_for("plugin", os.path.join(root, "alone", PLUGIN_NAME), "b")[0] is None
         # The sibling's side of the base is the pair that passed with the base, kept in the sibling's repo.
@@ -1939,6 +2055,58 @@ def self_test():
         assert touches(both, GATE_PATHS["mge"]), "a move out of a gate path plans the gate"
         inside = changed_paths(moves, out_of_gate, inside_tools)
         assert sorted(inside) == ["tools/a.py", "tools/b.py"] and not touches(inside, GATE_PATHS["mge"]), inside
+        # W528 item 1: the helper's sources from the dep-info file of its build plan the gate.
+        source_roots = {"plugin": os.path.join(root, "src-plugin"), "mge": os.path.join(root, "src mge")}
+        dep_text = "%s: %s %s %s %s %s %s\n\n%s:\n" % (
+            os.path.join(source_roots["mge"], "target", "numidium.exe").replace(" ", "\\ "),
+            os.path.join(source_roots["plugin"], "src", "stream_format.rs"),
+            os.path.join(source_roots["mge"], "mgeHost64", "src", "main.rs").replace(" ", "\\ "),
+            os.path.join(source_roots["mge"], "target", "out", "gen.rs").replace(" ", "\\ "),
+            os.path.join(source_roots["plugin"], ".git", "HEAD"),
+            os.path.join(root, "elsewhere", "lib.rs"),
+            os.path.join(source_roots["plugin"], "host", "src", "lib.rs"),
+            os.path.join(source_roots["plugin"], "src", "stream_format.rs"))
+        listed = dep_info_paths(dep_text)
+        assert len(listed) == 6 and listed[1] == os.path.join(source_roots["mge"], "mgeHost64", "src", "main.rs"), listed
+        assert sources_by_repo(listed, source_roots) == {"plugin": ["host/src/lib.rs", "src/stream_format.rs"], "mge": ["mgeHost64/src/main.rs"]}
+        assert dep_info_paths("no rule here\n") == []
+        dep_file, list_file = os.path.join(root, "numidium.d"), os.path.join(root, "keep", "helper-sources.txt")
+        with open(dep_file, "w", encoding="utf-8") as file:
+            file.write(dep_text)
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert keep_helper_sources(dep_file, list_file, source_roots["plugin"], source_roots["mge"], before_moves, before_moves) == 0
+        assert said.getvalue().startswith("helper sources: 2 of nirender-plugin and 1 of render-link"), said.getvalue()
+        assert read_helper_sources(list_file) == ({"plugin": before_moves, "mge": before_moves},
+                                                  {"plugin": ("host/src/lib.rs", "src/stream_format.rs"), "mge": ("mgeHost64/src/main.rs",)})
+        # A missing dep-info file, and one that names no source of a repo, fail the stage and keep the old list.
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert keep_helper_sources(os.path.join(root, "none.d"), list_file, source_roots["plugin"], source_roots["mge"], "a", "b") == 1
+            assert keep_helper_sources(dep_file, list_file, source_roots["plugin"], os.path.join(root, "other"), "a", "b") == 1
+        assert "FAIL: no dep-info file" in said.getvalue() and "names no source of %s" % os.path.join(root, "other") in said.getvalue()
+        assert read_helper_sources(list_file)[0]["plugin"] == before_moves, "a failed stage wrote the list"
+        # The plant: a list of an ancestor of the base; a change of a listed file plans the gate, and the line names the list.
+        helper_paths, line = helper_gate_paths("plugin", moves, inside_tools, list_file)
+        assert helper_paths == ("host/src/lib.rs", "src/stream_format.rs") and before_moves[:10] in line, line
+        assert "replay gate" in [name for name, _, _ in stages_for("plugin", plugin, ["src/stream_format.rs"], helper_paths=helper_paths)]
+        assert "replay gate" not in [name for name, _, _ in stages_for("plugin", plugin, ["src/stream_format.rs"])], "the null of the plant: GATE_PATHS alone"
+        # The null: a change of a file that is not listed plans no gate.
+        assert "replay gate" not in [name for name, _, _ in stages_for("plugin", plugin, ["tools/x.py"], helper_paths=helper_paths)]
+        # No list, a list not in the form, or a list of a commit that is not an ancestor of the base: the gate, with why.
+        assert helper_gate_paths("plugin", moves, inside_tools, os.path.join(root, "no-list.txt"))[0] is None
+        with open(os.path.join(root, "bad-list.txt"), "w", encoding="ascii") as file:
+            file.write("plugin\tsrc/x.rs\n")
+        assert helper_gate_paths("plugin", moves, inside_tools, os.path.join(root, "bad-list.txt"))[0] is None
+        assert helper_gate_paths("plugin", moves, before_moves, list_file)[0] is not None, "the list's own commit is the base"
+        with contextlib.redirect_stdout(io.StringIO()):
+            keep_helper_sources(dep_file, list_file, source_roots["plugin"], source_roots["mge"], inside_tools, inside_tools)
+        stale, line = helper_gate_paths("plugin", moves, before_moves, list_file)
+        assert stale is None and "is not an ancestor of the base %s" % before_moves[:10] in line, line
+        assert "replay gate" in [name for name, _, _ in stages_for("plugin", plugin, ["tools/x.py"], helper_paths=None)], "an unknown list plans the gate"
+        # The stage stands after the gate, and is NOT RUN when the build of the gate failed.
+        with open(os.path.join(root, "log-sources.txt"), "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
+            assert run_stages([("build for the gate", root, [sys.executable, "-c", "raise SystemExit(1)"]),
+                               (HELPER_SOURCES_STAGE, root, [sys.executable, "-c", "raise SystemExit(9)"])], log) == [False, False]
+        assert STAGE_WORDS[-1] == (HELPER_SOURCES_STAGE, NOT_RUN_WORD, "its build failed"), STAGE_WORDS
         # W528 item 3b: a round with a WITHHELD deploy keeps an open deploy until a deploy of the same or newer commits.
         # The scratch repo of the moves stands for both repos: before_moves, out_of_gate and inside_tools in that order.
         deploys = os.path.join(root, "deploys", "deploys.tsv")
@@ -2726,6 +2894,8 @@ def self_test():
 def main():
     if len(sys.argv) > 2 and sys.argv[1] == REQUIRE_TESTS:
         return require_tests(sys.argv[2:])
+    if len(sys.argv) == 8 and sys.argv[1] == HELPER_SOURCES:
+        return keep_helper_sources(*sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("repo", nargs="?")
     parser.add_argument("commit", nargs="?")
@@ -2771,6 +2941,8 @@ def main():
     paths = changed_paths(repo, base, commit)
     baseline = os.path.abspath(args.baseline)
     commits = under_test(kind, commit, resolve(sibling_of(kind, repo), "HEAD") if kind and os.path.isdir(sibling_of(kind, repo)) else None)
+    if kind:
+        say(helper_gate_paths(kind, repo, base)[1])
     stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, branch, args.sibling_base) if kind else ([], None, None)
     if why:
         say("FAIL the tree: %s" % why)
