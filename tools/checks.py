@@ -18,6 +18,9 @@ The checks of each list:
   `least_length`.
 - `capture_ab.py --self-test`: the compare of two captures by their fixed-length tags and the
   check of a replay's report (the tool itself needs two captures and replays).
+- `replay.py --self-test`: the run folder of a replay (D530): its name, the copy of mgeXE.toml, the
+  refusal of a picture inside an instance or the game folder, and what stays after a run (no
+  helper starts).
 - `check_mwse_native.py`: the plugin's and MGE XE's copies of MWSE's native ABI against MWSE's
   header.
 - `check_mwse_vtable_fills.py`: each vtable slot that MWSE fills from a member function gets the
@@ -93,6 +96,7 @@ CHECKS = {
     "stream tags": (PLUGIN / "tools" / "check_stream_tags.py", PLUGIN),
     "stream tags parsing": (PLUGIN / "tools" / "check_stream_tags.py", PLUGIN, ["--self-test"]),
     "capture A/B parsing": (PLUGIN / "tools" / "capture_ab.py", PLUGIN, ["--self-test"]),
+    "replay run folder": (PLUGIN / "tools" / "replay.py", PLUGIN, ["--self-test"]),
     "mge contract": (PLUGIN / "tools" / "check_contract.py", REPOS / "MGE-XE-G7-render-link", ["--mge"]),
     # The version handshake: one home for each format number and each layout constant of the
     # stream.
@@ -182,7 +186,7 @@ SELF_TESTS_NOT_CHECKED = {
     "symbols.py": "about 11 s and symstore.exe: too slow for the hook of each commit",
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "sharedse layouts parsing", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "tour", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test", "lua checks", "build sets", "sets", "mwse sites parsing", "bc7", "frame census", "new run folder"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "replay run folder","handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "sharedse layouts parsing", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "tour", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test", "lua checks", "build sets", "sets", "mwse sites parsing", "bc7", "frame census", "new run folder"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects", "mge plain guards"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
