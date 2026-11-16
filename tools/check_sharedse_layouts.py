@@ -100,7 +100,26 @@ def export_line(path):
     return "sharedse layouts: the IDA export %s, md5 %s, written %s" % (path, digest, written)
 
 
+def self_test():
+    """The compare on a header of one struct. W527 (W524 F-G-8): headers in which nothing is compared fail. The null:
+    before W527 such a run printed "0 structs compared" and passed."""
+    structs = {"NiProperty": {"size": 0x10, "union": False, "members": [{"name": "flags", "offset": 8, "size": 4, "type": "int"}]}}
+    header = "struct Property {\n    int flags; // 0x8\n};\nstatic_assert(sizeof(Property) == 0x10, \"size\");\n"
+    assert compare([("SharedSE/NIProperty.h", "NI", header)], structs, False) == ([], 1, 1, 1)
+    problems = compare([("SharedSE/NIProperty.h", "NI", header.replace("0x10,", "0x14,"))], structs, False)[0]
+    assert len(problems) == 1 and "MWSE size 0x14, IDA NiProperty 0x10" in problems[0], problems
+    # The plant: the headers are there, and no struct of them is found (a changed form, or no header read).
+    unread = header.replace("// 0x8", "").replace("static_assert", "static_check")
+    for texts in ([("SharedSE/NIProperty.h", "NI", unread)], []):
+        problems, compared = compare(texts, structs, False)[:2]
+        assert compared == 0 and len(problems) == 1 and "the check judged none" in problems[0], problems
+    print("sharedse layouts self-test: ok")
+
+
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        return 0
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--all", action="store_true", help="every struct MWSE asserts, not only those of the layouts")
     source = parser.add_mutually_exclusive_group()
@@ -115,10 +134,24 @@ def main():
         print(fallback)
     print(export_line(args.export))
     structs = json.load(open(args.export))
-    everything = args.all
+    texts = [(rel, namespace, tree.read(rel).decode("utf-8", "replace")) for rel, namespace in headers(tree)]
+    problems, compared, sizes_compared, fields_compared = compare(texts, structs, args.all)
+    known = [p for p in problems if any((" %s:" % name) in p or (" %s::" % name) in p for name in KNOWN)]
+    new = [p for p in problems if p not in known]
+    for problem in new:
+        print("sharedse layouts: " + problem)
+    print("sharedse layouts: %d structs compared (%d sizes, %d field offsets), %d differences, %d known (KNOWN); MWSE: %s" % (
+        compared, sizes_compared, fields_compared, len(new), len(known), tree.label))
+    return 1 if new else 0
+
+
+def compare(texts, structs, everything):
+    """(problems, structs compared, sizes compared, field offsets compared) of the headers `texts` ((path, namespace,
+    text) each) against the IDA export `structs`. No struct compared is a problem: a check that judged nothing does not
+    pass (W527, W524 F-G-8)."""
     problems, compared, sizes_compared, fields_compared = [], 0, 0, 0
-    for rel, namespace in headers(tree):
-        sizes, fields = parse(tree.read(rel).decode("utf-8", "replace"), namespace)
+    for rel, namespace, text in texts:
+        sizes, fields = parse(text, namespace)
         for name in sorted(set(sizes) | set(fields)):
             ida = ida_name(name, structs)
             if not ida or not (everything or LAYOUT_RE.search(ida)):
@@ -135,13 +168,9 @@ def main():
                 elif offset not in starts and not field.startswith("unknown_"):
                     # A placeholder inside a wider IDA member is less detail, not a contradiction.
                     problems.append("%s:%d %s::%s at 0x%x: no IDA member of %s starts there" % (rel, number, name, field, offset, ida))
-    known = [p for p in problems if any((" %s:" % name) in p or (" %s::" % name) in p for name in KNOWN)]
-    new = [p for p in problems if p not in known]
-    for problem in new:
-        print("sharedse layouts: " + problem)
-    print("sharedse layouts: %d structs compared (%d sizes, %d field offsets), %d differences, %d known (KNOWN); MWSE: %s" % (
-        compared, sizes_compared, fields_compared, len(new), len(known), tree.label))
-    return 1 if new else 0
+    if not compared:
+        problems.append("no struct of the headers (%d files) was compared with the IDA export: the check judged none" % len(texts))
+    return problems, compared, sizes_compared, fields_compared
 
 
 if __name__ == "__main__":

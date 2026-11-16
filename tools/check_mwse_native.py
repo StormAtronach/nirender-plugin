@@ -43,6 +43,9 @@ def compare(header, rust, copies):
             problems.append("MWSE_%s has no constant %s in mwse_native.rs" % (name, name))
         elif rust_consts[name] != int(value, 0):
             problems.append("MWSE_%s is %s in the header and %d in mwse_native.rs" % (name, value, rust_consts[name]))
+    if not names:
+        # A pattern that finds nothing judges nothing (W527, W524 F-G-20 C23).
+        problems.append("the header gives no MWSE_NATIVE_ number: the check judged none")
 
     for path, data in copies.items():
         if data is None:
@@ -64,6 +67,10 @@ def self_test():
     assert compare(new, "pub const NATIVE_A: u32 = 2;\n", copy)[1] == ["MWSE_NATIVE_B has no constant NATIVE_B in mwse_native.rs"]
     assert compare(new, rust.replace("7;", "8;"), copy)[1] == ["MWSE_NATIVE_B is 7 in the header and 8 in mwse_native.rs"]
     assert compare(new, rust, {"none.h": None})[1] == ["no copy at none.h"]
+    # W527 (W524 F-G-20 C23): a header with no number fails. The null: before W527 it gave (0, []), "mwse native ok: 0
+    # numbers", a pass.
+    reworded = new.replace("#define MWSE_", "#define MWSE_X_")
+    assert compare(reworded, rust, {"copy.h": reworded.encode("ascii")}) == (0, ["the header gives no MWSE_NATIVE_ number: the check judged none"])
     print("mwse native self-test: ok")
     return 0
 

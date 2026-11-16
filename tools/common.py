@@ -51,6 +51,15 @@ def build_missing(mge_build):
 # that starts with "NOT RUN".
 NOT_RUN_EXIT = 5
 
+# The summary line of one test binary in the output of cargo test, quiet or not. The one reader of it in the tools:
+# merge_step.py --require-tests and check_mwse_sites.py (W527).
+TEST_RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed;", re.MULTILINE)
+
+
+def tests_ran(output):
+    """How many tests the output of `cargo test` says ran: passed and failed, over every test binary."""
+    return sum(int(passed) + int(failed) for passed, failed in TEST_RESULT.findall(output))
+
 # The build id that each part of the renderer carries as ASCII, "<program> v<version> <commit>[-dirty]"
 # (build_support/build_id.rs): the plugin (`BUILD_ID` of src/lib.rs), the host crate in numidium.exe (`BUILD_ID` of
 # host/src/lib.rs), and the two programs of render-link. By part: the file of a dist build and the programs it holds.

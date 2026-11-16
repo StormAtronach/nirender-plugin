@@ -159,7 +159,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import MD5, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import CAPTURE_FORMAT, NOT_RUN_EXIT, OLDER_THAN_CAPTURE, docs_place, git_env  # noqa: E402
+from common import CAPTURE_FORMAT, NOT_RUN_EXIT, OLDER_THAN_CAPTURE, docs_place, git_env, tests_ran  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 from mwse_tree import fallback_checks  # noqa: E402
 
@@ -336,15 +336,6 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     elif touches(paths, DIST_PATHS[kind]):
         stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
-
-
-# The summary line of one test binary in the output of cargo test, quiet or not.
-TEST_RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed;", re.MULTILINE)
-
-
-def tests_ran(output):
-    """How many tests the output of `cargo test` says ran: passed and failed, over every test binary."""
-    return sum(int(passed) + int(failed) for passed, failed in TEST_RESULT.findall(output))
 
 
 def require_tests(command):

@@ -304,6 +304,15 @@ def self_test():
     problems = export_problems([("main.cpp", unread)], exports)[1]
     assert len(problems) == 1 and "the lookup of nirender_direct3d_create8 has no cast" in problems[0], problems
     assert export_problems([("main.cpp", "")], exports)[0] == 0 and "finds nothing" in export_problems([("main.cpp", "")], exports)[1][0]
+    # W527 (W524 F-G-20 C22): a header in which the patterns find nothing fails. The null: before W527 the check printed
+    # "contract ok: 0 constants, 0 structs, 0 functions" and passed. The real header passes with a count of each.
+    sources = rust_sources()
+    real, rust = open(HEADER, "rb").read().decode("ascii"), open(RUST, encoding="utf-8").read()
+    problems, defines, sizes, functions = header_problems(real, rust, sources)
+    assert problems == [] and defines and sizes and functions, problems
+    problems = header_problems(real.replace("#define MGE_", "#define  MGE_").replace("static_assert", "static_check"), rust, sources)[0]
+    assert len(problems) == 2 and "no constant" in problems[0] and "no struct size" in problems[1], problems
+    assert len(header_problems("", rust, sources)[0]) == 3
     print("check_contract self-test: ok")
 
 
@@ -315,11 +324,33 @@ def main():
     if args.self_test:
         self_test()
         return 0
-    header = open(HEADER, "rb").read()
-    rust = open(RUST, encoding="utf-8").read()
-    problems = []
+    text = open(HEADER, "rb").read().decode("ascii")
+    sources = rust_sources()
+    problems, defines, header_sizes, functions = header_problems(text, open(RUST, encoding="utf-8").read(), sources)
+    if args.mge:
+        definition = os.path.join(args.mge, "d3d8", "cpp", "exports.def")
+        exported = exported_names(open(definition, encoding="utf-8").read())
+        for name in functions:
+            if name not in exported:
+                problems.append("%s is declared in the header and not exported in %s" % (name, definition))
+        cpp = cpp_files(args.mge)
+        problems += declaration_problems(text, cpp, functions)
+        lookups, lookup_problems = export_problems(cpp, sources)
+        problems += lookup_problems
 
-    text = header.decode("ascii")
+    for problem in problems:
+        print("FAIL: " + problem)
+    if not problems:
+        mge = " (and exported by d3d8.dll); %d exports of the plugin that d3d8.dll looks up" % lookups if args.mge else ""
+        print("contract ok: %d constants, %d structs, %d functions%s" % (len(defines), len(header_sizes), len(functions), mge))
+    return 1 if problems else 0
+
+
+def header_problems(text, rust, sources):
+    """(problems, defines, header sizes, functions) of the header text `text` against link.rs (`rust`) and the plugin's
+    sources. A kind of which the header gives none is a problem: a pattern that finds nothing judges nothing (W527, W524
+    F-G-20 C22)."""
+    problems = []
     rust_consts = {m.group(1): int(m.group(2), 0) for m in re.finditer(r"pub const (\w+): u32 = (\w+);", rust)}
     defines = re.findall(r"^#define (MGE_\w+) (0x[0-9A-Fa-f]+|\d+)u$", text, re.M)
     for name, value in defines:
@@ -338,27 +369,14 @@ def main():
             problems.append("%s is %s bytes in the header and %s in link.rs" % (name, size, rust_sizes.get(short)))
 
     functions = declared_functions(text)
-    sources = rust_sources()
     for name in functions:
         if not looked_up(name, sources):
             problems.append("%s is declared in the header, and no file of src looks it up by its name" % name)
-    if args.mge:
-        definition = os.path.join(args.mge, "d3d8", "cpp", "exports.def")
-        exported = exported_names(open(definition, encoding="utf-8").read())
-        for name in functions:
-            if name not in exported:
-                problems.append("%s is declared in the header and not exported in %s" % (name, definition))
-        cpp = cpp_files(args.mge)
-        problems += declaration_problems(text, cpp, functions)
-        lookups, lookup_problems = export_problems(cpp, sources)
-        problems += lookup_problems
-
-    for problem in problems:
-        print("FAIL: " + problem)
-    if not problems:
-        mge = " (and exported by d3d8.dll); %d exports of the plugin that d3d8.dll looks up" % lookups if args.mge else ""
-        print("contract ok: %d constants, %d structs, %d functions%s" % (len(defines), len(header_sizes), len(functions), mge))
-    return 1 if problems else 0
+    for kind, found in (("constant (#define MGE_... u)", defines), ("struct size (static_assert(sizeof(...)))", header_sizes),
+                        ("declared function", functions)):
+        if not found:
+            problems.append("the header gives no %s: the check judged none" % kind)
+    return problems, defines, header_sizes, functions
 
 
 if __name__ == "__main__":
