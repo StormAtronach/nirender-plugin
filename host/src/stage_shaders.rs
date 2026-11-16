@@ -370,8 +370,8 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
 
 /// The text with the draw's facts of the key as constants, so that the compiler leaves out the
 /// branches that the key's draws cannot take: `from_scene` returns the key's scene bit, the test
-/// of `fogged` for a draw that adds to the picture is the key's add bit, the flat test of `fs` is
-/// the key's flat bit, the plane's test of `fs` is false for a key without a plane, a read of the
+/// of `fogged` for a draw that adds to the picture is the key's add bit, each read of the flat bit
+/// is the key's, the plane's test of `fs` is false for a key without a plane, a read of the
 /// record's `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits of a
 /// retained draw stay values of the frame, without [`SKY_BITS`]), and the reads of `flags.x` and
 /// `flags.y` are the key's values. None when the text lacks one of these parts.
@@ -393,12 +393,13 @@ fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
     }
     let source = source.replacen(&adds_test, &key.adds.to_string(), 1);
 
-    // The one test of the flat bit is at the start of `fs`.
-    let flat_test = "(draws[record].light_range.w & 16u) != 0u";
-    if source.matches(flat_test).count() != 1 {
+    // Each read of the flat bit: the start of `fs`, and the vertex stage's and the extension's
+    // tests of a draw with no lights.
+    let flat_read = "draws[record].light_range.w & 16u";
+    if !source.contains(flat_read) {
         return None;
     }
-    let source = source.replacen(flat_test, &key.flat.to_string(), 1);
+    let source = source.replace(flat_read, &format!("{}u", if key.flat { 16 } else { 0 }));
 
     // The plane's test of `fs`: a draw without a plane keeps no read, test or `discard` of it.
     let plane_test = "any(clip_plane != vec4f(0.0))";
@@ -1296,11 +1297,16 @@ mod tests {
     #[test]
     fn the_flat_the_plane_and_the_sky_are_constants_of_the_text() {
         let world = world();
-        for flat in [false, true] {
+        for (flat, bit) in [(false, 0), (true, 16)] {
             let source = fragment_source(&world, &StageKey { flat, ..key(1, 0) }).unwrap();
             assert!(!source.contains("light_range.w & 16u"));
             assert!(
-                source.contains(&format!("    if {flat} {{\n        inp.color = inp.color_flat;")),
+                source.contains(&format!("    if ({bit}u) != 0u {{\n        inp.color = inp.color_flat;")),
+                "{flat}"
+            );
+            // The vertex stage's test of a draw with no lights takes the key's flat bit too.
+            assert!(
+                source.contains(&format!("(draw_counts_w() & 32768u) != 0u && ({bit}u) == 0u")),
                 "{flat}"
             );
         }
