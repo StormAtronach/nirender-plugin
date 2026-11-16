@@ -93,8 +93,9 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   stages did not run. A
   round of one repo does not run the fixed stages of the other (its tests and its checks), so a pair merge gets one
   check for each repo;
-- each ref line of a round (its own ref moves from <old> to <new>, or stays with the reason; the pair; the line of the
-  sibling, which starts "the sibling <name>:") goes to the console and, after the summary, into the round's log (W532);
+- each ref line of a round (its own ref moves from <old> to <new>, or stays at <old> with the reason; the pair, which
+  starts "this round's pair:"; the line of the sibling, which starts "the sibling <name>:") goes to the console and,
+  after the summary, into the round's log (W532);
 - `build for the deploy`, `cargo xtask dist` in render-link, and then `deploy rest`, when a plugin change touches
   DEPLOY_PATHS (the plugin DLL's src/, build.rs, build_support/, the mod's Lua, contract/) and not the paths of the gate
   (W406). The replay gate cannot see these, as it never runs the plugin, so the round has no gate and no A/B. The dist
@@ -1081,21 +1082,22 @@ def keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head, log_path=No
         ref_say(log_path, "%s: %s moves from %s to %s: this round passed" % (name, passed_ref, old[:10], commit[:10]))
     if sibling_head and resolve(sibling, "HEAD") == sibling_head:
         keep_pair(kind, sibling, commit, sibling_head)
-        ref_say(log_path, "%s in the sibling: %s" % (pair_ref(kind, commit), sibling_head[:10]))
+        ref_say(log_path, "this round's pair: %s in the sibling %s: %s" % (pair_ref(kind, commit), os.path.basename(sibling), sibling_head[:10]))
     elif sibling_head:
-        ref_say(log_path, "no pair kept: the HEAD of the sibling moved during the round (%s at the start)" % sibling_head[:10])
+        ref_say(log_path, "this round's pair: none kept: the HEAD of the sibling moved during the round (%s at the start)" % sibling_head[:10])
 
 
 def settle_refs(kind, repo, passed_ref, commit, sibling, sibling_head, stages, results, baseline, commits,
                 sibling_changed, log_path):
     """The refs after a round, and the round's exit code: a pass against the accepted folder moves the round's ref and
     can move the sibling's; any other end keeps both, with a line. Every line also goes to the round's log."""
+    old = resolve(repo, passed_ref)
+    stays = "%s: %s stays at %s" % (os.path.basename(repo), passed_ref, old[:10] if old else "nothing")
     if not all(results):
-        old = resolve(repo, passed_ref)
-        ref_say(log_path, "%s: %s stays at %s: a stage did not pass" % (os.path.basename(repo), passed_ref, old[:10] if old else "nothing"))
+        ref_say(log_path, "%s: a stage did not pass" % stays)
         return 1
     if not moves_the_ref(baseline):
-        ref_say(log_path, "%s stays: this pass is against %s, not the accepted folder" % (passed_ref, baseline))
+        ref_say(log_path, "%s: this pass is against %s, not the accepted folder" % (stays, baseline))
         return 0
     keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head, log_path)
     if os.path.isdir(sibling):
@@ -1656,7 +1658,7 @@ def self_test():
         assert resolve(sibling_tree, "refs/merge-step/test") == second and resolve(sibling_tree, pair_ref("plugin", second)) == first
         with contextlib.redirect_stdout(io.StringIO()) as said:
             keep_pass("plugin", sibling_tree, "refs/merge-step/test", third, sibling_tree, second)
-        assert resolve(sibling_tree, "refs/merge-step/test") == third and resolve(sibling_tree, pair_ref("plugin", third)) is None and "no pair kept" in said.getvalue()
+        assert resolve(sibling_tree, "refs/merge-step/test") == third and resolve(sibling_tree, pair_ref("plugin", third)) is None and "this round's pair: none kept: " in said.getvalue()
         assert "is no commit" in tips_for("plugin", plugin_of_pair, "base", "no-such-name")[1], "an unknown name"
         # W370: a stage covers another by folder and command, with a pass; the name is no proof.
         one = ("checks", os.path.join(root, "a"), ["python", "x"])
@@ -1817,12 +1819,14 @@ def self_test():
         assert "%s: %s stays at %s: a stage did not pass" % (PLUGIN_NAME, settle_ref, s1[:10]) in logged, logged
         # A pass against another folder keeps the ref, with its line in the log.
         code, logged = settled([True], baseline=os.path.join(settle, "other"))
-        assert code == 0 and "stays: this pass is against" in logged and resolve(settle_plugin, settle_ref) == s1, logged
+        assert code == 0 and resolve(settle_plugin, settle_ref) == s1, logged
+        assert "%s: %s stays at %s: this pass is against %s, not the accepted folder" % (
+            PLUGIN_NAME, settle_ref, s1[:10], os.path.join(settle, "other")) in logged, logged
         # The plant: a pass moves the ref, and the log names the old and the new value, the pair and the sibling.
         code, logged = settled([True])
         assert code == 0 and resolve(settle_plugin, settle_ref) == s2, logged
         assert "%s: %s moves from %s to %s: this round passed" % (PLUGIN_NAME, settle_ref, s1[:10], s2[:10]) in logged, logged
-        assert "%s in the sibling: %s" % (pair_ref("plugin", s2), settle_head[:10]) in logged, logged
+        assert "this round's pair: %s in the sibling %s: %s" % (pair_ref("plugin", s2), MGE_NAME, settle_head[:10]) in logged, logged
         assert "the sibling %s: refs/merge-step/feature/y stays absent" % MGE_NAME in logged, logged
         code, logged = settled([True])
         assert "is at %s already" % s2[:10] in logged, logged
