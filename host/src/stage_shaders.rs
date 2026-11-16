@@ -682,6 +682,9 @@ fn pipeline_from_words(words: &[u32]) -> Option<PipelineKey> {
     })
 }
 
+/// The name of the thread that makes the pipelines of a live session ([`StageShaders::start`]).
+pub(crate) const THREAD_NAME: &str = "stage pipelines";
+
 /// The name of a fragment module: the id of its stage key and its world variant
 /// (`PipelineKey::stages`, `PipelineKey::debug`).
 type ModuleId = (u32, u32);
@@ -916,7 +919,7 @@ impl StageShaders {
         }
         let (jobs, job_receiver) = mpsc::channel::<Job>();
         let (done_sender, done) = mpsc::channel::<Done>();
-        let spawned = std::thread::Builder::new().name("stage pipelines".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name(THREAD_NAME.into()).spawn(move || {
             let mut modules: HashMap<ModuleId, Option<wgpu::ShaderModule>> = HashMap::new();
             while let Ok(job) = job_receiver.recv() {
                 let id = module_id(&job.key);

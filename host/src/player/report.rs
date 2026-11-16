@@ -109,6 +109,7 @@ impl Player {
         println!("{}", self.renderer.stage_shaders.report());
         println!("{}", self.renderer.stage_shaders.facts_report());
         println!("{}", self.renderer.stage_shaders.uber_set_report());
+        println!("{}", self.renderer.making_report());
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
         println!("light keys: {} draws whose colour cannot take light dropped their lights; {} draws with no lights had no light loop", c.blind_light_draws, c.zero_light_draws);
         println!(
