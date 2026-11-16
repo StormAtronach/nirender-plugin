@@ -3199,10 +3199,19 @@ fn apply_shade(scene: &mut SceneData, shade: &TableShade) {
     if shade.radial_fog {
         scene.fog[3] = 1.0;
     }
+    // The table's kinds are of the world, never of the sky: the stage key of a table's draw
+    // has the sky's bits as constants ([`crate::stage_shaders::SKY_BITS`]).
+    let sky = crate::stage_shaders::SKY_BITS;
+    if shade.flags.iter().any(|flags| flags & sky != 0) && !TABLE_SKY_SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        println!("retained: a table kind had a sky bit from the extension's shade: dropped");
+    }
     for (k, flags) in shade.flags.iter().enumerate() {
-        scene.counts[k / 4][k % 4] = *flags;
+        scene.counts[k / 4][k % 4] = *flags & !sky;
     }
 }
+
+/// The line of [`apply_shade`] for a sky bit of a table's kind is said once.
+static TABLE_SKY_SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The key of a sorted blend of the table: the far draw first (the bits of the depth of the
 /// bound centre inverted; a depth below 0 counts as 0), ties by the id of the instance, the
@@ -4167,5 +4176,26 @@ mod sorted_plan_tests {
         use QueuedKind::*;
         let plan = SortedPlan::build(&[Table(2), Table(2)], &[2], placed_of);
         assert_eq!(plan.steps, vec![SortedStep::Held(vec![HeldSource::Wait(2)]), run_of(&[2])]);
+    }
+}
+
+#[cfg(test)]
+mod shade_tests {
+    use super::*;
+    use bytemuck::Zeroable;
+
+    #[test]
+    fn the_table_kinds_take_no_sky_bit() {
+        // The stage key of a table's draw has the sky's bits as constants: the scene's part of
+        // the bits must never have them, whatever the extension gives.
+        let shade = TableShade {
+            flags: [u32::MAX; 8],
+            ..TableShade::default()
+        };
+        let mut scene = SceneData::zeroed();
+        apply_shade(&mut scene, &shade);
+        for part in scene.counts.iter().flatten() {
+            assert_eq!(*part, u32::MAX & !crate::stage_shaders::SKY_BITS);
+        }
     }
 }
