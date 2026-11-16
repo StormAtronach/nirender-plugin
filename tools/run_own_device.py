@@ -252,9 +252,12 @@ def run_settings(args):
 
 # MGE XE's startup check of the distant land: with this key on (the default, and the testing instance's setting) a
 # game start whose files differ from those of the last generation rebuilds overwrite/distantland by itself, and the
-# rebuilt data stays in the instance after the run. With it off the helper loads the folder as it is, with no
-# check (render-link mgeHost64/src/renderer.rs, `start_check`).
+# rebuilt data stays in the instance after the run. With it off a game session runs no generation at its start:
+# it only checks that the output opens (render-link mgeHost64/src/renderer.rs, `check_output_at_start`), and
+# does not compare the output with the game's files. Both callers of the generation are under the key.
 REBUILD_OFF_LINE = "[distant_land] automatic_rebuild = false"
+# A --set line of the command that gives the key itself: "[distant_land] automatic_rebuild = ..." or the key alone.
+OWN_REBUILD_LINE = re.compile(r"\s*(\[[^\]]*\]\s*)?automatic_rebuild\s*=")
 
 
 def load_changes(args):
@@ -278,7 +281,7 @@ def rebuild_guard(args):
     (the command's own value stands). 2026-11-16, W535: a run with the game's own 72 meshes by --add-file made MGE
     XE rebuild the testing instance's distant statics at its start (rebuild_cause "meshes +0/-0/~61"), and every
     later replay and game start read the rebuilt folder until it was restored."""
-    if getattr(args, "allow_distant_land_rebuild", False) or any("automatic_rebuild" in line for line in args.set):
+    if getattr(args, "allow_distant_land_rebuild", False) or any(OWN_REBUILD_LINE.match(line) for line in args.set):
         return False
     return bool(load_changes(args))
 
@@ -307,24 +310,45 @@ def distant_land_state(root):
     if not os.path.isfile(path):
         return None
     digest = hashlib.md5()
-    with open(path, "rb") as file:
-        for block in iter(lambda: file.read(1 << 20), b""):
-            digest.update(block)
+    try:
+        with open(path, "rb") as file:
+            for block in iter(lambda: file.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        # A file that cannot be read is not "as before": the run's end names it, and the run keeps its code's path.
+        return "not readable"
     return digest.hexdigest()
 
 
-def distant_land_line(before, after, allowed):
+def distant_land_cause(root):
+    """The generator's own cause of its last generation: the value of `rebuild_cause` in
+    overwrite/distantland/generation_report.toml of the instance at `root`, or None."""
+    try:
+        with open(os.path.join(root, "overwrite", "distantland", "generation_report.toml"), encoding="utf-8", errors="replace") as file:
+            found = re.search(r'^rebuild_cause\s*=\s*"(.*)"\s*$', file.read(), re.M)
+    except OSError:
+        return None
+    return found.group(1) if found else None
+
+
+def distant_land_line(before, after, allowed, cause=None):
     """(the run's line about the distant land of the instance, whether it is an error). The state file's md5 before
     the game started and after it closed: equal, or the run rebuilt the distant land, which is an error unless the
-    command allowed it."""
+    command allowed it. `cause` is the generator's own cause ([`distant_land_cause`]): it says which of the two
+    cases of the error's advice the rebuild is."""
     if before == after:
         return "distant land: the generator's state file is as before the run (%s)" % (before[:8] if before else "none"), False
     change = "%s -> %s" % (before[:8] if before else "none", after[:8] if after else "none")
+    said = "; the generator's cause: %s" % cause if cause else "; the generator's report has no cause line"
     if allowed:
-        return "distant land: the run rebuilt it, as --allow-distant-land-rebuild lets it (generation_state.bin %s); the instance keeps the rebuilt data" % change, False
+        return ("distant land: the run rebuilt it, as --allow-distant-land-rebuild lets it (generation_state.bin %s); the instance "
+                "keeps the rebuilt data%s" % (change, said)), False
     return ("the run CHANGED THE DISTANT LAND of the instance (overwrite/distantland/generation_state.bin %s): every later replay and "
-            "game start reads the rebuilt data. Restore the folder, or start the game with the instance's own files so that "
-            "MGE XE rebuilds it again" % change), True
+            "game start reads the rebuilt data%s. Two cases. (1) The run's own files made it (a mesh, a mod or a plugin of the "
+            "run): the instance is not as it was; restore the folder, or start the game with the instance's own files so that "
+            "MGE XE rebuilds it again. (2) The rebuild is right (a build with another generator or data version, a deploy that "
+            "changed the instance's files before the run, a --set line of a generation key): the new data is the instance's "
+            "now, and --allow-distant-land-rebuild says so in the command" % (change, said)), True
 
 
 def exit_with_distant_land(code, changed):
@@ -1543,6 +1567,22 @@ def self_test_run_toml():
     assert error and "CHANGED THE DISTANT LAND" in line and "%s -> %s" % (first[:8], second[:8]) in line
     line, error = distant_land_line(first, second, True)
     assert not error and "--allow-distant-land-rebuild" in line
+    # The error's advice names both cases (verdict 484): the run's own files made the rebuild, or the rebuild is right.
+    line, error = distant_land_line(first, second, False, "meshes +0/-0/~61; merge groups +0/-0/~511; textures +32/-0/~2")
+    assert error and "the generator's cause: meshes +0/-0/~61" in line and "(1) The run's own files made it" in line, line
+    assert "(2) The rebuild is right" in line and "--allow-distant-land-rebuild says so" in line, line
+    assert "the generator's report has no cause line" in distant_land_line(first, second, False)[0]
+    with tempfile.TemporaryDirectory() as root:
+        assert distant_land_cause(root) is None
+        os.makedirs(os.path.join(root, "overwrite", "distantland"))
+        with open(os.path.join(root, "overwrite", "distantland", "generation_report.toml"), "w", encoding="utf-8") as file:
+            file.write('report_version = 3\nrebuild_cause = "meshes +0/-0/~61; textures +32/-0/~2"\nwarnings = []\n')
+        assert distant_land_cause(root) == "meshes +0/-0/~61; textures +32/-0/~2"
+    # Only a --set line that GIVES the key is the command's own value; the word in another line's value is not.
+    quoted = guarded(enable_mod=["Trees"], set=['[statics] note = "automatic_rebuild = off"'])
+    assert rebuild_guard(quoted) and run_settings(quoted)[-1] == REBUILD_OFF_LINE
+    for own_line in ("[distant_land] automatic_rebuild = true", "automatic_rebuild = false", "  [distant_land]automatic_rebuild=true"):
+        assert not rebuild_guard(guarded(enable_mod=["Trees"], set=[own_line])), own_line
     assert distant_land_line(None, None, False) == ("distant land: the generator's state file is as before the run (none)", False)
     assert distant_land_line(None, first, False)[1] and "none -> " in distant_land_line(None, first, False)[0]
     # The exit code: a run that would end with 0 and changed the distant land ends with 7; a failed run keeps its code.
@@ -3208,7 +3248,8 @@ def main():
     print_disk_limits()
     if closed:
         print("plain case: the close after the refusal, as designed; the run passes without DONE")
-    land_line, land_changed = distant_land_line(land_before, distant_land_state(session.harness.MO2_ROOT), args.allow_distant_land_rebuild)
+    land_line, land_changed = distant_land_line(land_before, distant_land_state(session.harness.MO2_ROOT), args.allow_distant_land_rebuild,
+                                                distant_land_cause(session.harness.MO2_ROOT))
     print(("ERROR: " if land_changed else "") + land_line)
     code = run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed), bool(stage_failed))
     return exit_with_distant_land(code, land_changed)
