@@ -168,7 +168,13 @@ LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
 
 # The option that gives each check of the MGE XE tree another tree than the render-link sibling
 # (`checks.py mge --mge DIR`: the pre-commit hook of a worktree).
-MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge", "mge counted objects": "--mge", "mge plain guards": "--mge"}
+MGE_OPTION = {"mge readme": "--mge-dir", "mge contract": "--mge", "mge handshake": "--mge", "clip products": "--mge", "mwse native": "--mge", "module headers": "--mge", "skill names": "--mge", "mge format": "--mge", "mge counted objects": "--mge", "mge plain guards": "--mge"}
+
+
+def sibling_checks_without_option(checks, options):
+    """The checks of `checks` that read the render-link sibling and have no entry in `options`: with `--mge DIR` they would
+    still read the sibling, not the tree under test (W524 F-G-21)."""
+    return [name for name, (_, needs, *_) in checks.items() if needs == REPOS / "MGE-XE-G7-render-link" and name not in options]
 
 
 def self_test():
@@ -211,6 +217,11 @@ def self_test():
                     "the sibling's branch. Fix the drift, or commit with --no-verify."), line
     assert "Of these" not in summary("plugin", [], [], ["readme"], ["mwse native"]), "a fallback that passed is no cause"
     self_test_strict()
+    # W527 (W524 F-G-21): with --mge DIR every check of the render-link sibling reads DIR. The null: before W527 the
+    # handshake check of MGE XE had no entry, so a merge round of render-link compared the sibling's mgeversion.h.
+    assert sibling_checks_without_option(CHECKS, MGE_OPTION) == [], sibling_checks_without_option(CHECKS, MGE_OPTION)
+    without = {name: option for name, option in MGE_OPTION.items() if name != "mge handshake"}
+    assert sibling_checks_without_option(CHECKS, without) == ["mge handshake"]
     print("checks self-test: ok")
     return 0
 
