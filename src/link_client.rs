@@ -126,6 +126,9 @@ const MAX_LIGHTS: usize = 64;
 struct Roots {
     scene_kind: u32,
     render_target: u32,
+    /// The scene draws into the back buffer (`renderer_on_back_buffer` at its start): the
+    /// scene record's `SCENE_BACK_BUFFER`, from which the helper takes the scene's target.
+    back_buffer: bool,
     sky_root: usize,
     sky_dome: usize,
     night_sky: usize,
@@ -148,6 +151,7 @@ struct Roots {
 const NO_ROOTS: Roots = Roots {
     scene_kind: SCENE_OTHER,
     render_target: 0,
+    back_buffer: false,
     sky_root: 0,
     sky_dome: 0,
     night_sky: 0,
@@ -1244,6 +1248,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
     *roots = Roots {
         scene_kind: scene_kind(camera, world_controller, water_controller),
         render_target: roots.render_target,
+        back_buffer: renderer_on_back_buffer(),
         sky_root: ptr_at(weather, W_SKY_ROOT),
         sky_dome: ptr_at(weather, W_SKY_DOME),
         night_sky: ptr_at(weather, W_NIGHT_SKY),
@@ -1274,7 +1279,7 @@ unsafe fn send_scene(camera: usize, origin: Option<[f64; 3]>) {
         shadow_overlay: ptr_at(shadow_manager, SM_SHADOW_OVERLAY),
     };
     // The view of the scene (D82, `view_slots`): its camera, its root and its target.
-    let back_buffer = renderer_on_back_buffer();
+    let back_buffer = roots.back_buffer;
     let scene_root = ptr_at(camera, CAM::spScene);
     let click = Click {
         kind: roots.scene_kind,
@@ -1433,24 +1438,32 @@ unsafe fn swap_buffers(_args: &[usize]) {
 /// plane's root, displayed in the water scene, while the helper draws the water itself. A
 /// draw of the sorted queue in that scene has another root. The first display of a scene
 /// goes through, so that the helper's item for the water keeps its place; the others make
-/// no record and no draw. The queue stays active in the water walk (`StartAccumulating`
-/// 0x6F9170 takes the same camera again, 0x41C654). On the pixel shader path the water
-/// plane has the no-sorter bit (0x51C597) and draws in place; on the plain path, with the
-/// eye below the plane, it is a sorted blend (0x51C5EB). \[I\] This rule was not checked
-/// against the second case.
+/// no record and no draw. The helper draws its water in place of the plane only in a scene
+/// into the back buffer (`draws.rs`, `in_back_buffer`), so a scene into a texture (the
+/// picture of a save, a mod's picture) keeps every display of the plane. The queue stays
+/// active in the water walk (`StartAccumulating` 0x6F9170 takes the same camera again,
+/// 0x41C654). On the pixel shader path the water plane has the no-sorter bit (0x51C597) and
+/// draws in place; on the plain path, with the eye below the plane, it is a sorted blend
+/// (0x51C5EB). \[I\] This rule was not checked against the second case.
 pub unsafe fn water_plane_display_skipped(t: &MainThread, shape: usize) -> bool {
     let roots = &state(t).roots;
     if roots.scene_kind != SCENE_WATER || object_class(shape, roots) != CLASS_WATER_PLANE {
         return false;
     }
     WATER_PLANE_SEEN.fetch_add(1, Ordering::Relaxed);
-    if WATER_PLANE_DISPLAYS.fetch_add(1, Ordering::Relaxed) == 0
-        || crate::capture::helper_takes() & (1 << CLASS_WATER_PLANE) == 0
-    {
+    let first_of_scene = WATER_PLANE_DISPLAYS.fetch_add(1, Ordering::Relaxed) == 0;
+    if !skips_plane_display(first_of_scene, roots.back_buffer, || crate::capture::helper_takes()) {
         return false;
     }
     WATER_PLANE_SKIPPED.fetch_add(1, Ordering::Relaxed);
     true
+}
+
+/// The rule of [`water_plane_display_skipped`] for a display of the plane: skipped when it is
+/// not the first of its scene, the scene draws into the back buffer, and the helper takes the
+/// plane's class (`takes`, read only when the rest holds).
+fn skips_plane_display(first_of_scene: bool, back_buffer: bool, takes: impl FnOnce() -> u32) -> bool {
+    !first_of_scene && back_buffer && takes() & (1 << CLASS_WATER_PLANE) != 0
 }
 
 /// The class of a geometry: a compare of the geometry and of each parent with the known
@@ -2282,6 +2295,20 @@ mod scene_kind_tests {
 mod water_plane_tests {
     use super::*;
     use crate::mem::wr;
+
+    /// A display of the plane is skipped only after the first of a scene into the back
+    /// buffer while the helper takes the plane. A scene into a texture (the picture of a
+    /// save) keeps every display, and then the helper's takes are not read.
+    #[test]
+    fn the_plane_is_skipped_only_in_the_back_buffer() {
+        let taken = || 1 << CLASS_WATER_PLANE;
+        let not_taken = || 0;
+        let unread = || -> u32 { panic!("the takes are read") };
+        assert!(skips_plane_display(false, true, taken));
+        assert!(!skips_plane_display(true, true, unread));
+        assert!(!skips_plane_display(false, false, unread));
+        assert!(!skips_plane_display(false, true, not_taken));
+    }
 
     /// A tile of the water controller is the plane. Another shape under the plane's node is
     /// not, and a shape under the ripple node stays a ripple.
