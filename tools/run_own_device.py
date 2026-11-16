@@ -97,70 +97,6 @@ def keep_log_in_run(log_path, run_dir, streams):
     return copy_path
 
 
-# The plugin copy of a run build folder (W520, the owner's D488): new_run_folder.py --plugin, deploy_rest.py and
-# make_play_set.py write it as akulakhan-<commit>.dll; an older folder holds a plain akulakhan.dll. The runner reads a set
-# now (W521); play.py still takes its plugin through folder_plugin, plugin_dll_of and plugin_warning until it moves to
-# sets too (the plan's 2.4), and these go then.
-FOLDER_PLUGIN_RE = re.compile(r"akulakhan(-[0-9a-f]{7,40})?\.dll", re.IGNORECASE)
-FOLDER_PLUGIN_SOURCE = "the run folder's plugin"
-CHECKOUT_PLUGIN_SOURCE = "the release build of this repository"
-
-
-def folder_plugin(mge_build, listdir=os.listdir):
-    """The plugin copy of the run build folder `mge_build`, as (path, fault): (path, None) for its one copy, (None,
-    None) for no copy or no folder, and (None, fault) for two or more copies, of which the run cannot tell its own."""
-    if not mge_build:
-        return None, None
-    try:
-        names = sorted(name for name in listdir(mge_build) if FOLDER_PLUGIN_RE.fullmatch(name))
-    except OSError:
-        return None, None
-    if len(names) > 1:
-        return None, "--mge-build %s holds %d plugin copies (%s): name the run's plugin with --plugin-dll" % (
-            mge_build, len(names), ", ".join(names))
-    return (os.path.join(mge_build, names[0]) if names else None), None
-
-
-def plugin_dll_of(argument, environment, default, mge_build=None, listdir=os.listdir):
-    """The plugin DLL of a run and where it came from: `--plugin-dll`, else the variable
-    `NIRENDER_PLUGIN_DLL`, else the plugin copy of the `--mge-build` folder (`folder_plugin`), else
-    the release build of this repository. A folder with two or more copies stops the run (SystemExit)."""
-    if argument:
-        return argument, "--plugin-dll"
-    if environment.get("NIRENDER_PLUGIN_DLL"):
-        return environment["NIRENDER_PLUGIN_DLL"], "NIRENDER_PLUGIN_DLL"
-    copy, fault = folder_plugin(mge_build, listdir)
-    if fault:
-        raise SystemExit(fault)
-    if copy:
-        return copy, FOLDER_PLUGIN_SOURCE
-    return default, CHECKOUT_PLUGIN_SOURCE
-
-
-def plugin_warning(mge_build, dll, source, md5=None, listdir=os.listdir):
-    """The WARNING line of a run with --mge-build whose plugin is not the run folder's copy, or None (W520). Two cases:
-    the checkout's build, when the folder holds no copy (a merge between two arms of an A/B changes that build without
-    a word); and the variable or --plugin-dll, when the folder holds one copy with other bytes (a shell that ran
-    current.bat takes the current set's plugin on another folder; verdict 444)."""
-    if not mge_build:
-        return None
-    md5 = md5 or symbols.md5_of
-
-    def digest(path):
-        return md5(path) if os.path.isfile(path) else "no file"
-
-    if source == CHECKOUT_PLUGIN_SOURCE:
-        return ("WARNING: the plugin DLL is %s (md5 %s): the checkout's build, not the run folder's (%s holds no "
-                "akulakhan-<commit>.dll); name the plugin with --plugin-dll" % (dll, digest(dll), mge_build))
-    if source == FOLDER_PLUGIN_SOURCE:
-        return None
-    copy, _ = folder_plugin(mge_build, listdir)
-    if not copy or digest(copy) == digest(dll):
-        return None
-    return ("WARNING: the plugin DLL is %s (md5 %s, from %s), not the run folder's copy %s (md5 %s)"
-            % (dll, digest(dll), source, copy, digest(copy)))
-
-
 def runs_without_plugin(args):
     """True for a run that loads no code of the plugin: a reference run or a `--plain-case` run, without
     `--reference-plugin` (the cases of the plugin's refusal keep it; the plan's addendum 5). A run on an archive
@@ -184,25 +120,25 @@ def gone_option_problems(args):
             for name, option in GONE_OPTIONS if getattr(args, name, None)]
 
 
-def run_set_folder(args, current=None):
+def run_set_folder(args, current=None, who="run_own_device", hint=MAKE_A_SET):
     """The folder of the run's set: --mge-build, else the current set (MGE_BUILD of current.bat, read by
-    clean_common.current_set). No set: SystemExit with the line that names build_set.py."""
+    clean_common.current_set). No set: SystemExit with the line of `who` that names the tools of `hint`."""
     if args.mge_build:
         return args.mge_build
     name = (current or clean_common.current_set)()
     if not name:
-        raise SystemExit("run_own_device: no --mge-build and no current set (current.bat of %s); %s" % (clean_common.SETS, MAKE_A_SET))
+        raise SystemExit("%s: no --mge-build and no current set (current.bat of %s); %s" % (who, clean_common.SETS, hint))
     return os.path.join(clean_common.SETS, name)
 
 
-def open_set(args, current=None, verify=sets.verify):
+def open_set(args, current=None, verify=sets.verify, who="run_own_device", hint=MAKE_A_SET):
     """The manifest of the run's set (`run_set_folder`) after sets.verify. A fault stops the run with the file's name.
     args.mge_build becomes the set's folder, so that every later reader of it has the set."""
-    folder = run_set_folder(args, current)
+    folder = run_set_folder(args, current, who, hint)
     try:
         manifest = verify(folder)
     except sets.SetError as error:
-        raise SystemExit("run_own_device: %s; nothing started" % error)
+        raise SystemExit("%s: %s; nothing started; %s" % (who, error, hint))
     args.mge_build = folder
     return manifest
 
@@ -2746,62 +2682,6 @@ def self_test_mgeview():
     assert done.returncode == 0 and "mgeview check: ok" in done.stdout, done.stdout + done.stderr
 
 
-def self_test_folder_plugin():
-    """W520: the plugin of a run with --mge-build. --plugin-dll wins, then the variable, then the run folder's copy; the
-    checkout's build comes last, with a WARNING line. The null: before W520 a folder with a copy gave the checkout's
-    build, so the first assert of the folder's copy below failed."""
-    checkout = os.path.join("target", "akulakhan.dll")
-    with tempfile.TemporaryDirectory(prefix="w520-") as scratch:
-        with_copy, plain, empty, two = (os.path.join(scratch, name) for name in ("f1", "f2", "f3", "f4"))
-        for folder in (with_copy, plain, empty, two):
-            os.mkdir(folder)
-        for folder, names in ((with_copy, ["akulakhan-45b645b.dll", "akulakhan-rig.dll", "d3d8.dll"]), (plain, ["akulakhan.dll"]),
-                              (two, ["akulakhan-0011e58.dll", "akulakhan-45b645b.dll"])):
-            for name in names:
-                with open(os.path.join(folder, name), "wb") as file:
-                    file.write(name.encode())
-        copy = os.path.join(with_copy, "akulakhan-45b645b.dll")
-        # The run folder's copy: taken without --plugin-dll and the variable; a name that is not a commit is no copy.
-        assert plugin_dll_of(None, {}, checkout, with_copy) == (copy, FOLDER_PLUGIN_SOURCE)
-        assert plugin_dll_of(None, {}, checkout, plain) == (os.path.join(plain, "akulakhan.dll"), FOLDER_PLUGIN_SOURCE)
-        assert plugin_warning(with_copy, copy, FOLDER_PLUGIN_SOURCE) is None
-        # --plugin-dll wins over the variable and the folder; the variable wins over the folder.
-        assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, checkout, with_copy) == ("E:/a.dll", "--plugin-dll")
-        assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, checkout, with_copy) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
-        # No copy: the checkout's build, and the WARNING names the file, its md5 and the fallback.
-        dll, source = plugin_dll_of(None, {}, checkout, empty)
-        assert (dll, source) == (checkout, CHECKOUT_PLUGIN_SOURCE)
-        built = os.path.join(scratch, "akulakhan.dll")
-        with open(built, "wb") as file:
-            file.write(b"abc")
-        warning = plugin_warning(empty, built, source)
-        assert warning.startswith("WARNING: ") and built in warning and "900150983cd24fb0d6963f7d28e17f72" in warning, warning
-        assert "the checkout's build, not the run folder's" in warning and empty in warning, warning
-        assert "md5 no file" in plugin_warning(empty, os.path.join(scratch, "none.dll"), source)
-        assert plugin_warning(None, built, source) is None, "no warning without --mge-build"
-        assert plugin_warning(empty, built, "--plugin-dll") is None
-        # Two copies: the run stops, and --check names them.
-        try:
-            plugin_dll_of(None, {}, checkout, two)
-        except SystemExit as fault:
-            assert "2 plugin copies" in str(fault) and "akulakhan-0011e58.dll, akulakhan-45b645b.dll" in str(fault), fault
-        else:
-            raise AssertionError("two copies did not stop the run")
-        assert plugin_dll_of("E:/a.dll", {}, checkout, two) == ("E:/a.dll", "--plugin-dll"), "--plugin-dll settles two copies"
-        # The variable or --plugin-dll over a folder with one copy of other bytes: the WARNING names both files.
-        same = os.path.join(scratch, "same.dll")
-        with open(same, "wb") as file:
-            file.write(b"akulakhan-45b645b.dll")
-        warning = plugin_warning(with_copy, built, "NIRENDER_PLUGIN_DLL")
-        assert warning and warning.startswith("WARNING: ") and built in warning and copy in warning and "from NIRENDER_PLUGIN_DLL" in warning, warning
-        assert (plugin_warning(with_copy, built, "--plugin-dll") or "").startswith("WARNING: ")
-        assert plugin_warning(with_copy, same, "--plugin-dll") is None, "the same bytes as the folder's copy"
-        assert plugin_warning(with_copy, copy, "--plugin-dll") is None
-        assert plugin_warning(two, built, "--plugin-dll") is None, "--plugin-dll settles two copies without a warning"
-    # A missing folder holds no copy.
-    assert folder_plugin("E:/no-such-folder-w520") == (None, None)
-    assert folder_plugin(None) == (None, None)
-
 
 def self_test():
     """The tests of the argument handling: no game, no build."""
@@ -2832,12 +2712,6 @@ def self_test():
     self_test_use_instance()
     self_test_set()
     self_test_mgeview()
-    build = os.path.join("target", "akulakhan.dll")
-    assert plugin_dll_of("E:/a.dll", {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/a.dll", "--plugin-dll")
-    assert plugin_dll_of(None, {"NIRENDER_PLUGIN_DLL": "E:/b.dll"}, build) == ("E:/b.dll", "NIRENDER_PLUGIN_DLL")
-    assert plugin_dll_of(None, {}, build) == (build, "the release build of this repository")
-    assert plugin_dll_of("", {}, build)[0] == build
-    self_test_folder_plugin()
     assert env_of([]) == {}
     assert env_of(["MGE_XE_BOX_SECONDS=90", "A=1=2", "B=", "A=3"]) == {"MGE_XE_BOX_SECONDS": "90", "A": "3", "B": ""}
     for bad in ["NOVALUE", "=1"] + ["%s=E:/x" % name for name in RUNNER_VARIABLES]:
