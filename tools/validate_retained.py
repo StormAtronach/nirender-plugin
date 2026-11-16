@@ -661,8 +661,38 @@ def self_test():
     assert clusters_verdict({"problem": "the sizes differ"}) == (False, "replay with the clusters against the lights of the draws: the sizes differ")
     self_test_route()
     self_test_baseline()
+    self_test_objects_folder()
     self_test_tour_stage()
     print("validate_retained self-test: ok")
+
+
+def self_test_objects_folder():
+    """Verdict 504: the objects stage writes its pictures to a temporary folder and removes it when the stage ends
+    (before, one folder with a picture of each replay stayed in %TEMP% at each gate run)."""
+    global run_code
+    real = run_code
+    pictures = []
+
+    def run(command, env=None):
+        if command[1].endswith("replay.py"):
+            pictures.append(command[3])
+            open(command[3], "wb").close()
+        return 0, ""
+
+    fails = FAILS[0]
+    run_code = run
+    try:
+        with tempfile.TemporaryDirectory() as baseline:
+            open(os.path.join(baseline, "a.nircap"), "wb").close()
+            with contextlib.redirect_stdout(io.StringIO()):
+                stage_objects(baseline, "no build")
+    finally:
+        run_code = real
+        FAILS[0] = fails
+    folders = {os.path.dirname(picture) for picture in pictures}
+    assert len(pictures) == len(OBJECT_BACKENDS) and len(folders) == 1, pictures
+    assert os.path.basename(next(iter(folders))).startswith("gate-objects-"), folders
+    assert not any(os.path.exists(folder) for folder in folders), folders
 
 
 def self_test_tour_stage():
@@ -784,6 +814,7 @@ def self_test_baseline():
         def run(command, env=None):
             if not command[1].endswith("replay.py"):
                 return 0, ""
+            prefixes.append(command[3])
             name = os.path.basename(command[3])
             frames = pictures.get(name, pictures["*"])
             for frame, colour in (frames() if callable(frames) else frames).items():
@@ -803,7 +834,7 @@ def self_test_baseline():
             code = 0 if passed else baseline_failure_code()
         return passed, printed.getvalue(), code
 
-    objects_calls = []
+    objects_calls, prefixes = [], []
 
     def objects(_baseline, _build, keep=None, env=None, route=None):
         objects_calls.append((env, route))
@@ -860,6 +891,9 @@ def self_test_baseline():
             passed, said, code = stage(folder, plant({"new": {1: other, 29: other}, "a": {1: other, 29: grey}}), add=True)
             assert not passed and "accepted new: new.png, new-last.png, new.checks.txt" in said and "a.png" in said, said
             assert picture_diff.Image.open(os.path.join(kept, "a.png")).getpixel((0, 0)) == grey, "an accepted picture was replaced"
+            # The second replays of the accept go to a temporary folder each, removed after the judgement (verdict 504).
+            steady = {os.path.dirname(prefix) for prefix in prefixes if os.path.basename(os.path.dirname(prefix)).startswith("gate-steady-")}
+            assert steady and not any(os.path.exists(folder) for folder in steady), steady
             passed, said, code = stage(folder, plant({"new": {1: other, 29: other}}))
             assert passed and "ok   6 of 6 pictures equal" in said and "3 captures: frame 1 of each, and the last frame of 3" in said, said
             passed, said, code = stage(folder, plant({"new": {1: other, 29: other}}), add=True)
@@ -1122,18 +1156,19 @@ def equal_pictures(a, b):
 def steady_problems(capture, name, pictures, mge_build, env):
     """Why the pictures of a capture cannot be accepted, as texts: a second replay must give each of them again,
     byte for byte. A frame that follows the clock (an arrival of distant statics) differs from run to run, and an
-    accepted picture of it would fail the gate by chance."""
-    again = tempfile.mkdtemp(prefix="gate-steady-")
-    code, output, _last = replay_frames(capture, os.path.join(again, name), mge_build, env)
-    if code != 0:
-        return ["the second replay ended with the code %d" % code]
-    problems = []
-    for suffix in pictures:
-        second = os.path.join(again, name + suffix + ".png")
-        equal, said = equal_pictures(pictures[suffix], second) if os.path.isfile(second) else (False, "no picture in the second replay")
-        if not equal:
-            problems.append("%s is not steady: two replays differ (%s)" % ("frame 1" if suffix == "" else "the last frame", said))
-    return problems
+    accepted picture of it would fail the gate by chance. The second replay's pictures go to a temporary folder,
+    removed when the judgement ends."""
+    with tempfile.TemporaryDirectory(prefix="gate-steady-") as again:
+        code, output, _last = replay_frames(capture, os.path.join(again, name), mge_build, env)
+        if code != 0:
+            return ["the second replay ended with the code %d" % code]
+        problems = []
+        for suffix in pictures:
+            second = os.path.join(again, name + suffix + ".png")
+            equal, said = equal_pictures(pictures[suffix], second) if os.path.isfile(second) else (False, "no picture in the second replay")
+            if not equal:
+                problems.append("%s is not steady: two replays differ (%s)" % ("frame 1" if suffix == "" else "the last frame", said))
+        return problems
 
 
 def stage_baseline(baseline, accept, mge_build, now=None, add=False, hooks=HOOK_FIXTURES):
@@ -1364,7 +1399,7 @@ def stage_objects(baseline, mge_build, keep=None, env=None, route=None):
     object, and no device may be lost (D288). A steady frame that made objects warns while
     OBJECTS_STRICT is False. A capture with no steady frame warns; a backend with no capture that
     has a steady frame fails. The stage compares no picture, so its pictures go to a temporary
-    folder; the output of each replay stays in `keep` (the folder of the gate's pictures) as
+    folder, removed when the stage ends; the output of each replay stays in `keep` (the folder of the gate's pictures) as
     objects-<backend>-<capture>.replay.txt. `env` is GATE_ENV by default; the hook fixtures' pass
     gives its own, and `route` (folder, fixtures): each replay must show that route too, as a
     hook that is dropped tests no object of its path (verdict 480)."""
@@ -1373,25 +1408,25 @@ def stage_objects(baseline, mge_build, keep=None, env=None, route=None):
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "objects: no capture in the baseline folder")
-    out = tempfile.mkdtemp(prefix="gate-objects-")
     ok = True
-    for backend in OBJECT_BACKENDS:
-        steady_seen = False
-        for capture in captures:
-            code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], env)
-            if keep:
-                keep_replay_output(os.path.join(keep, "objects-%s-%s" % (backend, capture[:-7])), code, output)
-            if route is not None:
-                ok &= check_route("%sobjects, %s, %s" % (title, backend, capture), output, *route)
-            verdict, text = objects_verdict(output)
-            line = "%sobjects, %s, %s: %s%s" % (title, backend, capture, text, replay_end(code, output))
-            steady_seen |= verdict in ("ok", "sites")
-            if code == 0 and (verdict == "idle" or (verdict == "sites" and not OBJECTS_STRICT)):
-                ok &= warn(line)
-            else:
-                ok &= check(verdict == "ok" and code == 0, line)
-        if not steady_seen:
-            ok &= check(False, "%sobjects, %s: no capture has a steady frame: the stage cannot show the rule" % (title, backend))
+    with tempfile.TemporaryDirectory(prefix="gate-objects-") as out:
+        for backend in OBJECT_BACKENDS:
+            steady_seen = False
+            for capture in captures:
+                code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], env)
+                if keep:
+                    keep_replay_output(os.path.join(keep, "objects-%s-%s" % (backend, capture[:-7])), code, output)
+                if route is not None:
+                    ok &= check_route("%sobjects, %s, %s" % (title, backend, capture), output, *route)
+                verdict, text = objects_verdict(output)
+                line = "%sobjects, %s, %s: %s%s" % (title, backend, capture, text, replay_end(code, output))
+                steady_seen |= verdict in ("ok", "sites")
+                if code == 0 and (verdict == "idle" or (verdict == "sites" and not OBJECTS_STRICT)):
+                    ok &= warn(line)
+                else:
+                    ok &= check(verdict == "ok" and code == 0, line)
+            if not steady_seen:
+                ok &= check(False, "%sobjects, %s: no capture has a steady frame: the stage cannot show the rule" % (title, backend))
     return ok
 
 
