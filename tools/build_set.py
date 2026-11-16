@@ -1019,21 +1019,25 @@ class FakeBuilder:
 
 
 def runner_compatible(folder):
-    """Today's runner takes the set as a plain --mge-build folder: its plugin copy with no WARNING, also when
-    --plugin-dll names that copy, and every file that it stages is there. Returns the faults."""
+    """The runner takes the set (W521): sets.verify passes, and the runner's staging, with the plugin and without it,
+    holds the set's plugin exactly when the run loads it, and every file that it stages is there. Returns the
+    faults."""
     import run_own_device
-    import session
 
+    try:
+        manifest = sets.verify(folder)
+    except sets.SetError as error:
+        return ["the runner refuses the set: %s" % error]
     faults = []
-    copy = os.path.join(folder, sets.plugin_copy(sets.read_manifest(folder)))
-    dll, source = run_own_device.plugin_dll_of(None, {}, "checkout.dll", folder)
-    if (dll, source) != (copy, run_own_device.FOLDER_PLUGIN_SOURCE):
-        faults.append("the runner takes %s (%s), not the set's copy" % (dll, source))
-    if run_own_device.plugin_warning(folder, dll, source) is not None:
-        faults.append("the runner warns: %s" % run_own_device.plugin_warning(folder, dll, source))
-    if run_own_device.plugin_warning(folder, copy, "--plugin-dll") is not None:
-        faults.append("the runner warns with --plugin-dll of the copy")
-    faults += ["the runner stages %s, and it is not there" % source for source in session.mge_build_files(folder).values() if not os.path.isfile(source)]
+    for plugin in (True, False):
+        mods = run_own_device.set_mods(folder, manifest, plugin)
+        staged = mods.get("nirender", {}).get(sets.PLUGIN_IN_MOD)
+        if plugin and staged != os.path.join(folder, *sets.staged_plugin(manifest).split("/")):
+            faults.append("the runner stages %s as the plugin, not the set's" % staged)
+        if not plugin and staged:
+            faults.append("a run without the plugin stages %s" % staged)
+        faults += ["the runner stages %s, and it is not there" % source for files in mods.values() for source in files.values()
+                   if not os.path.isfile(source)]
     return faults
 
 
@@ -1072,11 +1076,11 @@ def self_test():
         assert "Data Files/MWSE/core/initialize.lua" in manifest["files"] or "Data Files/mwse/core/initialize.lua" in manifest["files"]
         assert not [path for path in manifest["files"] if path.endswith(".pdb")], "a pdb went into the set"
         assert runner_compatible(first) == [], runner_compatible(first)
-        # The null of that check: a folder without the plugin copy fails it (the runner takes the checkout's build).
+        # The null of that check: a copy of the set without its plugin copy fails it (the runner's verify refuses it).
         bare = os.path.join(scratch, "bare", os.path.basename(first))
         shutil.copytree(first, bare)
         os.remove(os.path.join(bare, sets.plugin_copy(manifest)))
-        assert any("not the set's copy" in fault for fault in runner_compatible(bare)), "the runner check cannot fail"
+        assert any("the runner refuses the set" in fault for fault in runner_compatible(bare)), "the runner check cannot fail"
         # Test 1: the same commits again build nothing.
         code, lines = run(commits)
         assert code == 0 and "nothing is built" in lines[0] and builder.cargo_builds == 1 and builder.mwse_builds == 1, lines
