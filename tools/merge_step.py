@@ -45,6 +45,12 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
 --require-tests <command>", which fails when no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --strict
 --mge <repo>. The diff from <tip> to <commit> adds these:
 
+- for nirender-plugin, "helper tests for the host's text": cargo test -p mgeHost64, all of the package's tests, in the
+  render-link tree of the pair (the sibling, at the commit that the stage's name has), when the change touches anything
+  under host/src/ (W523, the audit's F-H-2). The helper joins text of the host crate into its own shaders (the world
+  shader, the depth and the spot functions), and tests in several of its modules read that text, most of them through
+  helper functions: a mark on the tests would miss some, so the whole package runs. The stage runs through
+  "merge_step.py --require-tests <command>" and fails when no test ran;
 - for nirender-plugin, "mwse sites <instance>": tools/check_mwse_sites.py on the MWSE.dll deployed in each test install
   (Morrowind75testing, Outlander-test), when the change touches the ports, the hooks, the install, the function table,
   the call sites or the baseline of the check (Brief 22): a new port over an MWSE patch that is already deployed fails;
@@ -220,6 +226,11 @@ EVIDENCE_STAGES = (INSTANCE_STAGE,)
 GPU_STAGE = "helper GPU tests"
 HOST_GPU_STAGE = "host GPU tests"
 REQUIRE_TESTS = "--require-tests"
+# What a plugin change must touch for the helper's tests in the sibling (HELPER_TEXT_STAGE): the host crate's source,
+# all of it. The helper's shaders hold text of several of its files (shader.wgsl, depth.rs, spot.rs, the join of
+# request.rs), and a list of them by hand goes stale (the audit's F-G-4).
+HELPER_TEXT_PATHS = ("host/src/",)
+HELPER_TEXT_STAGE = "helper tests for the host's text"
 # What a change must touch for the gate, as paths from the root of each repo: a file, or a folder with its slash.
 GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
                          "host/.cargo/config.toml"),
@@ -291,6 +302,14 @@ def under_test(kind, commit, sibling_commit):
     return {kind: commit, "mge" if kind == "plugin" else "plugin": sibling_commit}
 
 
+def helper_text_stage(plugin, mge, commits=None):
+    """The stage of a plugin round that changes the host crate's source (W523, the audit's F-H-2): every test of the
+    helper's package, in the render-link tree of the pair, through the wrapper that fails when no test ran. The name
+    has the commit of that tree under test, when the round knows it."""
+    name = HELPER_TEXT_STAGE + (" (render-link %s)" % commits["mge"][:10] if commits else "")
+    return name, mge, [sys.executable, "-I", os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64"]
+
+
 def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None, commits=None, base=None):
     """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `base` is the base
     commit of the round: the checks stage compares with it (checks.py --base), as the tree is at the merge. `tips` are the
@@ -315,6 +334,8 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
                   ("checks", plugin, tool("checks.py", "mge", "--strict", "--mge", mge, *on_base)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
+    if kind == "plugin" and touches(paths, HELPER_TEXT_PATHS):
+        stages.append(helper_text_stage(plugin, mge, commits))
     if kind == "plugin" and touches(paths, MWSE_SITES_PATHS):
         for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
             stages.append(("mwse sites " + instance, plugin, tool("check_mwse_sites.py", dll)))
@@ -1204,10 +1225,12 @@ def self_test():
         assert names("plugin", plugin, "src/lib.rs") == base + deploy_tail
         assert names("plugin", plugin, "build.rs") == names("plugin", plugin, "build_support/build_id.rs") == base + deploy_tail
         assert names("plugin", plugin, "tools/x.py", "src/lib.rs") == base + deploy_tail
-        assert names("plugin", plugin, "host/src/shader.wgsl") == base + gate_tail
-        assert names("plugin", plugin, "host/src/material.rs") == base + gate_tail
-        assert names("plugin", plugin, "host/src/retained.rs") == base + gate_tail
-        assert names("plugin", plugin, "host/src/retained.rs", "src/lib.rs") == base + gate_tail, "the gate round deploys once"
+        # A change of the host crate's source also runs the helper's tests in the sibling (W523, the audit's F-H-2).
+        host_base = base + [HELPER_TEXT_STAGE]
+        assert names("plugin", plugin, "host/src/shader.wgsl") == host_base + gate_tail
+        assert names("plugin", plugin, "host/src/material.rs") == host_base + gate_tail
+        assert names("plugin", plugin, "host/src/retained.rs") == host_base + gate_tail
+        assert names("plugin", plugin, "host/src/retained.rs", "src/lib.rs") == host_base + gate_tail, "the gate round deploys once"
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "srcx/lib.rs") == base, "a name that only starts the same deployed"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"] + deploy_tail
@@ -1251,7 +1274,7 @@ def self_test():
         # The mod's Lua: xtask dist checks it against its list of shipped files (7b7b72d broke the dist that way), and since
         # W406 the build is deployed.
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + deploy_tail
-        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == base + gate_tail
+        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == host_base + gate_tail
         assert needs_clean_sibling(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/noplugin.lua"]))
         for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
             assert names("plugin", plugin, path) == base + gate_tail, path
@@ -1956,6 +1979,30 @@ def self_test():
         with open(os.path.join(root, "log9.txt"), encoding="utf-8") as log:
             text = log.read()
         assert "== PASS with a test (" in text and "== FAIL with none (" in text and "no test ran" in text, text
+
+        # W523 (the audit's F-H-2): a plugin round that changes anything under host/src/ runs every test of the helper's
+        # package in the render-link tree of the pair; a path outside, and a render-link round, do not. The stage's name
+        # has the commit of that tree; its command is the wrapper, so 0 tests fail it.
+        for changed in ("host/src/shader.wgsl", "host/src/stage_shaders.rs", "host/src/depth.rs", "host/src/player/draws.rs"):
+            planned = [stage for stage in stages_for("plugin", plugin, [changed]) if stage[0].startswith(HELPER_TEXT_STAGE)]
+            assert len(planned) == 1 and planned[0][0] == HELPER_TEXT_STAGE and planned[0][1] == mge, (changed, planned)
+            assert planned[0][2] == wrapper[:2] + [os.path.join(plugin, "tools", "merge_step.py"), REQUIRE_TESTS, "cargo", "test", "--quiet", "-p", "mgeHost64"], planned[0][2]
+        for kind, repo, changed in (("plugin", plugin, "src/lib.rs"), ("plugin", plugin, "host/Cargo.toml"), ("plugin", plugin, "host/src_old/x.rs"), ("plugin", plugin, "tools/x.py"),
+                                    ("mge", mge, "mgeHost64/src/renderer.rs")):
+            assert not any(name.startswith(HELPER_TEXT_STAGE) for name, _, _ in stages_for(kind, repo, [changed])), (kind, changed)
+        named = helper_text_stage(plugin, mge, under_test("plugin", "a" * 40, "b" * 40))
+        assert named[0] == HELPER_TEXT_STAGE + " (render-link bbbbbbbbbb)" and named[1:] == planned[0][1:], named
+        in_round = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], commits=under_test("plugin", "a" * 40, "b" * 40))]
+        assert in_round.index(named[0]) == in_round.index("docs") + 1 < in_round.index("build for the gate"), in_round
+        # The stage's wrapper (this file in place of the planted tree's) with a planted output: a test that ran passes,
+        # 0 tests fail.
+        assert named[2][3] == REQUIRE_TESTS and named[2][:2] == wrapper[:2]
+        with open(os.path.join(root, "log9b.txt"), "w", encoding="utf-8") as log:
+            assert run_stage(named[0], root, wrapper + prints(one), log)
+            assert not run_stage(named[0], root, wrapper + prints(none), log)
+        with open(os.path.join(root, "log9b.txt"), encoding="utf-8") as log:
+            text = log.read()
+        assert "== PASS %s (" % named[0] in text and "== FAIL %s (" % named[0] in text and "no test ran" in text, text
 
         # The slots of a round (the owner's D161, D208): a round that needs the game takes the game and the whole build side in
         # one take, holds them for all its stages, and releases both on every exit path. This uses the real slot.py on a

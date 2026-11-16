@@ -71,7 +71,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-from common import BUILD_PARTS, NOT_RUN_EXIT, build_missing, capture_format_in, plugin_lines  # noqa: E402
+from common import BUILD_PARTS, EXIT_REPLAY_STAGE_SHADERS, NOT_RUN_EXIT, build_missing, capture_format_in, keep_replay_output, plugin_lines, stage_fault_in  # noqa: E402
 from validate_tour import NOT_RUN, refusal_of  # noqa: E402
 import stream_rule  # noqa: E402
 PY = sys.executable
@@ -96,11 +96,6 @@ def run_code(args, env=None):
     e.update(env or {})
     result = subprocess.run(args, capture_output=True, text=True, env=e, cwd=REPO)
     return result.returncode, result.stdout + result.stderr
-
-
-def run(args, env=None):
-    """The output of a program."""
-    return run_code(args, env)[1]
 
 
 def newest(label, since=None):
@@ -226,7 +221,9 @@ def ran(result, tool, accepting=False):
     pictures that are missing, or in accept mode as pictures accepted. An exception, a helper
     that died and a tour stop with no picture all end with another code. In accept mode the
     pictures made before the stop are in the accepted folder already. A replay that the slot
-    check refused checked no picture: it is NOT RUN, not a failed picture."""
+    check refused checked no picture: it is NOT RUN, not a failed picture. A replay that ended
+    with the fault of the stage shaders (the helper's exit code 40, W523) made its pictures, and
+    they are right; the stage fails with replay.py's line of the fault, which no picture shows."""
     code, output = result
     if code == 0:
         return True
@@ -243,7 +240,11 @@ def ran(result, tool, accepting=False):
         CAPTURE_FORMATS.append(other_format)
         print("  NOT RUN %s: %s" % (tool, other_format), flush=True)
         return False
-    return check(False, "%s ended with the code %d%s" % (tool, code, ": the accepted folder holds a mix now, accept again" if accepting else ""))
+    mix = ": the accepted folder holds a mix now, accept again" if accepting else ""
+    fault = stage_fault_in(output)
+    if fault:
+        return check(False, "%s: %s%s" % (tool, fault, mix))
+    return check(False, "%s ended with the code %d%s" % (tool, code, mix))
 
 
 def plugin_report(folder):
@@ -343,7 +344,7 @@ def adapter_note(recorded, now):
 
 def self_test():
     """The tests of the pure parts: no game, no replay."""
-    global REPO, run_code, build_missing
+    global REPO, run_code, build_missing, newest
     output = "distant land: on\nadapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)\nframe 1\n"
     assert adapter_of(output) == "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_of("no such line\n") is None
@@ -561,6 +562,52 @@ def self_test():
     assert said.getvalue() == "  the runner of a: the steps were done; " + output.splitlines()[1] + "\n", said.getvalue()
     for code in (0, 1, 3, 4):
         assert after_done((code, output), "a") == (code, output), code
+    # W523: a replay that ended with the fault of the stage shaders fails with replay.py's line of it, in each
+    # stage that replays; the null: the code 0 passes, and another code has the plain line.
+    import common
+    fault_output = ("frames 60\n" + common.STAGE_FAULT_START + "1 rewrites failed (stage key 1: the end mark of the stage loop: 0 in the text, 1 wanted); 0 pipelines failed; "
+                    "the uber-shader drew 9 draws that have a stage key (9 after a failed rewrite, 0 after a failed pipeline, 0 with a pipeline not made); 0 draws past the cap of 256 keys\n")
+    fault_line = common.stage_fault_line("seyda.nircap", EXIT_REPLAY_STAGE_SHADERS, fault_output)
+    assert fault_line.startswith("STAGE SHADERS: the replay of seyda.nircap failed with exit code 40: 1 rewrites failed (the first: stage key 1: the end mark"), fault_line
+    fault_output += fault_line + "\n"
+    for accepting, end in ((False, ""), (True, ": the accepted folder holds a mix now, accept again")):
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert ran((EXIT_REPLAY_STAGE_SHADERS, fault_output), "replay.py", accepting) is False
+        assert said.getvalue().endswith("  FAIL replay.py: " + fault_line + end + "\n"), said.getvalue()
+    with contextlib.redirect_stdout(io.StringIO()) as said:
+        assert ran((0, fault_output), "replay.py") is True and ran((20, "gpu error\n"), "replay.py") is False
+    assert said.getvalue().endswith("  FAIL replay.py ended with the code 20\n") and "STAGE SHADERS" not in said.getvalue(), said.getvalue()
+    # The tour tool's output with the line of a replay fails the same way.
+    tour_output = "4 pictures, 0 failed\nFAILED stage shaders: 1 replays ended with the fault of the stage shaders:\n  " + fault_line + "\npairs: 2 of 2 equal\n"
+    with contextlib.redirect_stdout(io.StringIO()) as said:
+        assert ran((1, tour_output), "validate_tour.py") is False
+    assert said.getvalue().endswith("  FAIL validate_tour.py: " + fault_line + "\n"), said.getvalue()
+    assert replay_end(0, fault_output) == "" and replay_end(20, "gpu error") == " (replay.py ended with the code 20)"
+    assert replay_end(EXIT_REPLAY_STAGE_SHADERS, fault_output) == " (replay.py ended with the code 40: " + fault_line + ")"
+    # The clusters stage: a replay that ended with the fault fails the stage before any picture is compared.
+    real_run_code, real_newest = run_code, newest
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder, "exterior.nircap"), "wb").close()
+            newest = lambda label, since=None: folder  # noqa: E731
+            calls = []
+
+            def a_replay(args, env=None):
+                calls.append(env)
+                return (EXIT_REPLAY_STAGE_SHADERS, fault_output) if len(calls) == fails_at[0] else (0, "clusters: 3.0 lights and 12 entries for each frame\n")
+
+            run_code = a_replay
+            for at, tool in ((1, "replay.py with the clusters"), (2, "replay.py with the lights of the draws")):
+                fails_at = [at]
+                calls.clear()
+                with contextlib.redirect_stdout(io.StringIO()) as said:
+                    assert stage_clusters("seyda", "build", "20261116-000000") is False
+                assert len(calls) == at and said.getvalue().endswith("  FAIL %s: %s\n" % (tool, fault_line)), said.getvalue()
+                kept = sorted(name for name in os.listdir(folder) if name.endswith(".replay.txt"))
+                assert kept == ["replay-clusters.replay.txt", "replay-draw-lights.replay.txt"][:at], kept
+            assert open(os.path.join(folder, "replay-draw-lights.replay.txt")).read() == "exit code 40\n" + fault_output
+    finally:
+        run_code, newest = real_run_code, real_newest
     print("validate_retained self-test: ok")
 
 
@@ -649,7 +696,9 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     early_captures = []
     no_view_captures = []
     for capture in captures:
-        code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
+        picture = os.path.join(out, capture[:-7] + ".png")
+        code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), picture, "--frame", "1", "--mge-build", mge_build], env)
+        keep_replay_output(picture, code, output)
         if not ran((code, output), "replay.py", accept):
             return False
         adapter = adapter or adapter_of(output)
@@ -689,7 +738,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
             else:
                 print("       %-40s %s" % (name, numbers.get("problem") or "%.2f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("largest", 0))), flush=True)
         ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s" % (equal, len(names), b))
-    return stage_objects(baseline, mge_build) and ok
+    return stage_objects(baseline, mge_build, out) and ok
 
 
 OBJECTS_LINE = re.compile(r"^gpu objects: (\d+) made in (\d+) frames; (\d+) steady frames, (\d+) of them made objects \((\d+) objects\)", re.M)
@@ -742,12 +791,23 @@ def arrival_frames(output):
     return int(found.group(1)) if found else 0
 
 
-def stage_objects(baseline, mge_build):
+def replay_end(code, output):
+    """The end of a line about a replay: "" for the exit code 0, else the code, with replay.py's line of the fault of
+    the stage shaders when the code is that fault's (W523)."""
+    if code == 0:
+        return ""
+    fault = stage_fault_in(output) if code == EXIT_REPLAY_STAGE_SHADERS else ""
+    return " (replay.py ended with the code %d%s)" % (code, ": " + fault if fault else "")
+
+
+def stage_objects(baseline, mge_build, keep=None):
     """Each capture of the baseline folder to its last frame, plain, on each backend of
     OBJECT_BACKENDS: no steady frame (no new content, no change of the extension) may make a GPU
     object, and no device may be lost (D288). A steady frame that made objects warns while
     OBJECTS_STRICT is False. A capture with no steady frame warns; a backend with no capture that
-    has a steady frame fails."""
+    has a steady frame fails. The stage compares no picture, so its pictures go to a temporary
+    folder; the output of each replay stays in `keep` (the folder of the gate's pictures) as
+    objects-<backend>-<capture>.replay.txt."""
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "objects: no capture in the baseline folder")
@@ -757,8 +817,10 @@ def stage_objects(baseline, mge_build):
         steady_seen = False
         for capture in captures:
             code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], dict(GATE_ENV))
+            if keep:
+                keep_replay_output(os.path.join(keep, "objects-%s-%s" % (backend, capture[:-7])), code, output)
             verdict, text = objects_verdict(output)
-            line = "objects, %s, %s: %s%s" % (backend, capture, text, "" if code == 0 else " (replay.py ended with the code %d)" % code)
+            line = "objects, %s, %s: %s%s" % (backend, capture, text, replay_end(code, output))
             steady_seen |= verdict in ("ok", "sites")
             if code == 0 and (verdict == "idle" or (verdict == "sites" and not OBJECTS_STRICT)):
                 ok &= warn(line)
@@ -809,8 +871,17 @@ def stage_clusters(place, mge_build, started):
     # The replays read the mgeXE.toml of the run (the fade of the lights is on in it).
     # The replays use the build under test: the default of replay.py is the folder of
     # `cargo xtask build`, which can hold an older helper.
-    out = run([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder, "--mge-build", mge_build], {"MGE_XE_CLUSTERS": "1"})
-    run([PY, os.path.join(HERE, "replay.py"), capture, b, "--frame", "20", "--config-root", folder, "--mge-build", mge_build], {"MGE_XE_CLUSTERS": "0"})
+    # A replay that failed fails the stage with its code: before W523 only a missing line or picture showed it.
+    replay = [PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder, "--mge-build", mge_build]
+    code, out = run_code(replay, {"MGE_XE_CLUSTERS": "1"})
+    keep_replay_output(a, code, out)
+    if not ran((code, out), "replay.py with the clusters"):
+        return False
+    replay[3] = b
+    other = run_code(replay, {"MGE_XE_CLUSTERS": "0"})
+    keep_replay_output(b, *other)
+    if not ran(other, "replay.py with the lights of the draws"):
+        return False
     sys.path.insert(0, HERE)
     import picture_diff
 

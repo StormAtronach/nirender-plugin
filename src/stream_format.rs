@@ -245,7 +245,8 @@ pub const MESSAGES_HEAD: usize = 32;
 /// The exit codes of the helper when the parts do not match. The helper's own table: 0 ok,
 /// 1 to 9 its IPC host mode (`error.rs` of mgeHost64), 10 to 29 a refusal with a message box
 /// (10 the stream format, 11 the extension format or no hello record, 20 to 29 the device or
-/// the window), 30 to 39 a stall or an end by the plugin. The plugin's `check_host` reads them with
+/// the window), 30 to 39 a stall or an end by the plugin, 40 to 49 a check of a replay (never a
+/// live session). The plugin's `check_host` reads them with
 /// [`helper_said_why`]: the helper showed its message, the plugin shows none.
 pub const EXIT_STREAM_FORMAT: u32 = 10;
 pub const EXIT_EXTENSION_FORMAT: u32 = 11;
@@ -275,6 +276,12 @@ pub const EXIT_NOT_ANSWERING: u32 = 31;
 /// The plugin ended the helper, which is older than the words of the ring head
 /// ([`helper_too_old`]).
 pub const EXIT_HELPER_TOO_OLD: u32 = 32;
+/// A replay drew with the uber-shader where a stage shader was due, or passed the cap of the
+/// stage keys (the helper's `stage shaders: a fault of the replay` line names each key and each
+/// count). The pictures are right; the speed that the stage shaders give is lost, which no
+/// picture shows. Only a replay ends with it, after its pictures and its report. A live session
+/// never ends for this: there the uber-shader draws and the log has the line.
+pub const EXIT_REPLAY_STAGE_SHADERS: u32 = 40;
 /// The seconds without a step of the frame thread after which the watchdog ends the helper.
 pub const STALL_SECONDS: u64 = 5;
 /// The seconds a step may take while the extension of the helper loads (the distant land

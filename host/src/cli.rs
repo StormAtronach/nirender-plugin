@@ -247,6 +247,12 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         }
     }
     player.print_counts();
+    // A replay whose stage shaders failed has the right pictures and the wrong speed. Nothing else
+    // shows it, so the replay ends with a code of its own, after its pictures and its report.
+    if let Some(fault) = player.renderer.stage_shaders.replay_fault() {
+        println!("{fault}");
+        std::process::exit(crate::stream_format::EXIT_REPLAY_STAGE_SHADERS as i32);
+    }
 }
 
 /// The head of the stream of a capture: its first record. A capture whose first record is not
