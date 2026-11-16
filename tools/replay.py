@@ -11,7 +11,13 @@ frame named (the frames count from 0, as --frame): one start of the helper for a
 many stops, in place of one for each. With --marks-every N, the helper prints a mark (its
 time for each frame by part) after every N frames: the bench of a long capture.
         [--config-root DIR] [--distant-land DIR] [--backend vulkan|dx12]
-        [--debug-view NAME [TERM]] [--debug-lines NAME,NAME] [--keep-run-folder]
+        [--debug-view NAME [TERM]] [--debug-lines NAME,NAME] [--core-mods FOLDER|off]
+        [--keep-run-folder]
+
+--core-mods FOLDER reads the core mods (`XE Mod <name>.wgsl`) only from that folder
+(MGE_XE_CORE_MODS_DIR), never from the game folder; --core-mods off reads none
+(MGE_XE_CORE_MODS=0). Without it, the helper searches as a player's game does. The hook
+fixtures of the gate are in tools/hook-fixtures (W528 item 5).
 
 --debug-view and --debug-lines set the debug view of the replay (the helper's names: lights,
 shadow-layers, shadow-map, water TERM, post TERM; the line sources lights, shadow-boxes,
@@ -295,6 +301,15 @@ def self_test():
     return 0
 
 
+def core_mods_env(value):
+    """The variables of --core-mods: off reads no core mod, a folder reads them only from it, None changes nothing."""
+    if value is None:
+        return {}
+    if value == "off":
+        return {"MGE_XE_CORE_MODS": "0"}
+    return {"MGE_XE_CORE_MODS_DIR": os.path.abspath(value)}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("capture", nargs="?")
@@ -309,6 +324,7 @@ def main(argv=None):
     ap.add_argument("--distant-land")
     ap.add_argument("--game-dir", help="the game folder with Morrowind.ini and the archives")
     ap.add_argument("--backend", default="vulkan")
+    ap.add_argument("--core-mods", metavar="FOLDER|off", help="the core mods only from this folder, or off: none")
     ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
     ap.add_argument("--marks-every", type=int, default=None, help="a mark after every N frames: the helper's time for each frame by part")
     ap.add_argument("--debug-view", nargs="+", metavar=("NAME", "TERM"), help="the shader view of the replay, and its term for water and post")
@@ -354,7 +370,7 @@ def main(argv=None):
     if args.debug_lines is not None:
         command += ["--debug-lines", args.debug_lines]
     env = dict(os.environ, MGE_XE_DISTANT_LAND_DIR=args.distant_land or default["distant_land"],
-               MGE_XE_GAME_DIR=args.game_dir or default["game_dir"])
+               MGE_XE_GAME_DIR=args.game_dir or default["game_dir"], **core_mods_env(args.core_mods))
     try:
         code, out, err = run_replay(command, args.picture, args.config_root or default["config_root"], env, args.keep_run_folder)
     except Refused as refused:
