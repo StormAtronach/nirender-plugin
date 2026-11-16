@@ -751,6 +751,8 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         diffuse = extension_shade(inp);
     }
     var current = diffuse;
+    // STAGE LOOP BEGIN: the rewrite of a stage key (stage_shaders.rs) finds the loop between this
+    // line and the line of its end. Keep both lines, one time each, with only the loop between.
     for (var i = 0u; i < draws[record].counts.y; i++) {
         let stage = draws[record].stages[i];
         let texel = texels[i];
@@ -773,6 +775,7 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
             current = clamp(current, vec4f(0.0), vec4f(1.0));
         }
     }
+    // STAGE LOOP END
 
     if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {
         discard;

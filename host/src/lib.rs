@@ -107,6 +107,7 @@ pub use request::{
     Refusal, TextureTier, ARRAY_SAMPLERS, ARRAY_TEXTURES, SAMPLED_TEXTURES,
 };
 use stage_groups::{StageGroups, StageKey};
+pub use stage_shaders::stage_rewrite_refusals;
 mod effect_turn;
 mod morph;
 pub mod stamps;
