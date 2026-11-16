@@ -46,8 +46,9 @@ the sibling of this tree, else the sibling of its main checkout (`common.sibling
 checks read the code of this tree (`--plugin`), not the code of the checkout beside the docs.
 
 Each takes well under a second. A check whose repository is not on this machine is skipped
-with a line; with `--strict` (release.py) such a check is a failure, since a release needs
-every check. The exit code is 1 when a check fails; its output is printed. `tools/docs.py`
+with a line; with `--strict` (release.py and the merge step) such a check is NOT RUN, since a
+release and a merge round need every check. The exit code is 1 when a check fails (its output
+is printed), else `common.NOT_RUN_EXIT` (5) when a check is NOT RUN, else 0. `tools/docs.py`
 compiles, so it is not here: release.py runs it (only its `--self-test` is here). `tools/install_hooks.py` writes the hooks.
 
     python -I tools/checks.py --self-test   # the places of the docs and MWSE
@@ -209,15 +210,39 @@ def self_test():
                     "commit), 1 FAILED: mwse native. Of these, mwse native compared the sibling MWSE: a difference there can be "
                     "the sibling's branch. Fix the drift, or commit with --no-verify."), line
     assert "Of these" not in summary("plugin", [], [], ["readme"], ["mwse native"]), "a fallback that passed is no cause"
+    self_test_strict()
     print("checks self-test: ok")
     return 0
 
 
-def summary(which, passed, skipped, failed, fell_back):
-    """The last line of a run: the counts, the checks that read the sibling MWSE (W497), and the failures."""
+def self_test_strict():
+    """W527 (W524 F-G-5): with --strict a check that cannot run is NOT RUN, and checks.py exits with NOT_RUN_EXIT, which
+    fails a merge round. The plant: a list of one check whose script is not there. The null: without --strict the same
+    list is skipped, and checks.py exits with 0, so a merge round passed on a check that did not run."""
+    saved = CHECKS.copy(), LISTS.copy()
+    try:
+        CHECKS["planted"] = (PLUGIN / "tools" / "no_such_check.py", PLUGIN)
+        LISTS["planted"] = ["planted"]
+        assert main(["planted", "--strict"]) == common.NOT_RUN_EXIT
+        assert main(["planted"]) == 0
+        # A failure stays a failure (exit 1) beside a check that did not run.
+        CHECKS["fails"] = (PLUGIN / "tools" / "checks.py", PLUGIN, ["--no-such-option"])
+        LISTS["planted"] = ["planted", "fails"]
+        assert main(["planted", "--strict"]) == 1
+    finally:
+        CHECKS.clear(), CHECKS.update(saved[0]), LISTS.clear(), LISTS.update(saved[1])
+    line = summary("plugin", ["a"], [], [], [], ["b", "c"])
+    assert line == "checks (plugin): 1 passed, 2 NOT RUN (--strict; not on this machine: b, c)", line
+
+
+def summary(which, passed, skipped, failed, fell_back, not_run=()):
+    """The last line of a run: the counts, the checks that read the sibling MWSE (W497), the checks that did not run, and
+    the failures."""
     line = "checks (%s): %d passed" % (which, len(passed))
     if skipped:
         line += ", %d skipped (not on this machine: %s)" % (len(skipped), ", ".join(skipped))
+    if not_run:
+        line += ", %d NOT RUN (--strict; not on this machine: %s)" % (len(not_run), ", ".join(not_run))
     if fell_back:
         line += ", MWSE FALLBACK in %d: %s (the sibling MWSE was read, not the installs' commit)" % (len(fell_back), ", ".join(fell_back))
     if failed:
@@ -241,7 +266,7 @@ def main(argv):
     which = names[0] if names else "all"
     if which not in LISTS:
         raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]")
-    failed, passed, skipped, fell_back = [], [], [], []
+    failed, passed, skipped, fell_back, not_run = [], [], [], [], []
     for name in LISTS[which]:
         script, needs, *rest = CHECKS[name]
         args = list(rest[0]) if rest else []
@@ -252,8 +277,8 @@ def main(argv):
         missing = [path for path in (script, *(needs if isinstance(needs, tuple) else (needs,))) if not path.exists()]
         if missing:
             if strict:
-                failed.append(name)
-                print("== the check '%s' cannot run (--strict): %s is not on this machine" % (name, missing[0]))
+                not_run.append(name)
+                print("== NOT RUN: the check '%s' (--strict): %s is not on this machine" % (name, missing[0]))
             else:
                 skipped.append(name)
             continue
@@ -270,8 +295,12 @@ def main(argv):
             failed.append(name)
             print("== the check '%s' failed (%s):" % (name, script.name))
             print((run.stdout + run.stderr).rstrip()[-4000:])
-    print(summary(which, passed, skipped, failed, fell_back))
-    return 1 if failed else 0
+    print(summary(which, passed, skipped, failed, fell_back, not_run))
+    # A failure is 1. A check that did not run is NOT_RUN_EXIT: a merge round fails on it (merge_step.run_stage), and
+    # release.py reads every code other than 0 as a failure.
+    if failed:
+        return 1
+    return common.NOT_RUN_EXIT if not_run else 0
 
 
 if __name__ == "__main__":

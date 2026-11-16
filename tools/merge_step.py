@@ -37,10 +37,12 @@ names the move and the reason in an "OPEN A/B GAP" line: the round's own change 
 code 1 and closes no item: NOT RUN is no pass.
 
 The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
-GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin. The
+GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin
+--strict (a check that cannot run is NOT RUN, and the round fails, W527). The
 stages of render-link: the tests of the helper and mge-config; the helper's GPU tests (cargo test -p mgeHost64 --
 --ignored --test-threads=1: the tests marked #[ignore] that need a GPU, one at a time, run through "merge_step.py
---require-tests <command>", which fails when no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --mge <repo>. The diff from <tip> to <commit> adds these:
+--require-tests <command>", which fails when no test ran); clippy_baseline.py --check --mge <repo>, checks.py mge --strict
+--mge <repo>. The diff from <tip> to <commit> adds these:
 
 - for nirender-plugin, "mwse sites <instance>": tools/check_mwse_sites.py on the MWSE.dll deployed in each test install
   (Morrowind75testing, Outlander-test), when the change touches the ports, the hooks, the install, the function table,
@@ -157,7 +159,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import MD5, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import CAPTURE_FORMAT, OLDER_THAN_CAPTURE, docs_place, git_env  # noqa: E402
+from common import CAPTURE_FORMAT, NOT_RUN_EXIT, OLDER_THAN_CAPTURE, docs_place, git_env  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 from mwse_tree import fallback_checks  # noqa: E402
 
@@ -297,13 +299,13 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
                   ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
                   (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["_in_this_process"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
-                  ("checks", plugin, tool("checks.py", "plugin")),
+                  ("checks", plugin, tool("checks.py", "plugin", "--strict")),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
     else:
         stages = [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config"]),
                   (GPU_STAGE, mge, gpu_command(plugin, ["-p", "mgeHost64"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
-                  ("checks", plugin, tool("checks.py", "mge", "--mge", mge)),
+                  ("checks", plugin, tool("checks.py", "mge", "--strict", "--mge", mge)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
     if kind == "plugin" and touches(paths, MWSE_SITES_PATHS):
         for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
@@ -1293,6 +1295,16 @@ def self_test():
         assert "refused" not in text, "a stage with no refusal names none"
         assert "FALLBACK" not in text, "a stage with no MWSE fallback names none"
         assert summary_line([True, False, True], "x.log") == "2 of 3 stages passed; the output is in x.log"
+
+        # W527 (W524 F-G-5): the checks stages run checks.py --strict, whose NOT RUN code fails the round. The null: before
+        # W527 the stages had no --strict, so checks.py skipped a check that could not run and exited with 0.
+        for kind in ("plugin", "mge"):
+            checks = dict((name, command) for name, _, command in stages_for(kind, os.path.join(root, "nirender-plugin"), []))["checks"]
+            assert "--strict" in checks, checks
+        assert NOT_RUN_CODE == NOT_RUN_EXIT, "checks.py's NOT RUN code is the one run_stage reads"
+        with open(os.path.join(root, "log5b.txt"), "w", encoding="utf-8") as log:
+            not_run = "checks (plugin): 3 passed, 1 NOT RUN (--strict; not on this machine: planted)"
+            assert not run_stage("checks", root, [sys.executable, "-c", "print(%r); raise SystemExit(%d)" % (not_run, NOT_RUN_CODE)], log)
 
         # W497: a stage whose MWSE checks read the sibling MWSE says so in its line, passed or failed.
         fell_back = "MWSE FALLBACK: mwse native: read the sibling checkout x: no single MWSE record in the installs: A none"
