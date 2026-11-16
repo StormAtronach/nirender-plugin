@@ -209,13 +209,19 @@ def unpack(mge, asset):
     return folder
 
 
+def gate_command(folder):
+    """The command of the gate on the unpacked archive `folder`. The archive has no manifest, so it goes as --archive
+    (W545): replay.py refuses a folder that is not a set under --mge-build."""
+    return [sys.executable, "-I", os.path.join(HERE, "validate_retained.py"), "baseline", "--archive", folder]
+
+
 def gate(folder, dry_run):
     """Replays the captures of the baseline on the helper in the unpacked archive
-    (`validate_retained.py baseline --mge-build <folder>`: the helper that ships, not the one
+    (`validate_retained.py baseline --archive <folder>`: the helper that ships, not the one
     in bin). Returns the result lines ("N of M pictures equal to the accepted ones in ...");
     a failed gate stops the release."""
     print("the gate on the helper of %s" % folder, flush=True)
-    result = subprocess.run([sys.executable, "-I", os.path.join(HERE, "validate_retained.py"), "baseline", "--mge-build", folder], capture_output=True, text=True, cwd=PLUGIN, env=ENVIRONMENT)
+    result = subprocess.run(gate_command(folder), capture_output=True, text=True, cwd=PLUGIN, env=ENVIRONMENT)
     print(result.stdout + result.stderr, flush=True)
     lines = GATE_RESULT.findall(result.stdout)
     if result.returncode != 0 or not lines:
@@ -421,6 +427,10 @@ def license_additions(mge, plugin_url, plugin_tag, sources, stage):
 
 def self_test():
     """The tests of the pure parts: no git, no cargo, no GitHub."""
+    # W545: the gate names the unpacked archive with --archive, never with --mge-build, which replay.py refuses for a
+    # folder with no manifest.
+    command = gate_command("C:/tmp/unpacked")
+    assert command[-3:] == ["baseline", "--archive", "C:/tmp/unpacked"] and "--mge-build" not in command, command
     status = status_entries("?? src/new.rs\0?? notes.txt\0?? host/src/lib2.rs\0?? Cargo.toml.bak\0?? Cargo.lock\0 M src/lib.rs\0?? results/run/x.png\0")
     assert untracked_in_sources(status, PLUGIN_SOURCES) == ["src/new.rs", "host/src/lib2.rs", "Cargo.lock"], untracked_in_sources(status, PLUGIN_SOURCES)
     assert untracked_in_sources(status_entries("?? docs/a.md\0 M src/lib.rs\0"), MGE_SOURCES) == []
