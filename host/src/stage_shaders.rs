@@ -189,7 +189,7 @@ pub(crate) struct StageKey {
     /// The draw has a plane: the record's `clip_plane` is not 0. A draw with the scene's values
     /// has none: the scene's plane is always 0 (the test `each_write_of_a_plane_is_known`). The
     /// record of a draw takes its plane after its key, so the places that give it one take the
-    /// key again ([`StageShaders::id_of`]).
+    /// key again ([`StageShaders::id_with_plane`]).
     plane: bool,
 }
 
@@ -603,6 +603,10 @@ pub(crate) struct StageShaders {
     uber_ahead: u32,
     /// The keys of the set that drew first with a pipeline of the frame thread: the sign that the set is late or stale.
     uber_late: u32,
+    /// The draws that took their key again after their record took a plane ([`StageShaders::id_with_plane`]): the split
+    /// copies, and the draws of a view with a plane.
+    again_split: u64,
+    again_view: u64,
 }
 
 impl StageShaders {
@@ -641,7 +645,20 @@ impl StageShaders {
             uber_drawn: HashSet::new(),
             uber_ahead: 0,
             uber_late: 0,
+            again_split: 0,
+            again_view: 0,
         }
+    }
+
+    /// The id of the stage key of a record that took a plane after its key: the split copy of a draw, or a draw of a
+    /// view with a plane (`view`). The plane is a fact of the key ([`StageKey::plane`]).
+    pub(crate) fn id_with_plane(&mut self, data: &DrawData, view: bool) -> u32 {
+        if view {
+            self.again_view += 1;
+        } else {
+            self.again_split += 1;
+        }
+        self.id_of(data)
     }
 
     /// The id of a draw's stage key, 0 (the uber-shader) when the feature is off, the key does
@@ -1069,6 +1086,22 @@ impl StageShaders {
         )
     }
 
+    /// The facts of the keys of W300: how many keys have each one, and the draws that took their key again with a
+    /// plane.
+    pub(crate) fn facts_report(&self) -> String {
+        let keys = &self.keys[1..];
+        let count = |fact: fn(&StageKey) -> bool| keys.iter().filter(|key| fact(key)).count();
+        format!(
+            "stage key facts: {} with a plane, {} flat, {} of the sky (bit 4 or 8), {} of the scene (the table); draws that took their key again with a plane: {} split copies, {} of a view",
+            count(|key| key.plane),
+            count(|key| key.flat),
+            count(|key| key.shade as u32 & SKY_BITS != 0),
+            count(|key| key.scene),
+            self.again_split,
+            self.again_view
+        )
+    }
+
     /// The report of [`UBER_SET`]: the keys sent to the thread, made before their first draw, drawn first with a
     /// pipeline of the frame thread (late, or a key that the thread could not make), and not drawn in the session,
     /// by their place from 1 among the keys sent (the table's place, unless the frame has one sample).
@@ -1290,7 +1323,7 @@ mod tests {
         // 0 (a scene's draw has no plane in its key), and a record that takes a plane after its
         // key must take its key again. So each write of a plane in the crate is one of these.
         // When a new write fails here, do not only add it to the list: a write to a record takes
-        // the key again right after it (`key.stages = stage_shaders.id_of(&data)`, as the two
+        // the key again right after it (`key.stages = stage_shaders.id_with_plane(..)`, as the two
         // here do), and a scene's plane stays 0, or `StageKey::of` must read the scene's plane
         // for a scene's draw first. A key with no plane for a record with one draws the far side.
         let known = [

@@ -34,7 +34,7 @@ impl Player {
             // a fact of the stage key: the copy takes the key of its own record.
             let mut data = draw.data;
             data.clip_plane = plane_of_draw(plane, draw.origin);
-            key.stages = renderer.stage_shaders.id_of(&data);
+            key.stages = renderer.stage_shaders.id_with_plane(&data, false);
             if let Some((_, remap)) = small {
                 for stage in data.stages.iter_mut() {
                     stage.slots[0] = remap.get(&stage.slots[0]).copied().unwrap_or(0);

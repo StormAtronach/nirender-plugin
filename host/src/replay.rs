@@ -163,7 +163,7 @@ impl Replay for Replayer<'_> {
             if let Some(plane) = view.clip_plane {
                 data.clip_plane = plane_of_draw(plane, kept.origin);
                 // The plane is a fact of the stage key: the draw takes the key of its record.
-                key.stages = self.renderer.stage_shaders.id_of(&data);
+                key.stages = self.renderer.stage_shaders.id_with_plane(&data, true);
             }
             key.samples = view.samples;
             if view.force_depth_test {
