@@ -661,8 +661,86 @@ def self_test():
     assert clusters_verdict({"problem": "the sizes differ"}) == (False, "replay with the clusters against the lights of the draws: the sizes differ")
     self_test_route()
     self_test_baseline()
+    self_test_scratch_folders()
     self_test_tour_stage()
     print("validate_retained self-test: ok")
+
+
+def self_test_scratch_folders():
+    """Verdicts 504 and 512: the temporary folders of the objects stage and of the second replays. A clean stage
+    removes its folder (before, one stayed in %TEMP% at each gate run). A replay that fails, or whose run folder
+    replay.py keeps, keeps the folder with its dump, named in a line. A folder that cannot be removed is named, and
+    the stage's result stands."""
+    global run_code
+    real, fails, real_temp = run_code, FAILS[0], tempfile.tempdir
+    replays = []
+
+    def planted(code=0, kept=False):
+        """A run_code whose replay writes its picture and, when it fails or `kept`, a run folder with a dump, as
+        replay.py keeps one."""
+        def run(command, env=None):
+            if not command[1].endswith("replay.py"):
+                return 0, ""
+            picture = command[3]
+            replays.append(picture)
+            open(picture if picture.endswith(".png") else picture + "-00001.png", "wb").close()
+            if code == 0 and not kept:
+                return 0, ""
+            run_folder = (picture[:-4] if picture.endswith(".png") else picture) + ".run"
+            os.makedirs(run_folder)
+            open(os.path.join(run_folder, "numidium.dmp"), "wb").close()
+            return code, "replay: the run folder %s is kept: numidium.dmp\n" % run_folder
+        return run
+
+    def objects(tool, baseline):
+        """(the stage's temporary folder, what the stage printed) of the objects stage with the replays of `tool`."""
+        global run_code
+        run_code = tool
+        del replays[:]
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            stage_objects(baseline, "no build")
+        folders = {os.path.dirname(picture) for picture in replays}
+        assert len(replays) == len(OBJECT_BACKENDS) and len(folders) == 1, replays
+        return folders.pop(), printed.getvalue()
+
+    try:
+        with tempfile.TemporaryDirectory() as root:
+            # Every temporary folder of this test, a kept one too, is made inside `root`, which is removed at the end.
+            tempfile.tempdir = root
+            baseline = os.path.join(root, "baseline")
+            os.makedirs(baseline)
+            open(os.path.join(baseline, "a.nircap"), "wb").close()
+
+            folder, said = objects(planted(), baseline)
+            assert os.path.basename(folder).startswith("gate-objects-") and not os.path.exists(folder), folder
+            assert " is kept: " not in said and " is left: " not in said, said
+
+            folder, said = objects(planted(code=41), baseline)
+            first = OBJECT_BACKENDS[0]
+            assert os.path.isfile(os.path.join(folder, "a-%s.run" % first, "numidium.dmp")), os.listdir(folder)
+            assert "the folder %s is kept: %s, a.nircap: replay.py ended with the code 41" % (folder, first) in said, said
+
+            # A clean end with a run folder that replay.py keeps (a file that the helper left) keeps the folder too.
+            folder, said = objects(planted(kept=True), baseline)
+            assert os.path.isdir(folder) and "%s, a.nircap: replay.py kept its run folder" % first in said, said
+
+            # The second replay of an accept, in the same way.
+            run_code = planted(code=41)
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                problems = steady_problems(os.path.join(baseline, "a.nircap"), "a", {"": "unused"}, "no build", GATE_ENV)
+            folder = os.path.dirname(replays[-1])
+            assert problems == ["the second replay ended with the code 41"], problems
+            assert os.path.basename(folder).startswith("gate-steady-") and os.path.isfile(os.path.join(folder, "a.run", "numidium.dmp")), folder
+            assert "the folder %s is kept: a: replay.py ended with the code 41" % folder in printed.getvalue(), printed.getvalue()
+
+            # A file in use at the end: the folder is left and named, and no exception reaches the stage.
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                with scratch_folder("gate-objects-") as (folder, _keep):
+                    held = open(os.path.join(folder, "held.bin"), "wb")
+            held.close()
+            assert os.path.isdir(folder) and "the folder %s is left: it could not be removed" % folder in printed.getvalue(), printed.getvalue()
+    finally:
+        run_code, FAILS[0], tempfile.tempdir = real, fails, real_temp
 
 
 def self_test_tour_stage():
@@ -784,6 +862,7 @@ def self_test_baseline():
         def run(command, env=None):
             if not command[1].endswith("replay.py"):
                 return 0, ""
+            prefixes.append(command[3])
             name = os.path.basename(command[3])
             frames = pictures.get(name, pictures["*"])
             for frame, colour in (frames() if callable(frames) else frames).items():
@@ -803,7 +882,7 @@ def self_test_baseline():
             code = 0 if passed else baseline_failure_code()
         return passed, printed.getvalue(), code
 
-    objects_calls = []
+    objects_calls, prefixes = [], []
 
     def objects(_baseline, _build, keep=None, env=None, route=None):
         objects_calls.append((env, route))
@@ -860,6 +939,9 @@ def self_test_baseline():
             passed, said, code = stage(folder, plant({"new": {1: other, 29: other}, "a": {1: other, 29: grey}}), add=True)
             assert not passed and "accepted new: new.png, new-last.png, new.checks.txt" in said and "a.png" in said, said
             assert picture_diff.Image.open(os.path.join(kept, "a.png")).getpixel((0, 0)) == grey, "an accepted picture was replaced"
+            # The second replays of the accept go to a temporary folder each, removed after the judgement (verdict 504).
+            steady = {os.path.dirname(prefix) for prefix in prefixes if os.path.basename(os.path.dirname(prefix)).startswith("gate-steady-")}
+            assert steady and not any(os.path.exists(folder) for folder in steady), steady
             passed, said, code = stage(folder, plant({"new": {1: other, 29: other}}))
             assert passed and "ok   6 of 6 pictures equal" in said and "3 captures: frame 1 of each, and the last frame of 3" in said, said
             passed, said, code = stage(folder, plant({"new": {1: other, 29: other}}), add=True)
@@ -872,13 +954,15 @@ def self_test_baseline():
         # W528 item 5: the pass of the hook fixtures, after the plain pass, with its own variables and accepted state.
         with tempfile.TemporaryDirectory() as folder:
             fixtures, good = route_plant(folder)
-            envs = []
+            envs, markers_there = [], []
 
             def with_route(tool, lines=good):
                 def run(command, env=None):
                     code, output = tool(command, env)
                     if command[1].endswith("replay.py"):
                         envs.append(env)
+                        if "MGE_XE_CORE_MOD_MARKERS" in env:
+                            markers_there.append(os.path.isdir(env["MGE_XE_CORE_MOD_MARKERS"]))
                     return code, output + ("".join(line + "\r\n" for line in lines) if "MGE_XE_CORE_MODS_DIR" in (env or {}) else "")
                 return run
 
@@ -889,7 +973,10 @@ def self_test_baseline():
             assert sorted(f for f in os.listdir(os.path.join(folder, HOOKS_ACCEPTED)) if not f.endswith(".replay.txt")) == ["a-last.png", "a.checks.txt", "a.png"]
             plain, hooked = [env for env in envs if "MGE_XE_CORE_MODS_DIR" not in env], [env for env in envs if "MGE_XE_CORE_MODS_DIR" in env]
             assert plain and all(env == GATE_ENV for env in plain), plain
-            assert hooked and all(env["MGE_XE_CORE_MODS_DIR"] == fixtures and "MGE_XE_CORE_MODS" not in env and os.path.isdir(env["MGE_XE_CORE_MOD_MARKERS"]) for env in hooked), hooked
+            assert hooked and all(env["MGE_XE_CORE_MODS_DIR"] == fixtures and "MGE_XE_CORE_MODS" not in env for env in hooked), hooked
+            # The markers folder is there while the pass replays, and gone when the pass ends (verdict 504).
+            assert markers_there and all(markers_there), markers_there
+            assert not any(os.path.exists(env["MGE_XE_CORE_MOD_MARKERS"]) for env in hooked), [env["MGE_XE_CORE_MOD_MARKERS"] for env in hooked]
             del objects_calls[:]
             passed, said, _code = stage(folder, with_route(plant()), hooks=fixtures)
             assert passed and "ok   2 of 2 pictures equal" in said and "ok   hook fixtures: 2 of 2 pictures equal" in said, said
@@ -1114,21 +1201,53 @@ def equal_pictures(a, b):
     return False, numbers.get("problem") or "%.2f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("largest", 0))
 
 
+# replay.py's line on standard error when it keeps a run folder: a failed replay, or a file that the helper left there.
+RUN_FOLDER_KEPT = re.compile(r"replay: the run folder (.+) is kept: ")
+
+
+@contextlib.contextmanager
+def scratch_folder(prefix):
+    """A temporary folder for files of the gate that it does not keep, as (folder, keep). `keep(code, output, what)`
+    is called after each replay into the folder. The folder is removed at the end only when every replay in it ended
+    with 0 and kept no run folder: a kept run folder holds the helper's log and its crash dump (verdict 512). A folder
+    that stays, kept or not removable (a file in use), is named in a line, and the stage's result stands."""
+    folder = tempfile.mkdtemp(prefix=prefix)
+    reasons = []
+
+    def keep(code, output, what):
+        if code != 0:
+            reasons.append("%s: replay.py ended with the code %d" % (what, code))
+        elif RUN_FOLDER_KEPT.search(output):
+            reasons.append("%s: replay.py kept its run folder" % what)
+
+    try:
+        yield folder, keep
+    finally:
+        if reasons:
+            print("       the folder %s is kept: %s" % (folder, "; ".join(reasons)), flush=True)
+        else:
+            shutil.rmtree(folder, ignore_errors=True)
+            if os.path.exists(folder):
+                print("       the folder %s is left: it could not be removed (a file in it is in use)" % folder, flush=True)
+
+
 def steady_problems(capture, name, pictures, mge_build, env):
     """Why the pictures of a capture cannot be accepted, as texts: a second replay must give each of them again,
     byte for byte. A frame that follows the clock (an arrival of distant statics) differs from run to run, and an
-    accepted picture of it would fail the gate by chance."""
-    again = tempfile.mkdtemp(prefix="gate-steady-")
-    code, output, _last = replay_frames(capture, os.path.join(again, name), mge_build, env)
-    if code != 0:
-        return ["the second replay ended with the code %d" % code]
-    problems = []
-    for suffix in pictures:
-        second = os.path.join(again, name + suffix + ".png")
-        equal, said = equal_pictures(pictures[suffix], second) if os.path.isfile(second) else (False, "no picture in the second replay")
-        if not equal:
-            problems.append("%s is not steady: two replays differ (%s)" % ("frame 1" if suffix == "" else "the last frame", said))
-    return problems
+    accepted picture of it would fail the gate by chance. The second replay's pictures go to a temporary folder,
+    removed when the judgement ends, unless the replay failed ([`scratch_folder`])."""
+    with scratch_folder("gate-steady-") as (again, keep):
+        code, output, _last = replay_frames(capture, os.path.join(again, name), mge_build, env)
+        keep(code, output, name)
+        if code != 0:
+            return ["the second replay ended with the code %d" % code]
+        problems = []
+        for suffix in pictures:
+            second = os.path.join(again, name + suffix + ".png")
+            equal, said = equal_pictures(pictures[suffix], second) if os.path.isfile(second) else (False, "no picture in the second replay")
+            if not equal:
+                problems.append("%s is not steady: two replays differ (%s)" % ("frame 1" if suffix == "" else "the last frame", said))
+        return problems
 
 
 def stage_baseline(baseline, accept, mge_build, now=None, add=False, hooks=HOOK_FIXTURES):
@@ -1162,13 +1281,15 @@ def hooks_pass(baseline, captures, accept, mge_build, out, add, hooks):
     `hooks` (MGE_XE_CORE_MODS_DIR), against the accepted state in HOOKS_ACCEPTED of the baseline folder. The plain
     pass replays with no core mod, so only this pass judges the helper's path that joins a hook file into its
     shaders. Each replay must show the route ([`route_problems`]). The build markers go to a new folder of this pass,
-    never to the user's. A folder with no fixture is a FAIL: the pass is never left out without a line."""
+    never to the user's, and the folder is removed when the pass ends. A folder with no fixture is a FAIL: the pass is
+    never left out without a line."""
     fixtures = hook_fixtures(hooks)
     if not fixtures:
         return check(False, "hook fixtures: %s has no XE Mod *.wgsl file: the gate cannot judge the path of a hook file" % hooks)
     print("hook fixtures %s: %s" % (hooks, ", ".join(sorted(fixtures))), flush=True)
-    env = hooks_env(hooks, tempfile.mkdtemp(prefix="gate-hook-markers-"))
-    return baseline_pass(baseline, captures, accept, mge_build, out, add, env=env, accepted=os.path.join(baseline, HOOKS_ACCEPTED), route=(hooks, fixtures))
+    with scratch_folder("gate-hook-markers-") as (markers, _keep):
+        env = hooks_env(hooks, markers)
+        return baseline_pass(baseline, captures, accept, mge_build, out, add, env=env, accepted=os.path.join(baseline, HOOKS_ACCEPTED), route=(hooks, fixtures))
 
 
 def baseline_pass(baseline, captures, accept, mge_build, out, add, env=None, accepted=None, route=None, tour_out=None):
@@ -1357,7 +1478,8 @@ def stage_objects(baseline, mge_build, keep=None, env=None, route=None):
     object, and no device may be lost (D288). A steady frame that made objects warns while
     OBJECTS_STRICT is False. A capture with no steady frame warns; a backend with no capture that
     has a steady frame fails. The stage compares no picture, so its pictures go to a temporary
-    folder; the output of each replay stays in `keep` (the folder of the gate's pictures) as
+    folder, removed when the stage ends unless a replay failed ([`scratch_folder`]); the output of
+    each replay stays in `keep` (the folder of the gate's pictures) as
     objects-<backend>-<capture>.replay.txt. `env` is GATE_ENV by default; the hook fixtures' pass
     gives its own, and `route` (folder, fixtures): each replay must show that route too, as a
     hook that is dropped tests no object of its path (verdict 480)."""
@@ -1366,25 +1488,26 @@ def stage_objects(baseline, mge_build, keep=None, env=None, route=None):
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "objects: no capture in the baseline folder")
-    out = tempfile.mkdtemp(prefix="gate-objects-")
     ok = True
-    for backend in OBJECT_BACKENDS:
-        steady_seen = False
-        for capture in captures:
-            code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], env)
-            if keep:
-                keep_replay_output(os.path.join(keep, "objects-%s-%s" % (backend, capture[:-7])), code, output)
-            if route is not None:
-                ok &= check_route("%sobjects, %s, %s" % (title, backend, capture), output, *route)
-            verdict, text = objects_verdict(output)
-            line = "%sobjects, %s, %s: %s%s" % (title, backend, capture, text, replay_end(code, output))
-            steady_seen |= verdict in ("ok", "sites")
-            if code == 0 and (verdict == "idle" or (verdict == "sites" and not OBJECTS_STRICT)):
-                ok &= warn(line)
-            else:
-                ok &= check(verdict == "ok" and code == 0, line)
-        if not steady_seen:
-            ok &= check(False, "%sobjects, %s: no capture has a steady frame: the stage cannot show the rule" % (title, backend))
+    with scratch_folder("gate-objects-") as (out, keep_folder):
+        for backend in OBJECT_BACKENDS:
+            steady_seen = False
+            for capture in captures:
+                code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], env)
+                keep_folder(code, output, "%s, %s" % (backend, capture))
+                if keep:
+                    keep_replay_output(os.path.join(keep, "objects-%s-%s" % (backend, capture[:-7])), code, output)
+                if route is not None:
+                    ok &= check_route("%sobjects, %s, %s" % (title, backend, capture), output, *route)
+                verdict, text = objects_verdict(output)
+                line = "%sobjects, %s, %s: %s%s" % (title, backend, capture, text, replay_end(code, output))
+                steady_seen |= verdict in ("ok", "sites")
+                if code == 0 and (verdict == "idle" or (verdict == "sites" and not OBJECTS_STRICT)):
+                    ok &= warn(line)
+                else:
+                    ok &= check(verdict == "ok" and code == 0, line)
+            if not steady_seen:
+                ok &= check(False, "%sobjects, %s: no capture has a steady frame: the stage cannot show the rule" % (title, backend))
     return ok
 
 
