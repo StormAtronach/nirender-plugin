@@ -28,7 +28,9 @@ each only when it is the pdb of its binary (symbols.pdb_matches); a copied part 
 set that it comes from.
 
 The set is made in <name>.making and renamed at the end, so a folder with the name is whole or is not there. If the
-name is there and its check passes, nothing is built. If the name is there and its check fails, or <name>.making is
+name is there, its check passes and its manifest has the request's full commits, patch md5s and kind, nothing is built;
+with other full commits (the name holds only 8 hex of each), the tool stops with exit code 1 and names both. If the
+name is there and its check fails, or <name>.making is
 there, the tool stops and names the folder: it never builds a second time into a name, and it deletes nothing (until
 the delete right of D492 is in, an unfinished folder is the owner's to remove). The tool takes the build slot for its
 builds and the probe and gives it back at its end. Before each write to E: it asks `slot.py e-ok` (D297) one time, and
@@ -501,6 +503,23 @@ def build_hold(slots, label, no_wait):
 
 # --- the set ------------------------------------------------------------------------------------
 
+def request_differences(manifest, commits, patch_md5s, kind):
+    """How the set of `manifest` differs from a request of `commits` ({repo: full commit}), `patch_md5s` ({repo: md5})
+    and `kind`: one text for each repo whose commit or patch differs, and one for the kind. Empty when it is the set of
+    the request."""
+    differences = []
+    for repo in sets.REPOS:
+        there = manifest.get("commits", {}).get(repo, {}).get("commit")
+        if there != commits[repo]:
+            differences.append("%s: the set has %s, the request %s" % (repo, there, commits[repo]))
+        there_patch = manifest.get("patches", {}).get(repo, {}).get("md5")
+        if there_patch != patch_md5s.get(repo):
+            differences.append("%s: the set's patch md5 is %s, the request's %s" % (repo, there_patch, patch_md5s.get(repo)))
+    if manifest.get("kind") != kind:
+        differences.append("the set's kind is %s, the request's %s" % (manifest.get("kind"), kind))
+    return differences
+
+
 def make(commits, patches, kind, builder, root=sets.SETS, gate=e_gate, hold=None, keep=PDB_KEEP, session=this_session,
          now=None, reuse=True):
     """Makes the set of `commits` ({repo: full commit}) with `patches` ({repo: (file, md5)}). `builder` does the builds
@@ -513,9 +532,14 @@ def make(commits, patches, kind, builder, root=sets.SETS, gate=e_gate, hold=None
     lines = []
     if os.path.exists(folder):
         try:
-            sets.check(folder)
+            there_manifest = sets.check(folder)
         except sets.SetError as error:
             return EXIT_FAULT, ["%s is there and is not a sealed set, and nothing is built: %s" % (name, error)]
+        # The name holds 8 hex of each commit only: the set there must be of the full commits, the patches and the kind
+        # of the request (the design's 11.4).
+        differences = request_differences(there_manifest, commits, patch_md5s, kind)
+        if differences:
+            return EXIT_FAULT, ["%s is there and is the set of other commits, and nothing is built: %s" % (name, "; ".join(differences))]
         there = ["%s is there and its check passes: nothing is built" % name]
         return 0, there + ([PATCH_UNVERIFIED] if patches else []) + [folder.replace("\\", "/")]
     if os.path.exists(making):
@@ -713,6 +737,15 @@ def self_test():
         # Test 1: the same commits again build nothing.
         code, lines = run(commits)
         assert code == 0 and "nothing is built" in lines[0] and builder.cargo_builds == 1 and builder.mwse_builds == 1, lines
+        # A name that is there with other full commits (the design's 11.4): refused, nothing built, both commits named.
+        # The null is test 1 above: the same full commits pass.
+        same_name = dict(commits, nirender=commits["nirender"][:8] + "9" * 32)
+        assert sets.set_name(same_name) == os.path.basename(first)
+        code, lines = run(same_name)
+        assert code == EXIT_FAULT and "the set of other commits" in lines[-1] and builder.cargo_builds == 1, lines
+        assert commits["nirender"] in lines[-1] and same_name["nirender"] in lines[-1], lines
+        assert request_differences(manifest, commits, {}, "rig") == ["the set's kind is usual, the request's rig"]
+        assert request_differences(manifest, commits, {"mwse": "f" * 32}, sets.KIND_USUAL)[0].startswith("mwse: the set's patch md5 is None")
         # Test 8: another MWSE commit builds only MWSE; the other parts are the same bytes.
         other = dict(commits, mwse="1234abcd" + "d" * 32)
         code, lines = run(other)
