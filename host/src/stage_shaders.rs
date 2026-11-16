@@ -4,7 +4,8 @@
 //! `fs` switches on (the stage count, the colour and alpha operations and their arguments, the
 //! alpha test function), and the facts of the draw that choose the branches of `fs` and of the
 //! extension's shade (the bits of `counts.w` in [`SHADE_BITS`], the lighting and normal flags,
-//! whether the draw takes the scene's values, and whether it adds to the picture). For each key
+//! whether the draw takes the scene's values, whether it adds to the picture, whether it is
+//! flat-shaded, and whether it has a plane). For each key
 //! the helper makes a fragment shader from the world shader's own text, with those codes and
 //! facts as constants and the reads of the stages past the count left out. The arithmetic is the
 //! same; the switches, the branches that the key's draws cannot take and the record loads go.
@@ -46,8 +47,9 @@ const STAGES: usize = 6;
 /// The first line of the list, then [`LIST_FORMAT`] and the hash of the world shader's text.
 const LIST_HEADER: &str = "numidium stage pipelines";
 /// The format of the list's lines; it is in the list's file name too ([`list_name`]). 3: the
-/// key's shade bits have [`crate::NO_LIGHTS_BIT`]. 4: the key has the add bit (`adds`).
-const LIST_FORMAT: u32 = 4;
+/// key's shade bits have [`crate::NO_LIGHTS_BIT`]. 4: the key has the add bit (`adds`). 5: the
+/// key has the flat and the plane bits, and its shade bits have the sky bits 4 and 8 (W300).
+const LIST_FORMAT: u32 = 5;
 /// The frames between two writes of a changed list.
 const SAVE_FRAMES: u32 = 600;
 /// The list's pipelines go to the thread while it has fewer jobs than this, so that a key of
@@ -55,8 +57,9 @@ const SAVE_FRAMES: u32 = 600;
 const LIST_BATCH: usize = 4;
 /// The stage keys that the list may take; the rest of the cap is for the keys of first use.
 const LIST_KEYS: usize = MAX_KEYS / 2;
-/// The words of a stage key in the list.
-const KEY_WORDS: usize = 7 + STAGES * 7;
+/// The words of a stage key in the list: 9 facts, then 7 codes for each stage.
+const KEY_FACTS: usize = 9;
+const KEY_WORDS: usize = KEY_FACTS + STAGES * 7;
 
 /// The samples of a key of [`UBER_SET`] that draws into the frame's targets. [`StageShaders::start`] puts the
 /// frame's count in its place: it is the user's multisample setting.
@@ -145,14 +148,19 @@ const UBER_SET: [PipelineKey; 48] = [
     PipelineKey { fvf: 4444, stride: 52, blend: [0, 2, 1], depth: [1, 1, 4], cull: 2, color_write: 15, ..TEXTURE },
 ];
 /// The bits of `counts.w` in a stage key: each one chooses a branch of `fs` or of the
-/// extension's shade (1 the extension shades, 2, 16, 32 the sun's shadow, 128 the light for
-/// each pixel, 512, and this crate's [`crate::CLOUDS_HOOK_BIT`], 1024: the clouds with the
-/// extension's colour, [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit at its corners, and
-/// [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained table
-/// also takes the bits of its kind from the scene (`draw_counts_w`): those stay values of the
-/// frame. The key keeps the bits in a `u16`.
+/// extension's shade (1 the extension shades, 2, the sky's [`SKY_BITS`], 16, 32 the sun's
+/// shadow, 128 the light for each pixel, 512, and this crate's [`crate::CLOUDS_HOOK_BIT`], 1024:
+/// the clouds with the extension's colour, [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit
+/// at its corners, and [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained
+/// table also takes the bits of its kind from the scene (`draw_counts_w`): those stay values of
+/// the frame, but for the sky's bits. The key keeps the bits in a `u16`.
 const SHADE_BITS: u32 =
-    1 | 2 | 16 | 32 | 128 | 512 | crate::CLOUDS_HOOK_BIT | crate::CORNER_LIGHT_BIT | crate::NO_LIGHTS_BIT;
+    1 | 2 | SKY_BITS | 16 | 32 | 128 | 512 | crate::CLOUDS_HOOK_BIT | crate::CORNER_LIGHT_BIT | crate::NO_LIGHTS_BIT;
+/// The sky's bits of `counts.w`: 4 the dome, 8 the shadow of a moon. Only the stream sets them
+/// (`stream::sky_bits`). The scene's bits of a table's kind never have them (`retained::apply_shade`
+/// takes them out), so the key's text takes them out of the scene's part too ([`fixed_facts`]),
+/// and a table's draw has them as constants.
+pub(crate) const SKY_BITS: u32 = 4 | 8;
 const _: () = assert!(SHADE_BITS <= u16::MAX as u32, "the stage key keeps the shade bits in a u16");
 
 /// The codes that `fs` switches on for a draw. Only the stages below `count` are kept; the
@@ -176,6 +184,13 @@ pub(crate) struct StageKey {
     /// Bit 64 of `light_range.w`: the draw adds to the picture ([`crate::adds_to_picture`]),
     /// and `fogged` makes it darker in the fog.
     adds: bool,
+    /// Bit 16 of `light_range.w`: the draw is flat-shaded ([`crate::flat_shading_bit`]).
+    flat: bool,
+    /// The draw has a plane: the record's `clip_plane` is not 0. A draw with the scene's values
+    /// has none: the scene's plane is always 0 (the test `each_write_of_a_plane_is_known`). The
+    /// record of a draw takes its plane after its key, so the places that give it one take the
+    /// key again ([`StageShaders::id_of`]).
+    plane: bool,
 }
 
 impl StageKey {
@@ -186,14 +201,17 @@ impl StageKey {
             return None;
         }
         let small = |value: u32| u8::try_from(value).ok();
+        let scene = data.light_range[3] & 4 != 0;
         let mut key = StageKey {
             count: count as u8,
             alpha_test: small(data.more[2])?,
             shade: (data.counts[3] & SHADE_BITS) as u16,
             lit: small(data.flags[0])?,
             normal: small(data.flags[1])?,
-            scene: data.light_range[3] & 4 != 0,
+            scene,
             adds: data.light_range[3] & crate::ADDS_BIT != 0,
+            flat: data.light_range[3] & 16 != 0,
+            plane: !scene && data.clip_plane != [0.0; 4],
             ..Default::default()
         };
         for stage in 0..count as usize {
@@ -218,6 +236,8 @@ impl StageKey {
             self.normal as u32,
             self.scene as u32,
             self.adds as u32,
+            self.flat as u32,
+            self.plane as u32,
         ];
         for stage in 0..STAGES {
             words.extend(self.color[stage].iter().map(|&v| v as u32));
@@ -247,13 +267,16 @@ impl StageKey {
             normal: small(words[4])?,
             scene: flag(words[5])?,
             adds: flag(words[6])?,
+            flat: flag(words[7])?,
+            plane: flag(words[8])?,
             ..Default::default()
         };
-        if key.count as usize > STAGES {
+        // A draw with the scene's values has no plane of its own ([`StageKey::of`]).
+        if key.count as usize > STAGES || (key.scene && key.plane) {
             return None;
         }
         for stage in 0..STAGES {
-            let at = 7 + stage * 7;
+            let at = KEY_FACTS + stage * 7;
             for part in 0..4 {
                 key.color[stage][part] = small(words[at + part])?;
             }
@@ -282,6 +305,27 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
         }
         let end = at + source[at..].find('\n')?;
         source.replace_range(at..end, &format!("    texels[{stage}] = vec4f(1.0);"));
+    }
+    // The reads below the count: after a stage that is no bump stage (22, 23), `bump_light` gives
+    // the texel and `bump_move` gives no move, so the read is the texture's own.
+    for stage in 1..key.count as usize {
+        let before = stage - 1;
+        if matches!(key.color[before][0], 22 | 23) {
+            continue;
+        }
+        let start = format!("    texels[{stage}] = bump_light({before}u, texels[{before}], ");
+        let at = source.find(&start)?;
+        if source[at + 1..].contains(&start) {
+            return None;
+        }
+        let end = at + source[at..].find('\n')?;
+        let sample = source[at + start.len()..end].strip_suffix(");")?;
+        let moved = format!(" + bump_move({before}u, texels[{before}])");
+        if sample.matches(&moved).count() != 1 {
+            return None;
+        }
+        let read = format!("    texels[{stage}] = {};", sample.replacen(&moved, "", 1));
+        source.replace_range(at..end, &read);
     }
 
     // The stage loop: its code must be the code that the steps copy.
@@ -326,10 +370,11 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
 
 /// The text with the draw's facts of the key as constants, so that the compiler leaves out the
 /// branches that the key's draws cannot take: `from_scene` returns the key's scene bit, the test
-/// of `fogged` for a draw that adds to the picture is the key's add bit, a read of the record's
-/// `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits of a retained
-/// draw stay values of the frame), and the reads of `flags.x` and `flags.y` are the key's values.
-/// None when the text lacks one of these parts.
+/// of `fogged` for a draw that adds to the picture is the key's add bit, the flat test of `fs` is
+/// the key's flat bit, the plane's test of `fs` is false for a key without a plane, a read of the
+/// record's `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits of a
+/// retained draw stay values of the frame, without [`SKY_BITS`]), and the reads of `flags.x` and
+/// `flags.y` are the key's values. None when the text lacks one of these parts.
 fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
     let scene_test = "fn from_scene() -> bool {\n    return (draws[record].light_range.w & 4u) != 0u;\n}\n";
     if source.matches(scene_test).count() != 1 {
@@ -347,6 +392,31 @@ fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
         return None;
     }
     let source = source.replacen(&adds_test, &key.adds.to_string(), 1);
+
+    // The one test of the flat bit is at the start of `fs`.
+    let flat_test = "(draws[record].light_range.w & 16u) != 0u";
+    if source.matches(flat_test).count() != 1 {
+        return None;
+    }
+    let source = source.replacen(flat_test, &key.flat.to_string(), 1);
+
+    // The plane's test of `fs`: a draw without a plane keeps no read, test or `discard` of it.
+    let plane_test = "any(clip_plane != vec4f(0.0))";
+    if source.matches(plane_test).count() != 1 {
+        return None;
+    }
+    let source = if key.plane {
+        source
+    } else {
+        source.replacen(plane_test, "false", 1)
+    };
+
+    // The scene's part of `draw_counts_w` never has the sky's bits.
+    let scene_part = "scene.counts[k >> 2u][k & 3u]";
+    if source.matches(scene_part).count() != 1 {
+        return None;
+    }
+    let source = source.replacen(scene_part, &format!("({scene_part} & {}u)", !SKY_BITS), 1);
 
     let counts_w = "draws[record].counts.w";
     if !source.contains(counts_w) {
@@ -1147,13 +1217,128 @@ mod tests {
         data.light_range[3] = 4 | 1 | crate::ADDS_BIT;
         let key = StageKey::of(&data).unwrap();
         assert_eq!(
-            (key.shade, key.lit, key.normal, key.scene, key.adds),
-            (1 | 32, 1, 1, true, true)
+            (key.shade, key.lit, key.normal, key.scene, key.adds, key.flat, key.plane),
+            (1 | 4 | 32, 1, 1, true, true, false, false)
         );
-        // A bit outside SHADE_BITS (4 the sky, 2048) does not split a key.
+        // A bit outside SHADE_BITS (2048) does not split a key.
         let mut other = data;
-        other.counts[3] = 1 | 32;
+        other.counts[3] = 1 | 4 | 32;
         assert_eq!(StageKey::of(&other), Some(key));
+    }
+
+    #[test]
+    fn the_flat_and_the_plane_are_facts_of_the_key() {
+        let mut data = DrawData::zeroed();
+        data.counts[3] = 1;
+        let plain = StageKey::of(&data).unwrap();
+        data.light_range[3] = 16;
+        let flat = StageKey::of(&data).unwrap();
+        assert!(flat.flat && !plain.flat);
+        data.light_range[3] = 0;
+        data.clip_plane = [0.0, 0.0, 1.0, -5.0];
+        let plane = StageKey::of(&data).unwrap();
+        assert!(plane.plane && !plain.plane);
+        // A draw with the scene's values takes the scene's plane, which is 0: no plane.
+        data.light_range[3] = 4;
+        assert!(!StageKey::of(&data).unwrap().plane);
+    }
+
+    #[test]
+    fn the_flat_the_plane_and_the_sky_are_constants_of_the_text() {
+        let world = world();
+        for flat in [false, true] {
+            let source = fragment_source(&world, &StageKey { flat, ..key(1, 0) }).unwrap();
+            assert!(!source.contains("light_range.w & 16u"));
+            assert!(
+                source.contains(&format!("    if {flat} {{\n        inp.color = inp.color_flat;")),
+                "{flat}"
+            );
+        }
+        let without = fragment_source(&world, &key(1, 0)).unwrap();
+        assert!(!without.contains("any(clip_plane != vec4f(0.0))"));
+        assert!(without.contains("== 0u && false && dot(inp.world_position, clip_plane.xyz)"));
+        let with = fragment_source(
+            &world,
+            &StageKey {
+                plane: true,
+                ..key(1, 0)
+            },
+        )
+        .unwrap();
+        assert!(with.contains("== 0u && any(clip_plane != vec4f(0.0)) && dot("));
+        for source in [&without, &with] {
+            crate::assert_wgsl("stage shader", source);
+        }
+        let all = StageKey {
+            flat: true,
+            plane: true,
+            shade: SHADE_BITS as u16,
+            ..key(2, 0)
+        };
+        crate::assert_wgsl("stage shader", &fragment_source(&world, &all).unwrap());
+        // The scene's part of the bits has no sky bit, in each key.
+        for source in [&without, &with] {
+            let masked = format!("(scene.counts[k >> 2u][k & 3u] & {}u)", !SKY_BITS);
+            assert_eq!(source.matches(&masked).count(), 1);
+            assert_eq!(source.matches("scene.counts[").count(), 1);
+        }
+    }
+
+    #[test]
+    fn each_write_of_a_plane_is_known() {
+        // The plane is a fact of the stage key, taken from the record. A scene's plane must stay
+        // 0 (a scene's draw has no plane in its key), and a record that takes a plane after its
+        // key must take its key again. So each write of a plane in the crate is one of these.
+        // When a new write fails here, do not only add it to the list: a write to a record takes
+        // the key again right after it (`key.stages = stage_shaders.id_of(&data)`, as the two
+        // here do), and a scene's plane stays 0, or `StageKey::of` must read the scene's plane
+        // for a scene's draw first. A key with no plane for a record with one draws the far side.
+        let known = [
+            ("player/draws.rs", "data.clip_plane = plane_of_draw(plane, draw.origin);"),
+            ("replay.rs", "data.clip_plane = plane_of_draw(plane, kept.origin);"),
+            ("player/items.rs", "clip_plane: Some(plane),"),
+            ("retained.rs", "clip_plane: [0.0; 4],"),
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut folders = vec![root.clone()];
+        let mut found = Vec::new();
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let name = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+                let text = std::fs::read_to_string(&path).unwrap();
+                // The writes outside the test modules (rustfmt ends a module with "}" alone).
+                let mut in_tests = false;
+                let mut last = "";
+                for line in text.lines() {
+                    if line.starts_with("mod ") && last == "#[cfg(test)]" {
+                        in_tests = true;
+                    }
+                    let code = line.trim();
+                    let write = code.contains("clip_plane =") && !code.contains("clip_plane ==")
+                        || code.contains("clip_plane[")
+                        || code.starts_with("clip_plane:");
+                    if !in_tests && write {
+                        found.push((name.clone(), code.to_string()));
+                    }
+                    if in_tests && line == "}" {
+                        in_tests = false;
+                    }
+                    last = line;
+                }
+            }
+        }
+        found.sort();
+        let mut expected: Vec<(String, String)> = known.iter().map(|&(f, l)| (f.to_string(), l.to_string())).collect();
+        expected.sort();
+        assert_eq!(found, expected);
     }
 
     #[test]
@@ -1207,8 +1392,25 @@ mod tests {
         let source = fragment_source(&world(), &key(2, 0)).unwrap();
         assert!(!source.contains("for (var i = 0u; i < draws[record].counts.y; i++)"));
         assert!(source.contains("    texels[2] = vec4f(1.0);"));
-        assert!(source.contains("    texels[1] = bump_light("));
         assert!(!source.contains("draws[record].more.z != 0u && !compare"));
+        // Stage 0 is no bump stage: stage 1 reads its texture with no bump code.
+        assert!(source.contains("    texels[1] = textureSample(textures[draws[record].stages[1].slots.x], samplers[draws[record].stages[1].slots.y], final_coordinate(1u, inp.coordinate1));\n"));
+        assert!(!source.contains("    texels[1] = bump_light("));
+    }
+
+    #[test]
+    fn a_stage_after_a_bump_stage_keeps_the_bump_code() {
+        let world = world();
+        for op in [22, 23] {
+            let mut bump = key(3, 0);
+            bump.color[1] = [op, 2, 1, 1];
+            bump.color[2] = [4, 2, 0, 1];
+            let source = fragment_source(&world, &bump).unwrap();
+            crate::assert_wgsl("stage shader", &source);
+            assert!(source.contains("    texels[2] = bump_light(1u, texels[1], textureSample("));
+            assert!(source.contains(" + bump_move(1u, texels[1])));\n"));
+            assert!(!source.contains("    texels[1] = bump_light("));
+        }
     }
 
     #[test]
@@ -1272,14 +1474,27 @@ mod tests {
             ..key(2, 5)
         };
         assert_eq!(StageKey::from_words(&stage.words()), Some(stage));
+        let own = StageKey {
+            flat: true,
+            plane: true,
+            shade: 1 | 8,
+            ..key(2, 5)
+        };
+        assert_eq!(StageKey::from_words(&own.words()), Some(own));
         // A bit outside SHADE_BITS is not a key of this build.
         let mut words = stage.words();
-        words[2] |= 4;
+        words[2] |= 2048;
         assert_eq!(StageKey::from_words(&words), None);
         // The add bit is a flag: another value is not a key of this build.
         let mut words = stage.words();
         words[6] = 2;
         assert_eq!(StageKey::from_words(&words), None);
+        // A draw with the scene's values has no plane.
+        let mut words = stage.words();
+        words[8] = 1;
+        assert_eq!(StageKey::from_words(&words), None);
+        // A line of format 4 (7 facts) is not a key of this build.
+        assert_eq!(StageKey::from_words(&stage.words()[2..]), None);
         let pipeline = PipelineKey {
             fvf: 0x152,
             stride: 24,
