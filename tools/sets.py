@@ -12,7 +12,7 @@ The name is s-<nirender>-<render-link>-<mwse>, each the first 8 hex of the commi
 patch has "+p<the first 8 hex of the patch's md5>" after its commit. A build of another kind than the usual one has
 "-<kind>" at the end. So two kinds or a patch never share a name with the plain build of the same commits.
 
-A set has six parts, and each part comes from its own commits (its key). A key is the part's own repo's commit and, for
+A set has seven parts, and each part comes from its own commits (its key). A key is the part's own repo's commit and, for
 each thing of another repo that the part's build reads, the smallest name that holds it: the git tree of a folder, or
 the commit for a whole crate. Each path of a set is in one part.
 
@@ -25,6 +25,9 @@ the commit for a whole crate. Each path of a set is in one part.
 - mwse: MWSE.dll and the core Lua; key: the MWSE commit.
 - luajit: lua51.dll in the root, beside MWSE.dll; key: the commit of deps/rubic0n that the MWSE commit names, and the
   git blob of SharedSE/LuaJIT.targets (the build parameter) at the MWSE commit (the design's 11.2).
+- plugin-test: the files of the nirender tree's mod/ folder that the release does not ship (the test Lua, meshes and
+  textures that a run stages), below plugin-test/ as below mod/; key: plugin-lua's, since xtask's list of shipped Lua
+  decides the split (the plan's addendum 3). No deploy places it.
 
 `check` is the proof that a folder is a sealed set: its manifest reads, each folder and each file of the manifest is
 there, each file with its size and md5, no other file or folder is there, nothing in the folder is a link or a junction,
@@ -51,7 +54,9 @@ MANIFEST = "MANIFEST.json"
 FORM = 1
 REPOS = ("nirender", "render-link", "mwse")
 KIND_USUAL = "usual"
-PARTS = ("plugin", "plugin-lua", "render-link", "numidium", "mwse", "luajit")
+PARTS = ("plugin", "plugin-lua", "render-link", "numidium", "mwse", "luajit", "plugin-test")
+# The folder of the part plugin-test in a set: the files of the nirender tree's mod/ folder, below it as below mod/.
+PLUGIN_TEST = "plugin-test"
 PATCHES = "patches"
 # The name of a set: three commits of 8 hex, each with an optional patch mark, and an optional kind.
 NAME_RE = re.compile(r"s-([0-9a-f]{8})(\+p[0-9a-f]{8})?-([0-9a-f]{8})(\+p[0-9a-f]{8})?-([0-9a-f]{8})(\+p[0-9a-f]{8})?(?:-([a-z][a-z0-9]*))?")
@@ -133,6 +138,8 @@ def part_of(path):
     low = path.lower()
     if low == MANIFEST.lower() or low.startswith(PATCHES + "/"):
         return None
+    if low.startswith(PLUGIN_TEST + "/"):
+        return "plugin-test"
     if PLUGIN_COPY_RE.fullmatch(low) or low.startswith(PLUGIN_PATHS):
         return "plugin"
     if low.startswith(PLUGIN_LUA_PATHS):
@@ -350,6 +357,7 @@ def self_test():
     assert part_of("Data Files/MWSE/lib/akulakhan.dll") == "plugin" and part_of("numidium.exe") == "numidium"
     assert part_of("MWSE.dll") == "mwse" and part_of("Data Files/MWSE/core/initialize.lua") == "mwse"
     assert part_of("lua51.dll") == "luajit" and part_of("Data Files/lua51.dll") == "render-link"
+    assert part_of("plugin-test/meshes/@_nifx/a.nif") == "plugin-test" and part_of("plugin-test/MWSE/mods/nirender/t.lua") == "plugin-test"
     assert part_of("d3d8.dll") == "render-link" and part_of("Data Files/mwse/mods/MGE XE Options/main.lua") == "render-link"
     assert part_of(MANIFEST) is None and part_of("patches/mwse.patch") is None
 

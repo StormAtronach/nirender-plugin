@@ -7,7 +7,7 @@ The commits default to the tips: nirender `master`, render-link `feature/wgpu-re
 test installs run (the records of deploy_rest.py, `mwse_tree.installed_commit`). A commit is any name that git resolves
 in its repository. The form of a set, its name, its parts and its check are in sets.py.
 
-Each of the six parts is made one time for its key. A part that a sealed set in E:/nirender-keep/mgebuilds has already,
+Each of the seven parts is made one time for its key. A part that a sealed set in E:/nirender-keep/mgebuilds has already,
 with the same key and kind, is copied from that set (its check is the proof), and no new build of it is used: so two
 sets that differ in one commit differ only in the parts of that commit, byte for byte. Else the tool builds: the plugin
 (`cargo build --release`) and `cargo xtask dist` in clean detached trees in C:/tmp/buildset (siblings, as the dist
@@ -16,7 +16,9 @@ by build_luajit.bat of the docs and its MorrowindDir a folder of C:/tmp/buildset
 tree. lua51.dll, the luajit part, goes into the set's root beside MWSE.dll; the build parameter of the tree's
 SharedSE/LuaJIT.targets must be the bat's, and the bat's md5 goes into the part's record. Each part's record also names
 the tools of its build (rustc and cargo, MSBuild, cl's version line); a copied part carries its set's record. The
-record is in no key and no name (the design's 11.7). A tree with changes makes no set.
+record is in no key and no name (the design's 11.7). The part plugin-test is the nirender tree's mod/ folder less the
+Lua that the release ships, below plugin-test/ of the set: the test Lua, meshes and textures that a run stages beside
+the plugin, of the plugin's commit. A tree with changes makes no set.
 
 --patch REPO=FILE (REPO nirender, render-link or mwse) applies ONE patch file to the clean tree of that repo before the
 build. The set holds the patch as patches/<repo>.patch, the manifest has its md5, and the name has the mark +p<8 hex>
@@ -99,7 +101,12 @@ BUILD_IDS = (
 )
 # The file that each part must hold.
 REQUIRED = {"plugin": sets.PLUGIN_STAGED, "plugin-lua": "Data Files/mwse/mods/nirender/main.lua", "render-link": "d3d8.dll",
-            "numidium": "numidium.exe", "mwse": "MWSE.dll", "luajit": "lua51.dll"}
+            "numidium": "numidium.exe", "mwse": "MWSE.dll", "luajit": "lua51.dll",
+            # plugin-test: at least one file, none named.
+            "plugin-test": None}
+# The folder of the nirender Lua below mod/ of the tree, and in a set's Data Files (the dist's place, plugin-lua).
+MOD_LUA = "MWSE/mods/nirender/"
+SET_LUA = "data files/mwse/mods/nirender/"
 # LuaJIT in the MWSE tree: the build parameter's file, and the outputs of msvcbuild.bat.
 LUAJIT_TARGETS = "SharedSE/LuaJIT.targets"
 LUAJIT_OUT = os.path.join("deps", "rubic0n", "src")
@@ -223,6 +230,8 @@ def part_keys(commits, tree, patch_md5s):
         "numidium": {"render-link": marked("render-link"), "nirender": marked("nirender")},
         "mwse": {"mwse": marked("mwse")},
         "luajit": {"mwse rubic0n": tree_of("mwse", "deps/rubic0n"), "mwse LuaJIT.targets": tree_of("mwse", LUAJIT_TARGETS)},
+        # plugin-test: the rest of mod/ after the shipped Lua, so the same as plugin-lua (the plan's addendum 3).
+        "plugin-test": {"nirender": marked("nirender"), "render-link xtask": tree_of("render-link", "xtask")},
     }
 
 
@@ -270,6 +279,20 @@ def files_below(folder, skip_pdb=True):
     if links:
         raise SetFault("%s holds links or junctions: %s" % (folder, ", ".join(links[:5])))
     return {path: os.path.join(folder, *path.split("/")) for path in files if not (skip_pdb and path.lower().endswith(".pdb"))}
+
+
+def test_part_files(mod, plugin_lua_paths):
+    """{path in the set: source file} of the part plugin-test: the files below the tree's mod folder `mod`, as
+    plugin-test/<path below mod/>, less the Lua files that plugin-lua ships (`plugin_lua_paths`, the part's paths in
+    the set), so that no file is in both parts once staged."""
+    shipped = {path.lower()[len(SET_LUA):] for path in plugin_lua_paths if path.lower().startswith(SET_LUA)}
+    files = {}
+    for path, source in files_below(mod, skip_pdb=False).items():
+        low = path.lower()
+        if low.startswith(MOD_LUA.lower()) and low[len(MOD_LUA):] in shipped:
+            continue
+        files["%s/%s" % (sets.PLUGIN_TEST, path)] = source
+    return files
 
 
 def luajit_parameter_fault(targets_text, bat_text):
@@ -476,6 +499,10 @@ class Trees:
     def tree(self, repo, commit, folder):
         """The git tree of `folder` of `repo` at `commit`."""
         return git(SOURCE_REPOS[repo], "rev-parse", "%s:%s" % (commit, folder))
+
+    def mod_folder(self):
+        """The mod folder of the nirender tree: the source of the part plugin-test."""
+        return os.path.join(self.trees["nirender"], "mod")
 
     def has_file(self, repo, commit, path):
         """True when `path` is a file of `repo` at `commit`."""
@@ -827,9 +854,17 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
             built = built_parts(stage, mwse, luajit)
             files = {}
             for part in sets.PARTS:
-                part_files = set_part_files(root, found[part][0], found[part][1], part) if found[part] else built[part]
-                if not any(path.lower() == REQUIRED[part].lower() for path in part_files):
-                    raise SetFault("the part %s has no %s" % (part, REQUIRED[part]))
+                if found[part]:
+                    part_files = set_part_files(root, found[part][0], found[part][1], part)
+                elif part == "plugin-test":
+                    # After plugin-lua in PARTS: the split takes the final list of the shipped Lua.
+                    part_files = test_part_files(builder.mod_folder(), [path for path in files if sets.part_of(path) == "plugin-lua"])
+                    built[part] = part_files
+                else:
+                    part_files = built[part]
+                required = REQUIRED[part]
+                if (not part_files) if required is None else not any(path.lower() == required.lower() for path in part_files):
+                    raise SetFault("the part %s has no %s" % (part, required or "file"))
                 files.update(part_files)
             faults = build_id_faults(files, commits, patches)
             if faults:
@@ -946,6 +981,14 @@ class FakeBuilder:
             sets.write(os.path.join(stage, *path.split("/")), data + os.urandom(8))
         return stage
 
+    def mod_folder(self):
+        """A mod folder with the shipped main.lua, a test Lua file, a test mesh and a test texture."""
+        mod = os.path.join(self.scratch, "fake-mod")
+        for path in (MOD_LUA + "main.lua", MOD_LUA + "test_views.lua", "meshes/@_nifx/a.nif", "textures/@_nifx/a.dds"):
+            if not os.path.isfile(os.path.join(mod, *path.split("/"))):
+                sets.write(os.path.join(mod, *path.split("/")), path.encode())
+        return mod
+
     def build_luajit(self):
         self.luajit_builds += 1
         out = tempfile.mkdtemp(dir=self.scratch)
@@ -1054,6 +1097,17 @@ def self_test():
         for path in ("d3d8.dll", "numidium.exe", "akulakhan-6d1b214.dll"):
             assert second["files"][path]["md5"] == manifest["files"][path]["md5"], path
         assert second["parts"]["plugin"]["from"] == os.path.basename(first)
+        # The part plugin-test (the plan's addendum 3): the mod folder less the shipped Lua; with plugin-lua it is the
+        # whole mod folder once staged, and no staged path is in both.
+        tests = sorted(path for path in manifest["files"] if sets.part_of(path) == "plugin-test")
+        assert tests == ["plugin-test/MWSE/mods/nirender/test_views.lua", "plugin-test/meshes/@_nifx/a.nif",
+                         "plugin-test/textures/@_nifx/a.dds"], tests
+        shipped = {path.lower()[len(SET_LUA):] for path in manifest["files"] if sets.part_of(path) == "plugin-lua"}
+        staged_tests = {path[len(sets.PLUGIN_TEST) + 1:].lower() for path in tests}
+        assert shipped == {"main.lua"} and not {MOD_LUA.lower() + name for name in shipped} & staged_tests
+        mod_files = {path.lower() for path in files_below(builder.mod_folder())}
+        assert {MOD_LUA.lower() + name for name in shipped} | staged_tests == mod_files, (shipped, staged_tests, mod_files)
+        assert second["parts"]["plugin-test"]["from"] == os.path.basename(first)
         # The luajit part (the design's 11.2): built for the first set, with the bat's md5 in its record; the second
         # set's MWSE commit names the same rubic0n commit and LuaJIT.targets, so lua51.dll is copied, byte for byte,
         # with its record.
@@ -1098,7 +1152,7 @@ def self_test():
         builder.trees_of = {("render-link", "xtask"): "e" * 40}
         code, lines = run(dict(commits, mwse="c1c1c1c1" + "0" * 32))
         keyed = sets.check(lines[-1])
-        assert code == 0 and keyed["parts"]["plugin-lua"]["from"] == "built", lines
+        assert code == 0 and keyed["parts"]["plugin-lua"]["from"] == "built" and keyed["parts"]["plugin-test"]["from"] == "built", lines
         assert keyed["parts"]["plugin"]["from"] != "built" and keyed["parts"]["render-link"]["from"] != "built", lines
         for path in ("akulakhan-6d1b214.dll", "d3d8.dll"):
             assert keyed["files"][path]["md5"] == manifest["files"][path]["md5"], path
