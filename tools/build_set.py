@@ -31,8 +31,8 @@ The set is made in <name>.making and renamed at the end, so a folder with the na
 name is there and its check passes, nothing is built. If the name is there and its check fails, or <name>.making is
 there, the tool stops and names the folder: it never builds a second time into a name, and it deletes nothing (until
 the delete right of D492 is in, an unfinished folder is the owner's to remove). The tool takes the build slot for its
-builds and the probe and gives it back at its end, and each write to E: waits for `slot.py e-ok` (D297). One run of the
-tool at a time on this machine.
+builds and the probe and gives it back at its end. Before each write to E: it asks `slot.py e-ok` (D297) one time, and
+when the gate says no it stops with exit code 3 and writes nothing. One run of the tool at a time on this machine.
 
 The last line is the set's folder. Exit code 0; 1 for a fault; 3 when a slot or the E: gate refuses; 4 when the probe
 finds a missing MWSE feature.
@@ -91,6 +91,22 @@ NOTE_SECONDS = 60
 LEAST_FREE_BYTES = 20 * 10**9
 EXIT_FAULT = 1
 EXIT_REFUSED = 3
+# The Reviewer's point B (verdict 452): no real run has yet built a plain and a patched set of one commit in both
+# orders. A checkout of the same commit does not write HEAD, and the build ids are made again only on a change of HEAD,
+# so [I] the build id of a binary can miss its patch, or show "-dirty" without one.
+PATCH_UNVERIFIED = ("UNVERIFIED: --patch (verdict 452 B): no plain and patched pair of one commit is built in both orders "
+                    "yet; the build ids of this set's binaries may not show its patch")
+# Variables of the caller's environment that would make a build read or write outside its tree: another cargo target,
+# and another plugin folder for the dist (d3d8/build.rs and xtask's plugin_dir read NIRENDER_PLUGIN_DIR).
+OUTSIDE_TREE_VARIABLES = ("CARGO_TARGET_DIR", "NIRENDER_PLUGIN_DIR")
+
+
+def build_environment(env=None):
+    """A copy of `env` (default: this process's) without OUTSIDE_TREE_VARIABLES, for the builds and the probe."""
+    env = dict(os.environ if env is None else env)
+    for name in OUTSIDE_TREE_VARIABLES:
+        env.pop(name, None)
+    return env
 
 
 class SetFault(Exception):
@@ -372,7 +388,9 @@ class Trees:
             self.room("the tree %s" % tree)
             git(SOURCE_REPOS[repo], "worktree", "add", "--detach", tree, commit)
         else:
-            changed = git(tree, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=untracked")
+            # An untracked file is a change too: a build can read it (a stray Lua file of the mod folder goes into the
+            # dist). The build outputs are ignored files.
+            changed = git(tree, "status", "--porcelain", "--ignore-submodules=untracked")
             if changed:
                 raise SetFault("the tree %s has changes, and no set is made:\n%s" % (tree, changed))
             git(tree, "checkout", "--quiet", "--detach", commit)
@@ -396,8 +414,7 @@ class Trees:
 
     def step(self, command, folder, env=None):
         self.room(" ".join(os.path.basename(part) for part in command[:2]))
-        env = dict(env or os.environ)
-        env.pop("CARGO_TARGET_DIR", None)
+        env = build_environment(env)
         say("building: %s in %s" % (" ".join(command), folder))
         with open(self.log, "a", encoding="utf-8") as log:
             log.write("\n$ %s\n" % " ".join(command))
@@ -451,7 +468,8 @@ class Trees:
         tree = self.trees["nirender"]
         self.room("the probe (it compiles the plugin's tests)")
         command = [sys.executable, "-I", os.path.join(tree, "tools", "check_mwse_sites.py"), "--features", "--mge", self.trees["render-link"], dll]
-        done = subprocess.run(command, cwd=tree, capture_output=True, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
+        done = subprocess.run(command, cwd=tree, env=build_environment(), capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", stdin=subprocess.DEVNULL)
         return done.returncode, done.stdout + done.stderr
 
 
@@ -496,7 +514,8 @@ def make(commits, patches, kind, builder, root=sets.SETS, gate=e_gate, hold=None
             sets.check(folder)
         except sets.SetError as error:
             return EXIT_FAULT, ["%s is there and is not a sealed set, and nothing is built: %s" % (name, error)]
-        return 0, ["%s is there and its check passes: nothing is built" % name, folder.replace("\\", "/")]
+        there = ["%s is there and its check passes: nothing is built" % name]
+        return 0, there + ([PATCH_UNVERIFIED] if patches else []) + [folder.replace("\\", "/")]
     if os.path.exists(making):
         return EXIT_FAULT, ["%s is there: an unfinished set or another run that makes it; nothing is built" % making.replace("\\", "/")]
     keys = part_keys(commits, lambda repo, folder: builder.tree(repo, commits[repo], folder), patch_md5s)
@@ -570,6 +589,8 @@ def make(commits, patches, kind, builder, root=sets.SETS, gate=e_gate, hold=None
     except sets.SetError as error:
         return EXIT_FAULT, lines + ["the new set fails its own check: %s" % error]
     lines.append("%s: %d files, manifest md5 %s" % (name, len(manifest["files"]), sets.manifest_md5(folder)))
+    if patches:
+        lines.append(PATCH_UNVERIFIED)
     return 0, lines + [folder.replace("\\", "/")]
 
 
@@ -743,6 +764,11 @@ def self_test():
         assert "+p%s" % patches["render-link"][1][:8] in patched["name"] and "patches/render-link.patch" in patched["files"]
         assert patched["patches"]["render-link"]["md5"] == patches["render-link"][1]
         assert patched["parts"]["render-link"]["from"] == "built" and patched["parts"]["mwse"]["from"] == os.path.basename(first)
+        # A patched set says that --patch is not verified (verdict 452 B), at its making and when it is there; the null:
+        # the plain set does not.
+        assert lines[-2] == PATCH_UNVERIFIED, lines
+        assert run(commits, patches=patches)[1][-2] == PATCH_UNVERIFIED
+        assert PATCH_UNVERIFIED not in run(commits)[1]
         try:
             read_patches(["render-link=" + patch_file, "render-link=" + patch_file])
             raise AssertionError("a second patch for one repo was taken")
@@ -757,6 +783,9 @@ def self_test():
         os.mkdir(os.path.join(root, "s-6d1b214a-d9741dbb-0f0f0f0f.making"))
         code, lines = run(dict(commits, mwse="0f0f0f0f" + "1" * 32))
         assert code == 1 and ".making is there" in lines[-1], lines
+        # The builds and the probe run without the variables that point outside their trees (verdict 452, A2).
+        outside = {"PATH": "p", "CARGO_TARGET_DIR": "t", "NIRENDER_PLUGIN_DIR": "n"}
+        assert build_environment(outside) == {"PATH": "p"} and len(outside) == 3, outside
         # Test 6: a tree with changes makes no set (a scratch repository and the real Trees.ready).
         repo = os.path.join(scratch, "repo")
         os.mkdir(repo)
@@ -771,13 +800,29 @@ def self_test():
         try:
             tree = trees.ready("nirender", git(repo, "rev-parse", "HEAD"))
             assert trees.ready("nirender", git(repo, "rev-parse", "HEAD")) == tree, "a clean tree is taken again"
+            def refused(change):
+                try:
+                    trees.ready("nirender", git(repo, "rev-parse", "HEAD"))
+                    raise AssertionError("a tree with %s was taken" % change)
+                except SetFault as fault:
+                    assert "has changes" in str(fault), fault
+                    return str(fault)
+
             with open(os.path.join(tree, "a.txt"), "w", encoding="ascii") as file:
                 file.write("changed\n")
-            try:
-                trees.ready("nirender", git(repo, "rev-parse", "HEAD"))
-                raise AssertionError("a tree with changes was taken")
-            except SetFault as fault:
-                assert "has changes" in str(fault)
+            refused("a changed file")
+            with open(os.path.join(tree, "a.txt"), "w", encoding="ascii") as file:
+                file.write("a\n")
+            # The Reviewer's plant (verdict 452): an untracked file is a change too. The null: without it the tree is
+            # taken again.
+            stray = os.path.join(tree, "mod", "stray.lua")
+            os.mkdir(os.path.dirname(stray))
+            with open(stray, "w", encoding="ascii") as file:
+                file.write("-- stray\n")
+            assert "mod/" in refused("an untracked file")
+            os.remove(stray)
+            os.rmdir(os.path.dirname(stray))
+            assert trees.ready("nirender", git(repo, "rev-parse", "HEAD")) == tree, "the tree without the stray file"
         finally:
             SOURCE_REPOS["nirender"] = saved
             git(repo, "worktree", "remove", "--force", tree)
@@ -831,7 +876,7 @@ def main():
     parser.add_argument("--render-link", help="the render-link commit (default: feature/wgpu-renderer)")
     parser.add_argument("--mwse", help="the MWSE commit (default: the commit that the test installs run)")
     parser.add_argument("--patch", action="append", default=[], help="REPO=FILE: one patch on that repo's commit")
-    parser.add_argument("--trees", default=TREES, help="the folder of the build trees (default %s); on E: each build step waits for e-ok" % TREES)
+    parser.add_argument("--trees", default=TREES, help="the folder of the build trees (default %s); on E: each build step asks e-ok one time and stops on a no" % TREES)
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 when the build slot is not free")
     parser.add_argument("--self-test", action="store_true", help="the tests on scratch folders: no build, no slot, no write to E:")
     args = parser.parse_args()
