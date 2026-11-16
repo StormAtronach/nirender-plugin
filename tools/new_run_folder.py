@@ -1,7 +1,12 @@
 """Makes the next run build folder E:/nirender-keep/mgebuilds/f<N> and writes its WHAT.txt (W380, the owner's D329).
 
-    python -I tools/new_run_folder.py --what "<who>: <item>, <tips>"
+    python -I tools/new_run_folder.py --what "<who>: <item>, <tips>" [--plugin <akulakhan.dll>]
     python -I tools/new_run_folder.py --self-test    # scratch folders only: no write to E:
+
+--plugin copies the plugin DLL of the build into the folder as akulakhan-<commit>.dll, with the commit of its build id,
+and adds its md5 and its source to WHAT.txt (W520, the owner's D488). run_own_device.py with --mge-build takes that copy
+when the run names no --plugin-dll. A plugin with no build id, two ids or a "-dirty" id names no commit: the tool then
+makes no folder.
 
 N is the highest number of the folders f<N> there, as a number, plus one. A name that is not "f" and digits (f29ref)
 does not count. os.mkdir makes the folder and fails on a name that another session made just before; the tool then
@@ -15,15 +20,17 @@ Exit code 0, or 1 with one line.
 """
 import argparse
 import datetime
+import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import docs_place  # noqa: E402
+from common import BUILD_ID_RE, docs_place  # noqa: E402
 
 SETS = "E:/nirender-keep/mgebuilds"
 # The batch file in SETS that names the current set (W500, the owner's D461): deploy_rest.py after a kept deploy and
@@ -110,14 +117,56 @@ def this_session():
     return "%s (%s)" % (name, session) if name else session
 
 
-def note_text(what, session, now):
-    return "%s\nmade: %s\nsession: %s\n" % (what, now.isoformat(timespec="seconds"), session)
+def note_text(what, session, now, plugin_line=None):
+    text = "%s\nmade: %s\nsession: %s\n" % (what, now.isoformat(timespec="seconds"), session)
+    return text + plugin_line + "\n" if plugin_line else text
 
 
-def make(what, root=SETS, gate=e_gate, session=this_session, now=None):
-    """Makes the folder and its note. (exit code, lines); the last line is the folder, or the one line of a refusal."""
+def md5_of(path):
+    digest = hashlib.md5()
+    with open(path, "rb") as file:
+        for block in iter(lambda: file.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def plugin_commit(dll):
+    """The commit of the plugin DLL `dll` from its build id, as (commit, None), or (None, fault): no file, no build id,
+    two ids, or a "-dirty" id, which names no commit."""
+    try:
+        with open(dll, "rb") as file:
+            data = file.read()
+    except OSError as error:
+        return None, "the plugin %s cannot be read: %s" % (dll, error)
+    ids = sorted({m.group(2).decode() + (m.group(3) or b"").decode() for m in BUILD_ID_RE.finditer(data) if m.group(1) == b"nirender"})
+    if len(ids) != 1:
+        return None, "the plugin %s holds %s build id of nirender%s" % (dll, "no" if not ids else "%d different" % len(ids), ": " + ", ".join(ids) if ids else "")
+    if ids[0].endswith("-dirty") or ids[0] == "unknown":
+        return None, "the plugin %s is %s: a build of a work tree with changes names no commit" % (dll, ids[0])
+    return ids[0], None
+
+
+def copy_plugin(dll, commit, folder):
+    """Copies `dll` into `folder` as akulakhan-<commit>.dll and checks the copy's md5. Returns the note's line."""
+    name = "akulakhan-%s.dll" % commit
+    target = os.path.join(folder, name)
+    shutil.copyfile(dll, target)
+    digest = md5_of(dll)
+    if md5_of(target) != digest:
+        raise OSError("the copy %s differs from %s" % (target, dll))
+    return "plugin: %s md5 %s, a copy of %s" % (name, digest, os.path.abspath(dll).replace("\\", "/"))
+
+
+def make(what, root=SETS, gate=e_gate, session=this_session, now=None, plugin=None):
+    """Makes the folder and its note, and with `plugin` its plugin copy (`copy_plugin`). (exit code, lines); the last
+    line is the folder, or the one line of a refusal. A plugin that names no commit makes no folder."""
     if not what.strip():
         return EXIT_REFUSED, ["new_run_folder: --what is empty: name who, the item and the tips"]
+    commit = None
+    if plugin:
+        commit, fault = plugin_commit(plugin)
+        if fault:
+            return EXIT_REFUSED, ["new_run_folder: no folder made: %s" % fault]
     allowed, line = gate()
     if not allowed:
         return EXIT_REFUSED, ["new_run_folder: no folder made: the E: gate says no: %s" % line]
@@ -127,9 +176,15 @@ def make(what, root=SETS, gate=e_gate, session=this_session, now=None):
         return EXIT_REFUSED, ["new_run_folder: no folder made in %s: %s" % (root, error)]
     folder = os.path.join(root, name).replace("\\", "/")
     stamp = now or datetime.datetime.now().astimezone()
+    plugin_line = None
+    if plugin:
+        try:
+            plugin_line = copy_plugin(plugin, commit, folder)
+        except OSError as error:
+            return EXIT_REFUSED, ["new_run_folder: %s was made, but its plugin was not copied: %s" % (folder, error)]
     try:
         with open(os.path.join(folder, NOTE), "x", encoding="ascii", errors="backslashreplace", newline="\n") as note:
-            note.write(note_text(what.strip(), session(), stamp))
+            note.write(note_text(what.strip(), session(), stamp, plugin_line))
     except OSError as error:
         return EXIT_REFUSED, ["new_run_folder: %s was made, but its %s was not written: %s" % (folder, NOTE, error)]
     return 0, [folder]
@@ -175,6 +230,42 @@ def race(root, barrier):
     return names
 
 
+def self_test_plugin(gate, session, stamp):
+    """W520: --plugin copies the DLL as akulakhan-<commit>.dll and writes its md5 into the note; a plugin that names no
+    commit makes no folder."""
+    with tempfile.TemporaryDirectory(prefix="new-run-folder-w520-") as root:
+        plugins = os.path.join(root, "plugins")
+        os.mkdir(plugins)
+
+        def plugin_file(name, data):
+            path = os.path.join(plugins, name)
+            with open(path, "wb") as file:
+                file.write(data)
+            return path
+
+        good = plugin_file("good.dll", b"MZ..nirender v0.3.8 45b645b..nirender-host v0.3.8 45b645b..")
+        code, lines = make("Ryker: W520", root, gate, session, stamp, plugin=good)
+        folder = os.path.join(root, "f1").replace("\\", "/")
+        assert (code, lines) == (0, [folder]), lines
+        assert md5_of(os.path.join(folder, "akulakhan-45b645b.dll")) == md5_of(good)
+        with open(os.path.join(folder, NOTE), encoding="ascii") as note:
+            text = note.read()
+        expected = "plugin: akulakhan-45b645b.dll md5 %s, a copy of %s\n" % (md5_of(good), os.path.abspath(good).replace("\\", "/"))
+        assert text.endswith(expected), text
+        # A "-dirty" id, no id, two ids, no file: no folder.
+        for data, words in ((b"nirender v0.3.8 45b645b-dirty", "names no commit"), (b"no id", "holds no build id"),
+                            (b"nirender v0.3.8 45b645b nirender v0.3.8 0011e58", "2 different")):
+            code, lines = make("x", root, gate, session, stamp, plugin=plugin_file("bad.dll", data))
+            assert code == EXIT_REFUSED and words in lines[0] and not os.path.exists(os.path.join(root, "f2")), lines
+        code, lines = make("x", root, gate, session, stamp, plugin=os.path.join(plugins, "none.dll"))
+        assert code == EXIT_REFUSED and "cannot be read" in lines[0] and not os.path.exists(os.path.join(root, "f2")), lines
+        # Without --plugin: no copy and no plugin line (the null of the copy above).
+        code, lines = make("y", root, gate, session, stamp)
+        with open(os.path.join(lines[0], NOTE), encoding="ascii") as note:
+            assert "plugin:" not in note.read()
+        assert [name for name in os.listdir(lines[0]) if name.startswith("akulakhan")] == []
+
+
 def self_test():
     assert next_set_number(["f99", "f100", "f7", "other", "f12x"]) == 101
     assert next_set_number(["f29ref", "f29", "F30"]) == 30, "only f and digits count"
@@ -198,6 +289,7 @@ def self_test():
         assert code == EXIT_REFUSED and "--what is empty" in lines[0] and not os.path.exists(os.path.join(root, "f9"))
         code, lines = make("x", os.path.join(root, "no-such-folder"), yes, session, stamp)
         assert code == EXIT_REFUSED and len(lines) == 1 and "no folder made" in lines[0], lines
+        self_test_plugin(yes, session, stamp)
         # A name another session made just before: the next N.
         real, made = os.listdir, []
 
@@ -229,6 +321,7 @@ def self_test():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--what", help="who, the item and the tips of the build, for WHAT.txt")
+    parser.add_argument("--plugin", help="the plugin DLL of the build: copied into the folder as akulakhan-<commit>.dll, its md5 in WHAT.txt")
     parser.add_argument("--self-test", action="store_true", help="the tests on scratch folders: no write to E:")
     args = parser.parse_args()
     if args.self_test:
@@ -236,7 +329,7 @@ def main():
     if args.what is None:
         print("new_run_folder: it needs --what \"<who>: <item>, <tips>\"")
         return EXIT_REFUSED
-    code, lines = make(args.what)
+    code, lines = make(args.what, plugin=args.plugin)
     for line in lines:
         print(line)
     return code
