@@ -20,6 +20,9 @@ build. The set holds the patch as patches/<repo>.patch, the manifest has its md5
 after that commit; a part of a patched repo is never copied to or from a set without that patch. A second --patch for
 one repo is refused: make a commit. After the build, `git apply -R` takes the patch out of the tree again.
 
+Before any build, the tool checks that the commits' trees carry the proofs that the seal needs (PROOFS: the build ids
+of both repos, the probe's --features and --mge), read from the trees' content; an older commit stops with one line
+that names the first proof it lacks and the merge that brought it, and no flag passes a proof (the design's 11.3).
 Before it writes to E:, the tool checks the build ids (the plugin and the host crate name the nirender commit,
 numidium.exe and d3d8.dll the render-link commit; "-dirty" only for a repo with a patch) and runs the probe that
 deploy_rest.py runs: the plugin's needs against the set's MWSE.dll, tools/check_mwse_sites.py --features --mge of the
@@ -104,6 +107,16 @@ NOTE_SECONDS = 60
 LEAST_FREE_BYTES = 20 * 10**9
 EXIT_FAULT = 1
 EXIT_REFUSED = 3
+# The proofs that the seal needs from a commit's tree (the design's 11.3, the plan's addendum 1 A6): (repo, path, the
+# exact text in it or None for the file alone, what it proves, the merge that brought it). They are read from the tree's
+# content, not by ancestry, so a branch with the proofs picked onto an old commit passes. Each was checked: missing at
+# the parent of its commit, there at the commit (824e51c, 95cd1f9, c0f6286, 4bc9a9c).
+PROOFS = (
+    ("nirender", "build_support/build_id.rs", None, "the build ids of the plugin and the host crate", "8c4a52f"),
+    ("render-link", "build_support/build_id.rs", None, "the build ids of d3d8.dll and numidium.exe", "97b999d"),
+    ("nirender", "tools/check_mwse_sites.py", 'add_argument("--features"', "the probe's --features", "bceceff"),
+    ("nirender", "tools/check_mwse_sites.py", 'add_argument("--mge"', "the probe's --mge", "5171d71"),
+)
 # The first file of `<name>.making` (the design's 11.5): the tool's commit, the session, the process id and the time.
 # It is removed before the manifest is written, so a set never holds it.
 MARKER = "MAKING.json"
@@ -140,6 +153,11 @@ def git(folder, *args):
     if done.returncode != 0:
         raise SetFault("git %s in %s: %s" % (" ".join(args), folder, done.stderr.strip()))
     return done.stdout.strip()
+
+
+def git_code(folder, *args):
+    """The exit code of a git command whose answer is its code (cat-file -e, grep -q)."""
+    return subprocess.run(["git", "-C", folder, *args], capture_output=True, text=True, env=git_env()).returncode
 
 
 def resolve(repo, name):
@@ -434,6 +452,14 @@ class Trees:
         """The git tree of `folder` of `repo` at `commit`."""
         return git(SOURCE_REPOS[repo], "rev-parse", "%s:%s" % (commit, folder))
 
+    def has_file(self, repo, commit, path):
+        """True when `path` is a file of `repo` at `commit`."""
+        return git_code(SOURCE_REPOS[repo], "cat-file", "-e", "%s:%s" % (commit, path)) == 0
+
+    def has_text(self, repo, commit, path, text):
+        """True when the file `path` of `repo` at `commit` holds `text` (fixed, not a pattern)."""
+        return git_code(SOURCE_REPOS[repo], "grep", "-q", "-F", text, commit, "--", path) == 0
+
     def step(self, command, folder, env=None):
         self.room(" ".join(os.path.basename(part) for part in command[:2]))
         env = build_environment(env)
@@ -597,6 +623,16 @@ def read_marker(making):
     return marker if isinstance(marker, dict) and isinstance(marker.get("pid"), int) else None
 
 
+def missing_proof(commits, builder):
+    """The line for the first proof of PROOFS that a commit's tree lacks, or None. No flag passes a proof."""
+    for repo, path, text, what, brought_by in PROOFS:
+        there = builder.has_file(repo, commits[repo], path) if text is None else builder.has_text(repo, commits[repo], path, text)
+        if not there:
+            return ("the %s commit %s lacks %s (%s%s, brought by %s): no set is made; for an older build, make a branch "
+                    "with that proof picked onto it" % (repo, commits[repo][:8], what, path, "" if text is None else ": " + text, brought_by))
+    return None
+
+
 def request_differences(manifest, commits, patch_md5s, kind):
     """How the set of `manifest` differs from a request of `commits` ({repo: full commit}), `patch_md5s` ({repo: md5})
     and `kind`: one text for each repo whose commit or patch differs, and one for the kind. Empty when it is the set of
@@ -663,6 +699,9 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
         stale = "%s.failed-%s" % (folder, now.strftime("%Y%m%d-%H%M%S"))
         if os.path.exists(stale):
             return EXIT_FAULT, ["%s is there already: nothing is built" % stale.replace("\\", "/")]
+    lacking = missing_proof(commits, builder)
+    if lacking:
+        return EXIT_FAULT, [lacking]
     keys = part_keys(commits, lambda repo, folder: builder.tree(repo, commits[repo], folder), patch_md5s)
     found = {part: sets.find_part(root, part, keys[part], kind) if reuse else None for part in sets.PARTS}
     to_build = [part for part in sets.PARTS if found[part] is None]
@@ -776,9 +815,17 @@ class FakeBuilder:
         self.wrong_render_link = wrong_render_link
         # The git trees of the folders that a key names, by (repo, folder): "c" * 40 unless a test sets one.
         self.trees_of = {}
+        # The proofs that the trees lack, by (repo, path, text): none unless a test sets one.
+        self.lacks = set()
 
     def tree(self, repo, commit, folder):
         return self.trees_of.get((repo, folder), "c" * 40)
+
+    def has_file(self, repo, commit, path):
+        return (repo, path, None) not in self.lacks
+
+    def has_text(self, repo, commit, path, text):
+        return (repo, path, text) not in self.lacks
 
     def ready(self, repo, commit):
         self.trees[repo] = commit
@@ -1030,7 +1077,28 @@ def self_test():
         made = sets.check(lines[-1])
         assert MARKER not in made["files"] and not os.path.exists(os.path.join(lines[-1], MARKER)), "the marker went into the set"
         assert read_marker(os.path.join(root, failed))["session"] == "a gone session"
-        # process_lives on this process (it lives) and on an id that no process has.
+        # The proofs of an old commit (the design's 11.3): each missing in turn stops the set before any build, and the
+        # line names it and the merge that brought it. The null: every set above, with all proofs there.
+        proof_commits = dict(commits, mwse="0d0d0d0d" + "1" * 32)
+        for repo, path, text, what, brought_by in PROOFS:
+            builds = builder.cargo_builds
+            builder.lacks = {(repo, path, text)}
+            code, lines = run(proof_commits)
+            assert code == EXIT_FAULT and what in lines[-1] and brought_by in lines[-1] and builder.cargo_builds == builds, lines
+            assert not os.path.exists(os.path.join(root, sets.set_name(proof_commits) + ".making")), lines
+        builder.lacks = set()
+        # The real reads of the proofs, on both sides of each proof's commit [V 2026-11-16], when the repos are here.
+        real = Trees(os.path.join(scratch, "real-trees"))
+        try:
+            sides = {"nirender": ("824e51c", "c0f6286", "4bc9a9c"), "render-link": ("95cd1f9",)}
+            known = {repo: [resolve(SOURCE_REPOS[repo], commit) for commit in names] for repo, names in sides.items()}
+        except SetFault:
+            known = None
+            print("build_set self-test: the repos of the proofs are not here; their real reads are not tested")
+        if known:
+            for (repo, path, text, what, _), commit in zip(PROOFS, known["nirender"][:1] + known["render-link"] + known["nirender"][1:]):
+                read = (lambda c: real.has_file(repo, c, path)) if text is None else (lambda c: real.has_text(repo, c, path, text))
+                assert read(commit) and not read(commit + "~1"), (what, commit)
         assert process_lives(os.getpid())[0] is True
         assert process_lives(99999991) == (False, ""), process_lives(99999991)
         # A process list that fails (tasklist refuses this id) counts as living: the safe side.
