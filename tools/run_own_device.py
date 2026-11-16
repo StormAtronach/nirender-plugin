@@ -2539,9 +2539,6 @@ def self_test_use_instance():
         session.MGE_LOGS = saved_mge
 
 
-SET_SYMBOL_FILES = ("d3d8.dll", "dinput8.dll", "numidium.exe", "MWSE.dll", "lua51.dll", sets.PLUGIN_STAGED)
-
-
 def add_symbols(mge_build, plugin_dll, add=symbols.add, is_set=True):
     """The symbol store (W345): the pdbs of the run's build, kept in PDB_KEEP/<its name> (a set holds no pdb); a timing
     run puts the add off until its game slot is free (D297). A sealed set (`is_set`) goes in as one build under its
@@ -2551,7 +2548,7 @@ def add_symbols(mge_build, plugin_dll, add=symbols.add, is_set=True):
     folder_name = os.path.basename(os.path.normpath(mge_build))
     keep = [os.path.join(PDB_KEEP, folder_name)]
     if is_set:
-        binaries = [os.path.join(mge_build, *name.split("/")) for name in SET_SYMBOL_FILES]
+        binaries = [os.path.join(mge_build, *name.split("/")) for name in sets.SYMBOL_FILES]
         return [add(symbols.build_name(mge_build), binaries, keep)]
     binaries = [os.path.join(mge_build, name) for name in ("d3d8.dll", "dinput8.dll", "numidium.exe")]
     lines = [add(symbols.build_name(mge_build), binaries, keep)]
@@ -2645,7 +2642,7 @@ def self_test_add_symbols():
         # A set: one build, its plugin, MWSE.dll and lua51.dll among the binaries, the pdbs from PDB_KEEP/<its name>.
         named = os.path.join(folder, "s-6d1b2140-d9741db1-89198b53")
         assert add_symbols(named + os.sep, None, add) == ["symbols: +0"]
-        assert calls[0] == ("s-6d1b2140-d9741db1-89198b53", [os.path.join(named, *name.split("/")) for name in SET_SYMBOL_FILES],
+        assert calls[0] == ("s-6d1b2140-d9741db1-89198b53", [os.path.join(named, *name.split("/")) for name in sets.SYMBOL_FILES],
                             [os.path.join(PDB_KEEP, "s-6d1b2140-d9741db1-89198b53")]), calls[0]
         assert os.path.join(named, "Data Files", "mwse", "lib", "akulakhan.dll") in calls[0][1]
         calls.clear()

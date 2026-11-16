@@ -55,7 +55,8 @@ MARKS = ("ok: ", "FAIL: ", "stale: ", "reach: ")
 FEATURE_MARKS = ("feature: ", "MISSING: ", "absent: ")
 MISSING = "MISSING: "
 MD5 = "md5: "
-# The exit code when the DLL lacks a feature that the plugin needs. merge_step.py and deploy_rest.py read it.
+# The exit code when the DLL lacks a feature that the plugin needs. merge_step.py and build_set.py read it (W521: the
+# maker probes a set's MWSE.dll before the seal; deploy_rest.py probes no more).
 MISSING_FEATURE_EXIT = 4
 # The feature of MWSE's native request 7 (MGE_API_REQUEST of src/mwse_sites.rs): the plugin runs without it, and a d3d8
 # source that sends the request makes it required (--mge, W495).
@@ -64,7 +65,7 @@ MGE_API_CONSTANT = "MWSE_NATIVE_REQUEST_MGE_API"
 # The name of the MISSING line of the request. merge_step.py names it in the NOT DEPLOYED line.
 MGE_API_NEED = "native request 7"
 D3D8_SOURCE = ("d3d8", "cpp")
-# The mark of the line of the source check. deploy_rest.py prints it with the lines of the probe.
+# The mark of the line of the source check. build_set.py prints it with the lines of the probe.
 D3D8 = "d3d8: "
 
 

@@ -355,6 +355,11 @@ def verify(folder):
     return manifest
 
 
+# The binaries of a set whose pdbs the symbol store takes, as paths in the set; the pdbs are in E:/nirender-keep/pdb/<the
+# set's name> (a set holds none). The runner and the deploy add them under the set's name.
+SYMBOL_FILES = ("d3d8.dll", "dinput8.dll", "numidium.exe", "MWSE.dll", "lua51.dll", PLUGIN_STAGED)
+
+
 def plugin_copy(manifest):
     """The path of the plugin copy in the root of a set, from its manifest."""
     return next(path for path in manifest["files"] if PLUGIN_COPY_RE.fullmatch(path))
