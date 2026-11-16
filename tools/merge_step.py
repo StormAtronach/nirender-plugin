@@ -259,7 +259,7 @@ HELPER_TEXT_PATHS = ("host/src/",)
 HELPER_TEXT_STAGE = "helper tests for the host's text"
 # What a change must touch for the gate, as paths from the root of each repo: a file, or a folder with its slash.
 GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
-                         "host/.cargo/config.toml"),
+                         "host/.cargo/config.toml", "tools/hook-fixtures/"),
               "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "assets/Data Files/shaders/", "Cargo.toml", "Cargo.lock",
                       "mgeHost64/Cargo.toml", "mge-config/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml")}
 D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
@@ -1557,7 +1557,10 @@ def self_test():
         assert needs_clean_sibling(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/noplugin.lua"]))
         for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
             assert names("plugin", plugin, path) == base + gate_tail, path
-        mge_base = ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
+        # W528 item 5: a change of a hook fixture plans the gate, whose second pass reads the fixtures.
+        assert names("plugin", plugin, "tools/hook-fixtures/XE Mod Water.wgsl")[-len(gate_tail):] == gate_tail, names("plugin", plugin, "tools/hook-fixtures/XE Mod Water.wgsl")
+        assert not names("plugin", plugin, "tools/merge_step.py")[-len(gate_tail):] == gate_tail, "the null: another tool plans no gate"
+        mge_base =["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert names("mge", mge, "xtask/src/main.rs") == mge_base + ["build of the dist"]
         # A render-link round deploys the sibling's plugin with its build: the probe stands before the build there too.
         for path in ("Cargo.toml", "Cargo.lock", "mgeHost64/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
