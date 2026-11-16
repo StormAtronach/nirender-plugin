@@ -204,6 +204,12 @@ def self_tests_without_check(tools, checks, exempt):
     return found
 
 
+# The checks that compare the tree with a commit (the index, or HEAD), and that take the base of a merge round with
+# `checks.py --base COMMIT` (merge_step): the round's tree is at the merge, so its HEAD and index hold no change (W527,
+# W524 F-G-6). "offset moves" runs in the plugin round, "mge handshake" in the render-link round.
+BASE_OPTION = ("offset moves", "mge handshake")
+
+
 def sibling_checks_without_option(checks, options):
     """The checks of `checks` that read the render-link sibling and have no entry in `options`: with `--mge DIR` they would
     still read the sibling, not the tree under test (W524 F-G-21)."""
@@ -258,6 +264,13 @@ def self_test():
     assert sibling_checks_without_option(CHECKS, MGE_OPTION) == [], sibling_checks_without_option(CHECKS, MGE_OPTION)
     without = {name: option for name, option in MGE_OPTION.items() if name != "mge handshake"}
     assert sibling_checks_without_option(CHECKS, without) == ["mge handshake"]
+    # W527 (W524 F-G-6): with --base the checks that read the index or HEAD read the merge's base. The null: without
+    # --base the offset check reads the index (--cached), which holds no change in a round's tree.
+    assert check_command("offset moves")[2] == ["--cached"]
+    assert check_command("offset moves", base="abc")[2] == ["--base", "abc"]
+    assert check_command("mge handshake", "D", "abc")[2] == ["--mge", "--mge", "D", "--base", "abc"]
+    assert check_command("readme", "D", "abc")[2] == [], "a check with no base option gets none"
+    assert all(name in CHECKS for name in BASE_OPTION)
     # W527 (W524 F-G-20 C33): every self-test of the tools is a check, or a line of SELF_TESTS_NOT_CHECKED. The plant: a
     # new tool with a --self-test in a scratch folder. The null: before W527, eight tools of this folder were named.
     unrun = self_tests_without_check(PLUGIN / "tools", CHECKS, SELF_TESTS_NOT_CHECKED)
@@ -309,26 +322,43 @@ def summary(which, passed, skipped, failed, fell_back, not_run=()):
     return line
 
 
+def check_command(name, mge=None, base=None):
+    """(script, needs, arguments) of the check `name`: with `mge`, the MGE XE tree of its option (MGE_OPTION); with `base`,
+    the base of a merge round in place of the index or HEAD (BASE_OPTION)."""
+    script, needs, *rest = CHECKS[name]
+    args = list(rest[0]) if rest else []
+    if mge and name in MGE_OPTION:
+        args += [MGE_OPTION[name], mge]
+        if needs == REPOS / "MGE-XE-G7-render-link":
+            needs = Path(mge)
+    if base and name in BASE_OPTION:
+        args = [argument for argument in args if argument != "--cached"] + ["--base", base]
+    return script, needs, args
+
+
+USAGE = "usage: checks.py plugin|mge|all [--strict] [--mge DIR] [--base COMMIT]"
+
+
 def main(argv):
     if argv[:1] == ["--self-test"]:
         return self_test()
-    # `--strict`: a check that would be skipped is a failure (a release needs every check).
+    # `--strict`: a check that would be skipped is NOT RUN (a release and a merge round need every check).
     strict = "--strict" in argv
-    if "--mge" in argv and argv.index("--mge") + 1 >= len(argv):
-        raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]: --mge needs the folder of the MGE XE tree")
-    mge = argv[argv.index("--mge") + 1] if "--mge" in argv else None
-    names = [argument for index, argument in enumerate(argv) if argument not in ("--strict", "--mge") and (index == 0 or argv[index - 1] != "--mge")]
+    values = {}
+    for option in ("--mge", "--base"):
+        if option in argv:
+            if argv.index(option) + 1 >= len(argv):
+                raise SystemExit("%s: %s needs a value" % (USAGE, option))
+            values[option] = argv[argv.index(option) + 1]
+    mge, base = values.get("--mge"), values.get("--base")
+    names = [argument for index, argument in enumerate(argv)
+             if argument not in ("--strict", "--mge", "--base") and (index == 0 or argv[index - 1] not in ("--mge", "--base"))]
     which = names[0] if names else "all"
     if which not in LISTS:
-        raise SystemExit("usage: checks.py plugin|mge|all [--strict] [--mge DIR]")
+        raise SystemExit(USAGE)
     failed, passed, skipped, fell_back, not_run = [], [], [], [], []
     for name in LISTS[which]:
-        script, needs, *rest = CHECKS[name]
-        args = list(rest[0]) if rest else []
-        if mge and name in MGE_OPTION:
-            args += [MGE_OPTION[name], mge]
-            if needs == REPOS / "MGE-XE-G7-render-link":
-                needs = Path(mge)
+        script, needs, args = check_command(name, mge, base)
         missing = [path for path in (script, *(needs if isinstance(needs, tuple) else (needs,))) if not path.exists()]
         if missing:
             if strict:

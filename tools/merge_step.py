@@ -285,8 +285,9 @@ def under_test(kind, commit, sibling_commit):
     return {kind: commit, "mge" if kind == "plugin" else "plugin": sibling_commit}
 
 
-def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None, commits=None):
-    """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `tips` are the
+def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None, mwse_dlls=None, commits=None, base=None):
+    """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `base` is the base
+    commit of the round: the checks stage compares with it (checks.py --base), as the tree is at the merge. `tips` are the
     commits of the base build, {"plugin": sha, "mge": sha}, and `base_folder` holds it: with both, the gate is followed by
     the A/B stages. `mwse_dlls` are the (instance, MWSE.dll) of the "mwse sites" stages, by default those deployed now.
     `commits` are the commits under test, {"plugin": sha, "mge": sha}: the parts of the deployed build must be those."""
@@ -294,18 +295,19 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, base_folder=None
     plugin = repo if kind == "plugin" else sibling_of(kind, repo)
     mge = repo if kind == "mge" else sibling_of(kind, repo)
     tool = lambda name, *args: [python, "-I", os.path.join("tools", name), *args]  # noqa: E731
+    on_base = ["--base", base] if base else []
     if kind == "plugin":
         stages = [("plugin tests", plugin, ["cargo", "test", "--quiet"]),
                   ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
                   (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["_in_this_process"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
-                  ("checks", plugin, tool("checks.py", "plugin", "--strict")),
+                  ("checks", plugin, tool("checks.py", "plugin", "--strict", *on_base)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
     else:
         stages = [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config"]),
                   (GPU_STAGE, mge, gpu_command(plugin, ["-p", "mgeHost64"])),
                   ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", "--mge", mge)),
-                  ("checks", plugin, tool("checks.py", "mge", "--strict", "--mge", mge)),
+                  ("checks", plugin, tool("checks.py", "mge", "--strict", "--mge", mge, *on_base)),
                   ("docs", plugin, tool("docs.py", "--mge", mge))]
     if kind == "plugin" and touches(paths, MWSE_SITES_PATHS):
         for instance, dll in deployed_mwse_dlls() if mwse_dlls is None else mwse_dlls:
@@ -1016,7 +1018,7 @@ def planned_stages(kind, repo, paths, baseline, commits, base, branch, sibling_b
     """The stages of a check of `paths` from `base`, as main() runs them: with the replay gate, also the base build of
     tips_for and the A/B. (stages, tips, None); (stages, None, why) when the gate needs a base build that tips_for
     cannot give."""
-    stages = stages_for(kind, repo, paths, baseline, commits=commits)
+    stages = stages_for(kind, repo, paths, baseline, commits=commits, base=base)
     if not any(name == "replay gate" for name, _, _ in stages):
         return stages, None, None
     if not branch:
@@ -1024,7 +1026,7 @@ def planned_stages(kind, repo, paths, baseline, commits, base, branch, sibling_b
     tips, why = tips_for(kind, repo, base, sibling_base)
     if why:
         return stages, None, why
-    return stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits), tips, None
+    return stages_for(kind, repo, paths, baseline, tips, base_folder_of(branch), commits=commits, base=base), tips, None
 
 
 def stage_key(stage):
@@ -1292,6 +1294,9 @@ def self_test():
         for kind in ("plugin", "mge"):
             checks = dict((name, command) for name, _, command in stages_for(kind, os.path.join(root, "nirender-plugin"), []))["checks"]
             assert "--strict" in checks, checks
+            # W527 (W524 F-G-6): the round's base reaches the checks, as the round's tree is at the merge.
+            on_base = dict((name, command) for name, _, command in stages_for(kind, os.path.join(root, "nirender-plugin"), [], base="abc"))["checks"]
+            assert on_base[-2:] == ["--base", "abc"] and "--base" not in checks, (on_base, checks)
         assert NOT_RUN_CODE == NOT_RUN_EXIT, "checks.py's NOT RUN code is the one run_stage reads"
         with open(os.path.join(root, "log5b.txt"), "w", encoding="utf-8") as log:
             not_run = "checks (plugin): 3 passed, 1 NOT RUN (--strict; not on this machine: planted)"
@@ -1549,7 +1554,8 @@ def self_test():
         c2 = resolve(cover_mge, "HEAD")
         cover_ref = "refs/merge-step/feature/x"
         cover_commits = {"plugin": resolve(cover_plugin, "HEAD"), "mge": c2}
-        mge_round = stages_for("mge", cover_mge, ["mgeHost64/src/x.rs"], BASELINE, commits=cover_commits)
+        # The render-link round from the ref c1: its checks compare with c1 (W527), as the sibling's own check would.
+        mge_round = stages_for("mge", cover_mge, ["mgeHost64/src/x.rs"], BASELINE, commits=cover_commits, base=c1)
         plugin_round = stages_for("plugin", cover_plugin, ["tools/x.py"], BASELINE, commits=cover_commits)
 
         def sibling_move(stages, results, sibling_head=c2, changed=False):
