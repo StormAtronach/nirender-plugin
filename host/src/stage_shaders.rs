@@ -608,10 +608,12 @@ pub(crate) struct StageShaders {
     /// copies, and the draws of a view with a plane.
     again_split: u64,
     again_view: u64,
-    /// The stage keys that a draw asked a pipeline for. A key is made with its record; one that no draw asks for (the
-    /// key without a plane of a draw that is drawn only as its copies with a plane) costs its place under the cap, no
-    /// module.
-    drawn: HashSet<u32>,
+    /// The stage keys that a draw asked a pipeline for while it was not ready: filled on the miss path only, so that
+    /// the frame thread pays no insert for each draw. In a session that starts with no list, the keys not in it are
+    /// the keys that no draw asked for (the key without a plane of a draw that is drawn only as its copies with a
+    /// plane): each costs its place under the cap and no module. In a session with a list, a key whose pipeline the
+    /// list made first is not in it either.
+    not_ready: HashSet<u32>,
 }
 
 impl StageShaders {
@@ -652,7 +654,7 @@ impl StageShaders {
             uber_late: 0,
             again_split: 0,
             again_view: 0,
-            drawn: HashSet::new(),
+            not_ready: HashSet::new(),
         }
     }
 
@@ -999,7 +1001,7 @@ impl StageShaders {
         if let Some(pipeline) = pipelines.get(&key) {
             return Some(pipeline.clone());
         }
-        self.drawn.insert(key.stages);
+        self.not_ready.insert(key.stages);
         if self.failed.contains(&key) {
             self.uber_draws += 1;
             return None;
@@ -1093,13 +1095,13 @@ impl StageShaders {
         )
     }
 
-    /// The facts of the keys of W300: how many keys have each one, the keys that no draw asked a pipeline for, the
-    /// modules made (a replay's here, a live session's sent to the thread; not the uber-shader's), and the draws that
-    /// took their key again with a plane.
+    /// The facts of the keys of W300: how many keys have each one, the keys that asked for a pipeline that was not
+    /// ready ([`StageShaders::not_ready`]), the modules made (a replay's here, a live session's sent to the thread; not
+    /// the uber-shader's), and the draws that took their key again with a plane.
     pub(crate) fn facts_report(&self) -> String {
         let keys = &self.keys[1..];
         let count = |fact: fn(&StageKey) -> bool| keys.iter().filter(|key| fact(key)).count();
-        let drawn = self.drawn.iter().filter(|&&id| id != 0).count();
+        let asked = self.not_ready.iter().filter(|&&id| id != 0).count();
         let modules = self
             .modules
             .iter()
@@ -1107,13 +1109,13 @@ impl StageShaders {
             .count()
             + self.sent_modules.iter().filter(|id| id.0 != 0).count();
         format!(
-            "stage key facts: {} with a plane, {} flat, {} of the sky (bit 4 or 8), {} of the scene (the table); {} keys drawn, {} never drawn (cap {MAX_KEYS}); {} stage modules made; draws that took their key again with a plane: {} split copies, {} of a view",
+            "stage key facts: {} with a plane, {} flat, {} of the sky (bit 4 or 8), {} of the scene (the table); {} keys asked for a pipeline that was not ready in this session, {} did not (cap {MAX_KEYS}); {} stage modules made; draws that took their key again with a plane: {} split copies, {} of a view",
             count(|key| key.plane),
             count(|key| key.flat),
             count(|key| key.shade as u32 & SKY_BITS != 0),
             count(|key| key.scene),
-            drawn,
-            keys.len() - drawn,
+            asked,
+            keys.len() - asked,
             modules,
             self.again_split,
             self.again_view
