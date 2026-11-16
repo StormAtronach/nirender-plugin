@@ -29,12 +29,13 @@ gives the same answer.
 
 After a later commit, <branch>@{1} moves past a merge that failed or had no run. So the ref refs/merge-step/<branch> keeps
 the last commit that passed all stages, and the tool also refuses a <tip> newer than it. A branch with no such ref has only
-the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch. One more round moves
-the ref: every stage passed but the instance A/B, which is NOT RUN only because the base build reads an older format than
-the capture (the replay of the base names CAPTURE FORMAT and "older than the capture"). Without it the base stays, and no
-later A/B can replay the capture (59a357f, 2026-11-10). Every NOT RUN line of the stage must have that reason. The log
-names the move and the reason in an "OPEN A/B GAP" line: the round's own change has no A/B. The round still exits with
-code 1 and closes no item: NOT RUN is no pass.
+the rule of <branch>@{1}: the tool cannot see a merge with no run before the first pass of a branch.
+
+A FORMAT CHANGE (W527): the instance A/B exits with code 6 when the base build refuses the capture with a format code of
+the helper and the build under test plays it, so the two builds read two formats and cannot be compared on one capture.
+The exit code decides, never a line's text. The stage passes only with --evidence "instance A/B grass=FILE", a file that
+exists; the verdict and the round's close line name the file's md5. Without the file the round fails. Any other NOT RUN
+of the stage fails the round, with or without a file. The base is never the commit (base_problem).
 
 The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
 GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin
@@ -142,6 +143,7 @@ The gate needs what a diff cannot give:
 import argparse
 import contextlib
 import datetime
+import hashlib
 import importlib.util
 import io
 import itertools
@@ -159,7 +161,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import MD5, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import CAPTURE_FORMAT, NOT_RUN_EXIT, OLDER_THAN_CAPTURE, docs_place, git_env, tests_ran  # noqa: E402
+from common import FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, docs_place, git_env, tests_ran  # noqa: E402
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 from mwse_tree import fallback_checks  # noqa: E402
 
@@ -207,8 +209,12 @@ NOT_DEPLOYED = []
 # The installs of the last run_stages whose MWSE.dll lacks a feature that the plugin needs, as (install, md5 of the
 # MWSE.dll, the MISSING texts of the probe): the round deploys nothing then (W406).
 WITHHELD = []
-# The reasons of the NOT RUN lines of each stage of the last run_stages that ended NOT RUN, by the stage's name.
-NOT_RUN_REASONS = {}
+# The evidence files of the round, by the stage's name, as (path, md5): the one way a stage with a FORMAT CHANGE passes
+# (W527). Only the instance A/B can have one; main fills it from --evidence before the round.
+EVIDENCE = {}
+# The FORMAT CHANGE verdicts of the last run_stages that passed with an evidence file, for the round's close line.
+FORMAT_CHANGES = []
+EVIDENCE_STAGES = (INSTANCE_STAGE,)
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
 GPU_STAGE = "helper GPU tests"
@@ -517,6 +523,47 @@ def fallback_note(output):
     return "; MWSE FALLBACK in %s (the sibling MWSE was read, not the installs' commit)" % ", ".join(names) if names else ""
 
 
+def format_change_verdict(name, seconds, log):
+    """The verdict of a stage that exited with FORMAT_CHANGE_EXIT: the base refused the capture with a format code of the
+    helper, and the build under test played it, so no A/B of the two builds is possible. The exit code decides; the
+    stage's text is only shown. The stage passes only with an evidence file for it (--evidence), whose md5 goes into the
+    verdict and the round's close line."""
+    change = "FORMAT CHANGE (the base refuses the capture, the tip plays it: exit code %d of the stage)" % FORMAT_CHANGE_EXIT
+    evidence = EVIDENCE.get(name)
+    if evidence is None:
+        verdict(log, "NOT RUN %s (%d s): %s; the round fails without an evidence file: --evidence \"%s=FILE\"" % (name, seconds, change, name))
+        return False
+    path, md5 = evidence
+    passed = "%s; evidence %s md5 %s" % (change, path, md5)
+    FORMAT_CHANGES.append("%s: %s" % (name, passed))
+    verdict(log, "PASS %s (%d s): NOT RUN: %s" % (name, seconds, passed))
+    return True
+
+
+def evidence_of(values, exists=os.path.isfile, md5_of=None):
+    """The evidence files of --evidence "STAGE=FILE" arguments, as {stage: (path, md5)}, or a problem as a text. Only a
+    stage of EVIDENCE_STAGES takes one, once, and the file must exist."""
+    md5_of = md5_of or file_md5
+    found = {}
+    for value in values or []:
+        name, equals, path = value.partition("=")
+        if not equals or not path:
+            return "--evidence %s: give STAGE=FILE" % value
+        if name not in EVIDENCE_STAGES:
+            return "--evidence %s: only the stage %s takes an evidence file" % (value, " or ".join(EVIDENCE_STAGES))
+        if name in found:
+            return "--evidence %s: a second file for the stage %s" % (value, name)
+        if not exists(path):
+            return "--evidence %s: no such file" % value
+        found[name] = (os.path.abspath(path), md5_of(path))
+    return found
+
+
+def file_md5(path):
+    with open(path, "rb") as file:
+        return hashlib.md5(file.read()).hexdigest()
+
+
 def run_stage(name, folder, command, log):
     began = time.time()
     log.write("\n== %s: %s in %s\n" % (name, " ".join(command), folder))
@@ -527,9 +574,10 @@ def run_stage(name, folder, command, log):
     if code == NOT_RUN_CODE:
         output = output_since(log, start)
         reason = not_run_reason(output)
-        NOT_RUN_REASONS[name] = not_run_reasons(output)
         verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, reason))
         return False
+    if code == FORMAT_CHANGE_EXIT and name in EVIDENCE_STAGES:
+        return format_change_verdict(name, time.time() - began, log)
     if code != 0:
         output = output_since(log, start)
         missing = missing_features_in(output) if name.startswith(FEATURES_STAGE) and code == MISSING_FEATURE_EXIT else None
@@ -586,7 +634,7 @@ def run_stages(stages, log, note_stage=lambda: None):
     results = {}
     del NOT_DEPLOYED[:]
     del WITHHELD[:]
-    NOT_RUN_REASONS.clear()
+    del FORMAT_CHANGES[:]
     for name, folder, command in stages:
         if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
             verdict(log, "NOT RUN %s: its build failed" % name)
@@ -623,22 +671,6 @@ def summary_line(results, log_path):
 def moves_the_ref(baseline):
     """Only a pass against the accepted folder is a pass of the merge."""
     return os.path.normcase(os.path.abspath(baseline)) == os.path.normcase(os.path.abspath(BASELINE))
-
-
-def base_older_than_capture(names, results, reasons):
-    """The reason to keep the round's commit as the base of the next A/B, or None. That is so when every stage passed but the
-    instance A/B, and the A/B is NOT RUN only because the base build reads an older format than its capture. Without this
-    the base stays at the last pass, and no later A/B can replay the capture (2026-11-10, 59a357f: the base a76fd14 reads
-    the stream format 8, and the W225 capture has the format 9). The replay gate passed, so the build under test reads the
-    format of the accepted captures. Every NOT RUN line of the stage must have that reason: a NOT RUN of the replay of the
-    build under test, or of any other kind, keeps the base."""
-    failed = [name for name, passed in zip(names, results) if not passed]
-    if failed != [INSTANCE_STAGE]:
-        return None
-    lines = reasons.get(INSTANCE_STAGE, [])
-    if not lines or not all(line.startswith("the replay of the base: " + CAPTURE_FORMAT) and line.endswith(OLDER_THAN_CAPTURE) for line in lines):
-        return None
-    return lines[-1]
 
 
 def items_of(subject):
@@ -731,10 +763,11 @@ def write_closes(path, when, repo_name, merges, stages, log_path, tries=CLOSE_TR
 
 def close_after(results, baseline, merges, write):
     """The closing lines of a round, through `write(merges, stages)`: only when every stage passed and the pass is
-    against the accepted folder, as only that is a pass of the merge. None when the round writes no close."""
+    against the accepted folder, as only that is a pass of the merge. The stages column holds the count of the passes,
+    and each FORMAT CHANGE verdict with the md5 of its evidence file. None when the round writes no close."""
     if not results or not all(results) or not moves_the_ref(baseline):
         return None
-    return write(merges, "%d of %d" % (sum(results), len(results)))
+    return write(merges, "; ".join(["%d of %d" % (sum(results), len(results))] + FORMAT_CHANGES))
 
 
 def resolve(repo, name):
@@ -1671,33 +1704,55 @@ def self_test():
         assert "== NOT RUN instance A/B grass (" in text and "): the game slot is held by a run on Outlander-test: x\n" in text and "== FAIL" not in text and "== PASS" not in text, text
         assert not_run_reason("a\nb") == "the stage could not judge"
 
-        # The base of the A/B after a format change (59a357f, 2026-11-10): when the A/B is NOT RUN only because the base reads
-        # an older format than the capture, and every other stage passed, the round's commit becomes the base of the next A/B.
-        # The reasons come from the real stage path (run_stages and instance_ab's NOT RUN line).
-        older = ("CAPTURE FORMAT: outlander-pelagiad.nircap was made by akulakhan.dll (nirender v0.3.6 79c752d), which writes the stream "
-                 "format 9; the build under test reads the stream format 8: " + OLDER_THAN_CAPTURE)
+        # A FORMAT CHANGE (W527): the instance A/B's exit code 6 (the base refused the capture with 10 or 11, the build under
+        # test played it). The exit code decides, never the text; the stage passes only with an evidence file, whose md5
+        # goes into the close line.
+        change = "NOT RUN grass: FORMAT CHANGE (the base refuses the capture with code 11, the extension format; the tip plays it)"
+        evidence_file = os.path.join(root, "grass-evidence.txt")
+        with open(evidence_file, "w", encoding="utf-8", newline="\n") as file:
+            file.write("(a) OLD capture: equal. (b) NEW capture: two replays equal. (c) hash line: x\n")
+        evidence_md5 = file_md5(evidence_file)
 
-        def ab_round(tag, line, others=good, before=""):
-            printed = (before + "\n" if before else "") + "NOT RUN grass: the replay of the %s: %s" % (tag, line)
-            stage = [sys.executable, "-c", "print(%r); raise SystemExit(%d)" % (printed, NOT_RUN_CODE)]
-            stages = [("a", root, others), ("b", root, good), (INSTANCE_STAGE, root, stage)]
-            with open(os.path.join(root, "log-ab-base.txt"), "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
+        def ab_round(code, printed=change, evidence=None, stage_name=INSTANCE_STAGE):
+            EVIDENCE.clear()
+            if evidence:
+                EVIDENCE.update(evidence_of(["%s=%s" % (INSTANCE_STAGE, evidence)]))
+            stage = [sys.executable, "-c", "print(%r); raise SystemExit(%d)" % (printed, code)]
+            stages = [("a", root, good), (stage_name, root, stage)]
+            with open(os.path.join(root, "log-ab-format.txt"), "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
                 results = run_stages(stages, log)
-            return base_older_than_capture([name for name, _, _ in stages], results, NOT_RUN_REASONS)
+            with open(os.path.join(root, "log-ab-format.txt"), encoding="utf-8") as log:
+                text = log.read()
+            closed = close_after(results, BASELINE, [("c" * 40, "Merge x (W1)")], lambda merges, stages: stages)
+            EVIDENCE.clear()
+            return results, text, closed
 
-        assert ab_round("base", older) == "the replay of the base: " + older, NOT_RUN_REASONS
-        # The build under test cannot read the capture: no move.
-        assert ab_round("now", older) is None
-        # The capture is older than the base: a new capture is the fix, not a new base.
-        assert ab_round("base", older.replace(OLDER_THAN_CAPTURE, "make the capture again with this build, if the format change of this build is intended")) is None
-        # Another NOT RUN (the game slot), or a failure of another stage: no move.
-        assert ab_round("base", "the game slot is held by a run on Outlander-test: x") is None
-        assert ab_round("base", older, others=bad) is None
-        # Every NOT RUN line of the stage must have the format reason, not only the last one (verdict 135).
-        assert ab_round("base", older, before="NOT RUN grass: the game slot is held by a run on Outlander-test: x") is None
-        assert ab_round("base", older, before="NOT RUN grass: the replay of the base: " + older) == "the replay of the base: " + older
-        # A full pass is a plain pass, not this case.
-        assert base_older_than_capture(["a", INSTANCE_STAGE], [True, True], {}) is None
+        try:
+            # The plant: base 11, tip 0, no file: the round fails, and the line says how to give the file.
+            results, text, closed = ab_round(FORMAT_CHANGE_EXIT)
+            assert results == [True, False] and closed is None, (results, text)
+            assert "== NOT RUN instance A/B grass (" in text and 'the round fails without an evidence file: --evidence "instance A/B grass=FILE"' in text, text
+            # With the file: the stage passes, and the close line has the verdict and the md5.
+            results, text, closed = ab_round(FORMAT_CHANGE_EXIT, evidence=evidence_file)
+            assert results == [True, True] and "== PASS instance A/B grass (" in text and "md5 %s" % evidence_md5 in text, text
+            assert closed.startswith("2 of 2; instance A/B grass: FORMAT CHANGE (") and closed.endswith("evidence %s md5 %s" % (os.path.abspath(evidence_file), evidence_md5)), closed
+            # The nulls: a tip that refuses the capture too is a FAIL of the stage (instance_ab exits 1); a NOT RUN (5) of the
+            # stage fails with the file, even when its text says FORMAT CHANGE; a stage of another name with code 6 FAILs.
+            assert ab_round(1, "FAIL grass: the base refuses the capture with code 11, and the replay of the build under test exited with code 11", evidence=evidence_file)[0] == [True, False]
+            results, text, closed = ab_round(NOT_RUN_CODE, evidence=evidence_file)
+            assert results == [True, False] and closed is None and "== PASS instance A/B grass" not in text, text
+            assert ab_round(FORMAT_CHANGE_EXIT, stage_name="a check")[0] == [True, False]
+            # A full pass with a file names no FORMAT CHANGE in the close line.
+            assert ab_round(0, "PASS grass: x", evidence=evidence_file)[2] == "2 of 2"
+        finally:
+            EVIDENCE.clear()
+        # The evidence argument: only the instance A/B takes a file, once, and the file must exist.
+        assert evidence_of(None) == {} and evidence_of(["%s=%s" % (INSTANCE_STAGE, evidence_file)]) == {INSTANCE_STAGE: (os.path.abspath(evidence_file), evidence_md5)}
+        assert "only the stage" in evidence_of(["replay gate=%s" % evidence_file])
+        assert "no such file" in evidence_of(["%s=%s" % (INSTANCE_STAGE, os.path.join(root, "none.txt"))])
+        assert "give STAGE=FILE" in evidence_of([INSTANCE_STAGE]) and "a second file" in evidence_of(["%s=%s" % (INSTANCE_STAGE, evidence_file)] * 2)
+        # The base is never the tip.
+        assert base_problem("c" * 40, "c" * 40, True, "b" * 40, True).startswith("the base is the commit")
 
         # The A/B stage does not run on a failed build of the gate or of the base; a failed stage stops no other.
         with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
@@ -2315,6 +2370,7 @@ def main():
     parser.add_argument("--baseline", default=BASELINE, help="the folder that the gate compares with; without it, the accepted folder")
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for the slot")
     parser.add_argument("--dry-run", action="store_true", help="print the stages: no slot, no build")
+    parser.add_argument("--evidence", action="append", metavar="STAGE=FILE", help="the evidence file of a FORMAT CHANGE of the stage '%s': with it the stage passes, and the round's close line names the file's md5" % INSTANCE_STAGE)
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     args = parser.parse_args()
     if args.self_test:
@@ -2322,6 +2378,12 @@ def main():
         return 0
     if not args.repo or not args.commit or not args.base:
         parser.error("it needs <repo>, <commit> and --base <the tip before the merge>")
+    evidence = evidence_of(args.evidence)
+    if isinstance(evidence, str):
+        say("FAIL the evidence: %s" % evidence)
+        return 1
+    EVIDENCE.clear()
+    EVIDENCE.update(evidence)
 
     repo = os.path.abspath(args.repo)
     kind = repo_kind(repo)
@@ -2358,6 +2420,9 @@ def main():
     if problem:
         say("FAIL the stages: %s" % problem)
         return 1
+    for name in EVIDENCE:
+        if name not in [stage for stage, _, _ in stages]:
+            say("the evidence file of %s is not used: the round has no such stage" % name)
     sibling_hash = git(sibling, "rev-parse", "--short=10", "HEAD") if has_sibling else "none"
     sibling_head = resolve(sibling, "HEAD") if has_sibling else None
     sibling_base_note = ""
@@ -2398,14 +2463,6 @@ def main():
     elif written == []:
         say("closes: nothing to write (no new item in the subjects of %d merge(s): %s)" % (len(merges), "; ".join(subject for _, subject in merges)))
     if not all(results):
-        older = base_older_than_capture([name for name, _, _ in stages], results, NOT_RUN_REASONS) if moves_the_ref(baseline) else None
-        if older:
-            # The change of this round against the old base is never A/B'd: an open gap, not a pass (the Coordinator).
-            with open(log_path, "a", encoding="utf-8") as log:
-                verdict(log, "OPEN A/B GAP: the change from %s to %s has no grass A/B. The base of the next A/B moves to %s (%s), as the "
-                             "round passed but for the A/B, which is NOT RUN only because the base is older than the capture: %s"
-                        % (base[:10], commit[:10], commit[:10], passed_ref, older))
-            keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
         return 1
     if moves_the_ref(baseline):
         keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head)
