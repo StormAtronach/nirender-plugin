@@ -21,9 +21,16 @@ no picture of it is checked: it is "NOT RUN: slot refused", not a failed picture
 no second try. Its pairs are not compared. The exit code is 1 when a picture failed, else 3 when
 a replay was not run, else 0.
 
-A replay that ended with the fault of the stage shaders (the helper's exit code 40, W523) made its
-pictures, and they are right: the uber-shader drew the draws. The pictures are compared, the fault
-has a "FAILED stage shaders" line with replay.py's line of each such replay, and the exit code is 1.
+A replay that ended with a fault code of its own (the stage shaders' 40, W523; the checks' 41, W526)
+made its pictures. The pictures are compared, the fault has a "FAILED replays" line with replay.py's
+line of each such replay, and the exit code is 1.
+
+The tool gives the verdict itself (W526), in its last line "tour verdict: PASS", "FAIL: ..." or
+"NOT RUN: ...", and in its exit code. It fails for a picture that failed, for a replay with a fault
+code, for a pair of mode gpu against mode off with a mean over MEAN_LIMIT or with no numbers, and for
+fewer stops than --least-stops. It is NOT RUN (exit code 3) for a replay that the slot check refused,
+for a replay whose output lacks a check line of the helper, and for a dual run with no pair to
+compare. A caller reads the exit code, not the table.
 
     python tools/validate_tour.py --self-test   # a planted refusal and a planted fault, with no replay
 """
@@ -36,17 +43,28 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import keep_replay_output, stage_fault_in  # noqa: E402
+from common import EARLY_WORLD_DRAWS, OWN_VIEWS, check_problems, keep_replay_output, replay_fault_in  # noqa: E402
 
 PYTHON = sys.executable
 # The start of the refusal of slot.py's check of build work (`refuse_build_tool`), which replay.py calls.
 REFUSED = "Refused by the slot check"
 NOT_RUN = "NOT RUN: slot refused"
 NOT_RUN_CODE = 3
+# The start of the tool's last line, which has its verdict (W526): PASS, "FAIL: ..." or "NOT RUN: ...".
+VERDICT = "tour verdict: "
 # The runner of replay.py: the self-test replaces it.
 run_tool = subprocess.run
-# replay.py's line of each replay of this process that ended with the fault of the stage shaders.
+# replay.py's line of each replay of this process that ended with a fault code of its own (the stage shaders, the
+# checks of the helper).
 STAGE_FAULTS = []
+# The replays of this process whose output lacks a check line of the helper, as texts: not judged.
+CHECK_GAPS = []
+# The largest mean difference of a pair of mode gpu against mode off that passes. f185 had a largest mean of 0.001 at
+# the tour's 103 stops; the tips of 2026-11-16 have 0.033 at one stop and under 0.006 at the others. A change of the
+# picture between the two modes that is larger than this is no noise. [I] The value is a judgement, with room for
+# small differences. The gate's accepted pictures are the exact test: this is a second net. Its one home is here
+# (make_play_set.py had it before W526).
+MEAN_LIMIT = 0.05
 
 
 def stops_of(run):
@@ -94,9 +112,16 @@ def replay_many(capture, items):
     output = result.stdout + result.stderr
     keep_replay_output(prefix, result.returncode, output)
     refused = refusal_of(output)
-    fault = stage_fault_in(output)
+    fault = replay_fault_in(output)
     if fault:
         STAGE_FAULTS.append(fault)
+    if not refused and result.returncode == 0:
+        # A replay that ended in order with no line of a check, or with a check that judged nothing: not judged (a
+        # fault of a check has its exit code, and a replay that failed has its own line). A cell of the test level
+        # can have no start of a world for the extension (an interior) and no view of its own.
+        gaps = check_problems(output, may_judge_nothing=(EARLY_WORLD_DRAWS, OWN_VIEWS))[0]
+        if gaps:
+            CHECK_GAPS.append("replay of %s: %s" % (os.path.basename(capture), "; ".join(gaps)))
     missing = []
     for frame, picture in items:
         made = "%s-%05d.png" % (prefix, frame)
@@ -149,9 +174,11 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--mge-build", default=None, help="the MGE XE build whose helper replays (replay.py's default without it)")
+    ap.add_argument("--least-stops", type=int, default=0, help="the tour fails with fewer stops than this (the play set: a much shorter tour did not run through)")
     args = ap.parse_args()
     global MGE_BUILD
     MGE_BUILD = args.mge_build
+    del STAGE_FAULTS[:], CHECK_GAPS[:]
     out = args.out or args.run
     os.makedirs(out, exist_ok=True)
     stops, dual = stops_of(args.run)
@@ -181,9 +208,15 @@ def main():
         print("%s: %d pictures not made, and not checked" % (NOT_RUN, len(not_run)))
     stage_faults = list(STAGE_FAULTS)
     if stage_faults:
-        print("FAILED stage shaders: %d replays ended with the fault of the stage shaders:" % len(stage_faults))
+        print("FAILED replays: %d replays ended with a fault code of their own:" % len(stage_faults))
         for fault in stage_faults:
             print("  " + fault)
+    # What fails the tour, and what it could not judge, each as a text for the verdict.
+    stops_count = len(work) // (2 if dual else 1)
+    fails = (["%d pictures failed" % len(failures)] if failures else []) + (["%d replays ended with a fault code" % len(stage_faults)] if stage_faults else [])
+    if stops_count < args.least_stops:
+        fails.append("the tour has %d stops, fewer than the %d of --least-stops" % (stops_count, args.least_stops))
+    unjudged = (["%d pictures of replays that the slot check refused" % len(not_run)] if not_run else []) + list(CHECK_GAPS)
     import picture_diff
 
     if pairs:
@@ -208,8 +241,19 @@ def main():
             print("  %-48s %s" % (name, text))
         equal = sum(1 for mean, _, _ in rows if mean == 0)
         print("pairs: %d of %d equal%s" % (equal, len(rows), "; %d pairs %s, not compared" % (unrun, NOT_RUN) if unrun else ""))
+        # The verdict on the pairs: before W526 the tool printed the table and ended with 0 whatever it held.
+        unmeasured = [name for mean, name, _ in rows if mean == float("inf")]
+        over = [(mean, name) for mean, name, _ in rows if MEAN_LIMIT < mean < float("inf")]
+        if unmeasured:
+            fails.append("%d pairs have no numbers, first %s" % (len(unmeasured), unmeasured[-1]))
+        if over:
+            fails.append("%d pairs of mode gpu against mode off differ by more than the limit %.3f, the largest %.3f at %s" % ((len(over), MEAN_LIMIT) + max(over)))
+        if not rows and not unrun:
+            unjudged.append("the dual run has no pair of mode gpu against mode off to compare")
+    elif dual:
+        unjudged.append("the dual run has no stop, so no pair of mode gpu against mode off to compare")
     if not args.against:
-        return 1 if failures or stage_faults else NOT_RUN_CODE if not_run else 0
+        return verdict(fails, unjudged)
 
     rows = []
     import glob
@@ -235,7 +279,25 @@ def main():
         print("  %-48s %s" % (name, text))
     equal = sum(1 for mean, _, _ in rows if mean == 0)
     print("%d of %d equal" % (equal, len(rows)))
-    return 1 if stage_faults else NOT_RUN_CODE if not_run else 0
+    return verdict(fails, unjudged)
+
+
+def verdict_in(output):
+    """The verdict line of this tool in its output, or ""."""
+    return next((line.strip() for line in reversed(output.splitlines()) if line.startswith(VERDICT)), "")
+
+
+def verdict(fails, unjudged):
+    """Prints the last line of the tool and returns its exit code: 1 for a thing that failed, else NOT_RUN_CODE for a
+    thing that the tool could not judge, else 0. A failure comes first: a NOT RUN must not hide it."""
+    if fails:
+        print(VERDICT + "FAIL: " + "; ".join(fails + unjudged))
+        return 1
+    if unjudged:
+        print(VERDICT + "NOT RUN: " + "; ".join(unjudged))
+        return NOT_RUN_CODE
+    print(VERDICT + "PASS")
+    return 0
 
 
 def self_test():
@@ -304,46 +366,76 @@ def self_test():
             real_argv = sys.argv
             try:
                 sys.argv = ["validate_tour.py", run, "--jobs", "1"]
-                for tool, code, text in ((first_refused, 1, "0 pictures, 2 failed"), (refused, NOT_RUN_CODE, "0 pictures, 0 failed")):
+                for tool, code, text, said in ((first_refused, 1, "0 pictures, 2 failed", "tour verdict: FAIL: 2 pictures failed; 1 pairs have no numbers, first 2-01-b.png; 2 pictures of replays that the slot check refused"),
+                                               (refused, NOT_RUN_CODE, "0 pictures, 0 failed", "tour verdict: NOT RUN: 4 pictures of replays that the slot check refused")):
                     run_tool = tool
                     with contextlib.redirect_stdout(io.StringIO()) as printed:
                         assert main() == code, (tool.__name__, printed.getvalue())
                     assert text in printed.getvalue() and NOT_RUN in printed.getvalue(), printed.getvalue()
-                    assert STAGE_FAULTS == [] and "stage shaders" not in printed.getvalue(), printed.getvalue()
+                    assert printed.getvalue().splitlines()[-1] == said, printed.getvalue()
+                    assert STAGE_FAULTS == [] and CHECK_GAPS == [] and "FAILED replays" not in printed.getvalue(), printed.getvalue()
 
                 # W523: a replay that made each picture and ended with the fault of the stage shaders (exit code 40).
                 # No picture failed, the pairs are compared, and the tour fails with the line of each replay.
+                # W526: the tool gives its verdict by its last line and its exit code.
                 import shutil
 
+                import common
                 import picture_diff
 
                 fault = "STAGE SHADERS: the replay of %s failed with exit code 40: 2 rewrites failed, 0 pipelines failed, 9 draws on the uber-shader with a stage key, 0 draws past the cap of the keys."
-                picture = os.path.join(folder, "one.png")
-                picture_diff.Image.new("RGB", (4, 4), (10, 20, 30)).save(picture)
+                checks = "".join("check %s: 7 judged, 0 faults\n" % name for name in common.CHECK_NAMES)
+                pictures = {}
+                for colour, size in (((10, 20, 30), 4), ((250, 0, 250), 4), ((10, 20, 30), 6)):
+                    pictures[colour, size] = os.path.join(folder, "plant-%d-%d.png" % (colour[0], size))
+                    picture_diff.Image.new("RGB", (size, size), colour).save(pictures[colour, size])
 
-                def made_with_fault(command, **_):
-                    capture, prefix = command[2], command[3]
-                    for frame in command[command.index("--frames-at") + 1].split(","):
-                        shutil.copyfile(picture, "%s-%05d.png" % (prefix, int(frame)))
-                    return subprocess.CompletedProcess(command, 40, "stage shaders: a fault of the replay: 2 rewrites failed\n", fault % os.path.basename(capture) + "\n")
+                def made(code=0, output=checks, last="", off=((10, 20, 30), 4)):
+                    """A replay that makes each picture: the frames of mode gpu grey, those of mode off as `off`."""
+                    def tool(command, **_):
+                        capture, prefix = command[2], command[3]
+                        for frame in command[command.index("--frames-at") + 1].split(","):
+                            shutil.copyfile(pictures[off if int(frame) % 4 == 3 else ((10, 20, 30), 4)], "%s-%05d.png" % (prefix, int(frame)))
+                        return subprocess.CompletedProcess(command, code, output, last % os.path.basename(capture) + "\n" if last else "")
+                    return tool
 
-                def made_clean(command, **kind):
-                    made_with_fault(command, **kind)
-                    return subprocess.CompletedProcess(command, 0, "", "")
-
-                for tool, code, faults in ((made_with_fault, 1, 2), (made_clean, 0, 0)):
+                with_fault = made(40, checks + "stage shaders: a fault of the replay: 2 rewrites failed\n", fault)
+                no_lines = "; ".join("the helper's output has no line of the check \"%s\"" % name for name in common.CHECK_NAMES)
+                gap = "tour verdict: NOT RUN: replay of tour-1.nircap: %s; replay of tour-2.nircap: %s" % (no_lines, no_lines)
+                idle = checks.replace("check gpu errors: 7 judged", "check gpu errors: 0 judged").replace("check views of their own: 7 judged", "check views of their own: 0 judged")
+                for name, tool, arguments, code, faults, pairs, said in (
+                        ("a fault code", with_fault, [], 1, 2, "2 of 2", "tour verdict: FAIL: 2 replays ended with a fault code"),
+                        ("clean", made(), [], 0, 0, "2 of 2", "tour verdict: PASS"),
+                        # A replay that ended in order with no check line of the helper: not judged, never a pass.
+                        ("no check lines", made(output=""), [], NOT_RUN_CODE, 0, "2 of 2", gap),
+                        # A check that judged nothing is not judged; a cell with no view of its own may have 0 places.
+                        ("a check judged nothing", made(output=idle), [], NOT_RUN_CODE, 0, "2 of 2",
+                         'tour verdict: NOT RUN: replay of tour-1.nircap: the check "gpu errors" judged nothing; replay of tour-2.nircap: the check "gpu errors" judged nothing'),
+                        # Rob's plant of F-G-3: mode off differs from mode gpu at every stop. Before W526 the tool ended with 0.
+                        ("pairs differ", made(off=((250, 0, 250), 4)), [], 1, 0, "0 of 2", "tour verdict: FAIL: 2 pairs of mode gpu against mode off differ by more than the limit 0.050, the largest 160.000 at 2-01-b.png"),
+                        ("no numbers", made(off=((10, 20, 30), 6)), [], 1, 0, "0 of 2", "tour verdict: FAIL: 2 pairs have no numbers, first 1-01-a.png"),
+                        ("too few stops", made(), ["--least-stops", "100"], 1, 0, "2 of 2", "tour verdict: FAIL: the tour has 2 stops, fewer than the 100 of --least-stops"),
+                        ("enough stops", made(), ["--least-stops", "2"], 0, 0, "2 of 2", "tour verdict: PASS")):
                     run_tool = tool
-                    STAGE_FAULTS.clear()
+                    sys.argv = ["validate_tour.py", run, "--jobs", "1"] + arguments
                     with contextlib.redirect_stdout(io.StringIO()) as printed:
-                        assert main() == code, (tool.__name__, printed.getvalue())
+                        assert main() == code, (name, printed.getvalue())
                     text = printed.getvalue()
-                    assert "4 pictures, 0 failed" in text and "pairs: 2 of 2 equal" in text, text
+                    assert "4 pictures, 0 failed" in text and "pairs: %s equal" % pairs in text and text.splitlines()[-1] == said, (name, text)
                     kept = os.path.join(run, "tour-frames-tour-1.replay.txt")
                     assert open(kept, encoding="utf-8").read().startswith("exit code %d\n" % (40 if faults else 0)), "the output of the replay is kept beside the pictures"
-                    assert text.count("  STAGE SHADERS: the replay of tour-") == faults and ("FAILED stage shaders: 2 replays" in text) == bool(faults), text
+                    assert text.count("  STAGE SHADERS: the replay of tour-") == faults and ("FAILED replays: 2 replays" in text) == bool(faults), (name, text)
+                # A dual run with no stop has no pair to compare: not judged.
+                with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
+                    file.write("tour: dual\n")
+                sys.argv = ["validate_tour.py", run, "--jobs", "1"]
+                with contextlib.redirect_stdout(io.StringIO()) as printed:
+                    assert main() == NOT_RUN_CODE, printed.getvalue()
+                assert printed.getvalue().splitlines()[-1] == "tour verdict: NOT RUN: the dual run has no stop, so no pair of mode gpu against mode off to compare", printed.getvalue()
+                assert MEAN_LIMIT == 0.05
             finally:
                 sys.argv = real_argv
-                STAGE_FAULTS.clear()
+                del STAGE_FAULTS[:], CHECK_GAPS[:]
         finally:
             run_tool = subprocess.run
     assert refusal_of("a\n" + refusal + "\nb") == refusal and refusal_of("replay of x: 3 pictures missing") == ""

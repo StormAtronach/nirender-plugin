@@ -24,8 +24,9 @@ run it in the tree of the change.
 4. The reader's check: tools/replay.py draws the last frame of each capture with the helper of
    --mge-build (replay.py's default without it). Each replay must exit with 0 and read all the
    frames of its file, and its report must give 0 records shorter than their tag needs and 0
-   geometry records that did not parse, with no reads past the end, no tag that the build does
-   not know and no record that runs past the end of the file.
+   geometry records that did not parse, with no record that runs past the end of the file, and
+   with 0 faults of the helper's checks "reads past the end" and "unknown records" (W526: the
+   helper prints a line for each check always; a check line that is not there is a problem).
 
 A replay is build work: take the whole build side first (slot.py take build --whole). The exit
 code is 1 when a check fails.
@@ -42,7 +43,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import check_stream_tags  # noqa: E402
-from common import git_env  # noqa: E402
+from common import READS_PAST_END, UNKNOWN_RECORDS, check_problems, git_env  # noqa: E402
 
 REPO = os.path.dirname(HERE)
 MAGIC = b"NIRCAP01"
@@ -140,9 +141,12 @@ REPORT = (
     ("frames", re.compile(r"^(\d+) records, (\d+) frames", re.M), True),
     ("short", re.compile(r"(\d+) records of any tag shorter than their tag needs, refused"), True),
     ("unparsed", re.compile(r"(\d+) records that did not parse"), True),
-    ("past the end", re.compile(r"reads past the end of a buffer: (\d+)"), False),
-    ("unknown", re.compile(r"records of a tag this build does not know: (\d+)"), False),
 )
+# The checks of the helper that the reader's check judges, through the one reader of common.py (W526): the reads past
+# the end of a record, and the records of a tag that the build does not know. The helper prints their lines always.
+# Before, this tool read two sentences that the helper printed only for a count above 0, so a reworded sentence
+# read as "no fault".
+RECORD_CHECKS = (READS_PAST_END, UNKNOWN_RECORDS)
 # The helper's line for a record that runs past the end of the file (host/src/cli.rs).
 PAST_FILE_END = "runs past the end of the file"
 
@@ -166,7 +170,8 @@ def report_problems(output, code, frames):
                 problems.append("the replay read %d frames of %d" % (value, frames))
         elif value != 0:
             problems.append("%s: %d" % (name, value))
-    return problems
+    missing, failed = check_problems(output, RECORD_CHECKS)
+    return problems + missing + failed
 
 
 def replay(capture, frames, mge_build):
@@ -282,7 +287,8 @@ def self_test():
     # The report of a replay: a clean one, and the nulls of each line.
     good = ("20752 records, 30 frames, frame 29 into 1920 x 1080\n"
             "geometry: 902 records (21.3 MB), 7350 draws from them, 0 records that did not parse, 0 draws of more index entries\n"
-            "material: 176 records; 0 records of any tag shorter than their tag needs, refused\n")
+            "material: 176 records; 0 records of any tag shorter than their tag needs, refused\n"
+            "check reads past the end: 20752 judged, 0 faults\ncheck unknown records: 20752 judged, 0 faults\n")
     assert report_problems(good, 0, 30) == [], report_problems(good, 0, 30)
     cut = "record of the tag 18 (GEOMETRY) at the byte 9 of the capture: 3 bytes, 40 needed: refused (it runs past the end of the file); the replay takes the 5 records before it\n"
     nulls = {
@@ -290,8 +296,12 @@ def self_test():
         "the replay read 30 frames of 31": (good, 0, 31),
         "short: 2": (good.replace("; 0 records of any", "; 2 records of any"), 0, 30),
         "unparsed: 1": (good.replace(", 0 records that did not parse", ", 1 records that did not parse"), 0, 30),
-        "past the end: 3": (good + "reads past the end of a buffer: 3 (of a record)\n", 0, 30),
-        "unknown: 4": (good + "records of a tag this build does not know: 4, skipped; the first tag 77\n", 0, 30),
+        'the check "reads past the end": 3 faults of 20752 judged': (good.replace("end: 20752 judged, 0 faults", "end: 20752 judged, 3 faults"), 41, 30),
+        'the check "unknown records": 4 faults of 20752 judged': (good.replace("records: 20752 judged, 0 faults", "records: 20752 judged, 4 faults"), 41, 30),
+        # F-G-22: a check with no line, or with another word in its line, is a problem, not a pass. The helper's
+        # sentences of before W526 are no check line.
+        'the helper\'s output has no line of the check "reads past the end"': (good.replace("check reads past the end: 20752 judged, 0 faults\n", ""), 0, 30),
+        'the helper\'s output has no line of the check "unknown records"': (good.replace("check unknown records:", "check records of an unknown tag:"), 0, 30),
         "the report has no line of short": (good.replace("records of any tag shorter", "records of any tag"), 0, 30),
         "a record runs past the end of the file": (cut + good, 0, 30),
     }
