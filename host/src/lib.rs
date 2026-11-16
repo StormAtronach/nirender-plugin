@@ -46,6 +46,7 @@ mod picture;
 pub mod spot;
 mod window_pass;
 use picture::*;
+mod checks;
 mod cli;
 use cli::*;
 mod crash;

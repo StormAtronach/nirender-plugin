@@ -19,8 +19,10 @@ offsets, so a run is repeated with its seed):
 Each mutant is replayed with the host program (`nirender-host.exe <mutant> <picture> --frame N
 --backend ...`), its output kept in the out folder, and judged:
 
-- an ABORT is an end by a crash or a panic: an exit code that is not 0 (a replay that drew)
-  and not 2 (the usage), or an output without the host's last lines;
+- an ABORT is an end by a crash or a panic: an exit code that is not 0 (a replay that drew),
+  not 2 (the usage) and not a fault code of the replay's own (40 the stage shaders, 41 a check
+  of the helper, W526: the replay drew to its end, printed its report and named its fault in a
+  line), or an output without the host's last lines;
 - a REFUSAL is a line of the reader that names the damage: a short record "refused", or a
   record of a tag the build does not know "skipped" (or the report's count of either above
   0; the report prints the short-record count on a clean replay too, with 0);
@@ -118,12 +120,28 @@ def refusals(output):
     return any(int(count) > 0 for count in counts)
 
 
+# The helper's exit codes of a replay that drew to its end and found a fault of its own kind (EXIT_REPLAY_STAGE_SHADERS
+# and EXIT_REPLAY_CHECKS of src/stream_format.rs; the self-test reads the values there). A record of an unknown tag,
+# a read past the end and a GPU error are faults of a check since W526, so a mutant that the reader skipped in order
+# ends with 41: that is the reader saying the damage, not an abort. This tool uses the standard library only, so it
+# has the two numbers here and not from common.py.
+FAULT_CODES = {40: "EXIT_REPLAY_STAGE_SHADERS", 41: "EXIT_REPLAY_CHECKS"}
+FAULT_LINE = re.compile(r"^(?:checks|stage shaders): a fault of the replay: (.*)$", re.M)
+
+
 def judge(kind, exit_code, output):
     """The verdict of one replay: (passed, the reason)."""
     refused = refusals(output)
     ended = "records," in output or refused or exit_code == 2
-    if exit_code not in (0, 2) or not ended:
+    if exit_code not in (0, 2, *FAULT_CODES) or not ended:
         return False, "ABORT: exit code %d%s" % (exit_code, "" if ended else ", the host did not get to its report")
+    if exit_code in FAULT_CODES:
+        # The helper must name the fault that its code stands for: a fault code with no fault line is a broken end.
+        said = FAULT_LINE.search(output)
+        if not said:
+            return False, "ABORT: exit code %d with no fault line of the replay" % exit_code
+        if kind != "cut" or refused:
+            return True, "a fault named by the helper (exit code %d): %s" % (exit_code, said.group(1)[:160])
     if kind == "cut" and not refused:
         return False, "no refusal of a cut inside a record: the short record was not seen"
     return True, "refused" if refused else "no refusal (taken as valid)"
@@ -171,6 +189,18 @@ def self_test():
     assert judge("boundary", 0, "2 records, 1 frames\n") == (True, "no refusal (taken as valid)")
     assert judge("head", 3, "") == (False, "ABORT: exit code 3, the host did not get to its report")
     assert judge("flip", -1073741819, "3 records,")[1].startswith("ABORT")
+    # W526: a replay that ended with a fault code of its own drew to its end and named its fault: no abort. A fault
+    # code with no fault line is a broken end. A cut inside a record still needs the refusal of the short record.
+    codes = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "stream_format.rs"), encoding="utf-8").read()
+    for code, name in FAULT_CODES.items():
+        assert "pub const %s: u32 = %d;" % (name, code) in codes, "%s of src/stream_format.rs is not %d" % (name, code)
+    named = "3 records, 1 frames\nchecks: a fault of the replay: unknown records: 1 faults of 3 judged\n"
+    assert judge("head", 41, named) == (True, "a fault named by the helper (exit code 41): unknown records: 1 faults of 3 judged")
+    assert judge("flip", 41, "3 records, 1 frames\nchecks: a fault of the replay: gpu errors: 2 faults of 1 judged\n")[0]
+    assert judge("flip", 40, "3 records, 1 frames\nstage shaders: a fault of the replay: 1 rewrites failed\n")[0]
+    assert judge("flip", 41, "3 records, 1 frames\n") == (False, "ABORT: exit code 41 with no fault line of the replay")
+    assert judge("cut", 41, named)[1].startswith("no refusal of a cut inside a record")
+    assert judge("cut", 41, "record of the tag 5 (x): 1 bytes, 4 needed: refused\n" + named) == (True, "a fault named by the helper (exit code 41): unknown records: 1 faults of 3 judged")
     print("fuzz_capture self-test: ok")
 
 

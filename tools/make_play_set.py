@@ -16,11 +16,13 @@ testing instance:
 
 - live: tools/run_own_device.py with batch-play-smoke.lua: teleports over 5 cell borders, a save, a move to
   another cell, a load, the map, the inventory and the character. The runner must end well, each answer of
-  the game must be the asked one, no step picture may be black, and host.txt must have no `gpu error`.
+  the game must be the asked one, no step picture may be black, and the helper's check "gpu errors" in
+  host.txt must have 0 faults (its line `check gpu errors: N judged, M faults`; no line is a failure).
 - gate: tools/validate_retained.py baseline, with no game: the replays against the accepted pictures. This
   sees a fault that both modes share. A planned new look stops the set until a baseline is accepted.
-- tour: the 3 test cells with --tour-dual, and tools/validate_tour.py: no picture may fail, no pair may lack
-  its numbers, and no pair of mode gpu against mode off may differ by more than MEAN_LIMIT.
+- tour: the 3 test cells with --tour-dual, and tools/validate_tour.py --least-stops: the tool gives the
+  verdict by its exit code (no picture may fail, no pair may lack its numbers, no pair of mode gpu against
+  mode off may differ by more than its MEAN_LIMIT, and the tour must have its stops).
 
 A replay needs the whole build side (the owner's D139), and the game slot does not give it. No session waits for
 one slot while it holds the other (the owner's D208). So the set takes the game and the whole build side together
@@ -77,10 +79,10 @@ import types
 
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import SIBLINGS, docs_place, local, main_checkout  # noqa: E402
+from common import GPU_ERRORS, SIBLINGS, check_problems, docs_place, local, main_checkout  # noqa: E402
 from new_run_folder import CURRENT_BAT, SETS, new_set_folder, write_current_bat  # noqa: E402  (W380, W500)
 import clean_common  # noqa: E402  (the current set, W500)
-from validate_tour import NOT_RUN, NOT_RUN_CODE  # noqa: E402
+from validate_tour import NOT_RUN, NOT_RUN_CODE, verdict_in as tour_verdict_in  # noqa: E402
 import symbols  # noqa: E402
 from symbols import codeview  # noqa: E402,F401  (the tests and keep_pdbs read CodeView records by it)
 
@@ -140,11 +142,8 @@ OWNER_START_GAME = "the step of the owner's start"
 SET_HOLD = {"build": False}
 # The log of merge_step's keep_holds: its lines go to the console only here.
 QUIET_LOG = types.SimpleNamespace(write=lambda text: None, flush=lambda: None)
-# f185 had a largest mean of 0.001 at the tour's 103 stops. A change of the picture between two modes that
-# is larger than this is no noise. [I] The value is a judgement, with room for small differences. The gate
-# is the exact test: this is a second net.
-MEAN_LIMIT = 0.05
-# The tour has 103 stops: a much shorter tour did not run through.
+# The tour has 103 stops: a much shorter tour did not run through. validate_tour.py judges it (--least-stops), with
+# the limit of a pair of mode gpu against mode off, whose one home is that tool (MEAN_LIMIT, W526).
 LEAST_STOPS = 100
 # Below this mean level (0 to 255) a step picture counts as black.
 BLACK_LEVEL = 3.0
@@ -260,33 +259,17 @@ def live_faults(progress):
 
 
 def tour_faults(output, code):
-    """What is wrong with the output of validate_tour.py, as a list of texts. Its exit code NOT_RUN_CODE says that
-    no picture failed and a replay was not run: that is no fault here, and neither is the lack of pairs it
-    leaves. The pictures that were made are still checked."""
-    not_run = code == NOT_RUN_CODE
-    faults = []
-    if code not in (0, NOT_RUN_CODE):
-        faults.append("validate_tour.py gave exit code %d" % code)
-    pictures = re.search(r"(\d+) pictures, (\d+) failed", output)
-    if not pictures:
-        faults.append("validate_tour.py has no count of pictures")
-    elif int(pictures.group(2)):
-        faults.append("%s replays of the tour failed" % pictures.group(2))
-    stops = re.search(r"(\d+) stops to replay", output)
-    if not stops or int(stops.group(1)) < LEAST_STOPS:
-        faults.append("the tour has too few stops: %s" % (stops.group(1) if stops else "none"))
-    # A pair with no numbers (a missing picture, a size mismatch) lists first, and its exit code is 0.
-    pair_rows = re.findall(r"^\s+(\S+\.png)\s+(.*)$", output, re.MULTILINE)
-    unmeasured = [name for name, text in pair_rows if not re.match(r"[\d.]+ mean", text)]
-    if unmeasured:
-        faults.append("%d pairs have no numbers, first %s" % (len(unmeasured), unmeasured[0]))
-    means = [(float(mean), name) for name, mean in re.findall(r"^\s+(\S+\.png)\s+([\d.]+) mean", output, re.MULTILINE)]
-    if not means:
-        if not not_run:
-            faults.append("validate_tour.py has no differences of mode gpu against mode off")
-    elif max(means)[0] > MEAN_LIMIT:
-        faults.append("mode gpu against mode off differs by %.3f at %s, over the limit %.3f" % (*max(means), MEAN_LIMIT))
-    return faults
+    """What validate_tour.py says is wrong, as a list of texts. The tool's exit code is its verdict (W526): it judges
+    its pictures, its replays' fault codes, each pair of mode gpu against mode off against its limit, and its stops
+    (--least-stops), and its last line says why. This tool reads the code, not the table. NOT_RUN_CODE is no fault
+    here: the caller makes it a NOT RUN. An exit code 0 without the tool's PASS line is a fault: a tool from
+    before the verdict judged no pair."""
+    said = tour_verdict_in(output)
+    if code == NOT_RUN_CODE:
+        return []
+    if code != 0:
+        return ["validate_tour.py gave exit code %d: %s" % (code, said or "no verdict line")]
+    return [] if said.endswith("PASS") else ["validate_tour.py ended with 0 and without its PASS line: %s" % (said or "no verdict line")]
 
 
 def gate_not_run(output, code):
@@ -638,10 +621,13 @@ def read_text(path):
 
 
 def check_run_files(run, notes):
-    """The checks of every run: no GPU error, and a note for a crash at the close that only MWSE.log shows."""
-    gpu_errors = read_text(os.path.join(run, "host.txt")).count("gpu error")
-    if gpu_errors:
-        raise SmokeFailed("%d gpu errors in %s" % (gpu_errors, run))
+    """The checks of every run: no GPU error, and a note for a crash at the close that only MWSE.log shows. The GPU
+    errors are the helper's check "gpu errors" (W526; common.py's one reader), not a count of a text: a helper
+    that printed no line of the check (it did not end in order, or it is from before the checks) is a failure, and
+    so is a check that judged no frame."""
+    not_judged, failed = check_problems(read_text(os.path.join(run, "host.txt")), (GPU_ERRORS,))
+    if not_judged or failed:
+        raise SmokeFailed("%s in host.txt of %s" % ("; ".join(failed + not_judged), run))
     # The runner's exit code 0 says that the last step ended and that the runner saw no crash at the close (no exit
     # code that is not 0, no dump: its exit code 5 fails the set in run_runner), so a crash in this log came at the
     # close and left no dump.
@@ -708,7 +694,7 @@ def smoke_tour(tree, folder, plugin_dll, notes, slots):
     run = run_runner(tree, "playset-tour", folder, plugin_dll, 900, "--steps", "tour", "--tour-cells", TOUR_CELLS, "--tour-dual")
     check_run_files(run, notes)
     keep_set_hold(slots, "the tour's replays of the next set")
-    done = subprocess.run([sys.executable, "tools/validate_tour.py", run, "--mge-build", folder, "--jobs", "3"],
+    done = subprocess.run([sys.executable, "tools/validate_tour.py", run, "--mge-build", folder, "--jobs", "3", "--least-stops", str(LEAST_STOPS)],
                           cwd=tree, capture_output=True, text=True, errors="replace")
     release_set_build(slots)
     with open(os.path.join(run, "validate.txt"), "w", encoding="utf-8") as file:
@@ -899,8 +885,18 @@ def run_runner_test():
             subprocess.run = real_run
             for name, value in real.items():
                 setattr(module, name, value)
+        # The helper's check of the GPU errors: no line, a check that judged nothing, and faults fail the smoke.
+        for text, said in (("frames 10\n", 'no line of the check "gpu errors"'), ("gpu error 1 (validation, adapter x): y\n", 'no line of the check "gpu errors"'),
+                           ("check gpu errors: 0 judged, 0 faults\n", 'the check "gpu errors" judged nothing'), ("check gpu errors: 10 judged, 2 faults\n", 'the check "gpu errors": 2 faults of 10 judged')):
+            with open(os.path.join(run, "host.txt"), "w", encoding="ascii") as file:
+                file.write(text)
+            try:
+                check_run_files(run, [])
+                raise AssertionError("the smoke passed with %r in host.txt" % text)
+            except SmokeFailed as failure:
+                assert said in str(failure), failure
         with open(os.path.join(run, "host.txt"), "w", encoding="ascii") as file:
-            file.write("frames 10\n")
+            file.write("frames 10\ncheck gpu errors: 10 judged, 0 faults\n")
         with open(os.path.join(run, "MWSE.log"), "w", encoding="ascii") as file:
             file.write("Morrowind has crashed! To help improve game stability, send MWSE_Minidump.dmp\n")
         notes = []
@@ -978,7 +974,7 @@ def smoke_wiring_test(fake_slots):
     head = "103 stops to replay, gpu and off at each\n"
     pairs = "mode gpu against mode off at each stop, the largest differences first:\n" + row % "2-01-b.png"
     tours = {
-        "passed": (0, head + "206 pictures, 0 failed\n" + pairs + "pairs: 103 of 103 equal\n"),
+        "passed": (0, head + "206 pictures, 0 failed\n" + pairs + "pairs: 103 of 103 equal\ntour verdict: PASS\n"),
         "not run": (NOT_RUN_CODE, head + "%s: replay of tour-1.nircap: 84 pictures not made: %s\n122 pictures, 0 failed\n%s: 84 pictures not made, and not checked\n" % (NOT_RUN, refused, NOT_RUN)
                     + pairs + "pairs: 61 of 61 equal; 42 pairs %s, not compared\n" % NOT_RUN),
         # f220 with this fix: every replay refused, so no pair has numbers.
@@ -1320,16 +1316,15 @@ def self_test():
     assert any("sh-map failed" in fault for fault in live_faults(good.replace("step sh-map: true", "step sh-map: false")))
     assert live_faults("") != []
 
-    tour = "103 stops to replay, gpu and off at each\n206 pictures, 0 failed\n  2-13.png    0.001 mean, 0.08 % different\n  1-01.png   0.000 mean, 0.0 % different\npairs: 18 of 103 equal\n"
-    assert tour_faults(tour, 0) == [], tour_faults(tour, 0)
-    assert tour_faults(tour, 1) != []
-    assert tour_faults(tour.replace("0 failed", "3 failed"), 0) != []
-    assert tour_faults(tour.replace("103 stops", "4 stops"), 0) != []
-    assert tour_faults(tour.replace("103 stops", "60 stops"), 0) != []
-    assert tour_faults(tour.replace("0.001 mean", "0.200 mean"), 0) != []
-    assert any("no numbers" in fault for fault in tour_faults(tour.replace("0.001 mean, 0.08 % different", "missing"), 0))
-    assert any("no numbers" in fault for fault in tour_faults(tour.replace("0.001 mean, 0.08 % different", "the sizes differ"), 0))
-    assert tour_faults("", 0) != []
+    # The tour: the tool's exit code is the verdict, and its last line says why (validate_tour.py's own self-test has
+    # the cases of the pictures, the pairs and the stops).
+    tour = "103 stops to replay, gpu and off at each\n206 pictures, 0 failed\n  2-13.png    0.001 mean, 0.08 % different\npairs: 18 of 103 equal\n"
+    assert tour_faults(tour + "tour verdict: PASS\n", 0) == []
+    assert tour_faults(tour + "tour verdict: FAIL: 3 pictures failed\n", 1) == ["validate_tour.py gave exit code 1: tour verdict: FAIL: 3 pictures failed"]
+    assert tour_faults(tour + "tour verdict: NOT RUN: 4 pictures of replays that the slot check refused\n", NOT_RUN_CODE) == []
+    assert tour_faults("Traceback (most recent call last):\n", 1) == ["validate_tour.py gave exit code 1: no verdict line"]
+    # A tool that ends with 0 and has no PASS line (one from before its verdict) judged no pair: a fault.
+    assert tour_faults(tour, 0) == ["validate_tour.py ended with 0 and without its PASS line: no verdict line"] and tour_faults("", 0) != []
 
     note = set_note("f186", "abc", "def", "passed (a, b, 2 of 2 bats)", {"aae6"})
     assert note.count("\n") == 1 and note.endswith("2 of 2 bats)\n") and ", MWSE.dll aae6; smoke:" in note, note
