@@ -1,6 +1,7 @@
 """Makes a sealed build set (W521, the owner's D490): one folder with every binary of a run, from three commits.
 
     python -I tools/build_set.py [--nirender C] [--render-link C] [--mwse C] [--patch REPO=FILE] [--no-wait]
+    python -I tools/build_set.py --nirender C --render-link C --mwse C --in-hold LABEL   # a stage of a merge round
     python -I tools/build_set.py --self-test    # scratch folders and fake builds: no build, no slot, no write to E:
 
 The commits default to the tips: nirender `master`, render-link `feature/wgpu-renderer`, and the MWSE commit that the
@@ -50,6 +51,12 @@ manifest and the rename). A gate that says no, or a renew that the slot tool ref
 that phase writes. One run of the tool at a time on this machine:
 make() itself takes the run lock C:/tmp/buildset/build_set.lock, also when another tool calls it, and stops with exit
 code 3 while another run holds it.
+
+--in-hold LABEL is for a stage of a merge round (merge_step.py), which runs under one take of the game and the whole
+build side: a take of its own would wait for that round to end. With it the tool takes no slot. It checks that this
+session holds every place of the build side as LABEL, else exit code 3 and nothing is built; then it notes the build
+work and renews that hold each minute, as with its own hold, and a refused renew stops it before the next phase of
+writes to E:.
 
 The last line is the set's folder. Exit code 0; 1 for a fault; 3 when a slot or the E: gate refuses; 4 when the probe
 finds a missing MWSE feature.
@@ -667,6 +674,40 @@ def hold_notes(slots, label, seconds=NOTE_SECONDS):
         thread.join()
 
 
+def in_hold_problem(slots, label):
+    """Why this session does not hold every place of the build side under `label` (--in-hold), as a text, or None. A
+    state that cannot be read is a problem too: the maker then builds nothing."""
+    from merge_step import places_held
+
+    needed = len(slots.units_of("build"))
+    held = places_held(slots, "build", label)
+    if held is None:
+        return "the state of the slots cannot be read"
+    if held < needed:
+        return "this session holds %d of the %d places of the build side as \"%s\"" % (held, needed, label)
+    return None
+
+
+@contextlib.contextmanager
+def in_hold(slots, label):
+    """The maker inside a caller's take (--in-hold, the plan's addendum 10 C2): no take and no release; the notes and
+    the renew of `label` each minute, as build_hold has them. Yields the SlotHold."""
+    with hold_notes(slots, label) as hold:
+        yield hold
+
+
+def maker_hold(slots, round_label, label, no_wait):
+    """The hold of one make(): (None, a function that gives its context), or (why not, None) when --in-hold names a
+    hold that this session does not have. `round_label` is the label of --in-hold, or None for the maker's own take
+    under `label`."""
+    if round_label is None:
+        return None, lambda: build_hold(slots, label, no_wait)
+    problem = in_hold_problem(slots, round_label)
+    if problem:
+        return "--in-hold: %s: nothing is built" % problem, None
+    return None, lambda: in_hold(slots, round_label)
+
+
 @contextlib.contextmanager
 def build_hold(slots, label, no_wait):
     """The build slot from before the first write to E: to the rename of the set, with hold_notes, and given back at
@@ -1041,6 +1082,40 @@ def runner_compatible(folder):
     return faults
 
 
+def in_hold_test(state):
+    """--in-hold (addendum 10 C2, C8 test 2) on slot.py with a scratch state folder: a label that this session does not
+    hold refuses, and nothing is built; the null is the round's take of both slots under the label. The renew of the
+    label under that take works, as hold_notes renews it each minute."""
+    from merge_step import scratch_slots
+
+    environment = dict(os.environ)
+    path = list(sys.path)
+    try:
+        slots = scratch_slots(state)
+        label = "merge_step: plugin aaaaaaaaaa"
+        places = len(slots.units_of("build"))
+        problem, hold = maker_hold(slots, label, "build_set: unused", True)
+        assert hold is None and problem == "--in-hold: this session holds 0 of the %d places of the build side as \"%s\": nothing is built" % (places, label), problem
+        assert slots.take("both", label, minutes=5).code == slots.DONE
+        try:
+            problem, hold = maker_hold(slots, label, "build_set: unused", True)
+            assert problem is None and hold is not None, problem
+            with hold() as held:
+                assert held.lost is None
+            assert slots.renew("build", who=label).code == slots.DONE, "the renew of hold_notes was refused under the round's take"
+            other, none = maker_hold(slots, "merge_step: another", "build_set: unused", True)
+            assert none is None and "holds 0 of the %d places" % places in other, other
+            # The maker gives nothing back: the round's take stands after it.
+            assert in_hold_problem(slots, label) is None
+        finally:
+            assert slots.release("both", label).code == slots.DONE
+        assert maker_hold(slots, None, "build_set: x", True)[0] is None, "without --in-hold the maker takes its own hold"
+    finally:
+        os.environ.clear()
+        os.environ.update(environment)
+        sys.path[:] = path
+
+
 def self_test():
     commits = {"nirender": "6d1b214" + "a" * 33, "render-link": "d9741db" + "b" * 33, "mwse": "89198b53" + "c" * 32}
     yes = lambda: (True, "e-ok: yes")  # noqa: E731
@@ -1407,6 +1482,7 @@ def self_test():
             raise AssertionError("a build on E: went on while the E: gate said no")
         except SetFault as fault:
             assert fault.code == EXIT_REFUSED and "no build on E: now" in str(fault) and asked == [1], fault
+        in_hold_test(os.path.join(scratch, "slot-state"))
     sets.self_test()
     print("build_set self-test: ok")
     return 0
@@ -1420,6 +1496,8 @@ def main():
     parser.add_argument("--patch", action="append", default=[], help="REPO=FILE: one patch on that repo's commit")
     parser.add_argument("--trees", default=TREES, help="the folder of the build trees (default %s); on E: each build step asks e-ok one time and stops on a no" % TREES)
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 when the build slot is not free")
+    parser.add_argument("--in-hold", metavar="LABEL", help="take no slot: this session holds the whole build side under LABEL (a merge round's take); "
+                        "the maker checks it, notes and renews that hold, and stops with exit code 3 without it")
     parser.add_argument("--self-test", action="store_true", help="the tests on scratch folders: no build, no slot, no write to E:")
     args = parser.parse_args()
     if args.self_test:
@@ -1439,7 +1517,11 @@ def main():
 
     slots = load_slots()
     label = "build_set: %s" % sets.set_name(commits, {repo: md5 for repo, (_, md5) in patches.items()})
-    code, lines = make(commits, patches, sets.KIND_USUAL, Trees(args.trees), hold=lambda: build_hold(slots, label, args.no_wait))
+    problem, hold = maker_hold(slots, args.in_hold, label, args.no_wait)
+    if problem:
+        say(problem)
+        return EXIT_REFUSED
+    code, lines = make(commits, patches, sets.KIND_USUAL, Trees(args.trees), hold=hold)
     for line in lines:
         say(line)
     return code
