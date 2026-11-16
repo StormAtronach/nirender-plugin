@@ -63,6 +63,7 @@ import contextlib
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -71,8 +72,9 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-from common import BUILD_PARTS, EXIT_REPLAY_STAGE_SHADERS, NOT_RUN_EXIT, build_missing, capture_format_in, keep_replay_output, plugin_lines, stage_fault_in  # noqa: E402
-from validate_tour import NOT_RUN, refusal_of  # noqa: E402
+from common import (BUILD_PARTS, EARLY_WORLD_DRAWS, EXIT_REPLAY_CHECKS, EXIT_REPLAY_STAGE_SHADERS, NOT_RUN_EXIT, OWN_VIEWS, build_missing,  # noqa: E402
+                    capture_format_in, check_problems, helper_checks, keep_replay_output, plugin_lines, replay_fault_in)
+from validate_tour import NOT_RUN, NOT_RUN_CODE as TOUR_NOT_RUN, refusal_of, verdict_in as tour_verdict_in  # noqa: E402
 import stream_rule  # noqa: E402
 PY = sys.executable
 # The variables of the baseline replays: no core mod (`Data Files/shaders/core-mods/*.wgsl`) of
@@ -191,9 +193,24 @@ def host_counts(folder):
     return lines
 
 
+# The FAIL lines and the NOT RUN lines of this process: the exit code of the baseline stage reads them.
+FAILS = [0]
+NOT_RUN_LINES = []
+
+
 def check(condition, text):
     print(("  ok   " if condition else "  FAIL ") + text, flush=True)
+    if not condition:
+        FAILS[0] += 1
     return condition
+
+
+def not_run(text):
+    """A thing that the gate could not judge: its line, and False. It is never a pass (W524: PASS, FAIL, NOT RUN,
+    WITHHELD): a stage with such a line and no FAIL ends with NOT_RUN_EXIT."""
+    print("  NOT RUN " + text, flush=True)
+    NOT_RUN_LINES.append(text)
+    return False
 
 
 def warn(text):
@@ -207,11 +224,13 @@ CAPTURE_FORMATS = []
 
 
 def baseline_failure_code():
-    """The exit code of a failed baseline stage: NOT RUN when a capture of another format stopped it (the stage stops at
-    its first failure), with a "NOT RUN" line for merge_step.py; else 1."""
-    if not CAPTURE_FORMATS:
+    """The exit code of a baseline stage that did not pass: NOT RUN when it has no FAIL line and could not judge a
+    thing (a capture of another format, which stops the stage at once; a check with no line in a replay's output;
+    a check that no capture judges), with a "NOT RUN" line for merge_step.py; else 1. A FAIL comes first."""
+    reasons = CAPTURE_FORMATS + NOT_RUN_LINES
+    if FAILS[0] or not reasons:
         return 1
-    print("NOT RUN baseline: %s" % CAPTURE_FORMATS[-1], flush=True)
+    print("NOT RUN baseline: %s" % reasons[-1], flush=True)
     return NOT_RUN_EXIT
 
 
@@ -241,7 +260,11 @@ def ran(result, tool, accepting=False):
         print("  NOT RUN %s: %s" % (tool, other_format), flush=True)
         return False
     mix = ": the accepted folder holds a mix now, accept again" if accepting else ""
-    fault = stage_fault_in(output)
+    # The tour tool could not judge a thing (a check line of the helper that is not there, no pair to compare): its
+    # verdict line says what.
+    if code == TOUR_NOT_RUN and tour_verdict_in(output) and not failed:
+        return not_run("%s: %s%s" % (tool, tour_verdict_in(output), mix))
+    fault = replay_fault_in(output)
     if fault:
         return check(False, "%s: %s%s" % (tool, fault, mix))
     return check(False, "%s ended with the code %d%s" % (tool, code, mix))
@@ -282,12 +305,11 @@ def stage_capture(place, mge_build):
     capture = os.path.join(folder, "exterior.nircap")
     a = os.path.join(folder, "replay.png")
     code, out = run_code([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--mge-build", mge_build], {})
+    # A replay with a fault of a check ends with a code of its own (41), so `ran` fails it with its line.
     ok &= ran((code, out), "replay.py")
-    # Each GPU error prints a line "gpu error N (kind, adapter ...)" (host/src/gpu.rs).
-    errors = len(re.findall(r"^gpu error \d+ \(", out, re.M))
-    ok &= check(os.path.isfile(a) and errors == 0, "replay of the capture: %s, %d gpu errors" % ("a picture" if os.path.isfile(a) else "no picture", errors))
-    early = early_world_scenes(out)
-    ok &= check(early in (None, 0), "replay of the capture: %s scenes with draws of their world in the target before the extension's parts" % ("no" if early is None else early))
+    ok &= check(os.path.isfile(a), "replay of the capture: %s" % ("a picture" if os.path.isfile(a) else "no picture"))
+    # A capture of a place has a start of a world for the extension; it need not have a view of its own.
+    ok &= judge_checks("replay of the capture", out, may_judge_nothing=(OWN_VIEWS,))
     return ok
 
 
@@ -299,28 +321,17 @@ ADAPTER_SAME, ADAPTER_OTHER, ADAPTER_UNKNOWN = "SAME", "OTHER", "UNKNOWN"
 ADAPTER_LINE = re.compile(r"^\s*adapter: (%s|%s|%s): (.*?)\s*$" % (ADAPTER_SAME, ADAPTER_OTHER, ADAPTER_UNKNOWN), re.M)
 
 
-EARLY_LINE = re.compile(r"^early world draws: (\d+) starts of a world for the extension checked, (\d+) scenes with draws of their world already in the target, (\d+) draws", re.M)
-
-
-def early_world_scenes(output):
-    """The scenes with draws of their world already in the target when the extension's parts
-    began, from the report line `early world draws: ...` of the helper (`Player::report`); None
-    when the output has no such line (a replay with no start of a world to check). Each is a
-    fault of the order of the draws: the gate wants 0."""
-    match = EARLY_LINE.search(output)
-    return int(match.group(2)) if match else None
-
-
-NO_VIEW_LINE = re.compile(r"^views of their own: .*?, (\d+) not drawn because their scene has no view", re.M)
-
-
-def places_without_view(output):
-    """The places of a view of its own (a save's picture, a mod's camera) that the helper did
-    not draw because their scene got no view, from the report line `views of their own: ...`
-    (`Player::print_counts`); None when the output has no such line (a helper from before the
-    count). Each is a place lost from a picture: the gate wants 0."""
-    match = NO_VIEW_LINE.search(output)
-    return int(match.group(1)) if match else None
+def judge_checks(what, output, may_judge_nothing=()):
+    """The checks of the helper in a replay's output (common.py, the one reader): a check with no line, or that
+    judged nothing, is NOT RUN; a check with faults is a FAIL. Returns False for either. `may_judge_nothing` names
+    the checks for which the caller judges the case of 0 things itself."""
+    missing, failed = check_problems(output, may_judge_nothing=may_judge_nothing)
+    ok = True
+    for problem in missing:
+        ok &= not_run("%s: %s" % (what, problem))
+    for problem in failed:
+        ok &= check(False, "%s: %s" % (what, problem))
+    return ok
 
 
 def adapter_of(output):
@@ -348,16 +359,6 @@ def self_test():
     output = "distant land: on\nadapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)\nframe 1\n"
     assert adapter_of(output) == "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_of("no such line\n") is None
-    # The count of scenes with early world draws; no line means no start of a world was checked.
-    line = "early world draws: 12 starts of a world for the extension checked, %d scenes with draws of their world already in the target, 7 draws\n"
-    assert early_world_scenes("frame 1\n" + line % 0 + "retained: 3\n") == 0
-    assert early_world_scenes(line % 2) == 2
-    assert early_world_scenes("frame 1\n") is None
-    # The places of a view of its own not drawn because their scene has no view.
-    line = "views of their own: 2 views drawn (a save's picture, a mod's camera), 97 places drawn in them, 0 of an instance with no slot to draw, %d not drawn because their scene has no view, 0 of an instance not known; 0 views not drawn because the scene slots were full; 0 views of another camera with the last frame's shade\n"
-    assert places_without_view("frame 1\n" + line % 0) == 0
-    assert places_without_view(line % 68) == 68
-    assert places_without_view("frame 1\n") is None
     same = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
     assert adapter_note(same, same) == "adapter: SAME: %s, as the accepted pictures" % same
     assert adapter_note(None, same).endswith("(accept again to record it)")
@@ -419,12 +420,22 @@ def self_test():
     # A capture of another stream format (narsis.nircap at the merge step of 79c752d): the stage is NOT RUN, and its line
     # names the capture, not the parts of the build.
     stale = "CAPTURE FORMAT: narsis.nircap was made by akulakhan.dll (nirender v0.3.6 87f7049), which writes the stream format 8; x"
+    FAILS[0] = 0
     with contextlib.redirect_stdout(io.StringIO()) as printed:
         assert not ran((10, "The parts of the wgpu renderer of MGE XE do not match.\nmake the capture again with this build\n" + stale + "\n"), "replay.py")
         assert baseline_failure_code() == NOT_RUN_EXIT
     assert "NOT RUN replay.py: " + stale in printed.getvalue() and "FAIL" not in printed.getvalue(), printed.getvalue()
     assert ("\nNOT RUN baseline: " + stale) in printed.getvalue(), printed.getvalue()
     del CAPTURE_FORMATS[:]
+    # W526: a thing that the stage could not judge is NOT RUN, with its line; a FAIL beside it comes first.
+    FAILS[0] = 0
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        assert not_run("a.nircap: the helper's output has no line of the check \"gpu errors\"") is False
+        assert baseline_failure_code() == NOT_RUN_EXIT
+        assert check(False, "a.nircap: a picture differs") is False and baseline_failure_code() == 1
+    assert "  NOT RUN a.nircap: the helper's output has no line" in printed.getvalue() and "\nNOT RUN baseline: a.nircap: the helper's output" in printed.getvalue(), printed.getvalue()
+    FAILS[0] = 0
+    del NOT_RUN_LINES[:]
     # A build folder with the helper only (a cargo target folder) lacks the Data Files.
     with tempfile.TemporaryDirectory() as build:
         open(os.path.join(build, "numidium.exe"), "wb").close()
@@ -608,7 +619,159 @@ def self_test():
             assert open(os.path.join(folder, "replay-draw-lights.replay.txt")).read() == "exit code 40\n" + fault_output
     finally:
         run_code, newest = real_run_code, real_newest
+    # W526, F-G-19: the clusters stage's compare. Equal pictures pass. A wrong area of 3 % of the picture with a mean
+    # of 0.2 passed before (the mean limit alone); one pixel over 8 levels fails now. The mean limit stays.
+    equal = {"pixels": 2073600, "different": 0.0, "over8": 0.0, "mean": 0.0, "largest": 0}
+    assert clusters_verdict(equal) == (True, "replay with the clusters against the lights of the draws: 0 pixels by more than 8 levels (0.0000 %; the limit is 0), "
+                                             "the largest level 0, mean 0.000 (the limit is under 0.5), 0.00 % different")
+    assert clusters_verdict(dict(equal, different=0.01, mean=0.01, largest=8))[0], "pixels that differ by 8 levels or less pass"
+    for numbers, said in ((dict(equal, different=0.03, over8=0.03, mean=0.2, largest=40), "62208 pixels by more than 8 levels (3.0000 %; the limit is 0), the largest level 40"),
+                          (dict(equal, different=0.000001, over8=1 / 2073600, mean=0.0001, largest=159), "1 pixels by more than 8 levels"),
+                          (dict(equal, different=0.9, mean=0.6, largest=3), "mean 0.600 (the limit is under 0.5)")):
+        passed, text = clusters_verdict(numbers)
+        assert not passed and said in text and text.endswith("go to the Architect before a limit moves)"), (numbers, text)
+    assert clusters_verdict({"problem": "the sizes differ"}) == (False, "replay with the clusters against the lights of the draws: the sizes differ")
+    self_test_baseline()
+    self_test_tour_stage()
     print("validate_retained self-test: ok")
+
+
+def self_test_tour_stage():
+    """W526, F-G-3: the stage `tour` takes the tour tool's verdict by its exit code. Rob's plant: an output with
+    "pairs: 0 of 20 equal" passed the stage before; now the tool ends with 1 for it, and the stage fails."""
+    global run_code, game, check_counts
+    real = run_code, game, check_counts
+    table = "20 stops to replay, gpu and off at each\n40 pictures, 0 failed\npairs: %d of 20 equal\n"
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            for cell in (1, 2, 3):
+                open(os.path.join(folder, "tour-%d.nircap" % cell), "wb").close()
+            game, check_counts = (lambda *_args, **_kind: folder), (lambda _folder: True)
+            for code, output, passed, said in (
+                    (0, table % 20 + "tour verdict: PASS\n", True, "  ok   tour verdict: PASS"),
+                    (0, table % 3 + "tour verdict: PASS\n", True, "  ok   tour verdict: PASS"),
+                    (1, table % 0 + "tour verdict: FAIL: 20 pairs of mode gpu against mode off differ by more than the limit 0.050, the largest 3.000 at 1-01-a.png\n", False, "  FAIL validate_tour.py ended with the code 1"),
+                    (TOUR_NOT_RUN, table % 20 + "tour verdict: NOT RUN: replay of tour-1.nircap: the helper's output has no line of the checks: gpu errors\n", False,
+                     "  NOT RUN validate_tour.py: tour verdict: NOT RUN: replay of tour-1.nircap: the helper's output has no line of the checks: gpu errors"),
+                    # A tool that ends with 0 and no verdict line (a tool from before W526, or a broken one) is no pass.
+                    (0, table % 0, False, "  FAIL validate_tour.py printed no verdict")):
+                run_code = lambda command, env=None, result=(code, output): result  # noqa: E731
+                with contextlib.redirect_stdout(io.StringIO()) as printed:
+                    assert stage_tour("no build") is passed, (code, printed.getvalue())
+                assert printed.getvalue().rstrip("\n").endswith(said), (said, printed.getvalue())
+    finally:
+        run_code, game, check_counts = real
+        FAILS[0] = 0
+        del NOT_RUN_LINES[:]
+
+
+def self_test_baseline():
+    """W526: the baseline stage on planted baseline folders with planted replays (no build, no replay, no GPU). Each
+    plant of the audit must fail the stage: a check line that is not there (F-G-1), a capture with no accepted picture
+    (F-G-2), a fault that shows only after frame 1 (F-G-13); and the nulls pass."""
+    global run_code, build_missing, check_stream_rule, stage_objects
+    import common
+    import picture_diff
+
+    real = run_code, build_missing, check_stream_rule, stage_objects
+    grey, other = (10, 20, 30), (250, 0, 250)
+    judged = {common.EARLY_WORLD_DRAWS: 12, common.OWN_VIEWS: 97, common.READS_PAST_END: 5000, common.UNKNOWN_RECORDS: 5000, common.GPU_ERRORS: 30, common.STAGE_SHADERS_CHECK: 13}
+
+    def report(counts=None, faults=None, without=()):
+        counts, faults = dict(judged, **(counts or {})), faults or {}
+        return "adapter: plant\n" + "".join("check %s: %d judged, %d faults\n" % (name, counts[name], faults.get(name, 0)) for name in common.CHECK_NAMES if name not in without)
+
+    def plant(pictures=None, reports=None, code=0):
+        """A run_code whose replay of <name>.nircap writes the frames of `pictures[name]` ({frame: colour}; the key
+        "*" for the other captures) and prints `reports[name]`."""
+        pictures, reports = dict({"*": {1: grey, 29: grey}}, **(pictures or {})), dict({"*": report()}, **(reports or {}))
+
+        def run(command, env=None):
+            if not command[1].endswith("replay.py"):
+                return 0, ""
+            name = os.path.basename(command[3])
+            frames = pictures.get(name, pictures["*"])
+            for frame, colour in (frames() if callable(frames) else frames).items():
+                picture_diff.Image.new("RGB", (8, 8), colour).save("%s-%05d.png" % (command[3], frame))
+            return code, reports.get(name, reports["*"])
+
+        return run
+
+    def stage(folder, tool, accept=False, add=False):
+        """(passed, printed, exit code of a stage that did not pass) of the stage on `folder` with the plant `tool`."""
+        global run_code
+        run_code = tool
+        FAILS[0] = 0
+        del NOT_RUN_LINES[:]
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            passed = stage_baseline(folder, accept, "no build", None if accept else os.path.join(folder, "now"), add)
+            code = 0 if passed else baseline_failure_code()
+        return passed, printed.getvalue(), code
+
+    build_missing, check_stream_rule, stage_objects = (lambda _build: []), (lambda _folder: True), (lambda _baseline, _build, keep=None: True)
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            kept = os.path.join(folder, "accepted")
+            for name in ("a", "b"):
+                open(os.path.join(folder, name + ".nircap"), "wb").close()
+            # The accept writes frame 1, the last frame and the judged counts of each capture; the same replays pass.
+            passed, said, _code = stage(folder, plant(), accept=True)
+            assert passed and "2 captures accepted (4 pictures)" in said, said
+            assert sorted(f for f in os.listdir(kept) if not f.endswith(".replay.txt")) == ["a-last.png", "a.checks.txt", "a.png", "adapter.txt", "b-last.png", "b.checks.txt", "b.png"], os.listdir(kept)
+            assert read_judged(os.path.join(kept, "a.checks.txt")) == judged
+            passed, said, _code = stage(folder, plant())
+            assert passed and "ok   a.nircap: frame 1 and frame 29 (the last)" in said and "ok   4 of 4 pictures equal to the accepted ones in" in said, said
+            assert "2 captures: frame 1 of each, and the last frame of 2" in said, said
+            # F-G-13: a fault that shows only in the last frame fails; before W526 only frame 1 was compared.
+            passed, said, code = stage(folder, plant({"a": {1: grey, 29: other}}))
+            assert not passed and code == 1 and "a-last.png" in said and "FAIL 3 of 4 pictures equal" in said, said
+            # F-G-1 (Rob's plant): a check with no line in one replay's output is NOT RUN, never a pass.
+            for lost in (common.EARLY_WORLD_DRAWS, common.OWN_VIEWS, common.GPU_ERRORS):
+                passed, said, code = stage(folder, plant(reports={"a": report(without=(lost,))}))
+                assert not passed and code == NOT_RUN_EXIT and '  NOT RUN a.nircap: the helper\'s output has no line of the check "%s"' % lost in said, (lost, said)
+                assert "NOT RUN baseline: a.nircap: the helper's output has no line" in said, said
+            # A check that judged nothing (no frame drawn, no record read, no stage key) is NOT RUN: no fault in nothing
+            # is no pass. The two checks of the floor are judged by the accepted counts instead (the next case).
+            passed, said, code = stage(folder, plant(reports={"a": report({common.GPU_ERRORS: 0})}))
+            assert not passed and '  NOT RUN a.nircap: the check "gpu errors" judged nothing' in said, said
+            # A check that judged at the accept and judges nothing now fails its capture, though another capture judges it.
+            passed, said, code = stage(folder, plant(reports={"a": report({common.OWN_VIEWS: 0})}))
+            assert not passed and code == 1 and 'FAIL a.nircap: the check "views of their own" judged 97 things at the accept and judges 0 now' in said, said
+            # The floor: no capture of the stage judges the check. The accepted counts say the same here, and they fail first.
+            passed, said, code = stage(folder, plant(reports={"*": report({common.EARLY_WORLD_DRAWS: 0})}))
+            assert not passed and 'NOT RUN no capture of the baseline judges the check "early world draws"' in said and code == 1, said
+            # A check with faults: the helper ends the replay with its code, and replay.py's line names it.
+            fault = report(faults={common.GPU_ERRORS: 2}) + "CHECKS: the replay of a.nircap failed with exit code 41: gpu errors: 2 faults of 30 judged\n"
+            passed, said, code = stage(folder, plant(reports={"*": fault}, code=EXIT_REPLAY_CHECKS))
+            assert not passed and code == 1 and "FAIL replay.py: CHECKS: the replay of a.nircap failed with exit code 41: gpu errors: 2 faults of 30 judged" in said, said
+            # Faults with the exit code 0 (a helper that did not end with its code) still fail.
+            passed, said, code = stage(folder, plant(reports={"a": report(faults={common.EARLY_WORLD_DRAWS: 5})}))
+            assert not passed and code == 1 and 'FAIL a.nircap: the check "early world draws": 5 faults of 12 judged' in said, said
+            # F-G-2 (Rob's plant): a capture with no accepted state fails by name; before W526 the stage said "ok".
+            open(os.path.join(folder, "new.nircap"), "wb").close()
+            passed, said, code = stage(folder, plant({"new": {1: other, 29: other}}))
+            assert not passed and code == 1 and "FAIL new.nircap has no accepted picture of frame 1" in said and "FAIL new.nircap has no accepted picture of its last frame" in said, said
+            assert "FAIL new.nircap has no accepted counts of its checks (new.checks.txt)" in said and "FAIL 4 of 6 pictures equal" in said, said
+            # --accept-new adds only what a capture lacks, when two replays give its pictures again; nothing is replaced.
+            turns = iter([{1: other, 29: other}, {1: other, 29: grey}])
+            passed, said, code = stage(folder, plant({"new": lambda: next(turns)}), add=True)
+            assert not passed and "FAIL new.nircap: the last frame is not steady: two replays differ" in said and not os.path.isfile(os.path.join(kept, "new.png")), said
+            passed, said, code = stage(folder, plant({"new": {1: other, 29: other}, "a": {1: other, 29: grey}}), add=True)
+            assert not passed and "accepted new: new.png, new-last.png, new.checks.txt" in said and "a.png" in said, said
+            assert picture_diff.Image.open(os.path.join(kept, "a.png")).getpixel((0, 0)) == grey, "an accepted picture was replaced"
+            passed, said, code = stage(folder, plant({"new": {1: other, 29: other}}))
+            assert passed and "ok   6 of 6 pictures equal" in said and "3 captures: frame 1 of each, and the last frame of 3" in said, said
+            passed, said, code = stage(folder, plant({"new": {1: other, 29: other}}), add=True)
+            assert passed and "accepted new: nothing: each capture has its accepted state" in said, said
+            # The other way: an accepted picture with no capture, and one of a later frame that the capture no longer has.
+            picture_diff.Image.new("RGB", (8, 8), grey).save(os.path.join(kept, "gone.png"))
+            passed, said, code = stage(folder, plant({"new": {1: other, 29: other}, "b": {1: grey}}))
+            assert not passed and "FAIL the accepted picture gone.png has no capture" in said and "FAIL the accepted picture b-last.png has no capture" in said, said
+            assert "ok   b.nircap: frame 1 (the capture has no later frame)" in said, said
+    finally:
+        run_code, build_missing, check_stream_rule, stage_objects = real
+        FAILS[0] = 0
+        del NOT_RUN_LINES[:]
 
 
 def picture_folders(baseline, accept, now):
@@ -676,9 +839,98 @@ def check_stream_rule(baseline):
     return check(True, "stream rule: %d captures pass, %d have no scene of kind 5 (not run)" % (len(passed), not_run))
 
 
-def stage_baseline(baseline, accept, mge_build, now=None):
-    """The captures of the baseline folder against their accepted pictures, in the order of
-    the draws of the game, as a player has them."""
+# What a capture has in the accepted folder (W526): <name>.png, the picture of frame 1; <name>-last.png, the picture
+# of its last frame (a fault that shows only after frame 1, such as a fade, a cache or a filled atlas, shows there);
+# <name>.checks.txt, how many things each check of the helper judged in the accepted replay.
+LAST = "-last"
+JUDGED = ".checks.txt"
+# The frames of each replay of the stage, for the helper's --frames-at.
+GATE_FRAMES = "1,last"
+# The checks that a capture can have nothing to judge for (no start of a world for the extension, no view of its
+# own). For each capture the accepted count says whether it must judge; over the stage, one capture at least must.
+FLOOR_CHECKS = (EARLY_WORLD_DRAWS, OWN_VIEWS)
+
+
+def replay_frames(capture, prefix, mge_build, env):
+    """One replay of a capture for the gate: frame 1 into <prefix>.png and the last frame into <prefix>-last.png.
+    Returns (code, output, last frame or None). A capture whose last frame is frame 1 or before has no later
+    picture. Pictures of an earlier replay with this prefix are removed first: no stale picture is judged."""
+    folder, name = os.path.split(prefix)
+    numbered = re.compile(re.escape(name) + r"-(\d{5})\.png")
+    for stale in [prefix + ".png", prefix + LAST + ".png"] + [os.path.join(folder, entry) for entry in os.listdir(folder) if numbered.fullmatch(entry)]:
+        if os.path.isfile(stale):
+            os.remove(stale)
+    code, output = run_code([PY, os.path.join(HERE, "replay.py"), capture, prefix, "--frames-at", GATE_FRAMES, "--mge-build", mge_build], env)
+    frames = sorted(int(found.group(1)) for found in map(numbered.fullmatch, os.listdir(folder)) if found)
+    last = None
+    for frame in frames:
+        made = "%s-%05d.png" % (prefix, frame)
+        if frame == 1:
+            os.replace(made, prefix + ".png")
+        elif frame == frames[-1]:
+            os.replace(made, prefix + LAST + ".png")
+            last = frame
+        else:
+            os.remove(made)
+    return code, output, last
+
+
+def read_judged(path):
+    """The judged counts of a capture's checks at its accept, {name: count}; None when the file is not there."""
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as file:
+        return {name: int(count) for name, count in (line.rstrip("\n").split("\t") for line in file if "\t" in line)}
+
+
+def write_judged(path, checks):
+    with open(path, "w", encoding="utf-8", newline="\n") as file:
+        file.write("".join("%s\t%d\n" % (name, judged) for name, (judged, _faults) in sorted(checks.items())))
+
+
+def stopped_judging(accepted, now):
+    """The checks that judged above 0 at the accept and judge 0 now, as texts. Only that step is compared, not the
+    number: a capture that still judges its check judges it. A check with no line now is not here: it is NOT RUN
+    (`judge_checks`), which is another thing than a check that ran and judged nothing."""
+    return ["the check \"%s\" judged %d things at the accept and judges 0 now" % (name, count)
+            for name, count in sorted(accepted.items()) if count > 0 and name in now and now[name][0] == 0]
+
+
+def equal_pictures(a, b):
+    """(equal, text) for two picture files."""
+    import picture_diff
+
+    numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(b))
+    if "problem" not in numbers and numbers["different"] == 0:
+        return True, "equal"
+    return False, numbers.get("problem") or "%.2f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("largest", 0))
+
+
+def steady_problems(capture, name, pictures, mge_build, env):
+    """Why the pictures of a capture cannot be accepted, as texts: a second replay must give each of them again,
+    byte for byte. A frame that follows the clock (an arrival of distant statics) differs from run to run, and an
+    accepted picture of it would fail the gate by chance."""
+    again = tempfile.mkdtemp(prefix="gate-steady-")
+    code, output, _last = replay_frames(capture, os.path.join(again, name), mge_build, env)
+    if code != 0:
+        return ["the second replay ended with the code %d" % code]
+    problems = []
+    for suffix in pictures:
+        second = os.path.join(again, name + suffix + ".png")
+        equal, said = equal_pictures(pictures[suffix], second) if os.path.isfile(second) else (False, "no picture in the second replay")
+        if not equal:
+            problems.append("%s is not steady: two replays differ (%s)" % ("frame 1" if suffix == "" else "the last frame", said))
+    return problems
+
+
+def stage_baseline(baseline, accept, mge_build, now=None, add=False):
+    """The captures of the baseline folder against their accepted state, in the order of the draws of the game, as
+    a player has them. Each capture is judged, and what cannot be judged is said (W526): its checks (a missing line
+    is NOT RUN, a fault is a FAIL, a check that judged at the accept and judges nothing now is a FAIL); its frame 1
+    and its last frame against their accepted pictures (a capture with no accepted picture is a FAIL by name, and
+    so is an accepted picture with no capture). `accept` writes the accepted state of every capture again; `add`
+    (--accept-new) writes only the state that a capture lacks, after the compare of what it has, and replaces
+    nothing. Both accept a picture only when a second replay gives it again."""
     print("baseline %s" % baseline, flush=True)
     missing = build_missing(mge_build)
     if missing:
@@ -693,51 +945,106 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     out, tour_out = picture_folders(baseline, accept, now)
     os.makedirs(out, exist_ok=True)
     adapter = None
-    early_captures = []
-    no_view_captures = []
+    ok = True
+    now_state = {}
     for capture in captures:
-        picture = os.path.join(out, capture[:-7] + ".png")
-        code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), picture, "--frame", "1", "--mge-build", mge_build], env)
-        keep_replay_output(picture, code, output)
+        name = capture[:-7]
+        code, output, last = replay_frames(os.path.join(baseline, capture), os.path.join(out, name), mge_build, env)
+        keep_replay_output(os.path.join(out, name + ".png"), code, output)
         if not ran((code, output), "replay.py", accept):
             return False
         adapter = adapter or adapter_of(output)
-        if early_world_scenes(output):
-            early_captures.append(capture)
-        if places_without_view(output):
-            no_view_captures.append(capture)
+        # The two checks of the floor can have nothing to judge in a capture: its accepted counts and the floor say
+        # whether that is right. Each other check must judge (records, frames, stage keys).
+        ok &= judge_checks(capture, output, may_judge_nothing=FLOOR_CHECKS)
+        pictures = {suffix: os.path.join(out, name + suffix + ".png") for suffix in ("", LAST)}
+        pictures = {suffix: picture for suffix, picture in pictures.items() if os.path.isfile(picture)}
+        ok &= check("" in pictures, "%s: %s" % (capture, "frame 1 and frame %d (the last)" % last if last else "frame 1 (the capture has no later frame)") if "" in pictures else "%s: the replay made no picture of frame 1" % capture)
+        now_state[name] = (helper_checks(output), pictures)
+    for check_name in FLOOR_CHECKS:
+        if not any(checks.get(check_name, (0, 0))[0] for checks, _pictures in now_state.values()):
+            ok &= not_run("no capture of the baseline judges the check \"%s\": the stage cannot show it" % check_name)
     tour = os.path.join(baseline, "tour")
     if os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
         return False
     adapter_path = os.path.join(accepted, ADAPTER_FILE)
     if accept:
+        for name, (checks, pictures) in sorted(now_state.items()):
+            for problem in steady_problems(os.path.join(baseline, name + ".nircap"), name, pictures, mge_build, env):
+                ok &= check(False, "%s.nircap: %s: the accepted folder holds a picture that the gate cannot repeat" % (name, problem))
+            write_judged(os.path.join(accepted, name + JUDGED), checks)
         if adapter:
             with open(adapter_path, "w", encoding="utf-8", newline="\n") as out_file:
                 out_file.write(adapter + "\n")
         elif os.path.isfile(adapter_path):
             # No adapter printed this time: an old record would name the wrong one.
             os.remove(adapter_path)
-        return check(True, "%d pictures accepted%s, on %s" % (len(captures), ", and the tour" if os.path.isdir(tour) else "", adapter or "an adapter the helper did not print"))
+        return check(ok, "%d captures accepted (%d pictures)%s, on %s" % (len(captures), sum(len(pictures) for _checks, pictures in now_state.values()), ", and the tour" if os.path.isdir(tour) else "", adapter or "an adapter the helper did not print"))
     recorded = open(adapter_path, encoding="utf-8").read().strip() if os.path.isfile(adapter_path) else None
     print("       " + adapter_note(recorded, adapter), flush=True)
     sys.path.insert(0, HERE)
-    import picture_diff
 
-    ok = check(not early_captures, "no replay had draws of its world in the target before the extension's parts" if not early_captures else "replays with draws of their world in the target before the extension's parts: %s" % ", ".join(early_captures))
-    ok &= check(not no_view_captures, "no replay had places of a view of its own without a view" if not no_view_captures else "replays with places of a view of its own not drawn because their scene has no view: %s" % ", ".join(no_view_captures))
-    for a, b in [(accepted, out)] + ([(os.path.join(tour, "accepted"), tour_out)] if os.path.isdir(tour) else []):
-        names = sorted(f for f in os.listdir(a) if f.endswith(".png")) if os.path.isdir(a) else []
+    equal, wanted, added = 0, 0, []
+    for name, (checks, pictures) in sorted(now_state.items()):
+        capture = name + ".nircap"
+        lacks = []
+        fine = True
+        for suffix, picture in sorted(pictures.items()):
+            wanted += 1
+            kept = os.path.join(accepted, name + suffix + ".png")
+            if not os.path.isfile(kept):
+                lacks.append(suffix)
+                continue
+            same, said = equal_pictures(kept, picture)
+            equal += same
+            fine &= same
+            if not same:
+                print("       %-40s %s" % (os.path.basename(kept), said), flush=True)
+        judged = read_judged(os.path.join(accepted, name + JUDGED))
+        for problem in stopped_judging(judged or {}, checks):
+            fine &= check(False, "%s: %s" % (capture, problem))
+        if not add:
+            for suffix in lacks:
+                fine &= check(False, "%s has no accepted picture of %s: the gate cannot judge it (accept it with --accept-new)" % (capture, "frame 1" if suffix == "" else "its last frame"))
+            if judged is None:
+                fine &= check(False, "%s has no accepted counts of its checks (%s): the gate cannot tell a check that stopped judging (accept it with --accept-new)" % (capture, name + JUDGED))
+        elif fine and (lacks or judged is None):
+            # Only what the capture lacks, and only when what it has is equal: nothing is replaced.
+            problems = steady_problems(os.path.join(baseline, capture), name, {suffix: pictures[suffix] for suffix in lacks}, mge_build, env) if lacks else []
+            for problem in problems:
+                fine &= check(False, "%s: %s: not accepted" % (capture, problem))
+            if not problems:
+                os.makedirs(accepted, exist_ok=True)
+                for suffix in lacks:
+                    shutil.copyfile(pictures[suffix], os.path.join(accepted, name + suffix + ".png"))
+                    added.append(name + suffix + ".png")
+                    equal += 1
+                if judged is None:
+                    write_judged(os.path.join(accepted, name + JUDGED), checks)
+                    added.append(name + JUDGED)
+        ok &= fine
+    # The other way: an accepted picture that no capture of this run has.
+    known = {name + suffix + ".png" for name, (_checks, pictures) in now_state.items() for suffix in pictures}
+    strays = sorted(f for f in os.listdir(accepted) if f.endswith(".png") and f not in known) if os.path.isdir(accepted) else []
+    for stray in strays:
+        ok &= check(False, "the accepted picture %s has no capture and no frame of this run: the gate judged nothing with it" % stray)
+    if add:
+        print("       accepted new: %s" % (", ".join(added) or "nothing: each capture has its accepted state"), flush=True)
+    ok &= check(wanted != 0 and equal == wanted and not strays, "%d of %d pictures equal to the accepted ones in %s" % (equal, wanted, out))
+    print("       %d captures: frame 1 of each, and the last frame of %d" % (len(now_state), sum(LAST in pictures for _checks, pictures in now_state.values())), flush=True)
+    if os.path.isdir(tour):
+        kept_tour = os.path.join(tour, "accepted")
+        names = sorted(f for f in os.listdir(kept_tour) if f.endswith(".png")) if os.path.isdir(kept_tour) else []
         equal = 0
         for name in names:
-            if not os.path.isfile(os.path.join(b, name)):
+            if not os.path.isfile(os.path.join(tour_out, name)):
                 print("       %-40s no picture now" % name, flush=True)
                 continue
-            numbers = picture_diff.compare(picture_diff.load(os.path.join(a, name)), picture_diff.load(os.path.join(b, name)))
-            if "problem" not in numbers and numbers["different"] == 0:
-                equal += 1
-            else:
-                print("       %-40s %s" % (name, numbers.get("problem") or "%.2f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("largest", 0))), flush=True)
-        ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s" % (equal, len(names), b))
+            same, said = equal_pictures(os.path.join(kept_tour, name), os.path.join(tour_out, name))
+            equal += same
+            if not same:
+                print("       %-40s %s" % (name, said), flush=True)
+        ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s" % (equal, len(names), tour_out))
     return stage_objects(baseline, mge_build, out) and ok
 
 
@@ -796,7 +1103,7 @@ def replay_end(code, output):
     the stage shaders when the code is that fault's (W523)."""
     if code == 0:
         return ""
-    fault = stage_fault_in(output) if code == EXIT_REPLAY_STAGE_SHADERS else ""
+    fault = replay_fault_in(output) if code in (EXIT_REPLAY_STAGE_SHADERS, EXIT_REPLAY_CHECKS) else ""
     return " (replay.py ended with the code %d%s)" % (code, ": " + fault if fault else "")
 
 
@@ -858,6 +1165,31 @@ def stage_only(place, mge_build):
     return ok
 
 
+# The limits of the clusters stage's compare (the replay with the clusters against the replay with the lights of the
+# draws). The mean over all pixels alone passed a wrong area of a few percent of the picture (the audit's F-G-19), so
+# the stage also allows NO pixel that differs by more than 8 levels (the Architect's limit, W526).
+# The expectation, written before the first run under it: the clusters and the lights of the draws are two forms of
+# one light. Three kept captures gave 0 pixels different on 2026-11-16 (seyda, narsis, night-masser at frame 20;
+# narsis with lights in its clusters), under the instance's settings. No capture of this stage's own place under its
+# own settings (the expanded light limit, a night place with many lights) was compared then: the first run of the
+# stage there is the test of this limit. A failure here means that the expectation was wrong or that the code is.
+# It is not noise: bring the numbers and their cause to the Architect before the limit moves.
+CLUSTERS_MEAN_LIMIT = 0.5
+CLUSTERS_OVER_8_LIMIT = 0
+
+
+def clusters_verdict(numbers):
+    """(passed, text) for the numbers of picture_diff.compare of the two replays of the clusters stage: the share of
+    pixels over 8 levels with its count and the largest level, and the mean, each against its limit."""
+    if "problem" in numbers:
+        return False, "replay with the clusters against the lights of the draws: %s" % numbers["problem"]
+    over = round(numbers.get("over8", 0) * numbers.get("pixels", 0))
+    passed = over <= CLUSTERS_OVER_8_LIMIT and numbers["mean"] < CLUSTERS_MEAN_LIMIT
+    said = "replay with the clusters against the lights of the draws: %d pixels by more than 8 levels (%.4f %%; the limit is %d), the largest level %d, mean %.3f (the limit is under %.1f), %.2f %% different" % (
+        over, numbers.get("over8", 0) * 100, CLUSTERS_OVER_8_LIMIT, numbers.get("largest", 0), numbers["mean"], CLUSTERS_MEAN_LIMIT, numbers["different"] * 100)
+    return passed, said if passed else said + ": the two are two forms of one light, so the expectation was wrong or the code is; this is not noise (the numbers and their cause go to the Architect before a limit moves)"
+
+
 def stage_clusters(place, mge_build, started):
     """The replays of the capture that this validate run made at the place (`started`, in RUN_TIME's
     form, is the start of this run). An older capture of the place is not used: it can be of another
@@ -887,10 +1219,7 @@ def stage_clusters(place, mge_build, started):
 
     used = re.search(r"clusters: ([\d.]+) lights and (\d+) entries for each frame", out)
     ok = check(used is not None and used.group(2) != "0", used.group(0) if used else "no clusters line in the replay")
-    numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(b))
-    text = "replay with the clusters against the lights of the draws: %s" % (numbers.get("problem") or "%.2f %% different, %.2f %% by more than 8, mean %.3f, largest %d" % (
-        numbers["different"] * 100, numbers.get("over8", 0) * 100, numbers["mean"], numbers.get("largest", 0)))
-    ok &= check("problem" not in numbers and numbers["mean"] < 0.5, text)
+    ok &= check(*clusters_verdict(picture_diff.compare(picture_diff.load(a), picture_diff.load(b))))
     for name, env in (("clusters", {"MGE_XE_CLUSTERS": "1"}), ("draw-lights", {"MGE_XE_CLUSTERS": "0"})):
         label = "v-%s-%s" % (name, place)
         env = dict(env)
@@ -949,13 +1278,13 @@ def stage_tour(mge_build):
     print("       weather: not pinned: the tour step pins none (the run's line: %s)" % (run_weather_line(folder) or "none"), flush=True)
     ok = check_counts(folder)
     code, out = run_code([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4", "--mge-build", mge_build], {})
+    for line in out.strip().split("\n")[-45:]:
+        print("       " + line[:160], flush=True)
+    # The tool's exit code is its verdict (W526: its pictures, its replays' fault codes, each pair of mode gpu against
+    # mode off against its limit). Before, this stage passed on any count of equal pairs.
     if not ran((code, out), "validate_tour.py"):
         return False
-    tail = out.strip().split("\n")
-    for line in tail[-45:]:
-        print("       " + line[:160], flush=True)
-    pairs = re.search(r"pairs: (\d+) of (\d+) equal", out)
-    return ok & check(pairs is not None and pairs.group(2) != "0", pairs.group(0) if pairs else "no pairs compared")
+    return ok & check(tour_verdict_in(out).endswith("PASS"), tour_verdict_in(out) or "validate_tour.py printed no verdict")
 
 
 def main():
@@ -965,6 +1294,8 @@ def main():
     ap.add_argument("--places", default="seyda,narsis")
     ap.add_argument("--baseline", default=os.path.join(REPO, "results", "baseline-records"), help="the folder of the baseline stage")
     ap.add_argument("--accept", action="store_true", help="the baseline stage writes the accepted pictures and compares nothing")
+    ap.add_argument("--accept-new", action="store_true", help="the baseline stage compares, and then accepts only what a capture lacks (a picture of frame 1 or of its last frame, "
+                    "the counts of its checks); it replaces nothing")
     ap.add_argument("--now", default=None, help="the folder of the baseline stage's pictures, outside the baseline folder; without it, a run folder of its own in results")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
@@ -974,6 +1305,9 @@ def main():
     if args.self_test:
         self_test()
         return 0
+    if args.accept and args.accept_new:
+        print("  FAIL --accept writes every accepted picture again, and --accept-new replaces none: give one of them", flush=True)
+        return 1
     problem = now_problem(args.baseline, args.accept, args.now)
     if problem:
         print("  FAIL " + problem, flush=True)
@@ -1001,7 +1335,7 @@ def main():
                 if not stage_capture(place, args.mge_build):
                     return 1
         elif stage == "baseline":
-            if not stage_baseline(args.baseline, args.accept, args.mge_build, args.now):
+            if not stage_baseline(args.baseline, args.accept, args.mge_build, args.now, args.accept_new):
                 return baseline_failure_code()
         elif stage == "only":
             for place in places:

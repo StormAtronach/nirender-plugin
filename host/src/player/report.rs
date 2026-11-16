@@ -1,8 +1,27 @@
 //! The marks and the counts of a run, printed for the log.
 
+use crate::checks::{self, Check};
 use crate::*;
 
 impl Player {
+    /// The checks of the session that a tool reads ([`crate::checks`]): a new check is one entry
+    /// here. The sentences of [`Player::print_counts`] have the detail of each.
+    pub(crate) fn checks(&self) -> Vec<Check> {
+        let c = &self.renderer.counts;
+        vec![
+            Check::new(checks::EARLY_WORLD_DRAWS, c.early_checks, c.early_scenes),
+            Check::new(
+                checks::OWN_VIEWS,
+                c.view_places + c.view_places_no_view,
+                c.view_places_no_view,
+            ),
+            Check::new(checks::READS_PAST_END, c.records, crate::reads_past_end()),
+            Check::new(checks::UNKNOWN_RECORDS, c.records, c.unknown_records),
+            Check::new(checks::GPU_ERRORS, c.frames, crate::gpu::errors()),
+            self.renderer.stage_shaders.check(),
+        ]
+    }
+
     /// Prints the counts since the last mark, for one step of a scenario.
     pub(crate) fn mark(&mut self, text: &str) {
         let counts = &self.renderer.counts;
@@ -431,6 +450,10 @@ impl Player {
         }
         for line in pass_report::exit_lines() {
             println!("{line}");
+        }
+        // The checks, always and last: a tool reads these lines, not the sentences above.
+        for check in self.checks() {
+            println!("{}", check.line());
         }
     }
 

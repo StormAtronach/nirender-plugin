@@ -473,6 +473,8 @@ pub(crate) struct Counts {
     pub(crate) times: [u64; TIME_COUNT],
     /// The frames that are complete.
     pub(crate) frames: u32,
+    /// The records that the player was given, the refused ones too.
+    pub(crate) records: u64,
     /// The geometry records, their bytes, the draws from them, the records that did not
     /// parse, and the draws of more index entries than their geometry has.
     pub(crate) geometry_records: u32,

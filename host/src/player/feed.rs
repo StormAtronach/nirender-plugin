@@ -95,6 +95,7 @@ impl Player {
     /// Does one record. Returns true for the record that ends a frame.
     /// Engine-rules R19, R22 (the skill wgpu-renderer-dev).
     pub(crate) fn feed(&mut self, tag: u32, data: &[u8]) -> bool {
+        self.renderer.counts.records += 1;
         // A record shorter than its tag needs (the fixed part, and the variable parts that
         // its counts name) is refused: not read past its end, counted, the first of each tag
         // in the log. The reads below stay within `needed`; the checks of the readers on
