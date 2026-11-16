@@ -81,18 +81,12 @@ def slot_tool():
     return slot
 
 
-def e_gate(slot=None, now=None):
-    """(True, line) when no timing run holds the game (`slot.py e-ok`, D297), else (False, line). `slot` replaces the
-    slot tool in the tests."""
+def e_gate(slot=None):
+    """(True, line) when no timing run holds the game (`slot.py e-ok`, D297), else (False, line). slot.py's e_ok applies
+    a timing holder's own rule (`in_force`) itself since W546 (docs 15d72f7b), so no read of the holder is needed here.
+    `slot` replaces the slot tool in the tests."""
     try:
         slot = slot or slot_tool()
-        # The order matters (the plan's addendum 2): e_ok counts a timing holder's game past its lease only through
-        # game.seen, which in_force writes (timing_rule_stands) and e_ok does not. So the game holder is read here
-        # first, and a timing holder in force refuses before e_ok is asked. The full status read is not used: it may
-        # walk the E: disk.
-        holder = slot.read_record(slot.holder_path("game"), slot.Holder)
-        if holder is not None and holder.timing and slot.in_force(holder, time.time() if now is None else now):
-            return False, "e-ok: no: a timing run holds the game: %s" % getattr(holder, "who", "?")
         reply = slot.e_ok()
     except Exception as error:  # noqa: BLE001 - any fault of the slot tool means no write
         return False, "the slot tool did not answer: %s" % error
@@ -462,37 +456,25 @@ def faults_of(folder):
     return ""
 
 
-def fake_slot(holder, in_force_answer, e_ok_code="done"):
-    """A slot tool for the test of e_gate: it records its calls in `calls`."""
+def fake_slot(e_ok_code="done"):
+    """A slot tool for the test of e_gate: it records its calls in `calls`, and has only e_ok."""
     calls = []
-    slot = types.SimpleNamespace(DONE="done", Holder=object, calls=calls)
-    slot.holder_path = lambda name: calls.append("holder_path " + name) or "path-" + name
-    slot.read_record = lambda path, kind: calls.append("read_record " + path) or holder
-    slot.in_force = lambda record, now: calls.append("in_force") or in_force_answer
+    slot = types.SimpleNamespace(DONE="done", calls=calls)
     slot.e_ok = lambda: calls.append("e_ok") or types.SimpleNamespace(code=e_ok_code, text="e-ok: %s" % e_ok_code)
     return slot
 
 
 def self_test_e_gate():
-    timing = types.SimpleNamespace(timing=True, who="Hob: a timing run")
-    plain = types.SimpleNamespace(timing=False, who="Rob: a live check")
-    # A timing holder in force: no, and e_ok is not asked; the game holder is read first (addendum 2).
-    slot = fake_slot(timing, True)
-    assert e_gate(slot, 1.0) == (False, "e-ok: no: a timing run holds the game: Hob: a timing run"), slot.calls
-    assert slot.calls == ["holder_path game", "read_record path-game", "in_force"], slot.calls
-    # A timing holder whose rule ended: e_ok decides, after the read.
-    slot = fake_slot(timing, False)
-    assert e_gate(slot, 1.0) == (True, "e-ok: done") and slot.calls[-2:] == ["in_force", "e_ok"], slot.calls
-    # A holder that is not timing: in_force is not needed, e_ok decides.
-    slot = fake_slot(plain, True, e_ok_code="refused")
-    assert e_gate(slot, 1.0) == (False, "e-ok: refused") and slot.calls[-1] == "e_ok" and "in_force" not in slot.calls
-    # The null: no holder, e_ok's yes.
-    slot = fake_slot(None, False)
-    assert e_gate(slot, 1.0) == (True, "e-ok: done") and slot.calls[-1] == "e_ok"
+    # e_ok decides, and it is the only call (W546: no read of the game holder here).
+    slot = fake_slot("refused")
+    assert e_gate(slot) == (False, "e-ok: refused") and slot.calls == ["e_ok"], slot.calls
+    # The null: e_ok's yes.
+    slot = fake_slot()
+    assert e_gate(slot) == (True, "e-ok: done") and slot.calls == ["e_ok"], slot.calls
     # A slot tool that fails: no.
-    broken = fake_slot(None, False)
-    broken.read_record = lambda path, kind: (_ for _ in ()).throw(OSError("state busy"))
-    assert e_gate(broken, 1.0)[0] is False
+    broken = fake_slot()
+    broken.e_ok = lambda: (_ for _ in ()).throw(OSError("state busy"))
+    assert e_gate(broken)[0] is False and "state busy" in e_gate(broken)[1]
 
 
 def self_test_placing():
