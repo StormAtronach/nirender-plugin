@@ -291,19 +291,26 @@ impl StageKey {
 /// The world shader's `fs` for one key, made from the world shader's text: the reads of the
 /// stages at and past the count give white, the stage loop becomes one step for each stage with
 /// its codes as constants, the alpha test has its function as a constant, and the draw's facts
-/// of the key are constants ([`fixed_facts`]). None when the text does not have the parts that
-/// this rewrite expects (then the uber-shader draws the key).
-pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
-    let mut source = world.to_string();
+/// of the key are constants ([`fixed_once`], [`fixed_reads`]). A [`RewriteRefusal`] when the text does
+/// not have a part that this rewrite expects (then the uber-shader draws the key).
+///
+/// The parts that the rewrite needs one time are searched in the crate's own part of the text
+/// only: the text before [`crate::request::EXTENSION_BEGIN`]. The text of an extension or of a
+/// mod's file is not ours, and a second copy of such a part in it changes nothing. The first
+/// such line is the boundary, so a copy of the line itself in a mod's text changes nothing
+/// either. A text with no such line is the crate's own as a whole.
+pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Result<String, RewriteRefusal> {
+    let (own, extension) = match world.split_once(crate::request::EXTENSION_BEGIN) {
+        Some((own, extension)) => (own, Some(extension)),
+        None => (world, None),
+    };
+    let mut source = own.to_string();
     // The reads: each stage's line starts so; stage 0's read is kept (a draw with no stage has no
     // use for it, and the compiler drops it).
     for stage in (key.count as usize).max(1)..STAGES {
         let start = format!("    texels[{stage}] = bump_light(");
-        let at = source.find(&start)?;
-        if source[at + 1..].contains(&start) {
-            return None;
-        }
-        let end = at + source[at..].find('\n')?;
+        let at = one(&source, &start, || format!("the read of stage {stage}"))?;
+        let end = at + line_length(&source[at..]);
         source.replace_range(at..end, &format!("    texels[{stage}] = vec4f(1.0);"));
     }
     // The reads below the count: after a stage that is no bump stage (22, 23), `bump_light` gives
@@ -314,15 +321,25 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
             continue;
         }
         let start = format!("    texels[{stage}] = bump_light({before}u, texels[{before}], ");
-        let at = source.find(&start)?;
-        if source[at + 1..].contains(&start) {
-            return None;
-        }
-        let end = at + source[at..].find('\n')?;
-        let sample = source[at + start.len()..end].strip_suffix(");")?;
+        let at = one(&source, &start, || {
+            format!("the read of stage {stage} after the bump light of stage {before}")
+        })?;
+        let end = at + line_length(&source[at..]);
+        let Some(sample) = source[at + start.len()..end].strip_suffix(");") else {
+            return Err(RewriteRefusal::count(
+                format!("the close of the read of stage {stage}"),
+                0,
+                ONE,
+            ));
+        };
         let moved = format!(" + bump_move({before}u, texels[{before}])");
-        if sample.matches(&moved).count() != 1 {
-            return None;
+        let moves = sample.matches(&moved).count();
+        if moves != 1 {
+            return Err(RewriteRefusal::count(
+                format!("the bump move in the read of stage {stage}"),
+                moves,
+                ONE,
+            ));
         }
         let read = format!("    texels[{stage}] = {};", sample.replacen(&moved, "", 1));
         source.replace_range(at..end, &read);
@@ -331,7 +348,11 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
     // The stage loop: its code must be the code that the steps copy.
     let (start, end) = stage_loop_range(&source)?;
     if without_comments(&source[start..end]) != STAGE_LOOP {
-        return None;
+        return Err(RewriteRefusal {
+            part: "the stage loop".to_string(),
+            found: 1,
+            wanted: "its code is not the code that the steps copy",
+        });
     }
     let mut steps = String::new();
     for stage in 0..key.count as usize {
@@ -354,32 +375,77 @@ pub(crate) fn fragment_source(world: &str, key: &StageKey) -> Option<String> {
     source.replace_range(start..end, &steps);
 
     // The alpha test: the draw's, and the same test on the colour of the clouds hook.
-    for (indent, value) in [("    ", "current"), ("        ", "cloud")] {
+    for (indent, value, part) in [
+        ("    ", "current", "the alpha test of the draw"),
+        ("        ", "cloud", "the alpha test of the clouds hook"),
+    ] {
         let test = format!("{indent}if draws[record].more.z != 0u && !compare(draws[record].more.z, floor({value}.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n{indent}    discard;\n{indent}}}\n");
-        if source.matches(&test).count() != 1 {
-            return None;
-        }
+        one(&source, &test, || part.to_string())?;
         let fixed_test = match key.alpha_test {
             0 => String::new(),
             function => format!("{indent}if !compare({function}u, floor({value}.a * 255.0 + 0.5), f32(draws[record].more.w)) {{\n{indent}    discard;\n{indent}}}\n"),
         };
         source = source.replacen(&test, &fixed_test, 1);
     }
-    fixed_facts(&source, key)
+    let own = fixed_once(&source, key)?;
+    let whole = match extension {
+        Some(extension) => format!("{own}{}{extension}", crate::request::EXTENSION_BEGIN),
+        None => own,
+    };
+    fixed_reads(&whole, key)
 }
 
-/// The text with the draw's facts of the key as constants, so that the compiler leaves out the
-/// branches that the key's draws cannot take: `from_scene` returns the key's scene bit, the test
-/// of `fogged` for a draw that adds to the picture is the key's add bit, each read of the flat bit
-/// is the key's, the plane's test of `fs` is false for a key without a plane, a read of the
-/// record's `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits of a
-/// retained draw stay values of the frame, without [`SKY_BITS`]), and the reads of `flags.x` and
-/// `flags.y` are the key's values. None when the text lacks one of these parts.
-fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
-    let scene_test = "fn from_scene() -> bool {\n    return (draws[record].light_range.w & 4u) != 0u;\n}\n";
-    if source.matches(scene_test).count() != 1 {
-        return None;
+/// Why the rewrite of a stage key's text failed: the part of the world shader's text that the
+/// rewrite looked for, how many times the text has it, and what the rewrite wanted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewriteRefusal {
+    /// The part, in words.
+    pub part: String,
+    /// How many times the text has the part.
+    pub found: usize,
+    /// What the rewrite wanted of it, in words.
+    pub wanted: &'static str,
+}
+
+/// The rewrite wanted the part one time.
+const ONE: &str = "1 wanted";
+/// The rewrite wanted the part one time or more.
+const SOME: &str = "1 or more wanted";
+
+impl RewriteRefusal {
+    fn count(part: String, found: usize, wanted: &'static str) -> RewriteRefusal {
+        RewriteRefusal { part, found, wanted }
     }
+}
+
+impl std::fmt::Display for RewriteRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {} in the text, {}", self.part, self.found, self.wanted)
+    }
+}
+
+/// Where the one copy of `part_text` is in `text`, or the refusal with the count of its copies.
+fn one(text: &str, part_text: &str, part: impl Fn() -> String) -> Result<usize, RewriteRefusal> {
+    match text.matches(part_text).count() {
+        1 => Ok(text.find(part_text).expect("a text that matches one time is found")),
+        found => Err(RewriteRefusal::count(part(), found, ONE)),
+    }
+}
+
+/// The length of the first line of `text`, without its line end.
+fn line_length(text: &str) -> usize {
+    text.find('\n').unwrap_or(text.len())
+}
+
+/// The crate's own text with the facts of the key that the text tests at one place as constants,
+/// so that the compiler leaves out the branches that the key's draws cannot take: `from_scene`
+/// returns the key's scene bit, the test of `fogged` for a draw that adds to the picture is the
+/// key's add bit, the plane's test of `fs` is false for a key without a plane, and the scene's
+/// part of `draw_counts_w` never has [`SKY_BITS`]. A [`RewriteRefusal`] when the text does not have one
+/// of these parts one time.
+fn fixed_once(source: &str, key: &StageKey) -> Result<String, RewriteRefusal> {
+    let scene_test = "fn from_scene() -> bool {\n    return (draws[record].light_range.w & 4u) != 0u;\n}\n";
+    one(source, scene_test, || "the function from_scene".to_string())?;
     let source = source.replacen(
         scene_test,
         &format!("fn from_scene() -> bool {{\n    return {};\n}}\n", key.scene),
@@ -388,24 +454,12 @@ fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
 
     // The one test of the add bit is in `fogged`, which `fs` and the extension's finish call.
     let adds_test = format!("(draws[record].light_range.w & {}u) != 0u", crate::ADDS_BIT);
-    if source.matches(&adds_test).count() != 1 {
-        return None;
-    }
+    one(&source, &adds_test, || "the test of the add bit in fogged".to_string())?;
     let source = source.replacen(&adds_test, &key.adds.to_string(), 1);
-
-    // Each read of the flat bit: the start of `fs`, and the vertex stage's and the extension's
-    // tests of a draw with no lights.
-    let flat_read = "draws[record].light_range.w & 16u";
-    if !source.contains(flat_read) {
-        return None;
-    }
-    let source = source.replace(flat_read, &format!("{}u", if key.flat { 16 } else { 0 }));
 
     // The plane's test of `fs`: a draw without a plane keeps no read, test or `discard` of it.
     let plane_test = "any(clip_plane != vec4f(0.0))";
-    if source.matches(plane_test).count() != 1 {
-        return None;
-    }
+    one(&source, plane_test, || "the plane's test of fs".to_string())?;
     let source = if key.plane {
         source
     } else {
@@ -414,22 +468,38 @@ fn fixed_facts(source: &str, key: &StageKey) -> Option<String> {
 
     // The scene's part of `draw_counts_w` never has the sky's bits.
     let scene_part = "scene.counts[k >> 2u][k & 3u]";
-    if source.matches(scene_part).count() != 1 {
-        return None;
+    one(&source, scene_part, || "the scene's part of draw_counts_w".to_string())?;
+    Ok(source.replacen(scene_part, &format!("({scene_part} & {}u)", !SKY_BITS), 1))
+}
+
+/// The whole text, the extension's part too, with the facts of the key that the text reads at
+/// many places as constants: each read of the flat bit is the key's, a read of the record's
+/// `counts.w` has the key's bits of [`SHADE_BITS`] as constants (the scene's bits of a retained
+/// draw stay values of the frame), and the reads of `flags.x` and `flags.y` are the key's values.
+/// Each read is replaced on purpose, so a copy in the extension's text is a constant too. A
+/// [`RewriteRefusal`] when the text has no such read at all.
+fn fixed_reads(source: &str, key: &StageKey) -> Result<String, RewriteRefusal> {
+    // Each read of the flat bit: the start of `fs`, and the vertex stage's and the extension's
+    // tests of a draw with no lights.
+    let flat_read = "draws[record].light_range.w & 16u";
+    if !source.contains(flat_read) {
+        return Err(RewriteRefusal::count("a read of the flat bit".to_string(), 0, SOME));
     }
-    let source = source.replacen(scene_part, &format!("({scene_part} & {}u)", !SKY_BITS), 1);
+    let source = source.replace(flat_read, &format!("{}u", if key.flat { 16 } else { 0 }));
 
     let counts_w = "draws[record].counts.w";
     if !source.contains(counts_w) {
-        return None;
+        return Err(RewriteRefusal::count("a read of counts.w".to_string(), 0, SOME));
     }
     let source = source.replace(
         counts_w,
         &format!("((draws[record].counts.w & {}u) | {}u)", !SHADE_BITS, key.shade),
     );
 
-    let source = replace_field(&source, "draws[record].flags.x", &format!("{}u", key.lit))?;
-    replace_field(&source, "draws[record].flags.y", &format!("{}u", key.normal))
+    let no_read = |field: &str| RewriteRefusal::count(format!("a read of {field}"), 0, SOME);
+    let source =
+        replace_field(&source, "draws[record].flags.x", &format!("{}u", key.lit)).ok_or_else(|| no_read("flags.x"))?;
+    replace_field(&source, "draws[record].flags.y", &format!("{}u", key.normal)).ok_or_else(|| no_read("flags.y"))
 }
 
 /// The text with each read of a field replaced (a read, not a longer name that starts with it,
@@ -471,16 +541,87 @@ const STAGE_LOOP: &str = r#"    for (var i = 0u; i < draws[record].counts.y; i++
     }
 "#;
 
-/// Where the stage loop of `fs` is in the world shader's text: from its head to its closing
-/// line, before the alpha test.
-fn stage_loop_range(source: &str) -> Option<(usize, usize)> {
-    let head = "    for (var i = 0u; i < draws[record].counts.y; i++) {\n";
-    if source.matches(head).count() != 1 {
-        return None;
+/// The mark before the stage loop of `fs` in the world shader's text, and the line after the
+/// loop. The loop is what stands between the mark's line and the end line, so the lines that
+/// follow the loop are free: a new line there does not move the range.
+const STAGE_LOOP_BEGIN: &str = "    // STAGE LOOP BEGIN";
+const STAGE_LOOP_END: &str = "    // STAGE LOOP END\n";
+
+/// Where the stage loop of `fs` is in the world shader's text: from the line after the line of
+/// [`STAGE_LOOP_BEGIN`] to the line of [`STAGE_LOOP_END`]. Each mark must be in the text one time.
+fn stage_loop_range(source: &str) -> Result<(usize, usize), RewriteRefusal> {
+    let begin = one(source, STAGE_LOOP_BEGIN, || "the begin mark of the stage loop".to_string())?;
+    let end = one(source, STAGE_LOOP_END, || "the end mark of the stage loop".to_string())?;
+    let start = (begin + line_length(&source[begin..]) + 1).min(source.len());
+    if start > end {
+        return Err(RewriteRefusal::count(
+            "the end mark of the stage loop after its begin mark".to_string(),
+            0,
+            ONE,
+        ));
     }
-    let start = source.find(head)?;
-    let end = start + source[start..].find("\n    }\n\n    if draws[record].more.z != 0u")? + "\n    }\n".len();
-    Some((start, end))
+    Ok((start, end))
+}
+
+/// The kinds of stage key that [`stage_rewrite_refusals`] tries, each with its name: one key for
+/// each fact that changes the rewrite's steps, and one with every bit of [`SHADE_BITS`].
+fn kinds() -> Vec<(&'static str, StageKey)> {
+    let mut plain = StageKey {
+        count: 1,
+        shade: 1 | 128,
+        lit: 1,
+        normal: 1,
+        ..Default::default()
+    };
+    // Stage 0: MODULATE of the texture and the diffuse; the later stages: ADD of the texture and
+    // the current colour.
+    plain.color[0] = [4, 2, 0, 1];
+    plain.alpha[0] = [4, 2, 0];
+    let mut every_stage = StageKey {
+        count: STAGES as u8,
+        alpha_test: 5,
+        ..plain
+    };
+    for stage in 1..STAGES {
+        every_stage.color[stage] = [7, 2, 1, 1];
+        every_stage.alpha[stage] = [1, 1, 0];
+    }
+    let shade = |bits: u32| StageKey {
+        shade: bits as u16,
+        ..plain
+    };
+    vec![
+        ("a plain key", plain),
+        ("a key with no stage", StageKey { count: 0, ..plain }),
+        ("a key with every stage and an alpha test", every_stage),
+        ("a key with a plane", StageKey { plane: true, ..plain }),
+        ("a flat key", StageKey { flat: true, ..plain }),
+        ("a key of the scene", StageKey { scene: true, ..plain }),
+        ("a key that adds to the picture", StageKey { adds: true, ..plain }),
+        ("a key of the sky", shade(SKY_BITS)),
+        ("a key with the clouds hook's bit", shade(crate::CLOUDS_HOOK_BIT)),
+        ("a key with no lights", shade(crate::NO_LIGHTS_BIT)),
+        ("a key with the light at the corners", shade(crate::CORNER_LIGHT_BIT)),
+        ("a key with every shade bit", shade(SHADE_BITS)),
+    ]
+}
+
+/// The kinds of stage key whose text the rewrite cannot make from a world shader's text
+/// ([`crate::world_shader_source`], or its tier C form [`crate::tier_c_shader_source`]), each as
+/// "(the kind): (the part that refused)". Empty when the rewrite makes a text for each kind.
+///
+/// For a test of an extension's text with no GPU. The helper draws with the crate's text and the
+/// extension's, and a rewrite that fails on that text fails only at run time, where the
+/// uber-shader then draws every key.
+pub fn stage_rewrite_refusals(world_source: &str) -> Vec<String> {
+    kinds()
+        .into_iter()
+        .filter_map(|(kind, key)| {
+            fragment_source(world_source, &key)
+                .err()
+                .map(|refusal| format!("{kind}: {refusal}"))
+        })
+        .collect()
 }
 
 /// The lines of a text that are not comments, each with its line end.
@@ -706,8 +847,13 @@ impl StageShaders {
         }
     }
 
-    fn source_of(&self, (id, variant): ModuleId) -> Option<String> {
-        fragment_source(self.world_text(variant)?, self.keys.get(id as usize)?)
+    fn source_of(&self, (id, variant): ModuleId) -> Result<String, RewriteRefusal> {
+        let absent = |part: &str| RewriteRefusal::count(part.to_string(), 0, ONE);
+        let world = self
+            .world_text(variant)
+            .ok_or_else(|| absent("the world shader's text of the variant"))?;
+        let key = self.keys.get(id as usize).ok_or_else(|| absent("the stage key of the id"))?;
+        fragment_source(world, key)
     }
 
     /// The world variant of the frames ([`crate::debug_lines::world_variant`]). A change drops
@@ -921,11 +1067,11 @@ impl StageShaders {
             return false;
         } else {
             match self.source_of(id) {
-                Some(source) => Some(source),
-                None => {
+                Ok(source) => Some(source),
+                Err(refusal) => {
                     self.failed_sources.insert(id);
                     println!(
-                        "stage shaders: the rewrite of stage key {} failed; the uber-shader draws it",
+                        "stage shaders: the rewrite of stage key {} failed ({refusal}); the uber-shader draws it",
                         key.stages
                     );
                     return false;
@@ -1009,7 +1155,13 @@ impl StageShaders {
         if self.sync {
             let id = module_id(&key);
             if !self.modules.contains_key(&id) {
-                let module = self.source_of(id).and_then(|source| maker.module("stage shaders", &source));
+                let module = match self.source_of(id) {
+                    Ok(source) => maker.module("stage shaders", &source),
+                    Err(refusal) => {
+                        println!("stage shaders: the rewrite of stage key {} failed ({refusal})", key.stages);
+                        None
+                    }
+                };
                 self.modules.insert(id, module);
             }
             let pipeline = self
@@ -1509,6 +1661,114 @@ mod tests {
         }
     }
 
+    /// The lines after the loop are free: a line between the end mark and the alpha test, the place of a
+    /// hook's call, does not move the range, and each kind of key gets its text with the line in it.
+    #[test]
+    fn a_line_after_the_end_mark_leaves_the_loop_where_it_is() {
+        let world = world();
+        let planted = world.replacen(STAGE_LOOP_END, &format!("{STAGE_LOOP_END}    current = current * 1.0;\n"), 1);
+        assert_ne!(planted, world);
+        assert_eq!(stage_loop_range(&planted), stage_loop_range(&world));
+        assert_eq!(stage_rewrite_refusals(&planted), Vec::<String>::new());
+        for (_, key) in kinds() {
+            let source = fragment_source(&planted, &key).unwrap();
+            assert_eq!(source.matches("    current = current * 1.0;\n").count(), 1);
+        }
+    }
+
+    /// Each mark of the loop is in the crate's text one time, and neither holds the text that the join
+    /// rewrites in an extension's text.
+    #[test]
+    fn the_marks_of_the_stage_loop_are_in_the_shader_one_time() {
+        let shader = include_str!("shader.wgsl");
+        assert_eq!(shader.matches(STAGE_LOOP_BEGIN).count(), 1);
+        assert_eq!(shader.matches(STAGE_LOOP_END).count(), 1);
+        for mark in [
+            STAGE_LOOP_BEGIN,
+            STAGE_LOOP_END,
+            crate::request::EXTENSION_BEGIN,
+            crate::request::EXTENSION_END,
+        ] {
+            assert!(!mark.contains("draw."), "{mark}");
+        }
+        let world = world();
+        assert_eq!(world.matches(crate::request::EXTENSION_BEGIN).count(), 1);
+        assert_eq!(world.matches(crate::request::EXTENSION_END).count(), 1);
+    }
+
+    /// A mark that is gone, or there two times, is named with its count; no key gets a text.
+    #[test]
+    fn a_broken_mark_of_the_stage_loop_is_named() {
+        let world = world();
+        let no_end = world.replacen(STAGE_LOOP_END, "", 1);
+        let refusal = fragment_source(&no_end, &key(1, 0)).unwrap_err();
+        assert_eq!((refusal.part.as_str(), refusal.found), ("the end mark of the stage loop", 0));
+        let two_begins = world.replacen(STAGE_LOOP_END, &format!("{STAGE_LOOP_END}{STAGE_LOOP_BEGIN}\n"), 1);
+        let refusal = fragment_source(&two_begins, &key(1, 0)).unwrap_err();
+        assert_eq!(
+            (refusal.part.as_str(), refusal.found),
+            ("the begin mark of the stage loop", 2)
+        );
+        assert_eq!(
+            refusal.to_string(),
+            "the begin mark of the stage loop: 2 in the text, 1 wanted"
+        );
+        let refusals = stage_rewrite_refusals(&no_end);
+        assert_eq!(refusals.len(), kinds().len());
+        assert_eq!(
+            refusals[0],
+            "a plain key: the end mark of the stage loop: 0 in the text, 1 wanted"
+        );
+    }
+
+    /// The text of an extension or of a mod's file can hold a second copy of each part that the rewrite needs
+    /// one time: the rewrite searches those parts in the crate's own text only, so each kind of key still gets
+    /// its text, and the copies stay as the mod wrote them. The null: the same text with no boundary line gives
+    /// no text for any kind.
+    #[test]
+    fn a_second_copy_of_a_part_in_the_extensions_text_changes_nothing() {
+        let copies = [
+            "    // STAGE LOOP BEGIN\n",
+            "    // STAGE LOOP END\n",
+            "    for (var i = 0u; i < draws[record].counts.y; i++) {\n",
+            "    if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {\n        discard;\n    }\n",
+            "        if draws[record].more.z != 0u && !compare(draws[record].more.z, floor(cloud.a * 255.0 + 0.5), f32(draws[record].more.w)) {\n            discard;\n        }\n",
+            "fn from_scene() -> bool {\n    return (draws[record].light_range.w & 4u) != 0u;\n}\n",
+            "(draws[record].light_range.w & 64u) != 0u\n",
+            "any(clip_plane != vec4f(0.0))\n",
+            "scene.counts[k >> 2u][k & 3u]\n",
+            "    texels[1] = bump_light(\n",
+            "// EXTENSION TEXT BEGIN: the crate's own text ends here.\n",
+        ];
+        // The mod's text here is not code that compiles: the rewrite works on the text and does not read WGSL.
+        let mod_text: String = copies.concat();
+        let own = crate::extension::extension_shaders(None);
+        let world = crate::request::world_shader_source(&format!("{own}{mod_text}"));
+        assert_eq!(stage_rewrite_refusals(&world), Vec::<String>::new());
+        let source = fragment_source(&world, &key(2, 5)).unwrap();
+        for copy in &copies[..copies.len() - 1] {
+            assert!(source.contains(copy), "the copy is as the mod wrote it: {copy}");
+        }
+
+        // The null: with no boundary line the whole text is searched, and every kind is refused.
+        let no_boundary = world.replacen(crate::request::EXTENSION_BEGIN, "", 1);
+        let refusals = stage_rewrite_refusals(&no_boundary);
+        assert_eq!(refusals.len(), kinds().len(), "{refusals:?}");
+        assert!(refusals[0].ends_with("2 in the text, 1 wanted"), "{}", refusals[0]);
+    }
+
+    /// The rewrite makes a text for each kind of key on the crate's own text, in both forms of the world
+    /// shader.
+    #[test]
+    fn the_rewrite_makes_a_text_for_each_kind_of_key() {
+        let world = world();
+        assert_eq!(stage_rewrite_refusals(&world), Vec::<String>::new());
+        assert_eq!(
+            stage_rewrite_refusals(&crate::tier_c_shader_source(&world)),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn the_stage_loop_is_the_code_that_the_steps_copy() {
         let world = world();
@@ -1524,14 +1784,17 @@ mod tests {
             "        var alpha = current;\n        current = current * 0.5;\n",
             1,
         );
-        assert!(fragment_source(&planted, &key(2, 0)).is_none());
+        assert_eq!(
+            fragment_source(&planted, &key(2, 0)).unwrap_err().wanted,
+            "its code is not the code that the steps copy"
+        );
         // A new comment is not a change of the code.
         let commented = world.replacen(
             "        var alpha = current;\n",
             "        var alpha = current;\n        // A note.\n",
             1,
         );
-        assert!(fragment_source(&commented, &key(2, 0)).is_some());
+        assert!(fragment_source(&commented, &key(2, 0)).is_ok());
     }
 
     #[test]
@@ -1559,7 +1822,7 @@ mod tests {
     #[test]
     fn the_tier_c_text_rewrites_too() {
         let world = crate::request::tier_c_shader_source(&world());
-        assert!(fragment_source(&world, &key(2, 0)).is_some());
+        assert!(fragment_source(&world, &key(2, 0)).is_ok());
     }
 
     #[test]

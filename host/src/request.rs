@@ -176,12 +176,21 @@ pub fn world_shader_source(extension_text: &str) -> String {
         NO_LIGHTS_SHADE
     };
     format!(
-        "{}\n{}\n{}\n{extension}\n{corner}{clouds}{no_lights}",
+        "{}\n{}\n{}\n{EXTENSION_BEGIN}{extension}\n{EXTENSION_END}{corner}{clouds}{no_lights}",
         include_str!("shader.wgsl"),
         depth::wgsl(),
         crate::spot::WGSL
     )
 }
+
+/// The line before the extension's text in the world shader's text ([`world_shader_source`]). The
+/// text before it is the crate's own. The rewrite of a stage key
+/// ([`crate::stage_shaders`]) searches the parts that it needs one time there only: the text of
+/// an extension or of a mod's file is not ours, and a second copy of such a part in it must not
+/// make a rewrite fail.
+pub(crate) const EXTENSION_BEGIN: &str = "// EXTENSION TEXT BEGIN: the crate's own text ends here.\n";
+/// The line after the extension's text; the crate's default functions follow it.
+pub(crate) const EXTENSION_END: &str = "// EXTENSION TEXT END\n";
 
 /// The line of the world shader that names its debug view (shader.wgsl).
 const DEBUG_VIEW_LINE: &str = "const DEBUG_VIEW: u32 = 0u;";
