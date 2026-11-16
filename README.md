@@ -250,7 +250,11 @@ The helper's diagnostic and test switches (`host/src/switches.rs`, read once; no
 setting). The one of the A/B list above (`MGE_XE_DEPTH_FORMAT`) is there too. MGE XE's own
 switches are in the RENDERER.md of the MGE-XE-G7 render-link worktree. One of them,
 `MGE_XE_CORE_MODS=0` (no core mod joins the shaders), is set by the baseline gate for its
-replays.
+replays. Two more are set by the gate's second pass, the hook fixtures (W528 item 5):
+`MGE_XE_CORE_MODS_DIR=<folder>` (the core mods only from `tools/hook-fixtures/`, never from the
+game folder; W317) and `MGE_XE_CORE_MOD_MARKERS=<folder>` (the build markers of the core mods
+in a new folder of the pass, never in the user's). `tools/replay.py --core-mods` sets the first
+one, or `MGE_XE_CORE_MODS=0` with `off`.
 
 - `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting. The
   baseline gate replays with both.
