@@ -208,6 +208,9 @@ def self_tests_without_check(tools, checks, exempt):
 # `checks.py --base COMMIT` (merge_step): the round's tree is at the merge, so its HEAD and index hold no change (W527,
 # W524 F-G-6). "offset moves" runs in the plugin round, "mge handshake" in the render-link round.
 BASE_OPTION = ("offset moves", "mge handshake")
+# The checks that read MWSE through mwse_tree.resolve: the installs' commit, else the sibling checkout with a FALLBACK line.
+# With --strict they are NOT RUN when mwse_tree.installs_source gives no commit.
+MWSE_CHECKS = ("mwse native", "mwse vtable fills", "sharedse layouts")
 
 
 def sibling_checks_without_option(checks, options):
@@ -299,6 +302,23 @@ def self_test_strict():
         assert main(["planted", "--strict"]) == 1
     finally:
         CHECKS.clear(), CHECKS.update(saved[0]), LISTS.clear(), LISTS.update(saved[1])
+    # W527 (W524 F-G-15): with --strict the MWSE checks are NOT RUN while the installs name no single MWSE commit. The
+    # plant: installs_source gives two commits. The null: without --strict the same check runs (and would fall back).
+    global MWSE_CHECKS
+    saved_mwse = MWSE_CHECKS, mwse_tree.installs_source
+    try:
+        CHECKS["planted mwse"] = (PLUGIN / "tools" / "bc7.py", PLUGIN, ["--self-test"])
+        LISTS["planted"] = ["planted mwse"]
+        MWSE_CHECKS = ("planted mwse",)
+        mwse_tree.installs_source = lambda *args, **kwargs: (None, "no single MWSE record in the installs: A 1111, B 2222")
+        assert main(["planted", "--strict"]) == common.NOT_RUN_EXIT
+        assert main(["planted"]) == 0
+        mwse_tree.installs_source = lambda *args, **kwargs: ("1111", None)
+        assert main(["planted", "--strict"]) == 0, "one commit in the installs: the check runs"
+    finally:
+        MWSE_CHECKS, mwse_tree.installs_source = saved_mwse
+        CHECKS.pop("planted mwse", None), LISTS.pop("planted", None)
+    assert all(name in CHECKS for name in MWSE_CHECKS)
     line = summary("plugin", ["a"], [], [], [], ["b", "c"])
     assert line == "checks (plugin): 1 passed, 2 NOT RUN (--strict; not on this machine: b, c)", line
 
@@ -357,8 +377,17 @@ def main(argv):
     if which not in LISTS:
         raise SystemExit(USAGE)
     failed, passed, skipped, fell_back, not_run = [], [], [], [], []
+    mwse_problem = None
+    if strict and any(name in MWSE_CHECKS for name in LISTS[which]):
+        mwse_problem = mwse_tree.installs_source()[1]
     for name in LISTS[which]:
         script, needs, args = check_command(name, mge, base)
+        if mwse_problem and name in MWSE_CHECKS:
+            # A check of another MWSE than the installs' judges nothing about them (W527, W524 F-G-15).
+            not_run.append(name)
+            print("== NOT RUN: the check '%s' (--strict): it would read the sibling MWSE: %s; %s"
+                  % (name, mwse_problem, mwse_tree.DEPLOY_HINT))
+            continue
         missing = [path for path in (script, *(needs if isinstance(needs, tuple) else (needs,))) if not path.exists()]
         if missing:
             if strict:
