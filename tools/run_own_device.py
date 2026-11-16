@@ -315,9 +315,13 @@ def distant_land_state(root):
             for block in iter(lambda: file.read(1 << 20), b""):
                 digest.update(block)
     except OSError:
-        # A file that cannot be read is not "as before": the run's end names it, and the run keeps its code's path.
-        return "not readable"
+        # A file that cannot be read gives no md5: the run's end says that the distant land is not checked.
+        return NOT_READABLE
     return digest.hexdigest()
+
+
+# The answer of [`distant_land_state`] for a state file that is there and cannot be read.
+NOT_READABLE = "not readable"
 
 
 def distant_land_cause(root):
@@ -335,7 +339,13 @@ def distant_land_line(before, after, allowed, cause=None):
     """(the run's line about the distant land of the instance, whether it is an error). The state file's md5 before
     the game started and after it closed: equal, or the run rebuilt the distant land, which is an error unless the
     command allowed it. `cause` is the generator's own cause ([`distant_land_cause`]): it says which of the two
-    cases of the error's advice the rebuild is."""
+    cases of the error's advice the rebuild is. A state file that could not be read, before the run or after it, is
+    an error of its own, also when both reads failed and also with the option: a check that could not run is no
+    pass (verdict 484, addendum)."""
+    if NOT_READABLE in (before, after):
+        when = " and ".join(word for word, state in (("before", before), ("after", after)) if state == NOT_READABLE)
+        return ("the generator's state file of the instance (overwrite/distantland/generation_state.bin) could not be read %s the "
+                "run; the distant land is not checked" % when), True
     if before == after:
         return "distant land: the generator's state file is as before the run (%s)" % (before[:8] if before else "none"), False
     change = "%s -> %s" % (before[:8] if before else "none", after[:8] if after else "none")
@@ -1584,6 +1594,13 @@ def self_test_run_toml():
     for own_line in ("[distant_land] automatic_rebuild = true", "automatic_rebuild = false", "  [distant_land]automatic_rebuild=true"):
         assert not rebuild_guard(guarded(enable_mod=["Trees"], set=[own_line])), own_line
     assert distant_land_line(None, None, False) == ("distant land: the generator's state file is as before the run (none)", False)
+    # A state file that could not be read is an error, also when both reads failed (equal answers are no pass) and
+    # also with the option; the run then ends with 7 as a run that changed the distant land.
+    for before, after, when in ((NOT_READABLE, NOT_READABLE, "before and after"), (first, NOT_READABLE, "after"), (NOT_READABLE, first, "before")):
+        for allowed in (False, True):
+            line, error = distant_land_line(before, after, allowed)
+            assert error and "could not be read %s the run; the distant land is not checked" % when in line, (before, after, allowed, line)
+    assert exit_with_distant_land(0, distant_land_line(NOT_READABLE, NOT_READABLE, False)[1]) == EXIT_DISTANT_LAND_CHANGED
     assert distant_land_line(None, first, False)[1] and "none -> " in distant_land_line(None, first, False)[0]
     # The exit code: a run that would end with 0 and changed the distant land ends with 7; a failed run keeps its code.
     assert [exit_with_distant_land(code, True) for code in (0, 1, 2, 3, 4, 5, 6)] == [7, 1, 2, 3, 4, 5, 6]
