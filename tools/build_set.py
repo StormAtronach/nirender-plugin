@@ -52,7 +52,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sets  # noqa: E402
-from common import BUILD_ID_RE, REPO, docs_place, local, main_checkout, same_commit  # noqa: E402
+from common import BUILD_ID_RE, REPO, docs_place, git_env, local, main_checkout, same_commit  # noqa: E402
 from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_REPO  # noqa: E402
 from make_play_set import MGE_BRANCH, PDBS, PDB_KEEP, PLUGIN_BRANCH, hold_run_lock, inside, say  # noqa: E402
@@ -118,7 +118,9 @@ class SetFault(Exception):
 
 
 def git(folder, *args):
-    done = subprocess.run(["git", "-C", folder, *args], capture_output=True, text=True)
+    # Without the GIT_ names of a hook (common.git_env): under a hook, "git init" and "git config" in the self-test's
+    # scratch repo wrote core.bare = true and the scratch user into the config of the hook's repository (W527).
+    done = subprocess.run(["git", "-C", folder, *args], capture_output=True, text=True, env=git_env())
     if done.returncode != 0:
         raise SetFault("git %s in %s: %s" % (" ".join(args), folder, done.stderr.strip()))
     return done.stdout.strip()
@@ -789,8 +791,26 @@ def self_test():
         # Test 6: a tree with changes makes no set (a scratch repository and the real Trees.ready).
         repo = os.path.join(scratch, "repo")
         os.mkdir(repo)
-        for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
-            git(repo, *args)
+        # Under a hook, GIT_DIR names the hook's repository: a scratch repository of its own stands for it, and its config
+        # must not change (W527: the hook's run of this self-test made the main checkout bare). The null: without
+        # git_env, "git -C repo init" with this GIT_DIR wrote core.bare = true into that config.
+        hooked = os.path.join(scratch, "hooked")
+        os.mkdir(hooked)
+        git(hooked, "init", "-q")
+        with open(os.path.join(hooked, ".git", "config"), encoding="utf-8") as file:
+            hooked_config = file.read()
+        saved_git_dir = os.environ.get("GIT_DIR")
+        os.environ["GIT_DIR"] = os.path.join(hooked, ".git")
+        try:
+            for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+                git(repo, *args)
+        finally:
+            if saved_git_dir is None:
+                del os.environ["GIT_DIR"]
+            else:
+                os.environ["GIT_DIR"] = saved_git_dir
+        with open(os.path.join(hooked, ".git", "config"), encoding="utf-8") as file:
+            assert file.read() == hooked_config, "a git call of the self-test changed the config of the hook's repository"
         with open(os.path.join(repo, "a.txt"), "w", encoding="ascii") as file:
             file.write("a\n")
         git(repo, "add", "a.txt")
