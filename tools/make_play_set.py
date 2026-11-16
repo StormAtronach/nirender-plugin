@@ -639,7 +639,7 @@ def check_run_files(run, notes):
     # code that is not 0, no dump: its exit code 5 fails the set in run_runner), so a crash in this log came at the
     # close and left no dump.
     if closing_crash(read_text(os.path.join(run, "MWSE.log"))):
-        notes.append("crash at the close of %s: the parked fault at exit, or a new one, as this cannot tell" % os.path.basename(run))
+        notes.append("crash at the close of %s: MWSE.log says so, and the runner saw no exit code that is not 0 and no dump" % os.path.basename(run))
 
 
 def picture_is_black(path):
