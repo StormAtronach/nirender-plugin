@@ -60,9 +60,10 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   port meets an MWSE patch. With --mge and the render-link sibling, it also asks for what that tree's d3d8.dll needs:
   native request 7 (MWSE_NATIVE_REQUEST_MGE_API) when its d3d8 source sends it, as render-link 76918d5 and later do
   (W495). A failure of the probe (exit code 1) fails the round, and nothing is deployed. A missing
-  required feature (exit code 4) passes the stage: the code under test is right, and the deployed MWSE is too old for
-  it. The build still runs, `deploy rest` then deploys nothing, and the round prints one "NOT DEPLOYED" line (in the log,
-  and again after the summary) with each install's MWSE.dll and what it lacks, and the command that deploys the build
+  required feature (exit code 4) is the word WITHHELD, which counts as passed: the code under test is right, and the
+  deployed MWSE is too old for it. The build still runs, `deploy rest` then deploys nothing and is WITHHELD too, and the
+  round prints one "WITHHELD deploy rest" line (in the log, and again after the summary) with each install's MWSE.dll
+  and what it lacks, and the command that deploys the build
   with an MWSE.dll that has it (deploy_rest.py --mwse-dll). The installs keep the pair that they hold;
 - in the same rounds, after those probes, "mwse core": deploy_rest.py --check-mwse-core (D442). It fails when an
   install's MWSE core is not the core of the MWSE commit of its MWSE.dll, by the record that deploy_rest.py --mwse-dll
@@ -105,8 +106,9 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   passed, and the gate's result does not stop it: a build that the gate rejects is deployed too. It never copies a pdb, an
   esp, mgeXE.toml or d3d9.dll, backs up each replaced file once for each tag, compares each copy by MD5, and prints the MD5
   of d3d8.dll, numidium.exe and akulakhan.dll. While Morrowind, numidium or Mod Organizer runs, the tool writes nothing
-  and does not wait, and the stage prints "NOT DEPLOYED: <why>. To deploy this build alone, run in <folder>: <command>"
-  (in the log, and again after the summary). That refusal does not fail the round: the stage counts as passed, so a
+  and does not wait, and the stage prints "WITHHELD deploy rest (<n> s): <why>. To deploy this build alone, run in
+  <folder>: <command>" (in the log, and again after the summary). That refusal does not fail the round: WITHHELD counts
+  as passed, so a
   merge whose other stages passed still moves refs/merge-step. Any other failure of the tool is a FAIL. The stage
   runs also when the replay gate or the A/B stages fail: only the stages before it decide (the gate is red until the owner
   accepts a new baseline, and the owner tests the latest build, D193). The round holds the game slot (deploy rest is one
@@ -207,10 +209,10 @@ BASE_STAGE = "base build"
 # the build and before the replay gate, and it runs only when every stage before it passed: the gate's result does not stop it.
 DEPLOY_STAGE = "deploy rest"
 # The exit code of deploy_rest.py when a game or Mod Organizer runs. That refusal does not fail the round: the stage counts as
-# passed, and the round prints one "NOT DEPLOYED" line for it, in the log and again after the summary. Any other failure of
+# passed (WITHHELD), and the round prints one line for it, in the log and again after the summary. Any other failure of
 # the stage (a fault of the copy, a missing source) is a FAIL.
 DEPLOY_REFUSED_CODE = REFUSED_EXIT
-# The "NOT DEPLOYED" lines of the last run_stages.
+# The "WITHHELD deploy rest" lines of the last run_stages: the deploys that did not happen.
 NOT_DEPLOYED = []
 # The installs of the last run_stages whose MWSE.dll lacks a feature that the plugin needs, as (install, md5 of the
 # MWSE.dll, the MISSING texts of the probe): the round deploys nothing then (W406).
@@ -221,6 +223,12 @@ EVIDENCE = {}
 # The FORMAT CHANGE verdicts of the last run_stages that passed with an evidence file, for the round's close line.
 FORMAT_CHANGES = []
 EVIDENCE_STAGES = (INSTANCE_STAGE,)
+# The four words of a stage's verdict (W524). PASS and WITHHELD count as passed: a WITHHELD stage found the code right and
+# kept a deploy back (D193, W406), so it does not fail the round.
+PASS_WORD, FAIL_WORD, NOT_RUN_WORD, WITHHELD_WORD = "PASS", "FAIL", "NOT RUN", "WITHHELD"
+STAGE_WORD_ORDER = (PASS_WORD, WITHHELD_WORD, NOT_RUN_WORD, FAIL_WORD)
+# The verdicts of the last run_stages, as (stage, word, reason), one for each stage: the close line names them (W528).
+STAGE_WORDS = []
 # The stage of the helper's tests that need a GPU (marked #[ignore]); `merge_step.py REQUIRE_TESTS <command>` runs one
 # command and fails when no test ran.
 GPU_STAGE = "helper GPU tests"
@@ -248,7 +256,7 @@ DIST_PATHS = {"plugin": (), "mge": ("xtask/",)}
 MWSE_SITES_PATHS = ("src/ports/", "src/hook.rs", "src/install.rs", "src/gen/", "src/site.rs", "tools/mwse_sites.baseline")
 # The stages of the probe of the MWSE features that the plugin needs, one for each install (check_mwse_sites.py
 # --features, W406): in every round that deploys, plugin or render-link, before its build. A missing required feature
-# (exit code 4) passes the stage and keeps the deploy back, with one "NOT DEPLOYED" line for the round.
+# (exit code 4) is WITHHELD and keeps the deploy back, with one "WITHHELD deploy rest" line for the round.
 FEATURES_STAGE = "mwse features "
 # The check that each install's MWSE core is the core of the MWSE commit of its MWSE.dll (deploy_rest.py --check-mwse-core,
 # D442): in every round that deploys, after the probes. A failure fails the round, so nothing is deployed.
@@ -555,14 +563,16 @@ def missing_features_in(output):
 
 
 def withheld_line(withheld, folder, command):
-    """The one "NOT DEPLOYED" line of a round whose installs lack MWSE features that the build needs (the plugin, or the
-    d3d8.dll: native request 7, W495): each install with its MWSE.dll and what it lacks, and the command that deploys the
-    build of the round with an MWSE.dll that has them."""
+    """The one "WITHHELD deploy rest" line of a round whose installs lack MWSE features that the build needs (the plugin,
+    or the d3d8.dll: native request 7, W495): each install with its MWSE.dll and what it lacks, and the command that
+    deploys the build of the round with an MWSE.dll that has them. Also the short reason for the close line."""
     names = sorted({text.split(": ", 1)[0] for _, _, missing in withheld for text in missing})
+    features = ", ".join("'%s'" % name for name in names)
     lacks = "; ".join("%s (MWSE.dll %s): %s" % (install, md5, "; ".join(missing)) for install, md5, missing in withheld)
-    return "NOT DEPLOYED: the build needs the MWSE features %s, which the deployed MWSE.dll lacks: %s. Deploy both together, run in %s: %s" % (
-        ", ".join("'%s'" % name for name in names), lacks, subprocess.list2cmdline([folder]),
+    line = "%s %s: the build needs the MWSE features %s, which the deployed MWSE.dll lacks: %s. Deploy both together, run in %s: %s" % (
+        WITHHELD_WORD, DEPLOY_STAGE, features, lacks, subprocess.list2cmdline([folder]),
         subprocess.list2cmdline(command + ["--mwse-dll", "<an MWSE.dll with %s>" % " and ".join(names)]))
+    return line, "the deployed MWSE.dll lacks the MWSE features %s" % features
 
 
 def fallback_note(output):
@@ -581,12 +591,18 @@ def format_change_verdict(name, seconds, log):
     evidence = EVIDENCE.get(name)
     if evidence is None:
         verdict(log, "NOT RUN %s (%d s): %s; the round fails without an evidence file: --evidence \"%s=FILE\"" % (name, seconds, change, name))
-        return False
+        return noted(name, NOT_RUN_WORD, "a format change with no evidence file")
     path, md5 = evidence
     passed = "%s; evidence %s md5 %s" % (change, path, md5)
     FORMAT_CHANGES.append("%s: %s" % (name, passed))
     verdict(log, "PASS %s (%d s): NOT RUN: %s" % (name, seconds, passed))
-    return True
+    return noted(name, PASS_WORD)
+
+
+def noted(name, word, reason=""):
+    """Keeps the word of a stage's verdict in STAGE_WORDS. True when the word counts as passed."""
+    STAGE_WORDS.append((name, word, reason))
+    return word in (PASS_WORD, WITHHELD_WORD)
 
 
 def evidence_of(values, exists=os.path.isfile, md5_of=None):
@@ -624,7 +640,7 @@ def run_stage(name, folder, command, log):
         output = output_since(log, start)
         reason = not_run_reason(output)
         verdict(log, "NOT RUN %s (%d s): %s" % (name, time.time() - began, reason))
-        return False
+        return noted(name, NOT_RUN_WORD, reason)
     if code == FORMAT_CHANGE_EXIT and name in EVIDENCE_STAGES:
         return format_change_verdict(name, time.time() - began, log)
     if code != 0:
@@ -634,22 +650,24 @@ def run_stage(name, folder, command, log):
             # The code under test is right; the MWSE.dll of the install is too old for it. The stage passes, and the deploy of
             # the round is kept back until the plugin and an MWSE.dll with the feature go together.
             WITHHELD.append((name[len(FEATURES_STAGE):], missing[0], missing[1]))
-            verdict(log, "PASS %s (%d s): MISSING %s; the round deploys nothing" % (name, time.time() - began, "; ".join(missing[1])))
-            return True
+            lacks = "MISSING %s" % "; ".join(missing[1])
+            verdict(log, "%s %s (%d s): %s; the round deploys nothing" % (WITHHELD_WORD, name, time.time() - began, lacks))
+            return noted(name, WITHHELD_WORD, lacks)
         refusal, deploy_refusal = slot_refusal_in(output), deploy_refusal_in(output)
         if name == DEPLOY_STAGE and code == DEPLOY_REFUSED_CODE and deploy_refusal:
             # A game or Mod Organizer runs: nothing was written. The merge is no worse for it, so the stage does not fail the
             # round (D193); the line names the command that deploys the same build later, when nothing runs.
             # Quoted as the Windows command line takes it, so that a path with a space pastes into a shell.
-            not_deployed = "NOT DEPLOYED (%d s): %s. To deploy this build alone, run in %s: %s" % (
-                time.time() - began, deploy_refusal, subprocess.list2cmdline([folder]), subprocess.list2cmdline(command))
+            not_deployed = "%s %s (%d s): %s. To deploy this build alone, run in %s: %s" % (
+                WITHHELD_WORD, name, time.time() - began, deploy_refusal, subprocess.list2cmdline([folder]), subprocess.list2cmdline(command))
             verdict(log, not_deployed)
             NOT_DEPLOYED.append(not_deployed)
-            return True
+            return noted(name, WITHHELD_WORD, deploy_refusal)
         failure = ": exit code %d%s" % (code, "; refused by the slot check: %s" % refusal if refusal else "; refused: %s" % deploy_refusal if deploy_refusal else "")
     failure += fallback_note(output_since(log, start))
-    verdict(log, "%s %s (%d s)%s" % ("PASS" if code == 0 else "FAIL", name, time.time() - began, failure))
-    return code == 0
+    word = PASS_WORD if code == 0 else FAIL_WORD
+    verdict(log, "%s %s (%d s)%s" % (word, name, time.time() - began, failure))
+    return noted(name, word, failure.lstrip(": "))
 
 
 def log_path_of(commit, folder=LOG_FOLDER):
@@ -684,33 +702,46 @@ def run_stages(stages, log, note_stage=lambda: None):
     del NOT_DEPLOYED[:]
     del WITHHELD[:]
     del FORMAT_CHANGES[:]
+    del STAGE_WORDS[:]
+
+    def not_run(name, reason):
+        verdict(log, "%s %s: %s" % (NOT_RUN_WORD, name, reason))
+        return noted(name, NOT_RUN_WORD, reason)
+
     for name, folder, command in stages:
         if name in ("replay gate", INSTANCE_STAGE) and not results.get("build for the gate", True):
-            verdict(log, "NOT RUN %s: its build failed" % name)
-            results[name] = False
+            results[name] = not_run(name, "its build failed")
             continue
         if name == INSTANCE_STAGE and not results.get(BASE_STAGE, True):
-            verdict(log, "NOT RUN %s: the base build failed" % name)
-            results[name] = False
+            results[name] = not_run(name, "the base build failed")
             continue
         if name == DEPLOY_STAGE and not all(results.values()):
-            verdict(log, "NOT RUN %s: %s did not pass, and a build is put into the test installs only when every stage before it passed" % (name, next(stage for stage, passed in results.items() if not passed)))
-            results[name] = False
+            failed = next(stage for stage, passed in results.items() if not passed)
+            results[name] = not_run(name, "%s did not pass, and a build is put into the test installs only when every stage before it passed" % failed)
             continue
         if name == DEPLOY_STAGE and WITHHELD:
-            not_deployed = withheld_line(WITHHELD, folder, command)
+            not_deployed, lacks = withheld_line(WITHHELD, folder, command)
             verdict(log, not_deployed)
             NOT_DEPLOYED.append(not_deployed)
-            results[name] = True
+            results[name] = noted(name, WITHHELD_WORD, lacks)
             continue
         if name == "replay gate":
             clear_pictures(command[command.index("--now") + 1])
         if note_stage() is False:
-            verdict(log, "NOT RUN %s: the slot hold of this run ended and was not taken again" % name)
-            results[name] = False
+            results[name] = not_run(name, "the slot hold of this run ended and was not taken again")
             continue
         results[name] = run_stage(name, folder, command, log)
     return list(results.values())
+
+
+def stages_column(words):
+    """The stages column of a close line (W528): the count of each word, the names of the stages that passed, and each
+    WITHHELD stage with its reason. `words` are (stage, word, reason), as STAGE_WORDS holds them."""
+    counts = ["%s %d" % (word, count) for word in STAGE_WORD_ORDER for count in [sum(1 for _, said, _ in words if said == word)] if count]
+    passed = [name for name, word, _ in words if word == PASS_WORD]
+    column = ["%s of %d: %s" % (", ".join(counts) or "no stage", len(words), ", ".join(passed) or "none")]
+    column += ["%s %s: %s" % (word, name, reason) for name, word, reason in words if word != PASS_WORD]
+    return " ".join("; ".join(column).split("\t"))
 
 
 def summary_line(results, log_path):
@@ -810,13 +841,19 @@ def write_closes(path, when, repo_name, merges, stages, log_path, tries=CLOSE_TR
             time.sleep(wait)
 
 
-def close_after(results, baseline, merges, write):
+def close_after(results, baseline, merges, write, words=None):
     """The closing lines of a round, through `write(merges, stages)`: only when every stage passed and the pass is
-    against the accepted folder, as only that is a pass of the merge. The stages column holds the count of the passes,
-    and each FORMAT CHANGE verdict with the md5 of its evidence file. None when the round writes no close."""
+    against the accepted folder, as only that is a pass of the merge. The stages column names each stage by its word
+    (stages_column of `words`), and each FORMAT CHANGE verdict with the md5 of its evidence file. None when the round
+    writes no close."""
     if not results or not all(results) or not moves_the_ref(baseline):
         return None
-    return write(merges, "; ".join(["%d of %d" % (sum(results), len(results))] + FORMAT_CHANGES))
+    words = STAGE_WORDS if words is None else words
+    if len(words) != len(results):
+        column = "%d of %d (the words of the stages are not known: %d words)" % (sum(results), len(results), len(words))
+    else:
+        column = stages_column(words)
+    return write(merges, "; ".join([column] + FORMAT_CHANGES))
 
 
 def resolve(repo, name):
@@ -1471,11 +1508,16 @@ def self_test():
         with open(os.path.join(root, "log6.txt"), encoding="utf-8") as log:
             assert "PASS deploy rest" in log.read(), "the deploy did not run beside a red gate"
 
-        # A refused deploy (a game or Mod Organizer runs) is no failure of the round: the line "NOT DEPLOYED" names the command
+        # A refused deploy (a game or Mod Organizer runs) is no failure of the round: the line "WITHHELD deploy rest" names the command
         # that deploys alone. A fault of the deploy, and the exit code of the refusal with no "REFUSED" line, still fail.
         refused = [sys.executable, "-c", "print('REFUSED: Morrowind.exe runs, and the deploy does not wait: end it'); raise SystemExit(%d)" % DEPLOY_REFUSED_CODE]
         with open(os.path.join(root, "log7.txt"), "w", encoding="utf-8") as log:
             assert run_stages([("a", root, good), ("build for the gate", root, good), (DEPLOY_STAGE, root, refused), gate_stage], log) == [True, True, True, True]
+            # W528: each stage has its word, and the close names the WITHHELD stage with its reason.
+            assert [word for _, word, _ in STAGE_WORDS] == [PASS_WORD, PASS_WORD, WITHHELD_WORD, PASS_WORD], STAGE_WORDS
+            column = stages_column(STAGE_WORDS)
+            assert column == ("PASS 3, WITHHELD 1 of 4: a, build for the gate, replay gate; WITHHELD deploy rest: Morrowind.exe runs, "
+                              "and the deploy does not wait: end it"), column
             assert len(NOT_DEPLOYED) == 1 and "Morrowind.exe runs" in NOT_DEPLOYED[0] and "To deploy this build alone, run in %s: " % root in NOT_DEPLOYED[0] and subprocess.list2cmdline(refused) in NOT_DEPLOYED[0], NOT_DEPLOYED
             # A folder and an argument with a space are quoted: the line pastes into a shell.
             spaced = os.path.join(root, "a folder")
@@ -1488,7 +1530,7 @@ def self_test():
             assert run_stages([("a", root, good), ("docs", root, refused)], log) == [True, False], "another stage is not excused by the refusal"
         with open(os.path.join(root, "log7.txt"), encoding="utf-8") as log:
             text = log.read()
-        assert "== NOT DEPLOYED (" in text and "PASS replay gate" in text, text
+        assert "== WITHHELD deploy rest (" in text and "PASS replay gate" in text, text
 
         gate_names = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"])]
         assert gate_names.index("build for the gate") + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index("replay gate") - 1
@@ -1500,9 +1542,9 @@ def self_test():
             order = [name for name, _, _ in stages_for(kind, repo, [path])]
             build_at = order.index("build for the gate" if "build for the gate" in order else BUILD_FOR_DEPLOY)
             assert all(order.index(name) < build_at for name in features) and order.index(DEPLOY_STAGE) > build_at, order
-        # A probe that fails (exit code 1: no file, a build error) fails the round and stops the deploy, with no NOT DEPLOYED
-        # line. A missing required feature (exit code 4 with a MISSING line) passes the stage; the build runs, the deploy
-        # does not, the round passes, and one NOT DEPLOYED line names the features, each install and the joint command.
+        # A probe that fails (exit code 1: no file, a build error) fails the round and stops the deploy, with no WITHHELD
+        # line. A missing required feature (exit code 4 with a MISSING line) is WITHHELD; the build runs, the deploy does
+        # not, the round passes, and one "WITHHELD deploy rest" line names the features, each install and the joint command.
         def probe_missing(md5):
             return [sys.executable, "-c", "print('MISSING: count locks: 0 of 40 count lock sites in the data of MWSE.dll, missing 0x6fe39f, ...: the plugin needs it');"
                     "print('md5: %s D:/x/MWSE.dll'); raise SystemExit(%d)" % (md5, MISSING_FEATURE_EXIT)]
@@ -1514,9 +1556,13 @@ def self_test():
             stages = [("a", root, good), (FEATURES_STAGE + "A", root, probe_missing("a" * 32)), (FEATURES_STAGE + "B", root, probe_missing("b" * 32)),
                       (BUILD_FOR_DEPLOY, root, good), (DEPLOY_STAGE, root, never)]
             assert run_stages(stages, log) == [True] * 5
+            assert [word for _, word, _ in STAGE_WORDS] == [PASS_WORD, WITHHELD_WORD, WITHHELD_WORD, PASS_WORD, WITHHELD_WORD], STAGE_WORDS
+            assert STAGE_WORDS[-1] == (DEPLOY_STAGE, WITHHELD_WORD, "the deployed MWSE.dll lacks the MWSE features 'count locks'"), STAGE_WORDS
+            column = stages_column(STAGE_WORDS)
+            assert column.startswith("PASS 2, WITHHELD 3 of 5: a, %s; WITHHELD %sA: MISSING count locks: 0 of 40" % (BUILD_FOR_DEPLOY, FEATURES_STAGE)), column
             assert len(NOT_DEPLOYED) == 1, NOT_DEPLOYED
             line = NOT_DEPLOYED[0]
-            assert line.startswith("NOT DEPLOYED: the build needs the MWSE features 'count locks', which the deployed MWSE.dll lacks: A (MWSE.dll %s): count locks: 0 of 40" % ("a" * 32)), line
+            assert line.startswith("WITHHELD deploy rest: the build needs the MWSE features 'count locks', which the deployed MWSE.dll lacks: A (MWSE.dll %s): count locks: 0 of 40" % ("a" * 32)), line
             assert "; B (MWSE.dll %s): count locks" % ("b" * 32) in line and "Deploy both together, run in %s: " % root in line, line
             assert subprocess.list2cmdline(never + ["--mwse-dll", "<an MWSE.dll with count locks>"]) in line, line
             # One install that lacks the feature keeps the deploy of both back.
@@ -1537,14 +1583,14 @@ def self_test():
             assert run_stages([(FEATURES_STAGE + "A", root, probe_request), (BUILD_FOR_DEPLOY, root, good), (DEPLOY_STAGE, root, never)], log) == [True] * 3
             assert len(NOT_DEPLOYED) == 1, NOT_DEPLOYED
             line = NOT_DEPLOYED[0]
-            assert line.startswith("NOT DEPLOYED: the build needs the MWSE features 'native request 7', which the deployed MWSE.dll lacks: A (MWSE.dll %s): "
+            assert line.startswith("WITHHELD deploy rest: the build needs the MWSE features 'native request 7', which the deployed MWSE.dll lacks: A (MWSE.dll %s): "
                                    "native request 7: D:/x/MWSE.dll (md5 %s) has no native request 7 (MWSE_NATIVE_REQUEST_MGE_API), which the d3d8 of "
                                    "C:/r sends: MWSE too old; missing \"keeps MGE XE's API in use.\". Deploy both together" % ("e" * 32, "e" * 32)), line
             assert subprocess.list2cmdline(never + ["--mwse-dll", "<an MWSE.dll with native request 7>"]) in line, line
         with open(os.path.join(root, "log8.txt"), encoding="utf-8") as log:
             text = log.read()
         assert "== %s: " % DEPLOY_STAGE not in text, "a deploy ran beside a missing feature or a failed probe"
-        assert "== PASS mwse features A (" in text and "MISSING count locks: 0 of 40" in text and "the round deploys nothing" in text, text
+        assert "== WITHHELD mwse features A (" in text and "MISSING count locks: 0 of 40" in text and "the round deploys nothing" in text, text
         assert "== FAIL mwse features A (" in text and "== NOT RUN deploy rest: mwse features A did not pass" in text, text
         assert missing_features_in("feature: x: present\nmd5: abc D:/x\n") is None
         assert missing_features_in("MISSING: x: 0 of 1\n") == ("unknown", ["x: 0 of 1"])
@@ -1825,7 +1871,7 @@ def self_test():
             # With the file: the stage passes, and the close line has the verdict and the md5.
             results, text, closed = ab_round(FORMAT_CHANGE_EXIT, evidence=evidence_file)
             assert results == [True, True] and "== PASS instance A/B grass (" in text and "md5 %s" % evidence_md5 in text, text
-            assert closed.startswith("2 of 2; instance A/B grass: FORMAT CHANGE (") and closed.endswith("evidence %s md5 %s" % (os.path.abspath(evidence_file), evidence_md5)), closed
+            assert closed.startswith("PASS 2 of 2: a, instance A/B grass; instance A/B grass: FORMAT CHANGE (") and closed.endswith("evidence %s md5 %s" % (os.path.abspath(evidence_file), evidence_md5)), closed
             # The nulls: a tip that refuses the capture too is a FAIL of the stage (instance_ab exits 1); a NOT RUN (5) of the
             # stage fails with the file, even when its text says FORMAT CHANGE; a stage of another name with code 6 FAILs.
             assert ab_round(1, "FAIL grass: the base refuses the capture with code 11, and the replay of the build under test exited with code 11", evidence=evidence_file)[0] == [True, False]
@@ -1833,7 +1879,7 @@ def self_test():
             assert results == [True, False] and closed is None and "== PASS instance A/B grass" not in text, text
             assert ab_round(FORMAT_CHANGE_EXIT, stage_name="a check")[0] == [True, False]
             # A full pass with a file names no FORMAT CHANGE in the close line.
-            assert ab_round(0, "PASS grass: x", evidence=evidence_file)[2] == "2 of 2"
+            assert ab_round(0, "PASS grass: x", evidence=evidence_file)[2] == "PASS 2 of 2: a, instance A/B grass"
         finally:
             EVIDENCE.clear()
         # The evidence argument: only the instance A/B takes a file, once, and the file must exist.
@@ -2318,7 +2364,9 @@ def self_test():
         round_log = "E:\\nirender-keep\\merge-step\\merge-step-862873b012.log"
 
         def close_batch(results, merges, baseline=BASELINE):
-            return close_after(results, baseline, merges, lambda merges, stages: write_closes(closes, when, PLUGIN_NAME, merges, stages, round_log, wait=0))
+            words = [("s%d" % number, PASS_WORD if passed else FAIL_WORD, "") for number, passed in enumerate(results)]
+            return close_after(results, baseline, merges, lambda merges, stages: write_closes(closes, when, PLUGIN_NAME, merges, stages, round_log, wait=0),
+                               words)
 
         def close(results, subject, commit="862873b0123456789", baseline=BASELINE):
             return close_batch(results, [(commit, subject)], baseline)
@@ -2334,7 +2382,7 @@ def self_test():
         assert close([True] * 6, subject, baseline=os.path.join(root, "other")) is None and not os.path.exists(closes)
         assert close([True] * 6, "Merge: say which views draw the table") == [] and not os.path.exists(closes), "a subject with no item wrote"
         # A pass writes the header and one line, CRLF.
-        line = "\t".join((when, "W93", PLUGIN_NAME, "862873b012", "6 of 6", round_log, subject))
+        line = "\t".join((when, "W93", PLUGIN_NAME, "862873b012", "PASS 6 of 6: s0, s1, s2, s3, s4, s5", round_log, subject))
         assert close([True] * 6, subject) == [line]
         assert closes_bytes() == (CLOSES_HEADER + "\r\n" + line + "\r\n").encode("ascii"), closes_bytes()
         # A rerun of the commit writes nothing; a later commit of the item writes its line, also in the part form; an item
