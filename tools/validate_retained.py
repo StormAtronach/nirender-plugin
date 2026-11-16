@@ -619,6 +619,18 @@ def self_test():
             assert open(os.path.join(folder, "replay-draw-lights.replay.txt")).read() == "exit code 40\n" + fault_output
     finally:
         run_code, newest = real_run_code, real_newest
+    # W526, F-G-19: the clusters stage's compare. Equal pictures pass. A wrong area of 3 % of the picture with a mean
+    # of 0.2 passed before (the mean limit alone); one pixel over 8 levels fails now. The mean limit stays.
+    equal = {"pixels": 2073600, "different": 0.0, "over8": 0.0, "mean": 0.0, "largest": 0}
+    assert clusters_verdict(equal) == (True, "replay with the clusters against the lights of the draws: 0 pixels by more than 8 levels (0.0000 %; the limit is 0), "
+                                             "the largest level 0, mean 0.000 (the limit is under 0.5), 0.00 % different")
+    assert clusters_verdict(dict(equal, different=0.01, mean=0.01, largest=8))[0], "pixels that differ by 8 levels or less pass"
+    for numbers, said in ((dict(equal, different=0.03, over8=0.03, mean=0.2, largest=40), "62208 pixels by more than 8 levels (3.0000 %; the limit is 0), the largest level 40"),
+                          (dict(equal, different=0.000001, over8=1 / 2073600, mean=0.0001, largest=159), "1 pixels by more than 8 levels"),
+                          (dict(equal, different=0.9, mean=0.6, largest=3), "mean 0.600 (the limit is under 0.5)")):
+        passed, text = clusters_verdict(numbers)
+        assert not passed and said in text and text.endswith("go to the Architect before a limit moves)"), (numbers, text)
+    assert clusters_verdict({"problem": "the sizes differ"}) == (False, "replay with the clusters against the lights of the draws: the sizes differ")
     self_test_baseline()
     self_test_tour_stage()
     print("validate_retained self-test: ok")
@@ -1153,6 +1165,31 @@ def stage_only(place, mge_build):
     return ok
 
 
+# The limits of the clusters stage's compare (the replay with the clusters against the replay with the lights of the
+# draws). The mean over all pixels alone passed a wrong area of a few percent of the picture (the audit's F-G-19), so
+# the stage also allows NO pixel that differs by more than 8 levels (the Architect's limit, W526).
+# The expectation, written before the first run under it: the clusters and the lights of the draws are two forms of
+# one light. Three kept captures gave 0 pixels different on 2026-11-16 (seyda, narsis, night-masser at frame 20;
+# narsis with lights in its clusters), under the instance's settings. No capture of this stage's own place under its
+# own settings (the expanded light limit, a night place with many lights) was compared then: the first run of the
+# stage there is the test of this limit. A failure here means that the expectation was wrong or that the code is.
+# It is not noise: bring the numbers and their cause to the Architect before the limit moves.
+CLUSTERS_MEAN_LIMIT = 0.5
+CLUSTERS_OVER_8_LIMIT = 0
+
+
+def clusters_verdict(numbers):
+    """(passed, text) for the numbers of picture_diff.compare of the two replays of the clusters stage: the share of
+    pixels over 8 levels with its count and the largest level, and the mean, each against its limit."""
+    if "problem" in numbers:
+        return False, "replay with the clusters against the lights of the draws: %s" % numbers["problem"]
+    over = round(numbers.get("over8", 0) * numbers.get("pixels", 0))
+    passed = over <= CLUSTERS_OVER_8_LIMIT and numbers["mean"] < CLUSTERS_MEAN_LIMIT
+    said = "replay with the clusters against the lights of the draws: %d pixels by more than 8 levels (%.4f %%; the limit is %d), the largest level %d, mean %.3f (the limit is under %.1f), %.2f %% different" % (
+        over, numbers.get("over8", 0) * 100, CLUSTERS_OVER_8_LIMIT, numbers.get("largest", 0), numbers["mean"], CLUSTERS_MEAN_LIMIT, numbers["different"] * 100)
+    return passed, said if passed else said + ": the two are two forms of one light, so the expectation was wrong or the code is; this is not noise (the numbers and their cause go to the Architect before a limit moves)"
+
+
 def stage_clusters(place, mge_build, started):
     """The replays of the capture that this validate run made at the place (`started`, in RUN_TIME's
     form, is the start of this run). An older capture of the place is not used: it can be of another
@@ -1182,10 +1219,7 @@ def stage_clusters(place, mge_build, started):
 
     used = re.search(r"clusters: ([\d.]+) lights and (\d+) entries for each frame", out)
     ok = check(used is not None and used.group(2) != "0", used.group(0) if used else "no clusters line in the replay")
-    numbers = picture_diff.compare(picture_diff.load(a), picture_diff.load(b))
-    text = "replay with the clusters against the lights of the draws: %s" % (numbers.get("problem") or "%.2f %% different, %.2f %% by more than 8, mean %.3f, largest %d" % (
-        numbers["different"] * 100, numbers.get("over8", 0) * 100, numbers["mean"], numbers.get("largest", 0)))
-    ok &= check("problem" not in numbers and numbers["mean"] < 0.5, text)
+    ok &= check(*clusters_verdict(picture_diff.compare(picture_diff.load(a), picture_diff.load(b))))
     for name, env in (("clusters", {"MGE_XE_CLUSTERS": "1"}), ("draw-lights", {"MGE_XE_CLUSTERS": "0"})):
         label = "v-%s-%s" % (name, place)
         env = dict(env)
