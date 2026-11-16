@@ -14,8 +14,9 @@ sets that differ in one commit differ only in the parts of that commit, byte for
 needs), and MWSE.dll with MSBuild (Release, x86) in a detached worktree of the MWSE repository there, its LuaJIT built
 by build_luajit.bat of the docs and its MorrowindDir a folder of C:/tmp/buildset. The MWSE core Lua comes from that
 tree. lua51.dll, the luajit part, goes into the set's root beside MWSE.dll; the build parameter of the tree's
-SharedSE/LuaJIT.targets must be the bat's, and the bat's md5 goes into the part's record. A tree with changes makes no
-set.
+SharedSE/LuaJIT.targets must be the bat's, and the bat's md5 goes into the part's record. Each part's record also names
+the tools of its build (rustc and cargo, MSBuild, cl's version line); a copied part carries its set's record. The
+record is in no key and no name (the design's 11.7). A tree with changes makes no set.
 
 --patch REPO=FILE (REPO nirender, render-link or mwse) applies ONE patch file to the clean tree of that repo before the
 build. The set holds the patch as patches/<repo>.patch, the manifest has its md5, and the name has the mark +p<8 hex>
@@ -552,11 +553,49 @@ class Trees:
             found["lua51.dll"] = os.path.join(self.trees["mwse"], LUAJIT_OUT, "lua51.pdb")
         return found
 
+    def tool_line(self, command, folder=None):
+        """The first line of a tool's version answer, or "unknown: <why>". One run for each command and folder."""
+        cache = self.__dict__.setdefault("tool_lines", {})
+        key = (tuple(command), folder)
+        if key not in cache:
+            try:
+                done = subprocess.run(command, cwd=folder, capture_output=True, text=True, errors="replace", timeout=60,
+                                      stdin=subprocess.DEVNULL, env=build_environment())
+                # stderr first: cl writes its version line there and a usage line on stdout.
+                lines = (done.stderr + "\n" + done.stdout).strip().splitlines()
+                cache[key] = lines[0].strip() if lines else "unknown: no answer, exit code %d" % done.returncode
+            except (OSError, subprocess.SubprocessError) as error:
+                cache[key] = "unknown: %s" % error
+        return cache[key]
+
+    def cl_line(self):
+        """The version line of the cl.exe (x86) of the default MSVC toolset of the Visual Studio of MSBUILD: [I] the one
+        that MSBuild and the cc crate take when nothing names another."""
+        vs = os.path.normpath(os.path.join(os.path.dirname(MSBUILD), "..", "..", ".."))
+        try:
+            with open(os.path.join(vs, "VC", "Auxiliary", "Build", "Microsoft.VCToolsVersion.default.txt"), encoding="ascii") as file:
+                version = file.read().strip()
+        except OSError as error:
+            return "unknown: %s" % error
+        return self.tool_line([os.path.join(vs, "VC", "Tools", "MSVC", version, "bin", "Hostx64", "x86", "cl.exe")])
+
     def record(self, part):
-        """The record of a part built here, for its manifest entry: for luajit the md5 of build_luajit.bat, which is in
-        no set's commits (the plan's addendum 1 A3)."""
+        """The record of a part built here, for its manifest entry (the design's 11.7): the tools of its build, not in
+        any key. For luajit also the md5 of build_luajit.bat, which is in no set's commits (the plan's addendum 1 A3)."""
+        rust = lambda repo: {"rustc": self.tool_line(["rustc", "-V"], self.trees[repo]),  # noqa: E731
+                             "cargo": self.tool_line(["cargo", "-V"], self.trees[repo])}
+        msvc = lambda: {"msbuild": self.tool_line([MSBUILD, "-version", "-nologo"]), "cl": self.cl_line()}  # noqa: E731
+        if part == "plugin":
+            return rust("nirender")
+        if part == "numidium":
+            return rust("render-link")
+        if part == "render-link":
+            return dict(rust("render-link"), cl=self.cl_line())
+        if part == "mwse":
+            return msvc()
         if part == "luajit":
-            return {"build_luajit.bat md5": sets.md5_of(LUAJIT_BAT)}
+            return dict(msvc(), **{"build_luajit.bat md5": sets.md5_of(LUAJIT_BAT)})
+        # plugin-lua: a copy of the Lua files, no build.
         return {}
 
     def probe(self, dll):
@@ -914,7 +953,9 @@ class FakeBuilder:
         return os.path.join(out, "lua51.dll")
 
     def record(self, part):
-        return {"build_luajit.bat md5": "b" * 32} if part == "luajit" else {}
+        tools = {"plugin": {"rustc": "rustc t", "cargo": "cargo t"}, "mwse": {"msbuild": "msbuild t", "cl": "cl t"},
+                 "luajit": {"build_luajit.bat md5": "b" * 32}}
+        return dict(tools.get(part, {}), build=self.cargo_builds + self.mwse_builds + self.luajit_builds)
 
     def build_mwse(self):
         self.mwse_builds += 1
@@ -1016,7 +1057,17 @@ def self_test():
         # The luajit part (the design's 11.2): built for the first set, with the bat's md5 in its record; the second
         # set's MWSE commit names the same rubic0n commit and LuaJIT.targets, so lua51.dll is copied, byte for byte,
         # with its record.
-        assert manifest["parts"]["luajit"]["from"] == "built" and manifest["parts"]["luajit"]["record"] == {"build_luajit.bat md5": "b" * 32}
+        assert manifest["parts"]["luajit"]["from"] == "built" and manifest["parts"]["luajit"]["record"]["build_luajit.bat md5"] == "b" * 32
+        # The tools record (the design's 11.7): a copied part carries its set's record (the fake's build count shows
+        # whose), and a part built again has its own.
+        assert second["parts"]["plugin"]["record"] == manifest["parts"]["plugin"]["record"] and manifest["parts"]["plugin"]["record"]["rustc"] == "rustc t"
+        assert second["parts"]["mwse"]["record"] != manifest["parts"]["mwse"]["record"] and second["parts"]["mwse"]["record"]["cl"] == "cl t"
+        tools = Trees(os.path.join(scratch, "tool-trees"))
+        assert tools.tool_line([sys.executable, "-I", "-c", "print('tool 1.2.3'); print('more')"]) == "tool 1.2.3"
+        assert tools.tool_line([os.path.join(scratch, "no-such-tool.exe")]).startswith("unknown: ")
+        # cl's form: the version on stderr, a usage line on stdout.
+        cl_form = "import sys; print('usage: cl'); sys.stderr.write('Compiler Version 19\\n')"
+        assert tools.tool_line([sys.executable, "-I", "-c", cl_form]) == "Compiler Version 19"
         assert second["parts"]["luajit"]["from"] == os.path.basename(first) and builder.luajit_builds == 1
         assert second["files"]["lua51.dll"]["md5"] == manifest["files"]["lua51.dll"]["md5"]
         assert second["parts"]["luajit"]["record"] == manifest["parts"]["luajit"]["record"]
