@@ -36,7 +36,7 @@ log's text when the helper has ended, so a caller reads what it read before.
 After a run with exit code 0 and no other file in the run folder, the tool removes its two files
 and the folder. Else it keeps the folder and names its files on standard error;
 --keep-run-folder keeps it always. A picture path inside a Mod Organizer instance or inside the
-game folder is refused, since its run folder would be there too.
+game folder is refused, since its run folder would be there too. An empty picture path is refused.
 The helper looks for a file under "Data Files" in its current folder first, then in --game-dir,
 then beside itself: a --config-root with a "Data Files" folder is refused, because the run folder
 would not have it.
@@ -59,7 +59,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import SIBLINGS, build_missing, capture_format_line, local, replay_fault_line  # noqa: E402
+from common import BUILD_PARTS, SIBLINGS, build_missing, capture_format_line, local, replay_fault_line  # noqa: E402
 
 CONFIG_FILE = "mgeXE.toml"
 LOG_NAME = "helper.txt"
@@ -106,6 +106,9 @@ def prepare_run_folder(picture, config_root):
     of the helper's log). Raises [`Refused`] for a run folder inside an instance or the game folder, for
     a `config_root` without mgeXE.toml, and for one with a "Data Files" folder. Old files of the tool in
     a folder that exists are removed; other files there stay, and the end of the run names them."""
+    # An empty path would give the run folder "<the current folder>.run", wherever the caller stands.
+    if not str(picture).strip():
+        raise Refused("the picture path is empty")
     folder = run_folder_of(picture)
     owner = owner_of(folder)
     if owner:
@@ -304,6 +307,38 @@ def self_test():
         assert core_mods_env(join(temp, "fixtures")) == {"MGE_XE_CORE_MODS_DIR": join(temp, "fixtures")}
         relative = core_mods_env("fixtures")["MGE_XE_CORE_MODS_DIR"]
         assert os.path.isabs(relative) and os.path.basename(relative) == "fixtures", relative
+
+        # An empty picture path is refused before anything is made, in the mode and for a replay.
+        for empty in ("", "   "):
+            try:
+                prepare_run_folder(empty, source)
+                raise AssertionError("an empty picture path and not refused: %r" % empty)
+            except Refused as refused:
+                assert str(refused) == "the picture path is empty", refused
+        assert not os.path.exists(os.path.abspath("") + RUN_SUFFIX), "an empty picture path made a folder"
+        # --run-folder-for with an empty value takes the mode and is refused: it does not fall through to a replay of
+        # the arguments after it. The helper's stand-in must not be called, and the exit code is the refusal's.
+        # The build folder has every part that a replay asks for, so that a fall-through would reach the helper's
+        # start and show: without the test for "is not None" in main, `started` has the command of a replay.
+        started = []
+        build = join(temp, "build")
+        write(join(build, "numidium.exe"))
+        for part in BUILD_PARTS:
+            if not os.path.exists(join(build, part)):
+                os.makedirs(join(build, part))
+        assert not build_missing(build)
+
+        def never(command, folder, env):
+            started.append(command)
+            return 0, "", ""
+
+        for flag in (["--run-folder-for", ""], ["--run-folder-for="]):
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+                code = main(flag + [join(temp, "c.nircap"), join(temp, "out", "fall.png"), "--config-root", source,
+                                    "--mge-build", build], start=never)
+            assert code == EXIT_REFUSED and errors.getvalue() == "replay: refused: the picture path is empty\n", (flag, code, errors.getvalue())
+            assert not started and not os.path.exists(run_folder_of(join(temp, "out", "fall.png"))), (flag, started)
     print("replay self-test: ok")
     return 0
 
@@ -317,7 +352,7 @@ def core_mods_env(value):
     return {"MGE_XE_CORE_MODS_DIR": os.path.abspath(value)}
 
 
-def main(argv=None):
+def main(argv=None, start=start_helper):
     ap = argparse.ArgumentParser()
     ap.add_argument("capture", nargs="?")
     ap.add_argument("picture", nargs="?")
@@ -339,7 +374,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
-    if args.run_folder_for:
+    # Every given value takes the mode, an empty one too (it is refused below): with a test for a true value, an
+    # empty value fell through to a real replay of the arguments after it.
+    if args.run_folder_for is not None:
         try:
             folder, log = prepare_run_folder(args.run_folder_for, args.config_root or defaults()["config_root"])
         except Refused as refused:
@@ -379,7 +416,7 @@ def main(argv=None):
     env = dict(os.environ, MGE_XE_DISTANT_LAND_DIR=args.distant_land or default["distant_land"],
                MGE_XE_GAME_DIR=args.game_dir or default["game_dir"], **core_mods_env(args.core_mods))
     try:
-        code, out, err = run_replay(command, args.picture, args.config_root or default["config_root"], env, args.keep_run_folder)
+        code, out, err = run_replay(command, args.picture, args.config_root or default["config_root"], env, args.keep_run_folder, start)
     except Refused as refused:
         sys.stderr.write("replay: refused: %s\n" % refused)
         return EXIT_REFUSED
