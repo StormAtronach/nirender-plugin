@@ -10,14 +10,17 @@ decides.
 The headers are those of the MWSE commit that the test installs run (`mwse_tree.resolve`, W497), else of the sibling
 checkout with a FALLBACK line.
 
-Usage: python tools/check_sharedse_layouts.py [--all] [--mwse DIR | --mwse-commit SHA]   (--all: every struct MWSE
-asserts, not only those of the layouts)
+Usage: python tools/check_sharedse_layouts.py [--all] [--mwse DIR | --mwse-commit SHA] [--export PATH]   (--all: every
+struct MWSE asserts, not only those of the layouts; --export: the IDA export to read, named in the output with its md5
+and time)
 """
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ports"))
@@ -89,17 +92,29 @@ def ida_name(mwse_name, structs):
     return None
 
 
+def export_line(path):
+    """The line that names the IDA export a run read: its path, its md5 and the time it was written."""
+    with open(path, "rb") as file:
+        digest = hashlib.md5(file.read()).hexdigest()
+    written = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(path)))
+    return "sharedse layouts: the IDA export %s, md5 %s, written %s" % (path, digest, written)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--all", action="store_true", help="every struct MWSE asserts, not only those of the layouts")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--mwse", help="an MWSE tree on disk to read in place of the installs' commit")
     source.add_argument("--mwse-commit", help="an MWSE commit to read in place of the installs' commit")
+    parser.add_argument("--export", default=os.path.join(OUT, "structs.json"),
+                        help="the IDA export to read (default: this tree's tools/out/structs.json; checks.py names the main "
+                        "checkout's, as the export is a fact of the IDA database and not of a tree)")
     args = parser.parse_args()
     tree, fallback = mwse_tree.resolve(CHECK, folder=args.mwse, commit=args.mwse_commit)
     if fallback:
         print(fallback)
-    structs = json.load(open(os.path.join(OUT, "structs.json")))
+    print(export_line(args.export))
+    structs = json.load(open(args.export))
     everything = args.all
     problems, compared, sizes_compared, fields_compared = [], 0, 0, 0
     for rel, namespace in headers(tree):

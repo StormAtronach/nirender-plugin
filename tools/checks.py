@@ -76,6 +76,12 @@ def places(siblings, main, docs=None):
 
 
 STATE, MWSE = Path(common.docs_place(*STATE_PARTS)), places(str(REPOS), common.main_checkout())[1]
+# The IDA export of the layouts check: the main checkout's (this tree when it has no main checkout).
+MAIN_EXPORT = Path(common.main_checkout() or PLUGIN, "tools", "out", "structs.json")
+# How to make what a check needs, for its NOT RUN line.
+HOW_TO_MAKE = {
+    "sharedse layouts": "make the export in IDA (Morrowind2.i64) with tools/ports/ida_export_inventory.py of the main checkout",
+}
 
 CHECKS = {
     "readme": (PLUGIN / "tools" / "check_readme.py", PLUGIN),
@@ -111,9 +117,9 @@ CHECKS = {
     "hand offsets": (PLUGIN / "tools" / "hand_offsets.py", PLUGIN, ["--check"]),
     "offset moves": (PLUGIN / "tools" / "check_offset_moves.py", PLUGIN, ["--cached"]),
     # The IDA types of the layouts against MWSE's SharedSE and TES3 layouts, MWSE read as for "mwse native" (W497).
-    # It also needs this tree's IDA export, which git ignores: a new worktree has none, and the export of another
-    # checkout is not this tree's.
-    "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", (MWSE / "SharedSE", PLUGIN / "tools" / "out" / "structs.json")),
+    # It reads the one IDA export of the main checkout (git ignores it): the export is a fact of the IDA database, the
+    # same for every tree (W527, the Architect's answer to Q1). The check names its path, md5 and time.
+    "sharedse layouts": (PLUGIN / "tools" / "check_sharedse_layouts.py", (MWSE / "SharedSE", MAIN_EXPORT), ["--export", str(MAIN_EXPORT)]),
     # The fixture test of the third-party notices writer of the release archive.
     "notices": (PLUGIN / "tools" / "third_party_notices.py", PLUGIN, ["--self-test"]),
     # The tests of the pure parts of the release tool (the untracked-file stop, the tag name,
@@ -231,11 +237,14 @@ def self_test():
 
     for name in ("module headers", "skill names"):
         assert CHECKS[name][2] == ["--plugin", str(PLUGIN)], "the docs checks read the code of this tree"
-    assert PLUGIN / "tools" / "out" / "structs.json" in CHECKS["sharedse layouts"][1], "the layouts check needs this tree's export"
+    # W527 (Q1): the layouts check reads the main checkout's export, in a worktree too, and names it.
+    assert MAIN_EXPORT in CHECKS["sharedse layouts"][1] and CHECKS["sharedse layouts"][2] == ["--export", str(MAIN_EXPORT)]
+    assert MAIN_EXPORT.parts[-3:] == ("tools", "out", "structs.json")
 
     # W497: the MWSE checks pick their MWSE themselves (no path from here), and the summary names a fallback.
     for name in ("mwse native", "mwse vtable fills", "sharedse layouts"):
-        assert len(CHECKS[name]) == 2, "%s gets no MWSE path from checks.py" % name
+        assert not any(argument.startswith("--mwse") for argument in (CHECKS[name][2] if len(CHECKS[name]) > 2 else [])), \
+            "%s gets no MWSE path from checks.py" % name
     assert summary("plugin", ["a"], [], [], []) == "checks (plugin): 1 passed"
     line = summary("plugin", ["a", "mwse tree"], [], ["mwse native"], ["mwse native"])
     assert line == ("checks (plugin): 2 passed, MWSE FALLBACK in 1: mwse native (the sibling MWSE was read, not the installs' "
@@ -323,7 +332,8 @@ def main(argv):
         if missing:
             if strict:
                 not_run.append(name)
-                print("== NOT RUN: the check '%s' (--strict): %s is not on this machine" % (name, missing[0]))
+                how = "; %s" % HOW_TO_MAKE[name] if name in HOW_TO_MAKE else ""
+                print("== NOT RUN: the check '%s' (--strict): %s is not on this machine%s" % (name, missing[0], how))
             else:
                 skipped.append(name)
             continue
