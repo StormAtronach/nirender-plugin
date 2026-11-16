@@ -1,6 +1,5 @@
 """The A/B stages of the merge step that need the data of a game instance, such as the grass of Outlander-test.
 
-    python -I tools/instance_ab.py base-build --plugin-repo DIR --mge-repo DIR --plugin-tip SHA --mge-tip SHA --out DIR --work DIR
     python -I tools/instance_ab.py run --stage grass --baseline DIR --base-build DIR --now-build DIR --out DIR
     python -I tools/instance_ab.py --self-test    # the tests of the pure parts: no build, no game
 
@@ -10,11 +9,9 @@ of that instance (the distant land, the game folder) and a COPY of its mgeXE.tom
 data of the instance changes at each full regeneration (D128, D129), and a picture of the day before would fail every
 merge. The stage compares two builds on the same data, on the same day:
 
-- the BASE build, `cargo xtask dist` at the tip before the merge of the repo under test and at the HEAD of the sibling
-  tree, which the build under test uses too (numidium.exe comes from both repos, so the A/B shows the change of one repo).
-  `base-build` keeps it in a folder with a key file: the commit of each repo and the profile. It builds again when a
-  commit or the profile differs from the key, and uses the kept build when both commits equal it;
-- the build UNDER TEST (the dist-staging folder of the gate's build).
+- the BASE set (--base-build), the sealed set of tools/build_set.py of the base pair of both repos, which the merge step
+  makes in its round (the stage "base set"). Its manifest names its commits;
+- the set UNDER TEST (--now-build), the round's set, which the replay gate replays too (W521).
 
 `run` replays the capture with the base, with the build under test and with the base again, in that order, each with
 `--frames-at`. The second replay of the base is the null test: the base must equal itself, or the stage says "noise" and
@@ -25,7 +22,7 @@ hash line)": a FAIL when the pictures differ, else NOT RUN, never a PASS.
 
 A stage prints NOT RUN, and exits with code 5, when it cannot judge:
 
-- an input is missing (the capture, the config copy, the distant land, the game folder, a build);
+- an input is missing (the capture, the config copy, the distant land, the game folder, a set);
 - the game slot is held or reserved for a run that names the instance (the game start regenerates the distant land), its
   status is not "game: free" or "game: held ... by", or a Morrowind.exe from the instance's folder runs;
 - a file that the generator writes (`generation_report.toml`, `generation_state.bin`) changed its time or size between the
@@ -58,14 +55,7 @@ from common import (BUILD_PARTS, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, REFUSED_FORMA
                     docs_place, docs_root, format_change, local, missing_docs_text)
 
 PASS, FAIL, NOT_RUN = 0, 1, NOT_RUN_EXIT
-KEEP_FOLDER = "E:\\nirender-keep\\merge-step"
-BASE_WORK = os.path.join(KEEP_FOLDER, "base-work")
-PLUGIN_NAME = "nirender-plugin"
-MGE_NAME = "MGE-XE-G7-render-link"
-PROFILE = "dist"
 HASH_PREFIX = "grass hash frame "
-KEY_FILE = "key.txt"
-BUILD_FOLDER = "build"
 
 
 @dataclass(frozen=True)
@@ -173,26 +163,6 @@ def process_listing():
     if done.returncode != 0:
         raise RuntimeError("the process list failed: %s" % done.stderr.strip()[:200])
     return [line.strip() for line in done.stdout.splitlines() if line.strip()]
-
-
-def base_key(plugin_tip, mge_tip, profile=PROFILE):
-    """The text of the key file of a base build."""
-    return "%s %s\n%s %s\nprofile %s\n" % (PLUGIN_NAME, plugin_tip, MGE_NAME, mge_tip, profile)
-
-
-def key_problem(kept, wanted):
-    """Why a kept base build cannot serve, as a text, or None. `kept` is the text of the key file, or None."""
-    if kept is None:
-        return "no kept base build"
-    if kept == wanted:
-        return None
-    old, new = dict(), dict()
-    for target, text in ((old, kept), (new, wanted)):
-        for line in text.splitlines():
-            name, _, value = line.partition(" ")
-            target[name] = value
-    differs = [name for name in new if old.get(name) != new[name]]
-    return "the kept base build differs in %s" % ", ".join(differs or ["its key"])
 
 
 def hash_lines(output):
@@ -306,79 +276,6 @@ def named(line, name):
     return line
 
 
-# --- the base build ------------------------------------------------------------------------
-
-def sync_folder(source, target):
-    """Makes `target` hold the files of `source`: copies the new and the changed ones, and removes the files that are not in
-    `source`, one by one. It removes no folder."""
-    wanted = set()
-    for folder, _, names in os.walk(source):
-        relative = os.path.relpath(folder, source)
-        os.makedirs(os.path.join(target, relative), exist_ok=True)
-        for name in names:
-            path = os.path.normpath(os.path.join(relative, name))
-            wanted.add(path)
-            one, other = os.path.join(source, path), os.path.join(target, path)
-            if not os.path.isfile(other) or os.stat(one).st_size != os.stat(other).st_size or os.stat(one).st_mtime_ns != os.stat(other).st_mtime_ns:
-                shutil.copy2(one, other)
-    for folder, _, names in os.walk(target):
-        for name in names:
-            path = os.path.normpath(os.path.join(os.path.relpath(folder, target), name))
-            if path not in wanted:
-                os.remove(os.path.join(target, path))
-
-
-def git_out(tree, *args):
-    done = subprocess.run(["git", "-C", tree, *args], capture_output=True, text=True)
-    if done.returncode != 0:
-        raise SystemExit("git %s in %s: %s" % (" ".join(args), tree, done.stderr.strip()))
-    return done.stdout.strip()
-
-
-def put_worktree(tree, path, sha):
-    """A worktree of the repository of `tree` at `path`, at the commit `sha`, detached."""
-    if os.path.isdir(os.path.join(path, ".git")) or os.path.isfile(os.path.join(path, ".git")):
-        if git_out(path, "status", "--porcelain", "--untracked-files=no"):
-            raise SystemExit("%s has tracked changes: the base build does not touch a tree that is not clean" % path)
-        git_out(path, "checkout", "--detach", sha)
-    else:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        git_out(tree, "worktree", "add", "--detach", path, sha)
-
-
-def base_build(args, out=print):
-    """Keeps the base build of the current tips: returns the exit code."""
-    wanted = base_key(args.plugin_tip, args.mge_tip)
-    key_path = os.path.join(args.out, KEY_FILE)
-    kept = open(key_path, encoding="ascii").read() if os.path.isfile(key_path) else None
-    problem = key_problem(kept, wanted)
-    if problem is None:
-        out("the kept base build holds both tips: %s" % args.out)
-        return PASS
-    out("building the base: %s" % problem)
-    plugin_work, mge_work = os.path.join(args.work, PLUGIN_NAME), os.path.join(args.work, MGE_NAME)
-    put_worktree(args.plugin_repo, plugin_work, args.plugin_tip)
-    put_worktree(args.mge_repo, mge_work, args.mge_tip)
-    # The key file goes first: a build that fails leaves no key that a later run could trust.
-    if os.path.isfile(key_path):
-        os.remove(key_path)
-    began = time.time()
-    code = subprocess.run(["cargo", "xtask", "dist"], cwd=mge_work, stdin=subprocess.DEVNULL).returncode
-    if code != 0:
-        out("FAIL the base build: cargo xtask dist exit code %d" % code)
-        return FAIL
-    staging = os.path.join(mge_work, "target", "dist-staging")
-    missing = build_missing(staging)
-    if missing:
-        out("FAIL the base build has no %s" % ", ".join(missing))
-        return FAIL
-    sync_folder(staging, os.path.join(args.out, BUILD_FOLDER))
-    with open(key_path, "w", encoding="ascii", newline="\n") as key:
-        key.write(wanted)
-    out("the base build is kept in %s (%d s)" % (args.out, time.time() - began))
-    return PASS
-
-
 # --- the replays ---------------------------------------------------------------------------
 
 def clear_files(folder):
@@ -467,7 +364,7 @@ def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare
         folder = stage_folder(BASELINE, stage)
     out("inputs of %s from %s" % (stage.name, folder))
     missing = inputs_missing(stage, folder)
-    for build, what in ((args.base_build, "base build"), (args.now_build, "build under test")):
+    for build, what in ((args.base_build, "base set"), (args.now_build, "set under test")):
         if build_missing(build):
             missing.append("%s %s" % (what, build))
     if missing:
@@ -569,15 +466,6 @@ def self_test():
         assert process_blocker(["D:/other/Morrowind.exe"], (os.path.join(root, "inst"), "")) is None and process_blocker([], (root,)) is None
         assert not is_inside(os.path.join(root, "inst2", "x"), os.path.join(root, "inst")) and is_inside(os.path.join(root, "INST", "x"), os.path.join(root, "inst"))
 
-        # The key of the base build: both tips and the profile.
-        key = base_key("p1", "m1")
-        assert key_problem(key, key) is None and key_problem(None, key) == "no kept base build"
-        assert key_problem(base_key("p2", "m1"), key) == "the kept base build differs in %s" % PLUGIN_NAME
-        assert key_problem(base_key("p1", "m2"), key) == "the kept base build differs in %s" % MGE_NAME
-        assert "profile" in key_problem(base_key("p1", "m1", "other"), key)
-        both = key_problem(base_key("p2", "m2"), key)
-        assert PLUGIN_NAME in both and MGE_NAME in both
-
         # The hash lines, and the records they count.
         one = "grass hash frame 1 main: 3 records, cut false, ordered 00000000000000aa, unordered 00000000000000bb"
         two = "grass hash frame 2 view: 0 records, cut false, ordered 00000000000000cc, unordered 0000000000000000"
@@ -632,18 +520,6 @@ def self_test():
         assert code == FAIL and "base counts records" in lines[0]
         code, lines = judge([], [], [], [], [two], [two])
         assert code == NOT_RUN and "none holds a grass record" in lines[0]
-
-        # The kept base folder follows the build: new and changed files copied, stale files removed one by one.
-        source, target = os.path.join(root, "src"), os.path.join(root, "dst")
-        os.makedirs(os.path.join(source, "Data Files"))
-        os.makedirs(os.path.join(target, "old"))
-        open(os.path.join(source, "numidium.exe"), "w").write("new")
-        open(os.path.join(source, "Data Files", "s.fx"), "w").write("shader")
-        open(os.path.join(target, "numidium.exe"), "w").write("older!")
-        open(os.path.join(target, "old", "gone.dll"), "w").write("gone")
-        sync_folder(source, target)
-        assert open(os.path.join(target, "numidium.exe")).read() == "new" and open(os.path.join(target, "Data Files", "s.fx")).read() == "shader"
-        assert not os.path.exists(os.path.join(target, "old", "gone.dll")) and os.path.isdir(os.path.join(target, "old"))
 
         # The verdict word comes first, then the stage.
         assert named("PASS pictures equal", "grass") == "PASS grass pictures equal" and named("NOT RUN: x", "grass") == "NOT RUN grass: x"
@@ -722,26 +598,17 @@ def self_test():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", choices=("base-build", "run"))
-    parser.add_argument("--plugin-repo")
-    parser.add_argument("--mge-repo")
-    parser.add_argument("--plugin-tip")
-    parser.add_argument("--mge-tip")
+    parser.add_argument("command", nargs="?", choices=("run",))
     parser.add_argument("--out")
-    parser.add_argument("--work", default=BASE_WORK)
     parser.add_argument("--stage", choices=sorted(STAGES))
     parser.add_argument("--baseline")
-    parser.add_argument("--base-build")
-    parser.add_argument("--now-build")
+    parser.add_argument("--base-build", help="the base set: a sealed set of tools/build_set.py")
+    parser.add_argument("--now-build", help="the set under test")
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
-    if args.command == "base-build":
-        if not all((args.plugin_repo, args.mge_repo, args.plugin_tip, args.mge_tip, args.out)):
-            parser.error("base-build needs --plugin-repo, --mge-repo, --plugin-tip, --mge-tip and --out")
-        return base_build(args)
     if args.command == "run":
         if not all((args.stage, args.baseline, args.base_build, args.now_build, args.out)):
             parser.error("run needs --stage, --baseline, --base-build, --now-build and --out")

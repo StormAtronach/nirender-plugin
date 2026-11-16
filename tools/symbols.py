@@ -44,6 +44,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sets  # noqa: E402
 from clean_common import KEEP_LIST  # noqa: E402
 from common import docs_place, local  # noqa: E402
 
@@ -201,12 +202,12 @@ def pdb_of(binary, name, guid, age, pdb_dirs):
 
 
 def build_name(folder):
-    """The transaction name of a build folder: a play set's name f<N> as it is; any other name with the first 8 hex
-    digits of the md5 of its d3d8.dll, for example "build-1a2b3c4d". A plain word such as "build" would be pinned by
-    any keep-list line that has that word."""
+    """The transaction name of a build folder: a sealed set's name s-<nir8>-<rl8>-<mwse8>... (sets.NAME_RE) and an old
+    play set's name f<N> as they are; any other name with the first 8 hex digits of the md5 of its d3d8.dll, for example
+    "build-1a2b3c4d". A plain word such as "build" would be pinned by any keep-list line that has that word."""
     base = os.path.basename(os.path.normpath(folder))
     d3d8 = os.path.join(folder, "d3d8.dll")
-    if re.fullmatch(r"f\d+", base, re.I) or not os.path.isfile(d3d8):
+    if re.fullmatch(r"f\d+", base, re.I) or sets.NAME_RE.fullmatch(base) or not os.path.isfile(d3d8):
         return base
     return "%s-%s" % (base, md5_of(d3d8)[:8])
 
@@ -635,12 +636,14 @@ def self_test_in(work):
     # The name of a build folder: f<N> as it is; another name with its d3d8.dll's md5, so that a plain word in a keep
     # line ("its build plan") does not pin it. The null: the plain name "build" is pinned by that line.
     named = os.path.join(work, "names")
-    for folder in ("f232", "build", "empty"):
+    folders = ("f232", "build", "empty", "s-6d1b2140-d9741db1-89198b53")
+    for folder in folders:
         os.makedirs(os.path.join(named, folder))
         if folder != "empty":
             with open(os.path.join(named, folder, "d3d8.dll"), "wb") as file:
                 file.write(b"abc")
-    assert [build_name(os.path.join(named, folder)) for folder in ("f232", "build", "empty")] == ["f232", "build-90015098", "empty"]
+    # A sealed set's name is unique: it stays as it is (W521).
+    assert [build_name(os.path.join(named, folder)) for folder in folders] == ["f232", "build-90015098", "empty", folders[3]]
     plan = ["E:\\x\topen: the design page and its build plan\t2026-11-11"]
     assert pin_of(Transaction("9", "build", "md5", set()), plan) and not pin_of(Transaction("9", "build-90015098", "md5", set()), plan)
 

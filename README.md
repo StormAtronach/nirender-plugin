@@ -113,7 +113,8 @@ this file; every path this file names exists) and `tools/check_contract.py` (the
 Other tools: `tools/replay.py` (a capture to a picture), `tools/picture_diff.py` and
 `tools/diff_crops.py` (two pictures compared), `tools/capture_dump.py` (the records of a
 capture), `tools/lights_count.py` (what clustered distant lights would hold, from a
-`lights.data`), `tools/run_own_device.py` (a game run with the harness mods).
+`lights.data`), `tools/run_own_device.py` (a game run with the harness mods, on a sealed set of
+`tools/build_set.py`: `--mge-build <set>`, else the current set).
 
 ## Switches
 
@@ -133,7 +134,10 @@ The run:
 - `NIRENDER_RING_MB=<n>`: the size of the ring in MB, 1 to 512, default 128 (a texture
   level must fit it whole; a 4096 x 4096 ARGB level is 64 MiB); a value outside is named
   in the plugin's log and 128 is taken.
-- `NIRENDER_PLUGIN_DLL=<path>`: the tools install that DLL for a run (one arm of an A/B); the runner's `--plugin-dll <path>` says the same without a variable.
+- `NIRENDER_PLUGIN_DLL=<path>`: retired (W521). A run takes the plugin of its sealed set, and
+  `tools/run_own_device.py` stops with one line when the variable has any value: an A/B whose arms named their plugins
+  by it would run one plugin twice. `tools/play.py` prints one line and goes on. One arm of an A/B is another set
+  (`tools/build_set.py`).
 - `MGE_XE_TEXTURE_TIER=a|c`: the texture binding tier of the helper, for an A/B on one
   machine. `a`: the binding arrays (the default when the adapter has them). `c`: no binding
   arrays, a small group of the 6 textures and 6 samplers of each set (the default on an

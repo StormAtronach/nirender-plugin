@@ -1,18 +1,16 @@
 """Makes the owner's play set: a build of what is ready now, tested, and named in current.bat of the sets.
 
     python -I tools/make_play_set.py [--force] [--no-wait]
-    python -I tools/make_play_set.py --build-only   # warms the cargo targets: no set, no slot of the game
     python -I tools/make_play_set.py --bats-only    # the step of the owner's start alone, on the current set
     python -I tools/make_play_set.py --self-test    # the tests of the pure parts: no build, no game
 
-It builds nirender-plugin `master` and render-link `feature/wgpu-renderer` at their local tips, in the
-worktrees of C:/tmp/playset, which keep their cargo targets for the next set. It copies the stage of
-`cargo xtask dist` to a new E:/nirender-keep/mgebuilds/f<N>, with no pdb, and the plugin beside it as
-akulakhan-<commit>.dll. The pdbs of d3d8.dll, dinput8.dll, numidium.exe and akulakhan.dll go from the
-cargo targets to E:/nirender-keep/pdb/f<N>, outside the sets, so that a frame of a dump can be named: each
-pdb only when it holds the GUID of its binary's CodeView record, with a WHAT.txt of the binaries' MD5s. A
-pdb never goes into a set, an install or an archive. Then it takes the game slot and runs the smoke on the
-testing instance:
+It asks the maker (tools/build_set.py, `make`) for the sealed set of the tips (W521): nirender-plugin `master`,
+render-link `feature/wgpu-renderer` at their local tips, and the MWSE commit that the test installs run. The maker
+builds what no set has yet, under its own build hold and its run lock, keeps the pdbs outside the sets and seals the
+set; a set of these commits that is there already is taken as it is. This tool adds the set to the symbol store. The
+smoke runs the tools of a detached worktree C:/tmp/playset/nirender-plugin at the set's nirender commit, which builds
+nothing (the maker's trees can move under another caller's make). Then it takes the game slot and runs the smoke on
+the testing instance; each run takes the set's own plugin (no --plugin-dll):
 
 - live: tools/run_own_device.py with batch-play-smoke.lua: teleports over 5 cell borders, a save, a move to
   another cell, a load, the map, the inventory and the character. The runner must end well, each answer of
@@ -35,7 +33,8 @@ A hold that is gone, or a replay that the slot check refused, is "NOT RUN: slot 
 picture was checked, so the set did not fail, and it does not become the play set.
 - the owner's start: both play-manual-check*.bat with the real tools/play.py and --stage-only, so that
   they stop just before the game. The bat must pass the slot check, with this session's variable in its
-  terminal, and each instance's mod list must be as before.
+  terminal, and each instance's mod list must be as before. A bat that cannot be tested because the instance's
+  Mod Organizer is open makes the smoke NOT RUN (W524 F-T-1).
 
 This is the smoke of f185 with two changes: a batch replaces the live bridge, as a script cannot call it,
 and the gate is added. A crash when the game closes, after the last step, fails the set: the runner's exit
@@ -43,22 +42,26 @@ code 5 (W417) names it, and the set's note says FAILED with the run (since W431 
 close that only MWSE.log shows, with the runner's exit code 0, stays a note.
 
 Only on a pass, it writes current.bat in E:/nirender-keep/mgebuilds with the same writer as deploy_rest.py
-(`new_run_folder.write_current_bat`, W500, the owner's D461): MGE_BUILD and NIRENDER_PLUGIN_DLL of the set. The
+(`sets.write_current_bat`, W500, the owner's D461): one line, MGE_BUILD of the set (W521). The
 owner's local.bat calls current.bat, and the tool writes no local.bat. A failed smoke leaves current.bat on the
-last good set, says why, and exit code 1. Each set has a one-line WHAT.txt,
-which names the MD5 of the MWSE.dll that the smoke ran on, from the lines of the runner in progress.log.
-No set is deleted: older sets stay until the owner's cleanup, and a failed set stays with its reason. The
+last good set, says why, and exit code 1; a NOT RUN leaves it too, with exit code 3. A sealed set holds no file
+outside its manifest, so the note of each smoke is a file outside the sets: E:/nirender-keep/playset-notes/
+<set>-<time>.txt, one line, which names the three commits, the MD5 of the MWSE.dll that the smoke ran on (from the
+lines of the runner in progress.log) and the result. A set can be smoked again, with a note for each smoke.
+No set is deleted: older sets stay until the owner's cleanup, and a failed set stays with its note. The
 only file it deletes is the smoke's own save. The smoke's runs are copied to E:/nirender-keep/runs-<date>.
 
-It reads the tips again when it holds the slot, and builds again if they moved, as the wait in the queue can
-be long. If they move during the smoke, the note says that the set is not at the tips.
+It reads the tips again when it holds the slot, and asks the maker again if they moved, as the wait in the queue
+can be long; that make runs in the set's own hold of the whole build side. If they move during the smoke, the note
+says that the set is not at the tips.
 
 The current set is the one that current.bat names, else the one that local.bat names (`clean_common.current_set`).
-With the tips of the current set it does nothing, unless --force. The owner's checkout must be at the
-plugin's commit, as a game by the bat takes the Lua of mod/ from there: otherwise it stops, unless --force,
-and the note says so. A build waits while the slots refuse a build, and the smoke waits in the queue of the
-game slot: with --no-wait each stops with exit code 3. It needs the slot tool, and a session when
-enforcement is on: nobody waits for this job, and a game with no slot can spoil a timing run.
+When it has the tips (the three commits of its manifest) and a note of a smoke that passed, the tool does nothing,
+unless --force. The owner's checkout must be at the plugin's commit, as a game by the bat takes the Lua of mod/
+from there: otherwise it stops, unless --force, and the note says so. The maker's build hold and the smoke wait in
+their queues, one after the other: with --no-wait each stops with exit code 3. It needs the slot tool, and a
+session when enforcement is on: nobody waits for this job, and a game with no slot can spoil a timing run.
+--build-only is gone: the maker makes a set alone (tools/build_set.py).
 """
 import argparse
 import contextlib
@@ -70,7 +73,6 @@ import msvcrt
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
@@ -80,21 +82,25 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import GPU_ERRORS, SIBLINGS, check_problems, docs_place, local, main_checkout  # noqa: E402
-from new_run_folder import CURRENT_BAT, SETS, new_set_folder, write_current_bat  # noqa: E402  (W380, W500)
+from sets import CURRENT_BAT, KIND_USUAL, MANIFEST, SETS, SYMBOL_FILES, SetError, verify, write_current_bat  # noqa: E402  (W500, W521)
 import clean_common  # noqa: E402  (the current set, W500)
 from validate_tour import NOT_RUN, NOT_RUN_CODE, verdict_in as tour_verdict_in  # noqa: E402
 import symbols  # noqa: E402
-from symbols import codeview  # noqa: E402,F401  (the tests and keep_pdbs read CodeView records by it)
+# build_set.py imports this module at its top, so this module imports build_set inside its functions.
 
 REPOS = local("repos", SIBLINGS)
 PLUGIN_REPO = os.path.join(REPOS, "nirender-plugin")
-MGE_REPO = os.path.join(REPOS, "MGE-XE-G7-render-link")
 PLUGIN_BRANCH = "master"
 MGE_BRANCH = "feature/wgpu-renderer"
+# The tree of the smoke's tools (no build) and the run lock of this tool.
 TREES = "C:/tmp/playset"
-# The pdbs of the sets, one folder for each set. It must not be inside SETS: no pdb is deployed.
+# The note of each smoke, outside the sets: a sealed set holds no file outside its manifest (W524 F-T-4).
+PLAYSET_NOTES = os.path.join(os.path.dirname(SETS), "playset-notes")
+# The pdbs of the sets, one folder for each set (build_set.py keeps them). It must not be inside SETS: no pdb is
+# deployed.
 PDB_KEEP = "E:/nirender-keep/pdb"
-# Each binary of a set (its path in the set), the tree that built it, and its pdb in that tree.
+# Each binary of a set (its path in the set), the tree that built it, and its pdb in that tree (build_set.py's
+# Trees.pdb_sources).
 PDBS = (
     ("d3d8.dll", "mge", os.path.join("target", "i686-pc-windows-msvc", "release-dll", "d3d8.pdb")),
     ("dinput8.dll", "mge", os.path.join("target", "i686-pc-windows-msvc", "release-dll", "dinput8.pdb")),
@@ -126,7 +132,6 @@ def accepted_baseline(tree, main):
 
 
 BASELINE = accepted_baseline(PLUGIN_REPO, main_checkout())
-PLUGIN_TARGET = os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.dll")
 TOUR_CELLS = "@nifTest_1;@nifTest_2;@nifTest_3"
 TESTING_MODLIST = "D:/Modlists/Morrowind75testing/profiles/Default/modlist.txt"
 OUTLANDER_PROFILE = "Outlander"
@@ -138,6 +143,8 @@ SLOT_MINUTES = 45
 SMOKE_GAME = "the smoke of the next set"
 # The `what` of the game hold of --bats-only.
 OWNER_START_GAME = "the step of the owner's start"
+# The `what` of the maker's build hold, before the set's hold.
+SET_BUILD = "the build of the next set"
 # Whether the set's hold (`take_set_hold`) still has the whole build side: it gives it back after the last replay.
 SET_HOLD = {"build": False}
 # The log of merge_step's keep_holds: its lines go to the console only here.
@@ -180,14 +187,17 @@ def md5_of(path):
 
 # --- the pure parts ---------------------------------------------------------------------
 
-def current_tips():
-    """The commits of the two branches now, as (plugin, render-link)."""
-    return git(PLUGIN_REPO, "rev-parse", "--short=7", PLUGIN_BRANCH), git(MGE_REPO, "rev-parse", "--short=7", MGE_BRANCH)
+def tip_commits():
+    """The full commits of the tips now, {repo: commit}: the two branches and the MWSE commit of the test installs
+    (build_set.tips). A tip that is not known raises build_set.SetFault."""
+    import build_set
+
+    return {repo: build_set.resolve(build_set.SOURCE_REPOS[repo], name) for repo, name in build_set.tips().items()}
 
 
 def tips_moved(built, now):
-    """A text that says which tips differ from the built commits, or an empty text."""
-    moved = ["%s moved from %s to %s" % (branch, old, new) for branch, old, new in zip((PLUGIN_BRANCH, MGE_BRANCH), built, now, strict=True) if old != new]
+    """A text that says which tips differ from the built commits ({repo: commit}), or an empty text."""
+    moved = ["%s moved from %s to %s" % (repo, built[repo][:8], now[repo][:8]) for repo in built if built[repo] != now[repo]]
     return ", ".join(moved)
 
 
@@ -211,11 +221,33 @@ def mwse_text(digests):
     return "MWSE.dll %s" % next(iter(digests))
 
 
-def set_note(name, plugin_commit, mge_commit, result, digests=()):
-    """The one line of WHAT.txt."""
+def set_note(name, commits, result, digests=()):
+    """The one line of a smoke's note: the set, its commits ({repo: commit}), the MWSE.dll that the smoke ran on, and
+    the result."""
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    return "%s %s: the owner's play set, nirender %s %s, render-link %s %s, no pdb, %s; smoke: %s\n" % (
-        name, stamp, PLUGIN_BRANCH, plugin_commit, MGE_BRANCH, mge_commit, mwse_text(digests), result)
+    return "%s %s: the owner's play set, nirender %s %s, render-link %s %s, MWSE %s, %s; smoke: %s\n" % (
+        name, stamp, PLUGIN_BRANCH, commits["nirender"][:8], MGE_BRANCH, commits["render-link"][:8], commits["mwse"][:8],
+        mwse_text(digests), result)
+
+
+def note_path(name, when, notes=PLAYSET_NOTES):
+    """The note of the smoke of the set `name` that began at `when` (a time.struct_time)."""
+    return os.path.join(notes, "%s-%s.txt" % (name, time.strftime("%Y%m%d-%H%M%S", when)))
+
+
+def newest_note(name, notes=PLAYSET_NOTES):
+    """The text of the newest note of the set `name`, or None. The newest note decides (verdict 507 addendum 7): an
+    older "passed" with a later "FAILED" does not count."""
+    pattern = re.compile(re.escape(name) + r"-\d{8}-\d{6}\.txt")
+    try:
+        found = sorted(entry for entry in os.listdir(notes) if pattern.fullmatch(entry))
+    except FileNotFoundError:
+        return None
+    return read_text(os.path.join(notes, found[-1])) if found else None
+
+
+def note_says_passed(text):
+    return bool(text) and "; smoke: passed" in text
 
 
 def batch_answers(progress):
@@ -309,20 +341,6 @@ def load_slots():
         say("enforcement is on, and this process has no session: run this from a session")
         sys.exit(3)
     return slot
-
-
-def wait_for_build(slots, no_wait):
-    """Waits while the state refuses a build: this tool's cargo is a child, and the hook does not see it."""
-    while slots.enforcing():
-        found = slots.refusal("build", slots.session_id())
-        if found is None:
-            return
-        # Waiting cannot pass a refusal for lack of room.
-        if no_wait or found.final:
-            say("no build now: %s" % found.text)
-            sys.exit(3)
-        say("waiting for the build: %s" % found.text)
-        time.sleep(WAIT_SECONDS)
 
 
 def slot_label(what):
@@ -443,10 +461,10 @@ def hold_run_lock(path):
     return descriptor
 
 
-# --- the build ------------------------------------------------------------------------------
+# --- the set --------------------------------------------------------------------------------
 
 def ready_tree(name, repo, commit):
-    """A detached worktree at this commit in TREES. It keeps its target folder between sets."""
+    """A detached worktree at this commit in TREES, for the smoke's tools. Nothing is built in it."""
     tree = os.path.join(TREES, name)
     if not os.path.exists(os.path.join(tree, ".git")):
         os.makedirs(TREES, exist_ok=True)
@@ -459,85 +477,31 @@ def ready_tree(name, repo, commit):
     return tree
 
 
-def build_step(command, folder, log_path):
-    """Runs one cargo command with its output in the log. A set's folder needs the target of its own tree."""
-    env = dict(os.environ)
-    env.pop("CARGO_TARGET_DIR", None)
-    say("building: %s in %s" % (" ".join(command), folder))
-    with open(log_path, "a", encoding="utf-8") as log:
-        log.write("\n$ %s\n" % " ".join(command))
-        log.flush()
-        done = subprocess.run(command, cwd=folder, env=env, stdout=log, stderr=subprocess.STDOUT)
-    if done.returncode != 0:
-        raise SystemExit("the build failed with exit code %d: see %s" % (done.returncode, log_path))
+def make_set(slots, commits, no_wait, in_set_hold, make=None, builder=None):
+    """The maker's set of `commits` ({repo: full commit}), with no patch, of the usual kind: (exit code, folder or None).
+    Before the set's hold the maker takes the build slot itself (build_set.build_hold, under SET_BUILD's label) and
+    gives it back; in the set's hold (`in_set_hold`, the tips moved during the wait) it takes none, as the set's hold
+    has the whole build side and its notes. The E: gate is asked at each phase of writes either way. make() takes the
+    maker's run lock. `make` and `builder` replace build_set.make and build_set.Trees in the tests."""
+    import build_set
+
+    make = make or build_set.make
+    hold = None if in_set_hold else (lambda: build_set.build_hold(slots, slot_label(SET_BUILD), no_wait))
+    code, lines = make(commits, {}, KIND_USUAL, builder or build_set.Trees(), hold=hold)
+    for line in lines:
+        say(line)
+    return code, (lines[-1] if code == 0 and lines else None)
 
 
-def copy_stage(stage, plugin_tree, folder, plugin_commit):
-    """Copies the stage to the set, with no pdb, and the plugin beside it. Returns the plugin's path."""
-    shutil.copytree(stage, folder, dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.pdb"))
-    built = os.path.join(plugin_tree, PLUGIN_TARGET)
-    staged = os.path.join(folder, "Data Files", "mwse", "lib", "akulakhan.dll")
-    if md5_of(built) != md5_of(staged):
-        raise SystemExit("the plugin of the stage is not the plugin of the tree: %s" % staged)
-    plugin_dll = os.path.join(folder, "akulakhan-%s.dll" % plugin_commit)
-    shutil.copy2(built, plugin_dll)
-    for name in ("d3d8.dll", "numidium.exe"):
-        if md5_of(os.path.join(stage, name)) != md5_of(os.path.join(folder, name)):
-            raise SystemExit("the copy of %s differs from the stage" % name)
-    refuse_pdb_in(folder)
-    return plugin_dll
-
-
-def refuse_pdb_in(folder):
-    """Stops when the set holds a pdb."""
-    pdbs = glob.glob(os.path.join(folder, "**", "*.pdb"), recursive=True)
-    if pdbs:
-        raise SystemExit("the set holds a pdb: %s" % pdbs[0])
+def add_symbols(name, folder, add=None):
+    """The set's binaries and the pdbs that the maker kept, into the symbol store (W345), as deploy_rest.py does."""
+    say((add or symbols.add)(name, [os.path.join(folder, path) for path in SYMBOL_FILES], [os.path.join(PDB_KEEP, name)]))
 
 
 def inside(path, folder):
     """True when `path` is `folder` or a path in it, also through a junction or a link."""
     path, folder = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(folder))
     return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
-
-
-def keep_pdbs(name, folder, trees, plugin_commit, mge_commit, keep=PDB_KEEP, sets=SETS):
-    """Copies the pdb of each binary of the set to keep/name. A pdb is kept only when the GUID of its info stream and
-    the age of its DBI stream are those of its binary's CodeView record (symbols.pdb_matches): the test of a
-    debugger. Writes the folder's WHAT.txt and returns its
-    lines. A pdb that is absent or of another build is not kept, and its line says why."""
-    if inside(keep, sets):
-        raise SystemExit("the folder of the pdbs %s is in the sets %s: no pdb may go into a set" % (keep, sets))
-    out = os.path.join(keep, name)
-    os.makedirs(out, exist_ok=True)
-    lines = []
-    for binary_path, tree, pdb_path in PDBS:
-        binary_file = os.path.join(folder, binary_path)
-        pdb_file = os.path.join(trees[tree], pdb_path)
-        pdb_name = os.path.basename(pdb_path)
-        shown = binary_path.replace("\\", "/")
-        try:
-            with open(binary_file, "rb") as file:
-                record = codeview(file.read())
-            if record is None or record[2].lower() != pdb_name.lower():
-                lines.append("%s: not kept: %s has no CodeView record of it" % (pdb_name, shown))
-                continue
-            guid, age, _ = record
-            if not os.path.isfile(pdb_file):
-                raise FileNotFoundError(2, "No such file or directory", pdb_file)
-            if not symbols.pdb_matches(pdb_file, guid, age):
-                lines.append("%s: not kept: the pdb in the tree is of another build than %s" % (pdb_name, shown))
-                continue
-            shutil.copy2(pdb_file, os.path.join(out, pdb_name))
-            lines.append("%s: %s md5 %s, GUID %s, age %d" % (pdb_name, shown, md5_of(binary_file), guid.hex(), age))
-        except OSError as error:
-            lines.append("%s: not kept: %s" % (pdb_name, error))
-    head = "%s %s: the pdbs of the play set %s/%s (nirender %s, render-link %s). Never deploy them." % (
-        name, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), sets, name, plugin_commit, mge_commit)
-    with open(os.path.join(out, "WHAT.txt"), "w", encoding="ascii", errors="backslashreplace") as file:
-        file.write("\n".join([head] + lines) + "\n")
-    refuse_pdb_in(folder)
-    return lines
 
 
 # --- the smoke ------------------------------------------------------------------------------
@@ -582,8 +546,13 @@ def keep_run(run):
     return target
 
 
-def run_runner(tree, label, folder, plugin_dll, budget, *args):
-    """Runs the runner of the tree, whose Lua and tools are of the built commit. Returns the run folder, kept
+def runner_command(label, folder, budget, log, *args):
+    """The runner's command of a smoke run: the set's own plugin, so no --plugin-dll (W521)."""
+    return [sys.executable, "tools/run_own_device.py", "--label", label, "--mge-build", folder, "--budget", str(budget), *args, "--log", log]
+
+
+def run_runner(tree, label, folder, budget, *args):
+    """Runs the runner of the tree, whose tools are of the set's nirender commit. Returns the run folder, kept
     also when the run failed, as a failed set's reason names it. A run whose game crashed in its close after DONE
     (the runner's RUNNER_CRASHED_AFTER_DONE, W417) fails the set with an ERROR line that names the run (D462)."""
     wait_clean()
@@ -591,8 +560,7 @@ def run_runner(tree, label, folder, plugin_dll, budget, *args):
     say("smoke: %s" % label)
     began = time.time()
     # As the owner's start has it: a start that the renderer refuses is a fault of the set.
-    done = subprocess.run([sys.executable, "tools/run_own_device.py", "--label", label, "--plugin-dll", plugin_dll, "--mge-build", folder,
-                           "--no-build", "--budget", str(budget), *args, "--log", log],
+    done = subprocess.run(runner_command(label, folder, budget, log, *args),
                           cwd=tree, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     run = newest_run(tree, label, began)
     say("smoke: the run is kept in %s" % keep_run(run))
@@ -644,8 +612,8 @@ def picture_is_black(path):
         return max(ImageStat.Stat(picture.convert("RGB")).mean) < BLACK_LEVEL
 
 
-def smoke_live(tree, folder, plugin_dll, notes):
-    run = run_runner(tree, "playset-live", folder, plugin_dll, 400, "--steps", "exterior,shaders", "--exterior", "Balmora",
+def smoke_live(tree, folder, notes):
+    run = run_runner(tree, "playset-live", folder, 400, "--steps", "exterior,shaders", "--exterior", "Balmora",
                      "--hour", "12", "--weather", "0", "--shader-batch", BATCH)
     check_run_files(run, notes)
     faults = live_faults(read_text(os.path.join(run, "progress.log")))
@@ -688,10 +656,10 @@ def smoke_gate(tree, folder, slots):
     return os.path.basename(keep)
 
 
-def smoke_tour(tree, folder, plugin_dll, notes, slots):
+def smoke_tour(tree, folder, notes, slots):
     """The tour in a game, then its replays under the set's hold of the whole build side, which it gives back after
     them: they are the last replays of the smoke."""
-    run = run_runner(tree, "playset-tour", folder, plugin_dll, 900, "--steps", "tour", "--tour-cells", TOUR_CELLS, "--tour-dual")
+    run = run_runner(tree, "playset-tour", folder, 900, "--steps", "tour", "--tour-cells", TOUR_CELLS, "--tour-dual")
     check_run_files(run, notes)
     keep_set_hold(slots, "the tour's replays of the next set")
     done = subprocess.run([sys.executable, "tools/validate_tour.py", run, "--mge-build", folder, "--jobs", "3", "--least-stops", str(LEAST_STOPS)],
@@ -709,12 +677,14 @@ def smoke_tour(tree, folder, plugin_dll, notes, slots):
     return run
 
 
-def smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes):
+def smoke_owner_bats(tree, folder, owner_local_bat, notes):
     """Runs both real bats through the real tools/play.py up to the game's start. The tree's local.bat names a
     small command in place of Python: it adds --stage-only, and so the last lines of the bat do not run.
-    Returns the number of bats that reached the game's start."""
+    Returns the number of bats that reached the game's start. A bat that could not be tested because the
+    instance's Mod Organizer is open makes the smoke NOT RUN (W524 F-T-1), after the check of the mod lists."""
     wait_clean()
     tested = 0
+    not_run = []
     owner_values = local_bat_values(read_text(owner_local_bat))
     outlander = owner_values.get("OUTLANDER_INSTANCE", "")
     # Without this the bat looks for it next to the tree, where no moreFPS is.
@@ -727,8 +697,8 @@ def smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes):
     with open(stage_only, "w", encoding="ascii", newline="\r\n") as file:
         file.write('@"%s" %%* --stage-only\n' % sys.executable)
     with open(os.path.join(tree, "local.bat"), "w", encoding="ascii", newline="\r\n") as file:
-        file.write('@set "PYTHON=%s"\n@set "MGE_BUILD=%s"\n@set "NIRENDER_PLUGIN_DLL=%s"\n@set "OUTLANDER_INSTANCE=%s"\n@set "LIVECODING=%s"\n' % (
-            stage_only, folder, plugin_dll, outlander, livecoding))
+        file.write('@set "PYTHON=%s"\n@set "MGE_BUILD=%s"\n@set "OUTLANDER_INSTANCE=%s"\n@set "LIVECODING=%s"\n' % (
+            stage_only, folder, outlander, livecoding))
 
     for bat in OWNER_BATS:
         bat_path = os.path.join(tree, bat)
@@ -740,7 +710,7 @@ def smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes):
         if "Refused by the slot check" in output:
             raise SmokeFailed("%s was refused by the slot check: %s" % (bat, output[-300:]))
         if "Mod Organizer is open" in output:
-            notes.append("%s is not tested: the instance's Mod Organizer is open" % bat)
+            not_run.append("%s is not tested: the instance's Mod Organizer is open" % bat)
             continue
         if "no game (--stage-only)" not in output:
             raise SmokeFailed("%s did not reach the game's start: %s" % (bat, output[-400:]))
@@ -750,19 +720,21 @@ def smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes):
     for path, digest in before.items():
         if md5_of(path) != digest:
             raise SmokeFailed("the bats changed the mod list %s" % path)
+    if not_run:
+        raise SmokeNotRun("; ".join(not_run))
     return tested
 
 
-def run_smoke(tree, folder, plugin_dll, owner_local_bat, notes, slots):
+def run_smoke(tree, folder, owner_local_bat, notes, slots):
     """The quick part first: a fault costs less time. The set's hold (`take_set_hold`) covers every stage, with no
     release between them (W405)."""
     keep_set_hold(slots, "the live smoke of the next set")
-    live = smoke_live(tree, folder, plugin_dll, notes)
+    live = smoke_live(tree, folder, notes)
     gate = smoke_gate(tree, folder, slots)
     keep_set_hold(slots, "the tour of the next set")
-    tour = smoke_tour(tree, folder, plugin_dll, notes, slots)
+    tour = smoke_tour(tree, folder, notes, slots)
     keep_set_hold(slots, "the owner's start of the next set")
-    tested = smoke_owner_bats(tree, folder, plugin_dll, owner_local_bat, notes)
+    tested = smoke_owner_bats(tree, folder, owner_local_bat, notes)
     return "passed (%s, %s, %s, %d of %d bats)" % (os.path.basename(live), gate, os.path.basename(tour), tested, len(OWNER_BATS))
 
 
@@ -773,74 +745,95 @@ def current_set_folder(checkout=None, sets=SETS):
     return os.path.join(sets, name) if name else None
 
 
-def set_plugin_dll(folder):
-    """The plugin of the set `folder`: its one akulakhan-<commit>.dll (`copy_stage`), or None."""
-    found = glob.glob(os.path.join(folder, "akulakhan-*.dll"))
-    return found[0] if len(found) == 1 else None
+def manifest_commits(folder):
+    """The full commits of the set `folder`, {repo: commit}, from its manifest, or None when it has none that reads."""
+    try:
+        with open(os.path.join(folder, MANIFEST), encoding="utf-8") as file:
+            commits = json.load(file)["commits"]
+        return {repo: commits[repo]["commit"] for repo in ("nirender", "render-link", "mwse")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
-def current_set_commits(checkout=None, sets=SETS):
-    """The commits in the note of the current set, or None. A set whose note does not say passed has none."""
+def current_set_commits(checkout=None, sets=SETS, notes=PLAYSET_NOTES):
+    """The commits of the current set ({repo: full commit}, from its manifest) when the newest note of its smokes says
+    passed, else None. A set that deploy_rest.py named, with no smoke that passed, is smoked."""
     folder = current_set_folder(checkout, sets)
-    if folder is None:
+    if folder is None or not note_says_passed(newest_note(os.path.basename(folder), notes)):
         return None
-    note_path = os.path.join(folder, "WHAT.txt")
-    if not os.path.isfile(note_path):
-        return None
-    match = re.search(r"nirender %s (\w+), render-link %s (\w+),.*smoke: passed" % (PLUGIN_BRANCH, re.escape(MGE_BRANCH)), read_text(note_path))
-    return match.groups() if match else None
+    return manifest_commits(folder)
 
 
 # --- the tests of the pure parts ------------------------------------------------------------
+
+def write_test_set(sets, name, commits):
+    """A scratch set folder with a manifest that names `commits` ({repo: commit}), for the tests."""
+    os.makedirs(os.path.join(sets, name))
+    with open(os.path.join(sets, name, MANIFEST), "w", encoding="utf-8") as file:
+        json.dump({"name": name, "kind": KIND_USUAL, "commits": {repo: {"commit": commit} for repo, commit in commits.items()}}, file)
+
 
 def current_set_test():
     """The current set with the two forms of the owner's local.bat (the Reviewer's verdict 416): the set lines and then
     the call of current.bat, and the call alone. Each form is read by `current_set_commits` and run by cmd, on a scratch
     sets folder and checkout. The null: with no current.bat, the first form gives the set of its lines and the second
-    gives none."""
+    gives none. The commits come from the manifest, and the newest note of the set's smokes decides (addendum 9): no
+    note, a FAILED one, or a passed one with a FAILED one after it give None."""
     import io
     with tempfile.TemporaryDirectory(prefix="make-play-set-") as root:
         sets = os.path.join(root, "mgebuilds")
+        notes = os.path.join(root, "playset-notes")
         checkout = os.path.join(root, "nirender-plugin")
-        for name, commits in (("f185", ("abc", "def")), ("f186", ("a1b2c3d", "e4f5a6b"))):
-            os.makedirs(os.path.join(sets, name))
-            with open(os.path.join(sets, name, "WHAT.txt"), "w", encoding="ascii") as file:
-                file.write(set_note(name, commits[0], commits[1], "passed (a, b, 2 of 2 bats)", {"aae6"}))
-            open(os.path.join(sets, name, "akulakhan-%s.dll" % commits[0]), "wb").close()
+        os.makedirs(notes)
+        old = {"nirender": "a" * 40, "render-link": "b" * 40, "mwse": "c" * 40}
+        new = {"nirender": "1" * 40, "render-link": "2" * 40, "mwse": "3" * 40}
+
+        def note(name, stamp, result):
+            with open(os.path.join(notes, "%s-%s.txt" % (name, stamp)), "w", encoding="ascii") as file:
+                file.write(set_note(name, new if name == "s-new" else old, result, {"aae6"}))
+
+        for name, commits in (("s-old", old), ("s-new", new)):
+            write_test_set(sets, name, commits)
+        note("s-old", "20261117-010000", "passed (a, b, c, 2 of 2 bats)")
         os.makedirs(checkout)
         bat = os.path.join(sets, CURRENT_BAT)
         call = 'if exist "%s" call "%s"\r\n' % (bat, bat)
-        old_lines = 'set "MGE_BUILD=%s"\r\nset "NIRENDER_PLUGIN_DLL=%s"\r\n' % (os.path.join(sets, "f185"), os.path.join(sets, "f185", "akulakhan-abc.dll"))
+        old_lines = 'set "MGE_BUILD=%s"\r\nset "NIRENDER_PLUGIN_DLL=%s"\r\n' % (os.path.join(sets, "s-old"), os.path.join(sets, "s-old", "akulakhan-aaaaaaa.dll"))
         forms = {"lines and the call": "@echo off\r\n" + old_lines + call, "the call alone": "@echo off\r\n" + call}
         probe = os.path.join(root, "probe.cmd")
         with open(probe, "w", encoding="ascii", newline="") as file:
-            file.write('@call "%s"\r\n@echo %%MGE_BUILD%%^|%%NIRENDER_PLUGIN_DLL%%\r\n' % os.path.join(checkout, "local.bat"))
+            file.write('@call "%s"\r\n@echo %%MGE_BUILD%%\r\n' % os.path.join(checkout, "local.bat"))
 
         def form_gives(form):
-            """(the commits, the plugin of --bats-only, the two values in cmd) for the local.bat `form`."""
+            """(the commits, the value of MGE_BUILD in cmd) for the local.bat `form`."""
             with open(os.path.join(checkout, "local.bat"), "w", encoding="ascii", newline="") as file:
                 file.write(forms[form])
-            folder = current_set_folder(checkout, sets)
-            plugin_dll = set_plugin_dll(folder) if folder else None
             clean_env = {key: value for key, value in os.environ.items() if key.upper() not in ("MGE_BUILD", "NIRENDER_PLUGIN_DLL")}
             shell = subprocess.run(["cmd", "/c", probe], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, env=clean_env)
-            return current_set_commits(checkout, sets), plugin_dll, shell.stdout.strip()
+            return current_set_commits(checkout, sets, notes), shell.stdout.strip()
 
-        new_dll = os.path.join(sets, "f186", "akulakhan-a1b2c3d.dll")
         with contextlib.redirect_stdout(io.StringIO()):
-            assert form_gives("lines and the call") == (("abc", "def"), os.path.join(sets, "f185", "akulakhan-abc.dll"),
-                                                        "%s|%s" % (os.path.join(sets, "f185"), os.path.join(sets, "f185", "akulakhan-abc.dll")))
-            assert form_gives("the call alone")[:2] == (None, None), "no current.bat and no set lines: no current set"
-            write_current_bat(sets, "f186", "a1b2c3d")
+            assert form_gives("lines and the call") == (old, os.path.join(sets, "s-old"))
+            assert form_gives("the call alone")[0] is None, "no current.bat and no set lines: no current set"
+            # current.bat's one line (W521) wins over local.bat's MGE_BUILD in cmd too.
+            write_current_bat(sets, "s-new")
+            # A set with no note of a smoke (deploy_rest.py named it) has no commits: it is smoked.
+            assert form_gives("the call alone")[0] is None, "a set with no smoke"
+            note("s-new", "20261117-020000", "FAILED: a reason")
+            assert form_gives("the call alone")[0] is None, "a failed smoke"
+            # The null of the newest note: a later pass decides.
+            note("s-new", "20261117-030000", "passed (a, b, c, 2 of 2 bats)")
             for form in forms:
                 gives = form_gives(form)
-                assert gives == (("a1b2c3d", "e4f5a6b"), new_dll, "%s|%s" % (os.path.join(sets, "f186"), new_dll)), (form, gives)
-            # A set that did not pass is no current set; a set with two plugins gives --bats-only none.
-            with open(os.path.join(sets, "f186", "WHAT.txt"), "w", encoding="ascii") as file:
-                file.write(set_note("f186", "a1b2c3d", "e4f5a6b", "FAILED: a reason"))
-            assert form_gives("the call alone")[0] is None, "a failed set is no current set"
-            open(os.path.join(sets, "f186", "akulakhan-0000000.dll"), "wb").close()
-            assert form_gives("the call alone")[1] is None, "two plugins in a set"
+                assert gives == (new, os.path.join(sets, "s-new")), (form, gives)
+            # Passed, then FAILED: the newest note decides, and the set is no current set with the tips.
+            note("s-new", "20261117-040000", "FAILED: a later reason")
+            assert form_gives("the call alone")[0] is None, "an old pass counted over a later failure"
+            # A set whose name begins with another's: the other's notes are not its own.
+            write_test_set(sets, "s-new+p1", new)
+            write_current_bat(sets, "s-new+p1")
+            note("s-new", "20261117-050000", "passed (a, b, c, 2 of 2 bats)")
+            assert newest_note("s-new+p1", notes) is None and form_gives("the call alone")[0] is None
 
 
 def run_runner_test():
@@ -860,16 +853,19 @@ def run_runner_test():
         with open(os.path.join(run, "progress.log"), "w", encoding="ascii") as file:
             file.write("[runner] MWSE.dll aae6\n")
         code = [0]
+        commands = []
         try:
             module.wait_clean = lambda: None
             module.newest_run = lambda tree, label, since: run
             module.keep_run = lambda path: path
-            subprocess.run = lambda *args, **kwargs: types.SimpleNamespace(returncode=code[0])
+            subprocess.run = lambda command, **kwargs: commands.append(command) or types.SimpleNamespace(returncode=code[0])
             with contextlib.redirect_stdout(io.StringIO()) as said:
-                assert run_runner("t", "playset-live", "f", "p.dll", 400) == run, "exit code 0 passes"
+                assert run_runner("t", "playset-live", "f", 400) == run, "exit code 0 passes"
+                # The set's own plugin (W521): the command names the set and no plugin.
+                assert commands[0][commands[0].index("--mge-build") + 1] == "f" and not [part for part in commands[0] if "plugin" in part], commands
                 code[0] = RUNNER_CRASHED_AFTER_DONE
                 try:
-                    run_runner("t", "playset-live", "f", "p.dll", 400)
+                    run_runner("t", "playset-live", "f", 400)
                     raise AssertionError("a crash after DONE passed the smoke")
                 except SmokeFailed as failure:
                     line = str(failure)
@@ -877,7 +873,7 @@ def run_runner_test():
                 assert line in said.getvalue(), "the ERROR line is said"
                 code[0] = 1
                 try:
-                    run_runner("t", "playset-live", "f", "p.dll", 400)
+                    run_runner("t", "playset-live", "f", 400)
                     raise AssertionError("exit code 1 passed the smoke")
                 except SmokeFailed as failure:
                     assert "gave exit code 1" in str(failure), failure
@@ -1037,7 +1033,7 @@ def smoke_wiring_test(fake_slots):
                 with contextlib.redirect_stdout(io.StringIO()):
                     take_set_hold(Slots, False)
                     try:
-                        return run_smoke(tree, "f999", "plugin.dll", "local.bat", [], Slots)
+                        return run_smoke(tree, "s-999", "local.bat", [], Slots)
                     finally:
                         end_set_hold(Slots, contextlib.ExitStack(), keep_game)
             except (SmokeFailed, SmokeNotRun, SystemExit) as stop:
@@ -1120,6 +1116,116 @@ def self_test_wait_clean():
             assert reads == ["Morrowind.exe", "ModOrganizer.exe"], reads
         finally:
             TESTING_MODLIST, harness.processes, time.sleep = saved
+
+
+def make_and_smoke_test():
+    """The set step (addendum 8 tests 1, 2 and 4, with addendum 9's nulls), with a fake maker and a fake smoke; the
+    holds have their own test (smoke_wiring_test). A make() that made no set: its exit code, no hold, no note file, no
+    current.bat. The null: make() with code 0 writes the pending note before the smoke, and the pass writes current.bat.
+    A NOT RUN (F-T-1) and a failure write no current.bat. Tips that moved during the wait: a second make() with no hold
+    of its own."""
+    import io
+
+    tips = {"nirender": "a" * 40, "render-link": "b" * 40, "mwse": "c" * 40}
+    moved = dict(tips, nirender="d" * 40)
+    events = []
+    fakes = {
+        "take_set_hold": lambda slots, no_wait: events.append("hold"),
+        "set_hold_noted": lambda slots: contextlib.nullcontext(),
+        "end_set_hold": lambda slots, holds_noted, keep_game: events.append("end"),
+    }
+    real = {name: globals()[name] for name in ("run_smoke", *fakes)}
+    with tempfile.TemporaryDirectory(prefix="make-play-set-") as root:
+        sets, notes = os.path.join(root, "mgebuilds"), os.path.join(root, "playset-notes")
+        os.makedirs(sets)
+        smoke = {"stop": None}
+
+        def fake_make(commits, patches, kind, builder, hold=None):
+            events.append(("make", commits["nirender"][:1], hold is not None))
+            if smoke.get("make_code"):
+                return smoke["make_code"], ["no build slot"]
+            name = "s-%s" % commits["nirender"][:8]
+            os.makedirs(os.path.join(sets, name), exist_ok=True)
+            return 0, ["part plugin: built", os.path.join(sets, name).replace("\\", "/")]
+
+        def fake_smoke(tree, folder, owner_local_bat, notes_list, slots):
+            said = newest_note(os.path.basename(folder), notes)
+            assert said and "; smoke: pending" in said, said
+            events.append(("smoke", os.path.basename(folder), tree))
+            if smoke["stop"]:
+                raise smoke["stop"]
+            return "passed (live, gate, tour, 2 of 2 bats)"
+
+        def run(tips_now=tips, **case):
+            events.clear()
+            smoke.clear()
+            smoke.update(dict(stop=None), **case)
+            with contextlib.redirect_stdout(io.StringIO()):
+                return make_and_smoke("slots", tips, "local.bat", make=fake_make, tips=lambda: tips_now, tree_of=lambda commit: "tree-" + commit[:1],
+                                      checkout_of=lambda commit: "", add=lambda *_: "symbols: added", notes_root=notes, sets_root=sets)
+
+        globals().update(fakes, run_smoke=fake_smoke)
+        try:
+            # make() made no set: its code, no hold, no note file, no current.bat (test 1; test 2's null of the note).
+            assert run(make_code=3) == 3 and events == [("make", "a", True)], events
+            assert not os.path.exists(notes) and not os.path.exists(os.path.join(sets, CURRENT_BAT))
+            assert run(make_code=4) == 4
+            # The null: a set, its pending note before the smoke, then the pass and current.bat.
+            assert run() == 0 and events == [("make", "a", True), "hold", ("smoke", "s-aaaaaaaa", "tree-a"), "end"], events
+            assert clean_common.mge_build_of(os.path.join(sets, CURRENT_BAT)).endswith("s-aaaaaaaa")
+            assert note_says_passed(newest_note("s-aaaaaaaa", notes))
+            os.remove(os.path.join(sets, CURRENT_BAT))
+            # A NOT RUN (F-T-1) and a failure: exit 3 and 1, a note that says so, no current.bat.
+            time.sleep(1.1)
+            assert run(stop=SmokeNotRun("play-manual-check.bat is not tested: the instance's Mod Organizer is open")) == 3
+            assert NOT_RUN in newest_note("s-aaaaaaaa", notes) and not os.path.exists(os.path.join(sets, CURRENT_BAT))
+            time.sleep(1.1)
+            assert run(stop=SmokeFailed("a black picture")) == 1 and "smoke: FAILED: a black picture" in newest_note("s-aaaaaaaa", notes)
+            assert not os.path.exists(os.path.join(sets, CURRENT_BAT)) and len(os.listdir(notes)) == 3, os.listdir(notes)
+            # The tips moved during the wait: the second make() takes no hold of its own, and the set of the new tips
+            # is smoked.
+            assert run(tips_now=moved) == 0 and events[:3] == [("make", "a", True), "hold", ("make", "d", False)], events
+            assert events[3] == ("smoke", "s-dddddddd", "tree-d"), events
+            assert clean_common.mge_build_of(os.path.join(sets, CURRENT_BAT)).endswith("s-dddddddd")
+        finally:
+            globals().update(real)
+
+
+def owner_bats_test():
+    """W524 F-T-1: a bat that could not be tested because Mod Organizer is open makes the bats' step NOT RUN. The null:
+    both bats reach the game's start. The scratch local.bat names no NIRENDER_PLUGIN_DLL (3.2: nothing writes it)."""
+    global TESTING_MODLIST
+    outputs = {}
+    real_run, real_wait, real_modlist = subprocess.run, globals()["wait_clean"], TESTING_MODLIST
+
+    def fake_run(command, **_):
+        return subprocess.CompletedProcess(command, 0, outputs[os.path.basename(command[-1])], "")
+
+    with tempfile.TemporaryDirectory(prefix="make-play-set-") as tree:
+        for bat in OWNER_BATS:
+            with open(os.path.join(tree, bat), "w", encoding="ascii") as file:
+                file.write("@echo off\r\n%s\r\n" % BAT_CLEARS)
+        owner = os.path.join(tree, "owner-local.bat")
+        with open(owner, "w", encoding="ascii") as file:
+            file.write('set "OUTLANDER_INSTANCE=%s"\r\n' % os.path.join(tree, "no-instance"))
+        TESTING_MODLIST = os.path.join(tree, "modlist.txt")
+        with open(TESTING_MODLIST, "w", encoding="utf-8") as file:
+            file.write("+Other\n")
+        try:
+            globals()["wait_clean"] = lambda: None
+            subprocess.run = fake_run
+            outputs.update({bat: "play: no game (--stage-only)" for bat in OWNER_BATS})
+            assert smoke_owner_bats(tree, "E:/sets/s-1", owner, []) == 2
+            assert "NIRENDER_PLUGIN_DLL" not in read_text(os.path.join(tree, "local.bat")) and "MGE_BUILD=E:/sets/s-1" in read_text(os.path.join(tree, "local.bat"))
+            outputs[OWNER_BATS[1]] = "play: Mod Organizer is open in D:/o; close it first"
+            try:
+                smoke_owner_bats(tree, "E:/sets/s-1", owner, [])
+                raise AssertionError("a bat not tested passed the bats' step")
+            except SmokeNotRun as stop:
+                assert OWNER_BATS[1] in str(stop) and "Mod Organizer is open" in str(stop), stop
+        finally:
+            subprocess.run, TESTING_MODLIST = real_run, real_modlist
+            globals()["wait_clean"] = real_wait
 
 
 def self_test():
@@ -1209,12 +1315,6 @@ def self_test():
     assert ends_with_three(take_game, Slots, "x", False)
     Slots.replies = [Slots.DONE]
     assert not ends_with_three(take_game, Slots, "x", False)
-    Slots.refusals = [types.SimpleNamespace(text="no room", final=True)]
-    assert ends_with_three(wait_for_build, Slots, False)
-    Slots.refusals = [None]
-    assert not ends_with_three(wait_for_build, Slots, False)
-    Slots.refusals = [types.SimpleNamespace(text="held", final=False)]
-    assert ends_with_three(wait_for_build, Slots, True), "--no-wait"
 
     # The set's hold (W405): one take of both, which waits in both queues while it holds nothing (D208). A refusal, or the
     # queue with --no-wait, ends the set with exit code 3.
@@ -1292,9 +1392,10 @@ def self_test():
         validate_tour.self_test()
     smoke_wiring_test(Side)
 
-    assert tips_moved(("a", "b"), ("a", "b")) == ""
-    assert PLUGIN_BRANCH in tips_moved(("a", "b"), ("c", "b")) and MGE_BRANCH not in tips_moved(("a", "b"), ("c", "b"))
-    assert MGE_BRANCH in tips_moved(("a", "b"), ("a", "d"))
+    tips = {"nirender": "a" * 40, "render-link": "b" * 40, "mwse": "c" * 40}
+    assert tips_moved(tips, dict(tips)) == ""
+    assert tips_moved(tips, dict(tips, mwse="d" * 40)) == "mwse moved from cccccccc to dddddddd"
+    assert tips_moved(tips, dict(tips, nirender="e" * 40)).startswith("nirender moved")
 
     text = '@echo off\r\nset "PYTHON=C:\\p.exe"\r\nset "MGE_BUILD=E:\\a\\f185"\r\nset "NIRENDER_PLUGIN_DLL=E:\\a\\f185\\x.dll"\r\nset "OUTLANDER_INSTANCE=D:\\o"\r\n'
     assert local_bat_values(text) == {"PYTHON": "C:\\p.exe", "MGE_BUILD": "E:\\a\\f185", "NIRENDER_PLUGIN_DLL": "E:\\a\\f185\\x.dll", "OUTLANDER_INSTANCE": "D:\\o"}
@@ -1326,9 +1427,11 @@ def self_test():
     # A tool that ends with 0 and has no PASS line (one from before its verdict) judged no pair: a fault.
     assert tour_faults(tour, 0) == ["validate_tour.py ended with 0 and without its PASS line: no verdict line"] and tour_faults("", 0) != []
 
-    note = set_note("f186", "abc", "def", "passed (a, b, 2 of 2 bats)", {"aae6"})
+    note = set_note("s-1", tips, "passed (a, b, 2 of 2 bats)", {"aae6"})
     assert note.count("\n") == 1 and note.endswith("2 of 2 bats)\n") and ", MWSE.dll aae6; smoke:" in note, note
-    assert "no run of the smoke" in set_note("f186", "abc", "def", "pending")
+    assert "nirender master aaaaaaaa, render-link feature/wgpu-renderer bbbbbbbb, MWSE cccccccc," in note and note_says_passed(note), note
+    assert "no run of the smoke" in set_note("s-1", tips, "pending") and not note_says_passed(set_note("s-1", tips, "pending"))
+    assert not note_says_passed(None)
     assert "changed during the smoke: a1, b2" in mwse_text({"b2", "a1"})
     assert run_mwse("[runner] instance D:\\m, profile Default\n[runner] MWSE.dll aae6\n[t] MWSE.dll zz\n") == "aae6"
     assert run_mwse("[t] MWSE.dll zz\n") is None
@@ -1361,64 +1464,14 @@ def self_test():
         assert os.path.basename(kept) == os.path.basename(run) and os.path.isfile(os.path.join(kept, "a.txt"))
         KEPT_RUNS = kept_before
 
-    # The pdbs: outside the sets, each only when its GUID and DBI age are those of its binary's CodeView record.
+    # The pdbs stay outside the sets (build_set.py keeps them in PDB_KEEP).
     assert not inside(PDB_KEEP, SETS)
     assert inside(SETS + "/f9", SETS) and inside(SETS, SETS) and not inside(SETS + "x/f9", SETS)
-    guids = {name: bytes([index]) * 16 for index, name in enumerate(("d3d8", "dinput8", "numidium", "akulakhan", "other"), 1)}
-
-    def record(name, guid, age=1):
-        return b"RSDS" + guid + struct.pack("<I", age) + b"C:\\tree\\target\\" + name.encode("ascii") + b"\0"
-
-    assert codeview(b"MZ\0\0RSDS\0\0" + record("d3d8.pdb", guids["d3d8"], 3) + b"tail") == (guids["d3d8"], 3, "d3d8.pdb")
-    assert codeview(b"MZ no record here") is None
-    assert codeview(b"RSDS" + guids["d3d8"] + b"\1\0\0\0" + b"not a path\0") is None
-    with tempfile.TemporaryDirectory() as root:
-        sets, keep = os.path.join(root, "sets"), os.path.join(root, "pdb")
-        folder = os.path.join(sets, "f9")
-        trees = {"mge": os.path.join(root, "mge"), "plugin": os.path.join(root, "plugin")}
-        # d3d8 and akulakhan match; dinput8's pdb is of another build; numidium.exe has no record.
-        binaries = {"d3d8.dll": record("d3d8.pdb", guids["d3d8"]), "dinput8.dll": record("dinput8.pdb", guids["dinput8"]),
-                    "numidium.exe": b"MZ", os.path.join("Data Files", "mwse", "lib", "akulakhan.dll"): record("akulakhan.pdb", guids["akulakhan"])}
-        pdb_guids = {"d3d8.pdb": guids["d3d8"], "dinput8.pdb": guids["other"], "numidium.pdb": guids["numidium"], "akulakhan.pdb": guids["akulakhan"]}
-        for binary_path, tree, pdb_path in PDBS:
-            os.makedirs(os.path.dirname(os.path.join(folder, binary_path)) or folder, exist_ok=True)
-            with open(os.path.join(folder, binary_path), "wb") as file:
-                file.write(binaries[binary_path])
-            os.makedirs(os.path.dirname(os.path.join(trees[tree], pdb_path)), exist_ok=True)
-            # d3d8's info stream has age 2 and its DBI stream age 1, as a linker writes them (Visual Studio's
-            # Executor pair): the debugger and the keep match the DBI age. The scan before W352 refused this pdb.
-            symbols.write_test_pdb(os.path.join(trees[tree], pdb_path), pdb_guids[os.path.basename(pdb_path)], 1,
-                                   info_age=2 if pdb_path.endswith("d3d8.pdb") else None)
-        lines = keep_pdbs("f9", folder, trees, "abc", "def", keep=keep, sets=sets)
-        # The GUID with another age is another build.
-        with open(os.path.join(folder, "d3d8.dll"), "wb") as file:
-            file.write(record("d3d8.pdb", guids["d3d8"], 2))
-        assert any(line.startswith("d3d8.pdb: not kept: the pdb in the tree is of another build")
-                   for line in keep_pdbs("f8", folder, trees, "abc", "def", keep=keep, sets=sets))
-        with open(os.path.join(folder, "d3d8.dll"), "wb") as file:
-            file.write(binaries["d3d8.dll"])
-        assert sorted(os.listdir(os.path.join(keep, "f9"))) == ["WHAT.txt", "akulakhan.pdb", "d3d8.pdb"], os.listdir(os.path.join(keep, "f9"))
-        assert any(line.startswith("d3d8.pdb: d3d8.dll md5 %s, GUID %s, age 1" % (md5_of(os.path.join(folder, "d3d8.dll")), guids["d3d8"].hex())) for line in lines), lines
-        assert any(line.startswith("dinput8.pdb: not kept: the pdb in the tree is of another build") for line in lines), lines
-        assert any(line.startswith("numidium.pdb: not kept: numidium.exe has no CodeView record") for line in lines), lines
-        what = read_text(os.path.join(keep, "f9", "WHAT.txt"))
-        assert what.startswith("f9 ") and "nirender abc, render-link def" in what and what.count("\n") == 5, what
-        assert not glob.glob(os.path.join(sets, "**", "*.pdb"), recursive=True), "a pdb went into the set"
-        # A missing pdb is a line, not a stop.
-        os.remove(os.path.join(trees["plugin"], PDBS[3][2]))
-        assert any(line.startswith("akulakhan.pdb: not kept:") for line in keep_pdbs("f10", folder, trees, "abc", "def", keep=keep, sets=sets))
-        # A folder of the pdbs in the sets, and a pdb in the set, stop.
-        for case in ("keep in the sets", "a pdb in the set"):
-            if case == "a pdb in the set":
-                with open(os.path.join(folder, "stray.pdb"), "wb") as file:
-                    file.write(b"x")
-            try:
-                keep_pdbs("f11", folder, trees, "abc", "def", keep=os.path.join(sets, "pdb") if case == "keep in the sets" else keep, sets=sets)
-            except SystemExit:
-                pass
-            else:
-                raise AssertionError("no stop for %s" % case)
-        assert not os.path.exists(os.path.join(sets, "pdb")), "the refused folder was made"
+    make_and_smoke_test()
+    owner_bats_test()
+    # --build-only is gone: one line that names the maker, and nothing is made.
+    done = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "--build-only"], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 1 and done.stdout.strip() == BUILD_ONLY_GONE, (done.returncode, done.stdout, done.stderr)
 
     # The picture rule, with a black and a real picture.
     import picture_diff  # noqa: F401
@@ -1433,125 +1486,114 @@ def self_test():
     print("make_play_set self-test: ok")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--force", action="store_true", help="make a set when the current set has these tips already")
-    parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for a slot")
-    parser.add_argument("--keep-slot", action="store_true", help="after a pass, keep the game slot for this session's next work, and release it yourself")
-    parser.add_argument("--build-only", action="store_true", help="only the build in the trees: no set, no game")
-    parser.add_argument("--bats-only", action="store_true", help="the step of the owner's start alone, on the current set")
-    parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
-    args = parser.parse_args()
-    if inside(PDB_KEEP, SETS):
-        raise SystemExit("PDB_KEEP %s is in SETS %s: no pdb may go into a set" % (PDB_KEEP, SETS))
-    if args.self_test:
-        self_test()
-        return 0
+BUILD_ONLY_GONE = ("make_play_set: --build-only is gone (W521): the maker makes and keeps a set alone, "
+                   "python -I tools/build_set.py; this tool smokes the set of the tips")
 
-    owner_local_bat = os.path.join(PLUGIN_REPO, "local.bat")
-    plugin_commit, mge_commit = current_tips()
-    say("the tips: nirender %s %s, render-link %s %s" % (PLUGIN_BRANCH, plugin_commit, MGE_BRANCH, mge_commit))
-    if not args.force and not args.bats_only and current_set_commits() == (plugin_commit, mge_commit):
-        say("the current set has these tips, and nothing is made")
-        return 0
 
-    slots = load_slots()
-    os.makedirs(TREES, exist_ok=True)
-    if hold_run_lock(os.path.join(TREES, "make_play_set.lock")) is None:
-        say("another run of this tool is at work, and this one stops")
-        return 3
-    plugin_tree = ready_tree("nirender-plugin", PLUGIN_REPO, plugin_commit)
-    mge_tree = ready_tree("MGE-XE-G7-render-link", MGE_REPO, mge_commit)
-    os.makedirs(os.path.join(plugin_tree, "results"), exist_ok=True)
+def commits_text(commits):
+    return ", ".join("%s %s" % (repo, commit[:8]) for repo, commit in commits.items())
+
+
+def smoke_tree(commit):
+    """The tree of the smoke's tools at the set's nirender commit (B2 of the plan's addendum 8), with its results
+    folder and the key of the harness."""
+    tree = ready_tree("nirender-plugin", PLUGIN_REPO, commit)
+    os.makedirs(os.path.join(tree, "results"), exist_ok=True)
     # The runner of the tree finds the harness by this key: its siblings hold no moreFPS.
-    with open(os.path.join(plugin_tree, "local.json"), "w", encoding="ascii") as file:
+    with open(os.path.join(tree, "local.json"), "w", encoding="ascii") as file:
         json.dump({"harness": HARNESS}, file)
+    return tree
 
-    if args.bats_only:
-        folder = current_set_folder()
-        plugin_dll = set_plugin_dll(folder) if folder else None
-        if plugin_dll is None:
-            say("no current set with one plugin: the current set is %s" % folder)
-            return 1
-        take_game(slots, OWNER_START_GAME, args.no_wait)
-        notes = []
-        try:
-            tested = smoke_owner_bats(plugin_tree, folder, plugin_dll, owner_local_bat, notes)
-        except SmokeFailed as failure:
-            say("FAILED: %s" % failure)
-            return 1
-        finally:
-            say(release_game(slots, OWNER_START_GAME))
-        say("%d of %d bats reached the game's start%s" % (tested, len(OWNER_BATS), "; " + "; ".join(notes) if notes else ""))
-        return 0
 
-    # A game by the bat takes the Lua of mod/ from the owner's checkout: a plugin and a Lua of different commits
-    # are a wrong play set.
-    head = git(PLUGIN_REPO, "rev-parse", "--short=7", "HEAD")
-    checkout_note = ""
-    if head != plugin_commit:
-        if not args.force:
-            say("the owner's checkout is at %s, not %s, and nothing is built: use --force to make this set anyway" % (head, plugin_commit))
-            return 1
-        checkout_note = "; the owner's checkout was at %s, so a game by the bat takes another Lua" % head
+def checkout_note_of(commit):
+    """The note's words when the owner's checkout is not at the set's nirender commit, else an empty text: a game by
+    the bat takes the Lua of mod/ from there."""
+    head = git(PLUGIN_REPO, "rev-parse", "HEAD")
+    return "" if head == commit else "; the owner's checkout was at %s, so a game by the bat takes another Lua" % head[:8]
 
-    wait_for_build(slots, args.no_wait)
 
-    def build_trees():
-        build_log = os.path.join(TREES, "build-%s-%s.log" % (plugin_commit, mge_commit))
-        slots.note_active("build", time.time())
-        build_step(["cargo", "build", "--release"], plugin_tree, build_log)
-        slots.note_active("build", time.time())
-        build_step(["cargo", "xtask", "dist"], mge_tree, build_log)
-        return build_log
+def bats_only(slots, owner_local_bat, no_wait):
+    """The step of the owner's start alone, on the current set after its check. Returns the exit code."""
+    folder = current_set_folder()
+    if folder is None:
+        say("no current set: current.bat and local.bat name none")
+        return 1
+    try:
+        verify(folder)
+    except SetError as error:
+        say("the current set fails its check: %s" % error)
+        return 1
+    commits = manifest_commits(folder)
+    if commits is None:
+        say("the current set %s has no commits in its manifest" % folder)
+        return 1
+    tree = smoke_tree(commits["nirender"])
+    take_game(slots, OWNER_START_GAME, no_wait)
+    notes = []
+    try:
+        tested = smoke_owner_bats(tree, folder, owner_local_bat, notes)
+    except SmokeFailed as failure:
+        say("FAILED: %s" % failure)
+        return 1
+    except SmokeNotRun as stop:
+        say("%s: %s" % (NOT_RUN, stop))
+        return 3
+    finally:
+        say(release_game(slots, OWNER_START_GAME))
+    say("%d of %d bats reached the game's start%s" % (tested, len(OWNER_BATS), "; " + "; ".join(notes) if notes else ""))
+    return 0
 
-    build_log = build_trees()
-    if args.build_only:
-        say("built, with no set: %s" % build_log)
-        return 0
 
-    # The slot first: a stop in the queue leaves no set folder behind.
-    take_set_hold(slots, args.no_wait)
+def make_and_smoke(slots, commits, owner_local_bat, no_wait=False, keep_slot=False, make=None, tips=None, tree_of=None,
+                   checkout_of=None, add=None, notes_root=PLAYSET_NOTES, sets_root=SETS):
+    """The set of `commits` from the maker, then its smoke and, on a pass, current.bat. Returns the exit code: make()'s
+    when it made no set (0 means a set), 1 for a failed smoke, 3 for a NOT RUN or a slot. The keyword arguments after
+    `keep_slot` replace the maker, the tips, the smoke's tree, the read of the owner's checkout and the symbol store in
+    the tests."""
+    tips = tips or tip_commits
+    tree_of = tree_of or smoke_tree
+    checkout_of = checkout_of or checkout_note_of
+    code, folder = make_set(slots, commits, no_wait, False, make=make)
+    if code != 0:
+        return code
+    # The slot first: a stop in the queue leaves no note behind.
+    take_set_hold(slots, no_wait)
     # The notes start in the try: a fault at their start still ends the hold (the Reviewer's verdict 289).
     holds_noted = contextlib.ExitStack()
-    name = None
+    name = os.path.basename(folder)
+    note = None
     notes = []
     passed = False
+    SMOKE_MWSE.clear()
 
     def write_note(result):
-        with open(os.path.join(SETS, name, "WHAT.txt"), "w", encoding="ascii", errors="backslashreplace") as file:
-            file.write(set_note(name, plugin_commit, mge_commit, result, SMOKE_MWSE))
+        with open(note, "w", encoding="ascii", errors="backslashreplace") as file:
+            file.write(set_note(name, commits, result, SMOKE_MWSE))
 
     try:
         holds_noted.enter_context(set_hold_noted(slots))
-        # The wait for the slot can be long, and the set must be of the tips when the smoke starts (f187 was
-        # an hour old). A build here runs in the set's own hold of the whole build side.
-        moved = tips_moved((plugin_commit, mge_commit), current_tips())
+        # The wait for the slot can be long, and the set must be of the tips when the smoke starts (f187 was an hour
+        # old). This make runs in the set's own hold of the whole build side.
+        now = tips()
+        moved = tips_moved(commits, now)
         if moved:
-            say("%s during the wait for the slot, and I build again" % moved)
-            plugin_commit, mge_commit = current_tips()
-            plugin_tree = ready_tree("nirender-plugin", PLUGIN_REPO, plugin_commit)
-            mge_tree = ready_tree("MGE-XE-G7-render-link", MGE_REPO, mge_commit)
-            build_trees()
-            head = git(PLUGIN_REPO, "rev-parse", "--short=7", "HEAD")
-            if head != plugin_commit:
-                checkout_note = "; the owner's checkout was at %s, so a game by the bat takes another Lua" % head
-                say(checkout_note[2:])
-
-        name = new_set_folder()
-        folder = os.path.join(SETS, name).replace("\\", "/")
-        with open(os.path.join(folder, "WHAT.txt"), "x", encoding="ascii") as file:
-            file.write(set_note(name, plugin_commit, mge_commit, "pending"))
-        plugin_dll = copy_stage(os.path.join(mge_tree, "target", "dist-staging"), plugin_tree, folder, plugin_commit).replace("\\", "/")
+            say("%s during the wait for the slot, and I ask the maker again" % moved)
+            commits = now
+            code, folder = make_set(slots, commits, no_wait, True, make=make)
+            if code != 0:
+                return code
+            name = os.path.basename(folder)
+        checkout_note = checkout_of(commits["nirender"])
+        os.makedirs(notes_root, exist_ok=True)
+        # "x": a note of another smoke is never written over; `note` names this smoke's note only once it is there.
+        path = note_path(name, time.localtime(), notes_root)
+        with open(path, "x", encoding="ascii", errors="backslashreplace") as file:
+            file.write(set_note(name, commits, "pending"))
+        note = path
+        tree = tree_of(commits["nirender"])
         say("the set: %s" % folder)
-        try:
-            for line in keep_pdbs(name, folder, {"mge": mge_tree, "plugin": plugin_tree}, plugin_commit, mge_commit):
-                say("pdb: %s" % line)
-        except OSError as error:
-            say("pdb: no pdb kept for %s: %s" % (name, error))
-        # The symbol store (W345): the pdbs that keep_pdbs kept, indexed for cdb.
-        say(symbols.add(name, [os.path.join(folder, binary) for binary, _, _ in PDBS], [os.path.join(PDB_KEEP, name)]))
-        result = run_smoke(plugin_tree, folder, plugin_dll, owner_local_bat, notes, slots)
+        add_symbols(name, folder, add)
+        result = run_smoke(tree, folder, owner_local_bat, notes, slots)
         passed = True
     except SmokeFailed as failure:
         reason = "FAILED: %s" % failure
@@ -1565,28 +1607,82 @@ def main():
         return 3
     except BaseException as failure:
         # A note must not stay on "pending" (a stop of a tool, an interrupt).
-        if name:
+        if note:
             write_note("FAILED: stopped by %r" % failure)
         raise
     finally:
-        end_set_hold(slots, holds_noted, passed and args.keep_slot)
+        end_set_hold(slots, holds_noted, passed and keep_slot)
 
     # A set that passed stays good, but it must not read as the tips.
-    moved = tips_moved((plugin_commit, mge_commit), current_tips())
+    try:
+        moved = tips_moved(commits, tips())
+    except Exception as error:  # noqa: BLE001 - a tip that is not known now is a note, not a fault of the set
+        moved = "the tips are not known now (%s)" % error
     if moved:
         notes.append("NOT THE TIPS: %s during the smoke" % moved)
 
     # current.bat first: a note that says passed then always has a set that current.bat names.
     try:
-        bat = write_current_bat(SETS, name, plugin_commit)
+        bat = write_current_bat(sets_root, name)
     except (OSError, UnicodeEncodeError) as error:
         write_note("FAILED: the smoke passed, but %s was not written: %s" % (CURRENT_BAT, error))
-        say("%s: the smoke passed, but %s was not written: %s" % (name, os.path.join(SETS, CURRENT_BAT), error))
+        say("%s: the smoke passed, but %s was not written: %s" % (name, os.path.join(sets_root, CURRENT_BAT), error))
         return 1
     write_note(result + checkout_note + ("; " + "; ".join(notes) if notes else ""))
-    say(read_text(os.path.join(folder, "WHAT.txt")).strip())
+    say(read_text(note).strip())
     say("current build: %s names %s" % (bat, name))
     return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--force", action="store_true", help="smoke the set of the tips when the current set has them already")
+    parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for a slot")
+    parser.add_argument("--keep-slot", action="store_true", help="after a pass, keep the game slot for this session's next work, and release it yourself")
+    parser.add_argument("--build-only", action="store_true", help="gone (W521): make a set alone with tools/build_set.py")
+    parser.add_argument("--bats-only", action="store_true", help="the step of the owner's start alone, on the current set")
+    parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
+    args = parser.parse_args()
+    if inside(PDB_KEEP, SETS):
+        raise SystemExit("PDB_KEEP %s is in SETS %s: no pdb may go into a set" % (PDB_KEEP, SETS))
+    if args.self_test:
+        self_test()
+        return 0
+    if args.build_only:
+        say(BUILD_ONLY_GONE)
+        return 1
+
+    owner_local_bat = os.path.join(PLUGIN_REPO, "local.bat")
+    if args.bats_only:
+        slots = load_slots()
+        os.makedirs(TREES, exist_ok=True)
+        if hold_run_lock(os.path.join(TREES, "make_play_set.lock")) is None:
+            say("another run of this tool is at work, and this one stops")
+            return 3
+        return bats_only(slots, owner_local_bat, args.no_wait)
+
+    import build_set
+
+    try:
+        commits = tip_commits()
+    except build_set.SetFault as fault:
+        say(str(fault))
+        return fault.code
+    say("the tips: %s" % commits_text(commits))
+    if not args.force and current_set_commits() == commits:
+        say("the current set has these tips and a smoke that passed, and nothing is made")
+        return 0
+
+    slots = load_slots()
+    os.makedirs(TREES, exist_ok=True)
+    if hold_run_lock(os.path.join(TREES, "make_play_set.lock")) is None:
+        say("another run of this tool is at work, and this one stops")
+        return 3
+    head = git(PLUGIN_REPO, "rev-parse", "HEAD")
+    if head != commits["nirender"] and not args.force:
+        say("the owner's checkout is at %s, not %s, and nothing is made: use --force to make this set anyway" % (head[:8], commits["nirender"][:8]))
+        return 1
+    return make_and_smoke(slots, commits, owner_local_bat, args.no_wait, args.keep_slot)
 
 
 if __name__ == "__main__":
