@@ -355,6 +355,40 @@ def verify(folder):
     return manifest
 
 
+# The batch file in SETS that names the current set (W500, the owner's D461; W521 D 2.5: one line): deploy_rest.py after
+# each deploy and make_play_set.py after a set that passed write it (`write_current_bat`); clean_common.current_set reads
+# it, and the owner's local.bat calls it. The tries of its rename while a reader holds it, and the wait between them.
+CURRENT_BAT = "current.bat"
+CURRENT_BAT_TRIES = 5
+CURRENT_BAT_WAIT_SECONDS = 0.5
+
+
+def current_bat_text(folder):
+    """The one line of CURRENT_BAT (CRLF) for the set `folder`. No plugin line: a run takes the set's plugin, and the
+    variable NIRENDER_PLUGIN_DLL is read by nothing (W521)."""
+    return 'set "MGE_BUILD=%s"\r\n' % os.path.normpath(os.path.abspath(folder))
+
+
+def write_current_bat(sets_root, name):
+    """Writes CURRENT_BAT in `sets_root` for the set `name`. The text goes to a temporary name in the same folder first
+    and then takes the place of the old file in one rename, so a reader sees the old file or the new one, never a part.
+    A reader that holds the old file makes the rename try again a few times. Returns the path; raises OSError when it
+    cannot."""
+    path = os.path.join(sets_root, CURRENT_BAT)
+    temporary = path + ".new"
+    with open(temporary, "w", encoding="ascii", newline="") as file:
+        file.write(current_bat_text(os.path.join(sets_root, name)))
+    for attempt in range(CURRENT_BAT_TRIES):
+        try:
+            os.replace(temporary, path)
+            return path
+        except PermissionError:
+            if attempt + 1 == CURRENT_BAT_TRIES:
+                raise
+            time.sleep(CURRENT_BAT_WAIT_SECONDS)
+    return path
+
+
 # The binaries of a set whose pdbs the symbol store takes, as paths in the set; the pdbs are in E:/nirender-keep/pdb/<the
 # set's name> (a set holds none). The runner and the deploy add them under the set's name.
 SYMBOL_FILES = ("d3d8.dll", "dinput8.dll", "numidium.exe", "MWSE.dll", "lua51.dll", PLUGIN_STAGED)
@@ -506,9 +540,23 @@ def self_test_placing():
         assert never_placed(withheld) == "no deploy writes it", withheld
 
 
+def self_test_current_bat():
+    """3.2 (D 2.5): current.bat is one line, ASCII and CRLF, that names the set's folder; a second write replaces it whole,
+    and no temporary file stays. The null: the form before W521 had a second line, NIRENDER_PLUGIN_DLL."""
+    with tempfile.TemporaryDirectory(prefix="sets-bat-") as root:
+        for name in ("s-6d1b2140-d9741db1-89198b53", "s-00000000-d9741db1-89198b53"):
+            path = write_current_bat(root, name)
+            with open(path, "rb") as file:
+                data = file.read()
+            assert data == ('set "MGE_BUILD=%s"\r\n' % os.path.join(os.path.abspath(root), name)).encode("ascii"), data
+            assert data.count(b"\r\n") == 1 and b"NIRENDER_PLUGIN_DLL" not in data
+        assert os.listdir(root) == [CURRENT_BAT], os.listdir(root)
+
+
 def self_test():
     self_test_e_gate()
     self_test_placing()
+    self_test_current_bat()
     commits = {"nirender": "6d1b214" + "0" * 33, "render-link": "d9741db" + "1" * 33, "mwse": "89198b53f0" + "2" * 30}
     assert set_name(commits) == "s-6d1b2140-d9741db1-89198b53"
     assert set_name(commits, {"render-link": "abcdef0123456789"}, "rig") == "s-6d1b2140-d9741db1+pabcdef01-89198b53-rig"

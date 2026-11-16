@@ -27,18 +27,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import BUILD_ID_RE  # noqa: E402
 from sets import SETS, e_gate, this_session  # noqa: E402  (W521: their home is sets.py)
 
-# The batch file in SETS that names the current set (W500, the owner's D461): deploy_rest.py after a kept deploy and
-# make_play_set.py after a set that passed write it (`write_current_bat`); clean_common.current_set reads it, and the
-# owner's local.bat calls it. The tries of its rename while a reader holds it, and the wait between them.
-CURRENT_BAT = "current.bat"
-CURRENT_BAT_TRIES = 5
-CURRENT_BAT_WAIT_SECONDS = 0.5
 NOTE = "WHAT.txt"
 EXIT_REFUSED = 1
 
@@ -59,33 +52,6 @@ def new_set_folder(root=SETS):
         except FileExistsError:
             continue
         return name
-
-
-def current_bat_text(folder, plugin_commit):
-    """The two lines of CURRENT_BAT (CRLF) for the set `folder`: the build and the plugin beside it."""
-    folder = os.path.normpath(os.path.abspath(folder))
-    plugin = os.path.join(folder, "akulakhan-%s.dll" % plugin_commit)
-    return 'set "MGE_BUILD=%s"\r\nset "NIRENDER_PLUGIN_DLL=%s"\r\n' % (folder, plugin)
-
-
-def write_current_bat(sets, name, plugin_commit):
-    """Writes CURRENT_BAT in `sets` for the set `name`. The text goes to a temporary name in the same folder first and
-    then takes the place of the old file in one rename, so a reader sees the old file or the new one, never a part. A
-    reader that holds the old file makes the rename try again a few times. Returns the path; raises OSError when it
-    cannot."""
-    path = os.path.join(sets, CURRENT_BAT)
-    temporary = path + ".new"
-    with open(temporary, "w", encoding="ascii", newline="") as file:
-        file.write(current_bat_text(os.path.join(sets, name), plugin_commit))
-    for attempt in range(CURRENT_BAT_TRIES):
-        try:
-            os.replace(temporary, path)
-            return path
-        except PermissionError:
-            if attempt + 1 == CURRENT_BAT_TRIES:
-                raise
-            time.sleep(CURRENT_BAT_WAIT_SECONDS)
-    return path
 
 
 def note_text(what, session, now, plugin_line=None):

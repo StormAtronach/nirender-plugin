@@ -40,7 +40,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import common  # noqa: E402
-from new_run_folder import CURRENT_BAT  # noqa: E402  (the file that names the current set, W500)
+from sets import CURRENT_BAT, write_current_bat  # noqa: E402  (the file that names the current set, W500; its home is sets.py, W521)
 
 # The folder of the repositories: the one of the main checkout of this repository, also for a tool of a worktree.
 REPOS_ROOT = os.path.dirname(common.main_checkout()) if common.main_checkout() else common.SIBLINGS
@@ -927,7 +927,10 @@ def self_test_common():
         os.makedirs(os.path.join(sets, "f310"))
         assert current_set(temp, sets) == "f195" and current_set(os.path.join(temp, "none"), sets) is None
         # current.bat comes first, also over local.bat, when it names a set folder that is there.
+        # The writer's one line (3.2), and the two lines that a current.bat from before W521 holds.
         bat = os.path.join(sets, CURRENT_BAT)
+        assert write_current_bat(sets, "f310") == bat
+        assert current_set(temp, sets) == "f310" and current_set(os.path.join(temp, "none"), sets) == "f310"
         with open(bat, "w", encoding="ascii", newline="") as file:
             file.write('set "MGE_BUILD=%s"\r\nset "NIRENDER_PLUGIN_DLL=%s\\akulakhan-abc1234.dll"\r\n' % ((os.path.join(sets, "f310"),) * 2))
         assert current_set(temp, sets) == "f310" and current_set(os.path.join(temp, "none"), sets) == "f310"

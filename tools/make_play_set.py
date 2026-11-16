@@ -43,7 +43,7 @@ code 5 (W417) names it, and the set's note says FAILED with the run (since W431 
 close that only MWSE.log shows, with the runner's exit code 0, stays a note.
 
 Only on a pass, it writes current.bat in E:/nirender-keep/mgebuilds with the same writer as deploy_rest.py
-(`new_run_folder.write_current_bat`, W500, the owner's D461): MGE_BUILD and NIRENDER_PLUGIN_DLL of the set. The
+(`sets.write_current_bat`, W500, the owner's D461): one line, MGE_BUILD of the set (W521). The
 owner's local.bat calls current.bat, and the tool writes no local.bat. A failed smoke leaves current.bat on the
 last good set, says why, and exit code 1. Each set has a one-line WHAT.txt,
 which names the MD5 of the MWSE.dll that the smoke ran on, from the lines of the runner in progress.log.
@@ -80,7 +80,8 @@ import types
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import GPU_ERRORS, SIBLINGS, check_problems, docs_place, local, main_checkout  # noqa: E402
-from new_run_folder import CURRENT_BAT, SETS, new_set_folder, write_current_bat  # noqa: E402  (W380, W500)
+from new_run_folder import new_set_folder  # noqa: E402  (W380)
+from sets import CURRENT_BAT, SETS, write_current_bat  # noqa: E402  (W500; their home is sets.py, W521)
 import clean_common  # noqa: E402  (the current set, W500)
 from validate_tour import NOT_RUN, NOT_RUN_CODE, verdict_in as tour_verdict_in  # noqa: E402
 import symbols  # noqa: E402
@@ -814,7 +815,7 @@ def current_set_test():
         forms = {"lines and the call": "@echo off\r\n" + old_lines + call, "the call alone": "@echo off\r\n" + call}
         probe = os.path.join(root, "probe.cmd")
         with open(probe, "w", encoding="ascii", newline="") as file:
-            file.write('@call "%s"\r\n@echo %%MGE_BUILD%%^|%%NIRENDER_PLUGIN_DLL%%\r\n' % os.path.join(checkout, "local.bat"))
+            file.write('@call "%s"\r\n@echo %%MGE_BUILD%%\r\n' % os.path.join(checkout, "local.bat"))
 
         def form_gives(form):
             """(the commits, the plugin of --bats-only, the two values in cmd) for the local.bat `form`."""
@@ -828,13 +829,13 @@ def current_set_test():
 
         new_dll = os.path.join(sets, "f186", "akulakhan-a1b2c3d.dll")
         with contextlib.redirect_stdout(io.StringIO()):
-            assert form_gives("lines and the call") == (("abc", "def"), os.path.join(sets, "f185", "akulakhan-abc.dll"),
-                                                        "%s|%s" % (os.path.join(sets, "f185"), os.path.join(sets, "f185", "akulakhan-abc.dll")))
+            assert form_gives("lines and the call") == (("abc", "def"), os.path.join(sets, "f185", "akulakhan-abc.dll"), os.path.join(sets, "f185"))
             assert form_gives("the call alone")[:2] == (None, None), "no current.bat and no set lines: no current set"
-            write_current_bat(sets, "f186", "a1b2c3d")
+            # current.bat's one line (W521) wins over local.bat's MGE_BUILD in cmd too.
+            write_current_bat(sets, "f186")
             for form in forms:
                 gives = form_gives(form)
-                assert gives == (("a1b2c3d", "e4f5a6b"), new_dll, "%s|%s" % (os.path.join(sets, "f186"), new_dll)), (form, gives)
+                assert gives == (("a1b2c3d", "e4f5a6b"), new_dll, os.path.join(sets, "f186")), (form, gives)
             # A set that did not pass is no current set; a set with two plugins gives --bats-only none.
             with open(os.path.join(sets, "f186", "WHAT.txt"), "w", encoding="ascii") as file:
                 file.write(set_note("f186", "a1b2c3d", "e4f5a6b", "FAILED: a reason"))
@@ -1578,7 +1579,7 @@ def main():
 
     # current.bat first: a note that says passed then always has a set that current.bat names.
     try:
-        bat = write_current_bat(SETS, name, plugin_commit)
+        bat = write_current_bat(SETS, name)
     except (OSError, UnicodeEncodeError) as error:
         write_note("FAILED: the smoke passed, but %s was not written: %s" % (CURRENT_BAT, error))
         say("%s: the smoke passed, but %s was not written: %s" % (name, os.path.join(SETS, CURRENT_BAT), error))

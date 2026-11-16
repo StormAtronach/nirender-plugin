@@ -70,7 +70,7 @@ import sets  # noqa: E402
 import symbols  # noqa: E402
 from common import DEPLOY_DONE, DEPLOYS_FILE, REPO, append_deploys, deploys_line, local, main_checkout  # noqa: E402
 from make_play_set import PDB_KEEP, say  # noqa: E402
-from new_run_folder import CURRENT_BAT, write_current_bat  # noqa: E402  (W500)
+from sets import CURRENT_BAT, write_current_bat  # noqa: E402  (W500)
 
 # The test installs, by name: the folder of the install (MO2 instance) and the names of its two mods. The key
 # "rest_installs" of local.json changes the places.
@@ -463,7 +463,7 @@ def run(folder, installs, plugin_commit=None, mge_commit=None, tag=None, dry_run
     if add_symbols:
         say(add_symbols(name, [os.path.join(folder, *path.split("/")) for path in sets.SYMBOL_FILES], [os.path.join(pdb_keep, name)]))
     try:
-        say("current build: %s names %s" % (write_current_bat(sets_root, name, commits["nirender"][:7]), name))
+        say("current build: %s names %s" % (write_current_bat(sets_root, name), name))
     except (OSError, UnicodeEncodeError) as error:
         raise DeployError("the set %s is deployed, but %s was not written: %s" % (name, os.path.join(sets_root, CURRENT_BAT), error))
     if deploys_file:
@@ -588,8 +588,8 @@ def self_test():
         assert not os.path.exists(os.path.join(a_mods, "nirender", "MWSE", "mods", "nirender", "test.lua")), "plugin-test reached an install"
         backup = os.path.join(root, "A", "mge-backup-" + name, "MGE A", "Root", "d3d8.dll")
         assert open(backup).read() == "old", "the backup of the replaced file"
-        bat = open(os.path.join(sets_root, CURRENT_BAT), encoding="ascii").read()
-        assert folder in bat.replace("/", "\\") or folder in bat, bat
+        with open(os.path.join(sets_root, CURRENT_BAT), "rb") as file:
+            assert file.read() == sets.current_bat_text(folder).encode("ascii"), "current.bat is the one line of the set (3.2)"
         assert FAKE_COMMITS["nirender"] in open(deploys_file, encoding="ascii").read()
         # --check: as sealed; a changed file in one install fails, with its name; the null passes again.
         assert check_deployed(folder, installs, deploys) == 0
