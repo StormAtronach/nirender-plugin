@@ -174,6 +174,8 @@ def check(folder):
             faults.append("the file %s has %d bytes, and the manifest says %s" % (path, os.path.getsize(full), expected.get("size")))
         elif md5_of(full) != expected.get("md5"):
             faults.append("the file %s has another md5 than the manifest's" % path)
+    # No pdb is deployed (the build skill's rule 2): the pdbs of a set live in E:/nirender-keep/pdb/<name>, outside it.
+    faults += ["the set holds the pdb %s" % path for path in sorted(set(files) | set(wanted_files)) if path.lower().endswith(".pdb")]
     copies = [path for path in wanted_files if PLUGIN_COPY_RE.fullmatch(path)]
     staged = staged_plugin(manifest)
     if len(copies) != 1:
@@ -297,6 +299,13 @@ def self_test():
         write(d3d8, b"d3d8!")
         assert "d3d8.dll has 5 bytes" in faults_of(folder)
         write(d3d8, b"d3d8")
+        assert faults_of(folder) == ""
+        # A pdb, also when the manifest names it: no pdb may be in a set.
+        write(os.path.join(folder, "d3d8.pdb"), b"pdb")
+        scratch_manifest(folder, name)
+        assert "the set holds the pdb d3d8.pdb" in faults_of(folder), faults_of(folder)
+        os.remove(os.path.join(folder, "d3d8.pdb"))
+        scratch_manifest(folder, name)
         assert faults_of(folder) == ""
         # A junction inside: named, and not entered.
         target = os.path.join(root, "elsewhere")
