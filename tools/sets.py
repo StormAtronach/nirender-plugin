@@ -12,7 +12,7 @@ The name is s-<nirender>-<render-link>-<mwse>, each the first 8 hex of the commi
 patch has "+p<the first 8 hex of the patch's md5>" after its commit. A build of another kind than the usual one has
 "-<kind>" at the end. So two kinds or a patch never share a name with the plain build of the same commits.
 
-A set has five parts, and each part comes from its own commits (its key). A key is the part's own repo's commit and, for
+A set has six parts, and each part comes from its own commits (its key). A key is the part's own repo's commit and, for
 each thing of another repo that the part's build reads, the smallest name that holds it: the git tree of a folder, or
 the commit for a whole crate. Each path of a set is in one part.
 
@@ -23,6 +23,8 @@ the commit for a whole crate. Each path of a set is in one part.
   the git tree of nirender's contract/ (d3d8.dll compiles the contract header of the nirender tree beside it).
 - numidium: numidium.exe; key: the render-link and the nirender commits (it holds the host crate).
 - mwse: MWSE.dll and the core Lua; key: the MWSE commit.
+- luajit: lua51.dll in the root, beside MWSE.dll; key: the commit of deps/rubic0n that the MWSE commit names, and the
+  git blob of SharedSE/LuaJIT.targets (the build parameter) at the MWSE commit (the design's 11.2).
 
 `check` is the proof that a folder is a sealed set: its manifest reads, each folder and each file of the manifest is
 there, each file with its size and md5, no other file or folder is there, nothing in the folder is a link or a junction,
@@ -49,7 +51,7 @@ MANIFEST = "MANIFEST.json"
 FORM = 1
 REPOS = ("nirender", "render-link", "mwse")
 KIND_USUAL = "usual"
-PARTS = ("plugin", "plugin-lua", "render-link", "numidium", "mwse")
+PARTS = ("plugin", "plugin-lua", "render-link", "numidium", "mwse", "luajit")
 PATCHES = "patches"
 # The name of a set: three commits of 8 hex, each with an optional patch mark, and an optional kind.
 NAME_RE = re.compile(r"s-([0-9a-f]{8})(\+p[0-9a-f]{8})?-([0-9a-f]{8})(\+p[0-9a-f]{8})?-([0-9a-f]{8})(\+p[0-9a-f]{8})?(?:-([a-z][a-z0-9]*))?")
@@ -61,6 +63,7 @@ PLUGIN_PATHS = ("data files/mwse/lib/akulakhan.dll",)
 PLUGIN_LUA_PATHS = ("data files/mwse/mods/nirender/",)
 NUMIDIUM_PATHS = ("numidium.exe",)
 MWSE_PATHS = ("mwse.dll", "data files/mwse/core/")
+LUAJIT_PATHS = ("lua51.dll",)
 
 
 class SetError(Exception):
@@ -138,6 +141,8 @@ def part_of(path):
         return "numidium"
     if low.startswith(MWSE_PATHS):
         return "mwse"
+    if low in LUAJIT_PATHS:
+        return "luajit"
     return "render-link"
 
 
@@ -344,6 +349,7 @@ def self_test():
     assert part_of("akulakhan-45b645b.dll") == "plugin" and part_of("Data Files/mwse/mods/nirender/main.lua") == "plugin-lua"
     assert part_of("Data Files/MWSE/lib/akulakhan.dll") == "plugin" and part_of("numidium.exe") == "numidium"
     assert part_of("MWSE.dll") == "mwse" and part_of("Data Files/MWSE/core/initialize.lua") == "mwse"
+    assert part_of("lua51.dll") == "luajit" and part_of("Data Files/lua51.dll") == "render-link"
     assert part_of("d3d8.dll") == "render-link" and part_of("Data Files/mwse/mods/MGE XE Options/main.lua") == "render-link"
     assert part_of(MANIFEST) is None and part_of("patches/mwse.patch") is None
 

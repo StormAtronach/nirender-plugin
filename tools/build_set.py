@@ -7,13 +7,15 @@ The commits default to the tips: nirender `master`, render-link `feature/wgpu-re
 test installs run (the records of deploy_rest.py, `mwse_tree.installed_commit`). A commit is any name that git resolves
 in its repository. The form of a set, its name, its parts and its check are in sets.py.
 
-Each of the five parts is made one time for its key. A part that a sealed set in E:/nirender-keep/mgebuilds has already,
+Each of the six parts is made one time for its key. A part that a sealed set in E:/nirender-keep/mgebuilds has already,
 with the same key and kind, is copied from that set (its check is the proof), and no new build of it is used: so two
 sets that differ in one commit differ only in the parts of that commit, byte for byte. Else the tool builds: the plugin
 (`cargo build --release`) and `cargo xtask dist` in clean detached trees in C:/tmp/buildset (siblings, as the dist
 needs), and MWSE.dll with MSBuild (Release, x86) in a detached worktree of the MWSE repository there, its LuaJIT built
 by build_luajit.bat of the docs and its MorrowindDir a folder of C:/tmp/buildset. The MWSE core Lua comes from that
-tree. A tree with changes makes no set.
+tree. lua51.dll, the luajit part, goes into the set's root beside MWSE.dll; the build parameter of the tree's
+SharedSE/LuaJIT.targets must be the bat's, and the bat's md5 goes into the part's record. A tree with changes makes no
+set.
 
 --patch REPO=FILE (REPO nirender, render-link or mwse) applies ONE patch file to the clean tree of that repo before the
 build. The set holds the patch as patches/<repo>.patch, the manifest has its md5, and the name has the mark +p<8 hex>
@@ -96,7 +98,10 @@ BUILD_IDS = (
 )
 # The file that each part must hold.
 REQUIRED = {"plugin": sets.PLUGIN_STAGED, "plugin-lua": "Data Files/mwse/mods/nirender/main.lua", "render-link": "d3d8.dll",
-            "numidium": "numidium.exe", "mwse": "MWSE.dll"}
+            "numidium": "numidium.exe", "mwse": "MWSE.dll", "luajit": "lua51.dll"}
+# LuaJIT in the MWSE tree: the build parameter's file, and the outputs of msvcbuild.bat.
+LUAJIT_TARGETS = "SharedSE/LuaJIT.targets"
+LUAJIT_OUT = os.path.join("deps", "rubic0n", "src")
 # The parts that come out of the cargo builds and the dist.
 CARGO_PARTS = {"plugin", "plugin-lua", "render-link", "numidium"}
 # The pdbs of the MWSE part: (path in the set, the pdb in the tree).
@@ -200,7 +205,10 @@ def part_keys(commits, tree, patch_md5s):
       (`collect_plugin`). So an xtask change makes new Lua files and keeps the plugin's bytes.
     - render-link: its commit, and nirender's contract/ (d3d8/build.rs includes mge_render_link.h from it).
     - numidium: the render-link and the nirender commits (the host crate is a path dependency).
-    - mwse: the MWSE commit (its submodules are part of it)."""
+    - mwse: the MWSE commit (its submodules are part of it).
+    - luajit (lua51.dll): the commit of deps/rubic0n that the MWSE commit names and the git blob of
+      SharedSE/LuaJIT.targets, which holds the build parameter (the design's 11.2). Its build reads only those, so two
+      MWSE commits with one rubic0n commit and one parameter share one lua51.dll, byte for byte."""
     def marked(repo):
         return commits[repo] + sets.patch_mark(patch_md5s.get(repo))
 
@@ -213,6 +221,7 @@ def part_keys(commits, tree, patch_md5s):
         "render-link": {"render-link": marked("render-link"), "nirender contract": tree_of("nirender", "contract")},
         "numidium": {"render-link": marked("render-link"), "nirender": marked("nirender")},
         "mwse": {"mwse": marked("mwse")},
+        "luajit": {"mwse rubic0n": tree_of("mwse", "deps/rubic0n"), "mwse LuaJIT.targets": tree_of("mwse", LUAJIT_TARGETS)},
     }
 
 
@@ -262,9 +271,22 @@ def files_below(folder, skip_pdb=True):
     return {path: os.path.join(folder, *path.split("/")) for path in files if not (skip_pdb and path.lower().endswith(".pdb"))}
 
 
-def built_parts(stage, mwse):
-    """{part: {path in the set: source file}} of a new build: the dist stage `stage`, and `mwse` (the MWSE.dll and the
-    core folder) when MWSE was built."""
+def luajit_parameter_fault(targets_text, bat_text):
+    """Why the LuaJIT build parameter of LuaJIT.targets (`<LuaJitBuildParams>`) and of build_luajit.bat (the argument of
+    its msvcbuild.bat call) do not agree, or None (the design's 11.2: the maker stops on two values)."""
+    in_targets = re.search(r"<LuaJitBuildParams>([^<]*)</LuaJitBuildParams>", targets_text)
+    in_bat = re.search(r"msvcbuild\.bat\"?[ \t]+([^\r\n]*)", bat_text, re.IGNORECASE)
+    if not in_targets or not in_bat:
+        return "the LuaJIT build parameter cannot be read in %s" % ("LuaJIT.targets" if not in_targets else "build_luajit.bat")
+    if in_targets.group(1).split() != in_bat.group(1).split():
+        return "the LuaJIT build parameter of LuaJIT.targets (%s) is not the one of build_luajit.bat (%s): no set is made" % (
+            in_targets.group(1).strip(), in_bat.group(1).strip())
+    return None
+
+
+def built_parts(stage, mwse, luajit=None):
+    """{part: {path in the set: source file}} of a new build: the dist stage `stage`, `mwse` (the MWSE.dll and the
+    core folder) when MWSE was built, and `luajit` (lua51.dll) when LuaJIT was built."""
     parts = {part: {} for part in sets.PARTS}
     if stage:
         for path, source in files_below(stage).items():
@@ -277,6 +299,8 @@ def built_parts(stage, mwse):
         parts["mwse"]["MWSE.dll"] = dll
         for path, source in files_below(core).items():
             parts["mwse"][SET_CORE + "/" + path] = source
+    if luajit:
+        parts["luajit"]["lua51.dll"] = luajit
     return parts
 
 
@@ -335,7 +359,7 @@ def tool_version():
     return head + ("-dirty" if dirty else "")
 
 
-def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, session):
+def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, session, records):
     folders, files, links = sets.walk(folder)
     if links:
         raise SetFault("the new set holds links or junctions: %s" % ", ".join(links))
@@ -345,7 +369,7 @@ def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, 
         "kind": kind,
         "commits": {repo: {"commit": commits[repo], "clean": True} for repo in sets.REPOS},
         "patches": {repo: {"file": "%s/%s.patch" % (sets.PATCHES, repo), "md5": md5} for repo, (_, md5) in sorted(patches.items())},
-        "parts": {part: {"key": keys[part], "from": parts_from[part]} for part in sets.PARTS},
+        "parts": {part: {"key": keys[part], "from": parts_from[part], "record": records[part]} for part in sets.PARTS},
         # The helper of this build cannot give its format yet (step 4 of the design): a format of its own (3.4).
         "distant_land_format": "own-%s" % commits["render-link"][:8],
         "tool": {"name": "build_set.py", "commit": tool_version()},
@@ -482,16 +506,31 @@ class Trees:
             raise SetFault("the plugin of the dist stage is not the plugin of the tree: %s" % staged)
         return stage
 
-    def build_mwse(self):
-        """MWSE.dll and its core folder."""
+    def build_luajit(self):
+        """lua51.dll of the MWSE tree, built one time for each rubic0n commit, with the build parameter of the tree's
+        LuaJIT.targets, which must be the parameter of build_luajit.bat. Returns the DLL."""
         tree = self.trees["mwse"]
+        with open(os.path.join(tree, *LUAJIT_TARGETS.split("/")), encoding="utf-8") as file:
+            targets = file.read()
+        with open(LUAJIT_BAT, encoding="utf-8", errors="replace") as file:
+            bat = file.read()
+        fault = luajit_parameter_fault(targets, bat)
+        if fault:
+            raise SetFault(fault)
         stamp = os.path.join(self.root, "MWSE-luajit.txt")
         luajit = git(tree, "rev-parse", "HEAD:deps/rubic0n")
         built_for = open(stamp, encoding="ascii").read().strip() if os.path.isfile(stamp) else ""
-        if built_for != luajit or not os.path.isfile(os.path.join(tree, "deps", "rubic0n", "src", "lua51.lib")):
+        if built_for != luajit or not os.path.isfile(os.path.join(tree, LUAJIT_OUT, "lua51.lib")):
             self.step(["cmd", "/c", LUAJIT_BAT, os.path.normpath(tree)], tree)
             with open(stamp, "w", encoding="ascii") as file:
                 file.write(luajit + "\n")
+        return os.path.join(tree, LUAJIT_OUT, "lua51.dll")
+
+    def build_mwse(self):
+        """MWSE.dll and its core folder."""
+        tree = self.trees["mwse"]
+        # MWSE.dll links lua51.lib: LuaJIT first (one time for its rubic0n commit).
+        self.build_luajit()
         out = os.path.join(self.root, "MWSE-morrowind")
         os.makedirs(out, exist_ok=True)
         self.step([MSBUILD, "MWSE.sln", "-t:MWSE", "-p:Configuration=Release", "-p:Platform=x86",
@@ -509,7 +548,16 @@ class Trees:
         if "mwse" in parts_built:
             for binary, pdb in MWSE_PDBS:
                 found[binary] = os.path.join(self.trees["mwse"], pdb)
+        if "luajit" in parts_built:
+            found["lua51.dll"] = os.path.join(self.trees["mwse"], LUAJIT_OUT, "lua51.pdb")
         return found
+
+    def record(self, part):
+        """The record of a part built here, for its manifest entry: for luajit the md5 of build_luajit.bat, which is in
+        no set's commits (the plan's addendum 1 A3)."""
+        if part == "luajit":
+            return {"build_luajit.bat md5": sets.md5_of(LUAJIT_BAT)}
+        return {}
 
     def probe(self, dll):
         """The probe of deploy_rest.py, in the tree at the set's nirender commit: (exit code, output)."""
@@ -729,14 +777,15 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
                     making.replace("\\", "/"), os.path.basename(stale)))
             for repo in ("nirender", "render-link"):
                 builder.ready(repo, commits[repo])
-            if "mwse" in to_build:
+            if {"mwse", "luajit"} & set(to_build):
                 builder.ready("mwse", commits["mwse"])
             for repo, (patch_file, _) in sorted(patches.items()):
                 if repo in builder.trees:
                     builder.patch(repo, patch_file)
             stage = builder.build_cargo() if set(to_build) & CARGO_PARTS else None
             mwse = builder.build_mwse() if "mwse" in to_build else None
-            built = built_parts(stage, mwse)
+            luajit = builder.build_luajit() if "luajit" in to_build else None
+            built = built_parts(stage, mwse, luajit)
             files = {}
             for part in sets.PARTS:
                 part_files = set_part_files(root, found[part][0], found[part][1], part) if found[part] else built[part]
@@ -782,7 +831,10 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
             phase("the manifest and the rename of the set")
             # The marker is the tool's own file: it goes before the manifest, which records the same facts.
             os.remove(os.path.join(making, MARKER))
-            write_manifest(making, name, kind, commits, patches, parts_from, keys, now, session())
+            # The record of each part (the plan's addendum 1 A3): a built part's from the builder, a copied part's from
+            # the manifest of its set.
+            records = {part: found[part][1]["parts"][part].get("record", {}) if found[part] else builder.record(part) for part in sets.PARTS}
+            write_manifest(making, name, kind, commits, patches, parts_from, keys, now, session(), records)
             os.rename(making, folder)
     except SetFault as fault:
         return fault.code, lines + builder.size_lines() + [str(fault)]
@@ -810,6 +862,7 @@ class FakeBuilder:
         self.applied = []
         self.cargo_builds = 0
         self.mwse_builds = 0
+        self.luajit_builds = 0
         self.probe_code = probe_code
         self.probed = []
         self.wrong_render_link = wrong_render_link
@@ -853,6 +906,15 @@ class FakeBuilder:
         for path, data in files.items():
             sets.write(os.path.join(stage, *path.split("/")), data + os.urandom(8))
         return stage
+
+    def build_luajit(self):
+        self.luajit_builds += 1
+        out = tempfile.mkdtemp(dir=self.scratch)
+        sets.write(os.path.join(out, "lua51.dll"), b"LuaJIT" + os.urandom(8))
+        return os.path.join(out, "lua51.dll")
+
+    def record(self, part):
+        return {"build_luajit.bat md5": "b" * 32} if part == "luajit" else {}
 
     def build_mwse(self):
         self.mwse_builds += 1
@@ -951,6 +1013,30 @@ def self_test():
         for path in ("d3d8.dll", "numidium.exe", "akulakhan-6d1b214.dll"):
             assert second["files"][path]["md5"] == manifest["files"][path]["md5"], path
         assert second["parts"]["plugin"]["from"] == os.path.basename(first)
+        # The luajit part (the design's 11.2): built for the first set, with the bat's md5 in its record; the second
+        # set's MWSE commit names the same rubic0n commit and LuaJIT.targets, so lua51.dll is copied, byte for byte,
+        # with its record.
+        assert manifest["parts"]["luajit"]["from"] == "built" and manifest["parts"]["luajit"]["record"] == {"build_luajit.bat md5": "b" * 32}
+        assert second["parts"]["luajit"]["from"] == os.path.basename(first) and builder.luajit_builds == 1
+        assert second["files"]["lua51.dll"]["md5"] == manifest["files"]["lua51.dll"]["md5"]
+        assert second["parts"]["luajit"]["record"] == manifest["parts"]["luajit"]["record"]
+        # Another rubic0n commit: lua51.dll is built again, and the MWSE part of that commit too.
+        builder.trees_of[("mwse", "deps/rubic0n")] = "f" * 40
+        code, lines = run(dict(commits, mwse="2468abcd" + "d" * 32))
+        assert code == 0 and builder.luajit_builds == 2 and sets.check(lines[-1])["parts"]["luajit"]["key"]["mwse rubic0n"] == "f" * 40, lines
+        builder.trees_of = {}
+        # The build parameter: the real LuaJIT.targets of the MWSE checkout and the real bat agree (lua52compat, the
+        # null); another value in either is refused; an unreadable one too.
+        targets_path = os.path.join(SOURCE_REPOS["mwse"], *LUAJIT_TARGETS.split("/"))
+        if os.path.isfile(targets_path) and os.path.isfile(LUAJIT_BAT):
+            with open(targets_path, encoding="utf-8") as file, open(LUAJIT_BAT, encoding="utf-8", errors="replace") as bat:
+                assert luajit_parameter_fault(file.read(), bat.read()) is None
+        else:
+            print("build_set self-test: the real LuaJIT.targets or build_luajit.bat is not here; only the planted texts are tested")
+        planted_targets = "<LuaJitBuildParams>lua52compat</LuaJitBuildParams>"
+        assert luajit_parameter_fault(planted_targets, 'call "%~1\\deps\\rubic0n\\src\\msvcbuild.bat" lua52compat\r\n') is None
+        assert "is not the one of build_luajit.bat (static)" in luajit_parameter_fault(planted_targets, 'call "x\\msvcbuild.bat" static\r\n')
+        assert "cannot be read in LuaJIT.targets" in luajit_parameter_fault("<Project/>", 'call "x\\msvcbuild.bat" lua52compat')
         # The keys of folders of another repo: another contract/ tree makes a new render-link part and keeps the plugin;
         # another xtask/ tree makes a new Lua part and keeps the plugin DLL and the render-link part, byte for byte.
         builder.trees_of[("nirender", "contract")] = "d" * 40
