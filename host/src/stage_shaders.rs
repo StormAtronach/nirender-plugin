@@ -1342,6 +1342,44 @@ mod tests {
         }
     }
 
+    /// No capture of the play set has a flat-shaded draw or the shadow of a moon. So the text is
+    /// their test: the text of a key with the bit and of the same key without it differ only in
+    /// the bit's constants, and nothing else of the text changes.
+    #[test]
+    fn the_flat_bit_and_the_moon_bit_change_only_their_constants() {
+        let world = world();
+
+        // The flat bit: each read of it is the constant 0u or 16u (the start of `fs`, the
+        // vertex stage's and the extension's tests of a draw with no lights).
+        let smooth = fragment_source(&world, &key(1, 0)).unwrap();
+        let flat = fragment_source(&world, &StageKey { flat: true, ..key(1, 0) }).unwrap();
+        assert_eq!(smooth.lines().count(), flat.lines().count());
+        let mut changed = 0;
+        for (without, with) in smooth.lines().zip(flat.lines()) {
+            if without != with {
+                assert_eq!(without.replace("(0u)", "(16u)"), with);
+                changed += 1;
+            }
+        }
+        assert!(changed >= 2, "{changed} lines changed");
+
+        // The shadow of a moon, bit 8 of the shade: the key's bits in each read of `counts.w`.
+        let base = key(1, 0);
+        let moon = StageKey {
+            shade: base.shade | 8,
+            ..base
+        };
+        let without = fragment_source(&world, &base).unwrap();
+        let with = fragment_source(&world, &moon).unwrap();
+        let (from, to) = (format!("| {}u)", base.shade), format!("| {}u)", moon.shade));
+        assert!(without.contains(&from));
+        assert_eq!(without.replace(&from, &to), with);
+        assert!(with.contains("(draw_counts_w() & 1036u) != 0u"));
+        for source in [&smooth, &flat, &with] {
+            crate::assert_wgsl("stage shader", source);
+        }
+    }
+
     #[test]
     fn each_write_of_a_plane_is_known() {
         // The plane is a fact of the stage key, taken from the record. A scene's plane must stay
