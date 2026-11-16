@@ -70,7 +70,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-from common import BUILD_PARTS, EXIT_REPLAY_STAGE_SHADERS, NOT_RUN_EXIT, build_missing, capture_format_in, plugin_lines, stage_fault_in  # noqa: E402
+from common import BUILD_PARTS, EXIT_REPLAY_STAGE_SHADERS, NOT_RUN_EXIT, build_missing, capture_format_in, keep_replay_output, plugin_lines, stage_fault_in  # noqa: E402
 from validate_tour import NOT_RUN, refusal_of  # noqa: E402
 import stream_rule  # noqa: E402
 PY = sys.executable
@@ -594,6 +594,9 @@ def self_test():
                 with contextlib.redirect_stdout(io.StringIO()) as said:
                     assert stage_clusters("seyda", "build", "20261116-000000") is False
                 assert len(calls) == at and said.getvalue().endswith("  FAIL %s: %s\n" % (tool, fault_line)), said.getvalue()
+                kept = sorted(name for name in os.listdir(folder) if name.endswith(".replay.txt"))
+                assert kept == ["replay-clusters.replay.txt", "replay-draw-lights.replay.txt"][:at], kept
+            assert open(os.path.join(folder, "replay-draw-lights.replay.txt")).read() == "exit code 40\n" + fault_output
     finally:
         run_code, newest = real_run_code, real_newest
     print("validate_retained self-test: ok")
@@ -684,7 +687,9 @@ def stage_baseline(baseline, accept, mge_build, now=None):
     early_captures = []
     no_view_captures = []
     for capture in captures:
-        code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, capture[:-7] + ".png"), "--frame", "1", "--mge-build", mge_build], env)
+        picture = os.path.join(out, capture[:-7] + ".png")
+        code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), picture, "--frame", "1", "--mge-build", mge_build], env)
+        keep_replay_output(picture, code, output)
         if not ran((code, output), "replay.py", accept):
             return False
         adapter = adapter or adapter_of(output)
@@ -724,7 +729,7 @@ def stage_baseline(baseline, accept, mge_build, now=None):
             else:
                 print("       %-40s %s" % (name, numbers.get("problem") or "%.2f %% different, mean %.3f, largest %d" % (numbers["different"] * 100, numbers["mean"], numbers.get("largest", 0))), flush=True)
         ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s" % (equal, len(names), b))
-    return stage_objects(baseline, mge_build) and ok
+    return stage_objects(baseline, mge_build, out) and ok
 
 
 OBJECTS_LINE = re.compile(r"^gpu objects: (\d+) made in (\d+) frames; (\d+) steady frames, (\d+) of them made objects \((\d+) objects\)", re.M)
@@ -786,12 +791,14 @@ def replay_end(code, output):
     return " (replay.py ended with the code %d%s)" % (code, ": " + fault if fault else "")
 
 
-def stage_objects(baseline, mge_build):
+def stage_objects(baseline, mge_build, keep=None):
     """Each capture of the baseline folder to its last frame, plain, on each backend of
     OBJECT_BACKENDS: no steady frame (no new content, no change of the extension) may make a GPU
     object, and no device may be lost (D288). A steady frame that made objects warns while
     OBJECTS_STRICT is False. A capture with no steady frame warns; a backend with no capture that
-    has a steady frame fails."""
+    has a steady frame fails. The stage compares no picture, so its pictures go to a temporary
+    folder; the output of each replay stays in `keep` (the folder of the gate's pictures) as
+    objects-<backend>-<capture>.replay.txt."""
     captures = sorted(f for f in os.listdir(baseline) if f.endswith(".nircap")) if os.path.isdir(baseline) else []
     if not captures:
         return check(False, "objects: no capture in the baseline folder")
@@ -801,6 +808,8 @@ def stage_objects(baseline, mge_build):
         steady_seen = False
         for capture in captures:
             code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], dict(GATE_ENV))
+            if keep:
+                keep_replay_output(os.path.join(keep, "objects-%s-%s" % (backend, capture[:-7])), code, output)
             verdict, text = objects_verdict(output)
             line = "objects, %s, %s: %s%s" % (backend, capture, text, replay_end(code, output))
             steady_seen |= verdict in ("ok", "sites")
@@ -856,10 +865,13 @@ def stage_clusters(place, mge_build, started):
     # A replay that failed fails the stage with its code: before W523 only a missing line or picture showed it.
     replay = [PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder, "--mge-build", mge_build]
     code, out = run_code(replay, {"MGE_XE_CLUSTERS": "1"})
+    keep_replay_output(a, code, out)
     if not ran((code, out), "replay.py with the clusters"):
         return False
     replay[3] = b
-    if not ran(run_code(replay, {"MGE_XE_CLUSTERS": "0"}), "replay.py with the lights of the draws"):
+    other = run_code(replay, {"MGE_XE_CLUSTERS": "0"})
+    keep_replay_output(b, *other)
+    if not ran(other, "replay.py with the lights of the draws"):
         return False
     sys.path.insert(0, HERE)
     import picture_diff

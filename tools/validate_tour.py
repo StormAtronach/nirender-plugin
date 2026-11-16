@@ -6,7 +6,9 @@
 The run comes from `run_own_device.py --steps tour --tour-cells "@nifTest_1;@nifTest_2;@nifTest_3"`:
 its folder has `tour-<cell>.nircap` with two frames for each stop, and `progress.log` names
 the stops. This replays the second frame of each stop into `<out>/<cell>-<stop>-<id>.png`
-(`<out>` is the run folder without `--out`). With `--against`, it compares each picture with
+(`<out>` is the run folder without `--out`). The full output of each replay stays there too:
+`tour-frames-<capture>.replay.txt` for the one run of a capture, `<picture>.replay.txt` for a
+second try of one picture, each with the exit code first. With `--against`, it compares each picture with
 the one of the same name in the baseline folder and prints the mean difference, with the
 largest ones first. Make a baseline by replaying a run and copying its folder.
 
@@ -34,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import stage_fault_in  # noqa: E402
+from common import keep_replay_output, stage_fault_in  # noqa: E402
 
 PYTHON = sys.executable
 # The start of the refusal of slot.py's check of build work (`refuse_build_tool`), which replay.py calls.
@@ -71,6 +73,7 @@ def replay(capture, frame, picture):
     if MGE_BUILD:
         command += ["--mge-build", MGE_BUILD]
     result = run_tool(command, capture_output=True, text=True)
+    keep_replay_output(picture, result.returncode, result.stdout + result.stderr)
     return result.returncode == 0 and os.path.isfile(picture), (result.stdout + result.stderr)[-400:]
 
 
@@ -89,6 +92,7 @@ def replay_many(capture, items):
         command += ["--mge-build", MGE_BUILD]
     result = run_tool(command, capture_output=True, text=True)
     output = result.stdout + result.stderr
+    keep_replay_output(prefix, result.returncode, output)
     refused = refusal_of(output)
     fault = stage_fault_in(output)
     if fault:
@@ -334,6 +338,8 @@ def self_test():
                         assert main() == code, (tool.__name__, printed.getvalue())
                     text = printed.getvalue()
                     assert "4 pictures, 0 failed" in text and "pairs: 2 of 2 equal" in text, text
+                    kept = os.path.join(run, "tour-frames-tour-1.replay.txt")
+                    assert open(kept, encoding="utf-8").read().startswith("exit code %d\n" % (40 if faults else 0)), "the output of the replay is kept beside the pictures"
                     assert text.count("  STAGE SHADERS: the replay of tour-") == faults and ("FAILED stage shaders: 2 replays" in text) == bool(faults), text
             finally:
                 sys.argv = real_argv

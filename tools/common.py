@@ -160,6 +160,24 @@ STAGE_REPORT = re.compile(r"^stage shaders: (?:on|off) \((made [^)]*)\), .*?; (\
                           r"(\d+) after a failed rewrite, (\d+) after a failed pipeline, (\d+) with a pipeline not made; (\d+) draws past the cap, \d+ draws with no key", re.M)
 
 
+# The end of the name of the file that keeps a replay's output beside its picture.
+REPLAY_OUTPUT = ".replay.txt"
+
+
+def keep_replay_output(picture, code, output):
+    """Writes the exit code and the full output of a replay beside its picture, as <picture without .png>.replay.txt,
+    and returns the path. The gate judges a replay by lines of this output (the counts, the order lines, the report of
+    the stage shaders); a verdict can then be checked against the text it read. A file that cannot be written does
+    not stop the gate: the path is then None."""
+    path = (picture[:-4] if picture.lower().endswith(".png") else picture) + REPLAY_OUTPUT
+    try:
+        with open(path, "w", encoding="utf-8", errors="replace", newline="\n") as file:
+            file.write("exit code %d\n%s" % (code, output))
+    except OSError:
+        return None
+    return path
+
+
 def stage_fault_summary(output):
     """The short form of the helper's fault line of a replay in `output`, or "": each count, and the first failed
     rewrite. The helper's line has every failed key, so it can be thousands of characters long."""
@@ -516,6 +534,13 @@ def stage_test():
     for text in (old, "", "gpu error: lost"):
         line, problem = stage_session_problem(text)
         assert problem is None and line.endswith("not checked"), (text, line)
+    # The kept output of a replay: beside the picture, with the exit code first; no folder, no file and no stop.
+    import tempfile
+    with tempfile.TemporaryDirectory() as folder:
+        kept = keep_replay_output(os.path.join(folder, "seyda.png"), 40, output)
+        assert kept == os.path.join(folder, "seyda" + REPLAY_OUTPUT) and open(kept, encoding="utf-8").read() == "exit code 40\n" + output, kept
+        assert keep_replay_output(os.path.join(folder, "tour-frames-tour-1"), 0, "x").endswith("tour-frames-tour-1" + REPLAY_OUTPUT)
+        assert keep_replay_output(os.path.join(folder, "no such folder", "a.png"), 0, "x") is None
 
 
 def fake_parts(build, plugin="79c752d", host="79c752d", mge="c610f3b", d3d8=None):
