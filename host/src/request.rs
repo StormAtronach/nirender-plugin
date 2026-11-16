@@ -170,8 +170,13 @@ pub fn world_shader_source(extension_text: &str) -> String {
     } else {
         PLAIN_CLOUDS_COLOR
     };
+    let no_lights = if extension.contains("fn extension_no_lights_shade(") {
+        ""
+    } else {
+        NO_LIGHTS_SHADE
+    };
     format!(
-        "{}\n{}\n{}\n{extension}\n{corner}{clouds}",
+        "{}\n{}\n{}\n{extension}\n{corner}{clouds}{no_lights}",
         include_str!("shader.wgsl"),
         depth::wgsl(),
         crate::spot::WGSL
@@ -194,6 +199,10 @@ pub fn world_variant_source(source: &str, variant: u32) -> Option<String> {
 /// `extension_corner_shade` of an extension that lights no particle at its corners: the vertex
 /// stage's colour stays ([`crate::CORNER_LIGHT_BIT`]).
 const NO_CORNER_SHADE: &str = "fn extension_corner_shade(world_position: vec3f, world_normal: vec3f, vertex_color: vec4f, color: vec4f) -> CornerShade { return CornerShade(color, vec3f(0.0)); }\n";
+
+/// `extension_no_lights_shade` of an extension that makes no colour in the vertex stage for a
+/// draw with no lights: the vertex stage's colour stays ([`crate::NO_LIGHTS_BIT`]).
+const NO_LIGHTS_SHADE: &str = "fn extension_no_lights_shade(vertex_color: vec4f, color: vec4f) -> vec4f { return color; }\n";
 
 /// `extension_clouds_color` of an extension that has none: the colour of the vertex times the
 /// first texture ([`crate::CLOUDS_HOOK_BIT`]).
@@ -1443,6 +1452,21 @@ mod tests {
         assert_eq!(with_own.matches("fn extension_corner_shade(").count(), 1);
         assert!(!with_own.contains(NO_CORNER_SHADE));
         crate::assert_wgsl("shader.wgsl with a corner shade", &with_own);
+    }
+
+    /// The vertex stage calls `extension_no_lights_shade` for a draw with no lights: the world
+    /// shader has one, the extension's own or the one that keeps the vertex stage's colour.
+    #[test]
+    fn the_world_shader_has_one_no_lights_shade() {
+        let defaults = crate::extension::extension_shaders(None);
+        let plain = world_shader_source(&defaults);
+        assert_eq!(plain.matches("fn extension_no_lights_shade(").count(), 1);
+        assert!(plain.contains(NO_LIGHTS_SHADE));
+        let own = "fn extension_no_lights_shade(vertex_color: vec4f, color: vec4f) -> vec4f { return vertex_color; }\n";
+        let with_own = world_shader_source(&format!("{defaults}{own}"));
+        assert_eq!(with_own.matches("fn extension_no_lights_shade(").count(), 1);
+        assert!(!with_own.contains(NO_LIGHTS_SHADE));
+        crate::assert_wgsl("shader.wgsl with a no-lights shade", &with_own);
     }
 
     /// The fragment stage calls `extension_clouds_color` for the clouds with CLOUDS_HOOK_BIT:

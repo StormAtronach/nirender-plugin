@@ -28,10 +28,13 @@ impl Player {
             .as_ref()
             .filter(|_| self.small_copy.is_some() && self.pass_target.is_none());
         let mut copy = None;
+        let mut key = draw.key;
         if let Some(plane) = side.filter(|_| split) {
-            // A copy of the record with the plane, and instances that name it, now.
+            // A copy of the record with the plane, and instances that name it, now. The plane is
+            // a fact of the stage key: the copy takes the key of its own record.
             let mut data = draw.data;
             data.clip_plane = plane_of_draw(plane, draw.origin);
+            key.stages = renderer.stage_shaders.id_with_plane(&data, false);
             if let Some((_, remap)) = small {
                 for stage in data.stages.iter_mut() {
                     stage.slots[0] = remap.get(&stage.slots[0]).copied().unwrap_or(0);
@@ -62,7 +65,7 @@ impl Player {
         let small = small.is_some();
         renderer.counts.times[TIME_DRAW_UPLOAD] += clock.elapsed();
         let clock = ticks::Clock::now();
-        let Some(pipeline) = renderer.pipeline(draw.key) else {
+        let Some(pipeline) = renderer.pipeline(key) else {
             renderer.counts.no_layout += 1;
             return;
         };

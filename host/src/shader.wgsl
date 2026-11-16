@@ -589,6 +589,13 @@ fn vs(in: VertexIn) -> VertexOut {
         out.color = corner.color;
         out.corner_light = corner.light;
     }
+    // A draw lit for each pixel with no lights (NO_LIGHTS_BIT) that is not flat-shaded: its
+    // light has no part that changes over a triangle, so the extension makes its colour here
+    // (`extension_no_lights_shade`), and the fragment stage takes it. Both bits are facts of
+    // the stage key. A flat-shaded one is lit in the fragment stage.
+    if (draw_counts_w() & 32768u) != 0u && (draws[record].light_range.w & 16u) == 0u {
+        out.color = extension_no_lights_shade(vertex_color, out.color);
+    }
 
     out.color_flat = out.color;
     // The fog of the game is table fog: linear on the depth, for each pixel. The fragment

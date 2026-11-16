@@ -680,6 +680,10 @@ pub trait Extension {
     ///   vertex_color: vec4f, color: vec4f) -> CornerShade`: in the vertex stage, the colour
     ///   of a corner of a particle with [`crate::CORNER_LIGHT_BIT`] and the light it takes
     ///   (`CornerShade { color, light }`). Without it the vertex stage's colour stays.
+    /// - Optional: `fn extension_no_lights_shade(vertex_color: vec4f, color: vec4f) -> vec4f`:
+    ///   in the vertex stage, the colour of a draw with [`crate::NO_LIGHTS_BIT`] that is not
+    ///   flat-shaded, which `extension_shade` then takes. Without it the vertex stage's colour
+    ///   stays.
     ///
     /// The functions read the uniform of the draw as `draw` (see [`DrawData`]); the colour of
     /// such a draw is not kept between 0 and 1 after the stages.
