@@ -708,6 +708,25 @@ pub trait Extension {
     /// that gave it. Called once for each text that holds.
     fn world_shader_held(&mut self, _attempt: u32) {}
 
+    /// The renderer is about to build the first pipelines of the world shader's text of
+    /// `attempt` (as in [`Extension::world_shader_held`]): the build that a fault of the driver can
+    /// end. [`Extension::world_shader_held`], [`Extension::shader_fallback`] or
+    /// [`Extension::world_shader_kept`] follows when the helper is still there.
+    fn world_shader_building(&mut self, _attempt: u32) {}
+
+    /// The world shader's text with none of the code of others (the built-in text), or [`None`]
+    /// when the extension's text holds no such code. The renderer builds the key that failed with
+    /// it one time, without a switch, before it asks [`Extension::shader_fallback`]: a key that
+    /// fails with it too is no fault of the code of others.
+    fn built_in_text(&mut self) -> Option<ShaderText> {
+        None
+    }
+
+    /// The key that failed fails with [`Extension::built_in_text`] too: the renderer keeps the
+    /// text and the failed key as they are, and asks for no other text. `error` is the device's
+    /// error of the probe.
+    fn world_shader_kept(&mut self, _error: &str) {}
+
     /// A new text for the world shader that the extension wants from the next frame on, or
     /// [`None`]: a core mod that failed in one of the extension's own shaders is dropped from the
     /// world shader too. Asked at the start of each frame; the renderer tries the text as the

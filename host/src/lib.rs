@@ -403,6 +403,13 @@ pub const CLOUDS_HOOK_BIT: u32 = 1 << 10;
 /// the module lacks, so the pipeline fails with an error of the device, after naga.
 pub const CORE_MOD_FAULT_PLANT: &str = "// core mod fault plant: each world pipeline of this text fails (W317)";
 
+/// `MGE_XE_CORE_MOD_FAULT=world key` (W317's test): the pipeline of the first world key fails
+/// whatever the world shader's text, as a fault of the driver that is no core mod's would. The
+/// probe with the built-in text then fails too, and no core mod is dropped.
+pub(crate) fn world_key_fault() -> bool {
+    std::env::var("MGE_XE_CORE_MOD_FAULT").is_ok_and(|plant| plant.trim() == "world key")
+}
+
 /// The lines `early world draws: ...` of a run: one for each scene whose world draws reached the
 /// target before its world began, for the first ones only.
 pub(crate) const EARLY_DRAW_LINES: u64 = 16;
