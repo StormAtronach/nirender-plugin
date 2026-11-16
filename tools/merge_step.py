@@ -193,12 +193,16 @@ CITE_TIMEOUT_SECONDS = 300
 CLOSES_HEADER = "time\titem\trepo\tcommit\tstages\tlog\tsubject"
 # The item of a merge subject: the subject ends with "(W<n>)" or "(W<n> <part>)", the form of the Coordinator's merge
 # subjects ("(W96)", "(W341 step A)"). The item is the text in the parentheses, the part with it: a row with parts
-# closes one part at a time (W357). The decisions of the merge can follow as a tail ", D<n>" or ", D<n>/D<m>/...", which
-# the item drops: "(W363, D325)" is W363, "(W340, D288/D289/D310)" is W340 (W365). The part is lazy, so that the tail
-# is not taken into it; any other comma stays in the part ("(W341 step B, commit 1)"). Any other subject names no item
-# and closes nothing. A part that starts with "dropped" is no part: master has "Merge: log pipe follow-ups W219 and W221
-# (W220 dropped)".
-ITEM = re.compile(r"\((W\d+(?: (?!dropped\b)[^()]+?)?)(?:, D\d+(?:/D\d+)*)?\)$")
+# closes one part at a time (W357). References can follow as a tail, each after ", ", which the item drops and which
+# close nothing: decisions ("(W363, D325)" is W363, "(W340, D288/D289/D310)" is W340, W365; "(W520, D488, D489)" is
+# W520), a row of another item ("(W527, W524 row 2)" is W527, W528), a risk or an E item. The part is lazy, so that the
+# tail is not taken into it; any other comma stays in the part ("(W341 step B, commit 1)"). Any other subject names no
+# item and closes nothing: a bare second item ("(W222, W226)": which one closes is not known) and a part after a comma
+# ("(W229, crate half)": W229 whole would close). unread_item_lines names each such subject with a W number. A part that
+# starts with "dropped" is no part: master has "Merge: log pipe follow-ups W219 and W221 (W220 dropped)".
+TAIL_REFERENCE = r"(?:D\d+(?:/D\d+)*|W\d+ (?!dropped\b)[^(),]+?|risk \d+|E\d+)"
+ITEM = re.compile(r"\((W\d+(?: (?!dropped\b)[^()]+?)?)(?:, " + TAIL_REFERENCE + r")*\)$")
+LAST_PARENTHESES = re.compile(r"\(([^()]*)\)\s*$")
 # The tries of an append to the closes file while a reader holds it, and the wait between them.
 CLOSE_TRIES = 5
 CLOSE_WAIT_SECONDS = 0.5
@@ -759,6 +763,20 @@ def items_of(subject):
     ("(W363, D325)" is W363)."""
     match = ITEM.search(subject.strip())
     return [" ".join(match.group(1).split())] if match else []
+
+
+def unread_item_lines(merges):
+    """One WARNING line for each (commit, subject) of `merges` whose last parentheses name a W number but no item that
+    items_of reads: such a merge closes nothing, and the round must say so (W528: bdc4145 "(W527, W524 row 2)" closed
+    nothing, and the round said only "nothing to write")."""
+    lines = []
+    for commit, subject in merges:
+        last = LAST_PARENTHESES.search(subject)
+        if last and re.search(r"\bW\d+", last.group(1)) and not items_of(subject):
+            lines.append("WARNING: %s closes nothing: its subject ends in \"(%s)\", which names no item. The forms: (W<n>) or "
+                         "(W<n> <part>), then any tail of D<n>, D<n>/D<m>, W<n> <part>, risk <n> or E<n>, each after \", \". "
+                         "The subject: %s" % (commit[:10], last.group(1), subject))
+    return lines
 
 
 def closing_commits(entries, tip):
@@ -2357,6 +2375,23 @@ def self_test():
                         "Merge: a tail with lower case (W363, d325)", "Merge: a tail without a number (W363, D)",
                         "Merge: a tail with no space (W363,D325)"):
             assert items_of(no_item) == [], no_item
+        # W528: the subject of bdc4145 named no item, as the tail held a row of another item. A tail of references closes
+        # the item: rows of other items, several decisions, a risk, an E item.
+        w527 = "Merge: a merge-step stage cannot pass on nothing (W527, W524 row 2)"
+        assert items_of(w527) == ["W527"], items_of(w527)
+        assert items_of("Merge: a run takes the run folder's plugin copy (W520, D488, D489)") == ["W520"]
+        assert items_of("Merge: free a texture level's CPU copy at its first unlock (W18, risk 42)") == ["W18"]
+        assert items_of("Merge: a fragment shader for each stage state of the draws (W293, E2)") == ["W293"]
+        assert items_of("Merge: a part with a row tail (W341 step B, W524 row 2, D300)") == ["W341 step B"]
+        assert unread_item_lines([("b" * 40, w527)]) == [], "an item that is read gives no warning"
+        # The null: a subject that names no item closes nothing, and one with a W number says so.
+        for no_item in ("Merge: two items (W222, W226)", "Merge: the exit paths do not wait for stdout (W229, crate half)",
+                        "Merge: a letter on the number (W234a)", "Merge: D first (D208, W294)", "Merge: a bare row tail (W389, W289)",
+                        "Merge: a dropped row in the tail (W1, W2 dropped)"):
+            assert items_of(no_item) == [], no_item
+            warned = unread_item_lines([("a" * 40, no_item)])
+            assert len(warned) == 1 and warned[0].startswith("WARNING: %s closes nothing" % ("a" * 10)) and no_item in warned[0], warned
+        assert unread_item_lines([("a" * 40, "Merge: the plan (D161)"), ("a" * 40, "Merge: say which views draw the table")]) == []
 
         closes = os.path.join(root, "closes", "closes.tsv")
         os.makedirs(os.path.dirname(closes))
@@ -2375,6 +2410,10 @@ def self_test():
             with open(closes, "rb") as written:
                 return written.read()
 
+        # W528, the plant: the subject of bdc4145 writes its close.
+        w527_line = "\t".join((when, "W527", PLUGIN_NAME, "bdc4145a35", "PASS 6 of 6: s0, s1, s2, s3, s4, s5", round_log, w527))
+        assert close([True] * 6, w527, commit="bdc4145a35d") == [w527_line]
+        os.remove(closes)
         subject = "Merge: a check that MWSE's vtable fills name their own slot (W93)"
         # A failed stage writes nothing and makes no file; so do a pass against another folder and a subject with no item.
         assert close([True, False, True, True, True, True], subject) is None and not os.path.exists(closes), "a fail wrote a close"
@@ -2597,6 +2636,9 @@ def main():
     merges, warning = closing_merges(repo, base, commit)
     if warning:
         say(warning)
+    unread = unread_item_lines(merges)
+    for line in unread:
+        say(line)
     if args.dry_run:
         return 0
 
@@ -2614,6 +2656,9 @@ def main():
     with open(log_path, "a", encoding="utf-8") as log:
         for line in cite_lines(kind, base, commit):
             say(line)
+            log.write(line + "\n")
+        # Said before the round; in the log too, beside the close that it explains.
+        for line in unread:
             log.write(line + "\n")
     # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
     # of merges with one check closes the item of each merge on the first-parent path (D183).
