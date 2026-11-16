@@ -2,6 +2,7 @@
 
     python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --self-test    # the tests of the pure parts: no build, no game
+    python -I tools/merge_step.py --open-deploys # the WITHHELD deploys that no deploy closed
 
 <repo> is the tree of nirender-plugin or MGE-XE-G7-render-link, at <commit> and with no tracked change. There is no
 trial merge: the tool refuses another tree state. It takes the build slot for the whole of its work and releases it. It
@@ -113,6 +114,10 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   runs also when the replay gate or the A/B stages fail: only the stages before it decide (the gate is red until the owner
   accepts a new baseline, and the owner tests the latest build, D193). The round holds the game slot (deploy rest is one
   of GAME_STAGES), so that the write to E: is allowed (evidence_problem);
+- the open deploys (W528): a round that passes with its deploy WITHHELD appends a WITHHELD line with both commits to
+  E:\\nirender-keep\\merge-step\\deploys.tsv, at the same gate as its close; deploy_rest.py appends a DEPLOYED line after
+  each deploy of a build. A WITHHELD line stays open until a DEPLOYED line names the same or newer commits of both
+  repos. Each round prints the open ones at its start, and its close line ends with "open deploys: K" (with the oldest);
 
 These stages also need a sibling with no tracked change. The first line gives the hash of the sibling.
 
@@ -169,7 +174,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import MD5, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE, base_key  # noqa: E402
-from common import FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, docs_place, git_env, local, tests_ran  # noqa: E402
+from common import (DEPLOY_WITHHELD, DEPLOYS_FILE, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, append_deploys, deploys_line,  # noqa: E402
+                    docs_place, git_env, local, main_checkout, open_deploys, open_deploys_text, tests_ran)
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 from mwse_tree import fallback_checks  # noqa: E402
 
@@ -859,7 +865,7 @@ def write_closes(path, when, repo_name, merges, stages, log_path, tries=CLOSE_TR
             time.sleep(wait)
 
 
-def close_after(results, baseline, merges, write, words=None):
+def close_after(results, baseline, merges, write, words=None, extra=()):
     """The closing lines of a round, through `write(merges, stages)`: only when every stage passed and the pass is
     against the accepted folder, as only that is a pass of the merge. The stages column names each stage by its word
     (stages_column of `words`), and each FORMAT CHANGE verdict with the md5 of its evidence file. None when the round
@@ -871,7 +877,39 @@ def close_after(results, baseline, merges, write, words=None):
         column = "%d of %d (the words of the stages are not known: %d words)" % (sum(results), len(results), len(words))
     else:
         column = stages_column(words)
-    return write(merges, "; ".join([column] + FORMAT_CHANGES))
+    return write(merges, "; ".join([column] + FORMAT_CHANGES + list(extra)))
+
+
+def deploys_open(plugin_repo, mge_repo, path=DEPLOYS_FILE):
+    """The open deploys of the deploys file (common.open_deploys): a commit is newer when it is the same or a descendant
+    in its repo. No file: none open."""
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="ascii", errors="replace") as file:
+        lines = file.readlines()
+    repos = {"plugin": plugin_repo, "mge": mge_repo}
+
+    def is_newer(kind, older, newer):
+        repo = repos[kind]
+        return bool(repo) and resolve(repo, older) is not None and resolve(repo, newer) is not None and is_ancestor(repo, older, newer)
+
+    return open_deploys(lines, is_newer)
+
+
+def open_deploy_lines(still):
+    """The open deploys as lines: the machine answer, then one line for each."""
+    return [open_deploys_text(still)] + ["  %s: plugin %s, mge %s: %s" % (when, plugin[:10], mge[:10], what) for when, plugin, mge, what in still]
+
+
+def withhold_deploy(path, when, commits, lines):
+    """Appends the WITHHELD line of a round that passed with its deploy kept back. A failed write is a line, not a
+    failure of the round."""
+    plugin, mge = (commits or {}).get("plugin"), (commits or {}).get("mge")
+    try:
+        append_deploys(path, deploys_line(when, DEPLOY_WITHHELD, plugin, mge, " | ".join(lines)))
+        return "deploys: WITHHELD plugin %s, mge %s in %s" % ((plugin or "unknown")[:10], (mge or "unknown")[:10], path)
+    except OSError as error:
+        return "deploys: NOT WRITTEN to %s (%s); write the WITHHELD line by hand" % (path, error)
 
 
 def resolve(repo, name):
@@ -1845,6 +1883,28 @@ def self_test():
         assert touches(both, GATE_PATHS["mge"]), "a move out of a gate path plans the gate"
         inside = changed_paths(moves, out_of_gate, inside_tools)
         assert sorted(inside) == ["tools/a.py", "tools/b.py"] and not touches(inside, GATE_PATHS["mge"]), inside
+        # W528 item 3b: a round with a WITHHELD deploy keeps an open deploy until a deploy of the same or newer commits.
+        # The scratch repo of the moves stands for both repos: before_moves, out_of_gate and inside_tools in that order.
+        deploys = os.path.join(root, "deploys", "deploys.tsv")
+        assert deploys_open(moves, moves, deploys) == [], "no file: none open"
+        said = withhold_deploy(deploys, "t1", {"plugin": out_of_gate, "mge": out_of_gate}, ["WITHHELD deploy rest (1 s): a game\truns"])
+        assert said.startswith("deploys: WITHHELD plugin %s, mge %s in " % (out_of_gate[:10], out_of_gate[:10])), said
+        still = deploys_open(moves, moves, deploys)
+        assert still == [("t1", out_of_gate, out_of_gate, "WITHHELD deploy rest (1 s): a game runs")], still
+        assert open_deploy_lines(still)[0] == "open deploys: 1 (the oldest t1: plugin %s, mge %s)" % (out_of_gate[:10], out_of_gate[:10])
+        closed = close_after([True], BASELINE, [("c" * 40, "Merge x (W1)")], lambda merges, stages: stages,
+                             [("a", WITHHELD_WORD, "a game runs")], extra=open_deploy_lines(still)[:1])
+        assert closed == "WITHHELD 1 of 1: none; WITHHELD a: a game runs; open deploys: 1 (the oldest t1: plugin %s, mge %s)" % (
+            out_of_gate[:10], out_of_gate[:10]), closed
+        # A deploy of an older commit, or of a commit that the repo does not know, leaves it open.
+        for done_plugin, done_mge in ((before_moves, out_of_gate), (out_of_gate, "f" * 40)):
+            append_deploys(deploys, deploys_line("t2", "DEPLOYED", done_plugin, done_mge, "A, B"))
+            assert len(deploys_open(moves, moves, deploys)) == 1
+        # The null: a deploy of newer commits closes it, and a write to a folder that cannot be made is a line.
+        append_deploys(deploys, deploys_line("t3", "DEPLOYED", inside_tools, out_of_gate, "A, B"))
+        assert deploys_open(moves, moves, deploys) == [] and open_deploy_lines([]) == ["open deploys: 0"]
+        blocked = os.path.join(root, "deploys", "deploys.tsv", "x.tsv")
+        assert withhold_deploy(blocked, "t4", None, ["x"]).startswith("deploys: NOT WRITTEN to %s" % blocked)
         assert tips_for("mge", sibling_tree, "base", first)[1].startswith("no sibling"), "no sibling tree"
         # The A/B stages replay with the game slot held: their round takes both (D208).
         assert round_slot([("a", root, good), (INSTANCE_STAGE, root, good)]) == "both"
@@ -2573,9 +2633,15 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="print the stages: no slot, no build")
     parser.add_argument("--evidence", action="append", metavar="STAGE=FILE", help="the evidence file of a FORMAT CHANGE of the stage '%s': with it the stage passes, and the round's close line names the file's md5" % INSTANCE_STAGE)
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
+    parser.add_argument("--open-deploys", action="store_true", help="list the WITHHELD deploys of %s that no deploy closed, and stop" % DEPLOYS_FILE)
     args = parser.parse_args()
     if args.self_test:
         self_test()
+        return 0
+    if args.open_deploys:
+        own = main_checkout()
+        for line in open_deploy_lines(deploys_open(own, sibling_of("plugin", own))):
+            say(line)
         return 0
     if not args.repo or not args.commit or not args.base:
         parser.error("it needs <repo>, <commit> and --base <the tip before the merge>")
@@ -2633,6 +2699,9 @@ def main():
         sibling_base_note = " (--sibling-base unused: no base build in these stages)"
     say("%s %s, sibling %s%s, baseline %s: %d changed paths from %s; stages: %s" % (os.path.basename(repo), commit[:10], sibling_hash, sibling_base_note, baseline, len(paths), base[:10], ", ".join(name for name, _, _ in stages)))
     # The merges that a pass closes (D183), read before the round so that the warning of a fast-forward comes first.
+    plugin_repo, mge_repo = (repo, sibling) if kind == "plugin" else (sibling, repo)
+    for line in open_deploy_lines(deploys_open(plugin_repo, mge_repo)):
+        say(line)
     merges, warning = closing_merges(repo, base, commit)
     if warning:
         say(warning)
@@ -2663,8 +2732,13 @@ def main():
     # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
     # of merges with one check closes the item of each merge on the first-parent path (D183).
     when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    # The same gate as the close: only a pass of the merge keeps an open deploy (W528).
+    if NOT_DEPLOYED and results and all(results) and moves_the_ref(baseline):
+        say(withhold_deploy(DEPLOYS_FILE, when, commits, NOT_DEPLOYED))
+    still = open_deploy_lines(deploys_open(plugin_repo, mge_repo))
     written = close_after(results, baseline, merges,
-                          lambda merges, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), merges, stages, log_path))
+                          lambda merges, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), merges, stages, log_path),
+                          extra=still[:1])
     if written:
         say("closes: %s in %s" % (", ".join(line.split("\t")[1] for line in written), CLOSES_FILE))
     elif written == []:

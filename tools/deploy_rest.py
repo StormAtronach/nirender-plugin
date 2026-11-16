@@ -92,7 +92,8 @@ import tempfile
 # The modules of this folder, also under `python -I`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_mwse_sites import D3D8, MISSING, MISSING_FEATURE_EXIT  # noqa: E402
-from common import BUILD_ID_RE, REPO, git_env, local, main_checkout, parts_problems, sibling  # noqa: E402
+from common import (BUILD_ID_RE, DEPLOY_DONE, DEPLOYS_FILE, REPO, append_deploys, deploys_line, git_env, local,  # noqa: E402
+                    main_checkout, parts_problems, sibling)
 from make_play_set import say  # noqa: E402
 from new_run_folder import CURRENT_BAT, CURRENT_BAT_TRIES, SETS, new_set_folder, write_current_bat  # noqa: E402  (W380, W500)
 import symbols  # noqa: E402
@@ -591,13 +592,15 @@ def check_parts(build, plugin_commit=None, mge_commit=None):
 
 
 def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=True, dry_run=False, sets=SETS, tasklist=tasklist_text, copy=shutil.copyfile,
-        add_symbols=None, mwse_dll=None, mwse_deploys=None, probe=probe_features, tree_changes=probe_tree_changes, mwse_commit=None, core_source=core_of):
+        add_symbols=None, mwse_dll=None, mwse_deploys=None, probe=probe_features, tree_changes=probe_tree_changes, mwse_commit=None, core_source=core_of,
+        deploys_file=None):
     """The whole deploy. Returns the exit code. `add_symbols` (symbols.add from the command line) puts the build's pdbs
     into the symbol store: the pdbs of render-link's tree around the dist-staging folder, and of this tree's plugin.
     `mwse_dll` goes into each install at its place of `mwse_deploys` (MWSE_DEPLOYS), after the build, or alone when
     `build` is None; `probe` is the probe of its features, and `tree_changes` (`probe_tree_changes`) gives the files of the
     probe in which this tree differs from a plugin commit. With `mwse_dll`, each install gets MWSE_NOTE, the record of
-    `mwse_commit`."""
+    `mwse_commit`. A deploy of a build appends a DEPLOYED line to `deploys_file` (common.DEPLOYS_FILE from the command
+    line; None writes none): it closes the WITHHELD deploys of a merge round of the same or older commits (W528)."""
     if build is None and mwse_dll is None:
         raise DeployError("nothing to deploy: give a build, an MWSE.dll or both")
     if mwse_dll is not None and not mwse_commit:
@@ -704,6 +707,13 @@ def run(build, installs, plugin_commit=None, mge_commit=None, tag=None, keep=Tru
             raise DeployError("the build is deployed and kept as %s, but %s was not written: %s" % (name, os.path.join(sets, CURRENT_BAT), error))
     elif build is not None:
         say("current build: %s stays as it is (no kept set: --no-keep)" % os.path.join(sets, CURRENT_BAT))
+    if deploys_file and build is not None:
+        when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+        try:
+            append_deploys(deploys_file, deploys_line(when, DEPLOY_DONE, plugin_commit, mge_commit, ", ".join(installs)))
+            say("deploys: DEPLOYED plugin %s, mge %s in %s" % (plugin_commit, mge_commit, deploys_file))
+        except OSError as error:
+            say("deploys: NOT WRITTEN to %s (%s); the deploy stands, write the DEPLOYED line by hand" % (deploys_file, error))
     say("DONE: %d installs from %s with tag %s" % (len(installs), " and ".join(part for part in (build, mwse_dll) if part), tag))
     return 0
 
@@ -902,7 +912,14 @@ def self_test():
         # With no commits given, the parts' own commits name the build.
         # The symbol store gets the set's name, the 4 binaries of the build and the pdb folders of the two trees.
         added = []
-        assert run(build, two, keep=True, sets=whole_sets, tasklist=quiet, add_symbols=lambda *call: added.append(call) or "symbols: +4", **installed_mwse(two)) == 0
+        deploys = os.path.join(root, "keep", "deploys.tsv")
+        assert run(build, two, keep=True, sets=whole_sets, tasklist=quiet, add_symbols=lambda *call: added.append(call) or "symbols: +4",
+                   deploys_file=deploys, **installed_mwse(two)) == 0
+        # W528: the deploy of a build writes its DEPLOYED line, with the parts' commits and the installs.
+        written = open(deploys, encoding="ascii").read().splitlines()
+        assert len(written) == 2 and written[1].split("\t")[1:] == ["DEPLOYED", "79c752d", "c610f3b", "E, F"], written
+        assert run(build, two, keep=False, dry_run=True, sets=whole_sets, tasklist=quiet, deploys_file=deploys, **installed_mwse(two)) == 0
+        assert open(deploys, encoding="ascii").read().splitlines() == written, "a dry run wrote a DEPLOYED line"
         assert len(added) == 1 and added[0][0] == "f1", added
         assert [os.path.relpath(path, build).replace(os.sep, "/") for path in added[0][1]] == ["d3d8.dll", "dinput8.dll", "numidium.exe", NIRENDER_PLUGIN], added
         assert os.path.join(os.path.dirname(os.path.dirname(build)), "target", "x86_64-pc-windows-msvc", "release") in added[0][2], added
@@ -1250,7 +1267,7 @@ def main():
     try:
         return run(os.path.abspath(args.build) if args.build else None, REST_INSTALLS, args.plugin_commit, args.mge_commit, args.tag, not args.no_keep,
                    args.dry_run, args.sets, add_symbols=symbols.add, mwse_dll=os.path.abspath(args.mwse_dll) if args.mwse_dll else None,
-                   mwse_commit=args.mwse_commit, probe=lambda dll: probe_features(dll, os.path.abspath(args.mge)))
+                   mwse_commit=args.mwse_commit, probe=lambda dll: probe_features(dll, os.path.abspath(args.mge)), deploys_file=DEPLOYS_FILE)
     except Refused as error:
         say(str(error))
         return REFUSED_EXIT
