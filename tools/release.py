@@ -53,10 +53,11 @@ The steps:
    so that a problem with them costs no build.
    Then the gate: the archive is unpacked into `target/release-gate` of the MGE XE repository
    and `tools/validate_retained.py baseline` replays the captures of the baseline on the
-   helper in it, the one that ships. A failed gate stops the release, and so does a baseline
-   whose accepted pictures were made on another adapter or driver than this machine's, or
-   name none: the pictures are the evidence of one GPU and one driver, so the baseline is
-   accepted again on the release machine first (`validate_retained.py baseline --accept`).
+   helper in it, the one that ships. A failed gate stops the release, and so does a gate
+   whose adapter word is not SAME: OTHER (the accepted pictures were made on another adapter
+   or driver than this machine's), UNKNOWN (the helper printed no adapter, or the pictures
+   name none) or no word. The pictures are the evidence of one GPU and one driver, so the
+   baseline is accepted again on the release machine first (`validate_retained.py baseline --accept`).
    Its result lines go
    into the notes in place of the token `{gate}` of their Tested block; the filled notes are
    written to `dist/notes-<tag>.md` and published. The notes follow
@@ -89,6 +90,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
 MGE = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
+sys.path.insert(0, HERE)
+from validate_retained import ADAPTER_LINE, ADAPTER_OTHER, ADAPTER_SAME, ADAPTER_UNKNOWN, adapter_note  # noqa: E402
 
 
 # The environment of every program the tool starts: the shell's, without RUSTUP_TOOLCHAIN, so
@@ -226,16 +229,18 @@ def gate(folder, dry_run):
 
 
 def adapter_problem(output):
-    """Why the gate's result is not the release's evidence, from the adapter line of
-    `validate_retained.py baseline`: the accepted pictures were made on another adapter or
-    driver (the pictures are the evidence of one GPU and one driver), or they name none.
-    None when the run's adapter is the accepted pictures' one."""
-    match = re.search(r"^\s*adapter: (.+?); the accepted pictures were made on (.+?), so a difference", output, re.MULTILINE)
-    if match:
-        return ("the baseline was accepted on %s; this machine has %s; accept the baseline again on this machine "
-                "(validate_retained.py baseline --accept) before the release" % (match.group(2), match.group(1)))
-    if re.search(r"^\s*adapter: .+; the accepted pictures name none", output, re.MULTILINE):
-        return "the accepted pictures of the baseline name no adapter; accept the baseline again on this machine (validate_retained.py baseline --accept) to record it before the release"
+    """Why the gate's result is not the release's evidence, from the fixed word of the adapter
+    line of `validate_retained.py baseline` (`ADAPTER_LINE`): the pictures are the evidence of
+    one GPU and one driver, so a release needs the word SAME. OTHER (another adapter or
+    driver), UNKNOWN (no adapter printed, or none recorded) and no word at all are problems.
+    None when every adapter line says SAME."""
+    words = ADAPTER_LINE.findall(output)
+    if not words:
+        return "the gate printed no adapter word (%s, %s or %s), so the release cannot know the GPU of its pictures" % (ADAPTER_SAME, ADAPTER_OTHER, ADAPTER_UNKNOWN)
+    for word, text in words:
+        if word != ADAPTER_SAME:
+            return ("the gate's adapter is %s (%s), and a release needs %s; accept the baseline again on this machine "
+                    "(validate_retained.py baseline --accept) before the release" % (word, text, ADAPTER_SAME))
     return None
 
 
@@ -440,12 +445,19 @@ def self_test():
     assert leftover[-1] == "the token {gate} with --no-gate: write the gate's result by hand", leftover
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
-    same = "       adapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14), as the accepted pictures\n  ok   2 of 2 pictures equal to the accepted ones in a\n"
-    assert adapter_problem(same) is None
-    other = "       adapter: AMD Radeon RX 7800 XT (Vulkan, driver 24.9.1); the accepted pictures were made on NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14), so a difference can be the GPU's\n"
-    assert adapter_problem(other).startswith("the baseline was accepted on NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14); this machine has AMD Radeon RX 7800 XT (Vulkan, driver 24.9.1); accept the baseline again")
-    none = "       adapter: NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14); the accepted pictures name none (accept again to record it)\n"
-    assert adapter_problem(none).startswith("the accepted pictures of the baseline name no adapter")
+    # The adapter word, from the lines the gate prints (validate_retained.adapter_note): only
+    # SAME passes. The plant: the helper printed no adapter (UNKNOWN). The null: SAME.
+    nvidia, amd = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)", "AMD Radeon RX 7800 XT (Vulkan, driver 24.9.1)"
+    def gate_output(recorded, now):
+        return "       %s\n  ok   2 of 2 pictures equal to the accepted ones in a\n" % adapter_note(recorded, now)
+    assert adapter_problem(gate_output(nvidia, nvidia)) is None
+    assert adapter_problem(gate_output(nvidia, amd)).startswith("the gate's adapter is OTHER (%s; the accepted pictures were made on %s" % (amd, nvidia))
+    assert adapter_problem(gate_output(None, nvidia)).startswith("the gate's adapter is UNKNOWN (%s; the accepted pictures name none" % nvidia)
+    assert adapter_problem(gate_output(nvidia, None)).startswith("the gate's adapter is UNKNOWN (not printed by the helper)")
+    # A gate without the word (today's sentence alone, or no adapter line) is a problem too.
+    assert adapter_problem("       adapter: %s, as the accepted pictures\n" % nvidia).startswith("the gate printed no adapter word")
+    assert adapter_problem("  ok   2 of 2 pictures equal to the accepted ones in a\n").startswith("the gate printed no adapter word")
+    assert adapter_problem(gate_output(nvidia, nvidia) + gate_output(nvidia, amd)).startswith("the gate's adapter is OTHER")
     assert plugin_of_the_build(os.path.join("C:\\", "repos", "MGE-XE-G7-render-link")) == os.path.realpath(os.path.join("C:\\", "repos", "nirender-plugin"))
     good = "## Changes\n\n- a\n\n## Tested\n\n- {gate}\n- The live checks, run folder `20261027-120302-mge-findings-live2`: the loads wait.\n"
     assert tested_block_problems(good, gated=True) == []
