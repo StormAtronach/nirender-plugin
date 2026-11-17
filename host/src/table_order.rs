@@ -221,6 +221,8 @@ impl Instance {
 /// The counts of one frame's order.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FrameOrder {
+    /// The instances with a draw in the order: [`keys`] asks the facts of each one.
+    pub(crate) instances: u64,
     pub(crate) groups: u64,
     /// The bound instances by [`KINDS`].
     pub(crate) bound: [u64; 6],
@@ -290,6 +292,7 @@ pub(crate) fn keys(
             end += 1;
         }
         let instance = facts(id);
+        frame.instances += 1;
         let is_unit = instance.unit == Some(None);
         match instance.unit {
             Some(None) => frame.units += 1,
@@ -346,6 +349,7 @@ pub(crate) fn keys(
 pub struct OrderCounts {
     pub(crate) frames: u64,
     pub(crate) entries: u64,
+    pub(crate) instances: u64,
     pub(crate) groups: u64,
     pub(crate) most_groups: u64,
     pub(crate) bound: [u64; 6],
@@ -359,6 +363,7 @@ impl OrderCounts {
     pub(crate) fn add(&mut self, entries: u64, frame: &FrameOrder) {
         self.frames += 1;
         self.entries += entries;
+        self.instances += frame.instances;
         self.groups += frame.groups;
         self.most_groups = self.most_groups.max(frame.groups);
         for (sum, count) in self.bound.iter_mut().zip(frame.bound) {
@@ -384,10 +389,11 @@ impl OrderCounts {
             parts.join(", ")
         };
         format!(
-            "table order {}: {} frames of the main view; a frame as a mean: {:.1} unsorted draws, {:.1} groups (the most {}), {:.1} bound instances (the most {}) by kind: {}; the bound blends stand in {:.2} runs of neighbours with one bucket; {:.2} units; instances with more than one pass that stay bound, by the first line that fails: {}",
+            "table order {}: {} frames of the main view; a frame as a mean: {:.1} unsorted draws of {:.1} instances, {:.1} groups (the most {}), {:.1} bound instances (the most {}) by kind: {}; the bound blends stand in {:.2} runs of neighbours with one bucket; {:.2} units; instances with more than one pass that stay bound, by the first line that fails: {}",
             order.name(),
             self.frames,
             self.entries as f64 / frames,
+            self.instances as f64 / frames,
             self.groups as f64 / frames,
             self.most_groups,
             self.bound.iter().sum::<u64>() as f64 / frames,
@@ -611,6 +617,25 @@ mod tests {
         let (order, frame) = sorted(TableOrder::Grouped, &entries, &[1, 2]);
         assert_eq!(order, [0, 1, 2, 3]);
         assert_eq!((frame.groups, frame.bound[2]), (1, 2));
+        assert_eq!(frame.instances, 3, "the four entries are of three instances");
+    }
+
+    /// The report's line gives the means of a frame: the draws, the instances that `keys`
+    /// asked, the groups and the bound instances.
+    #[test]
+    fn the_counts_line_names_the_draws_and_the_instances_of_a_frame() {
+        let entries = [(1, 8), (1, 2), (2, 0), (3, 4)];
+        let (_, frame) = sorted(TableOrder::Grouped, &entries, &[1, 2]);
+        let mut counts = OrderCounts::default();
+        counts.add(entries.len() as u64, &frame);
+        counts.add(entries.len() as u64, &frame);
+        let line = counts.line(TableOrder::Grouped);
+        assert!(
+            line.starts_with(
+                "table order grouped: 2 frames of the main view; a frame as a mean: 4.0 unsorted draws of 3.0 instances, 1.0 groups (the most 1), 2.0 bound instances (the most 2) by kind: "
+            ),
+            "{line}"
+        );
     }
 
     /// The engine's order with no group keeps every entry at its place in the list, whatever
