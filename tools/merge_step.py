@@ -74,6 +74,11 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   touches the host's source, the helper's renderer, the shaders of the assets (the source of the shaders in a build), or
   a manifest or a lock of the build. The path decides: a stream or a table change can move a picture too. The gate does
   not run when the round's set was not made;
+- for nirender-plugin, "table order" (W535, verdict 595), right after the gate, when the change touches a file of the
+  table's order (ORDER_PATHS): tools/validate_retained.py order on the round's set, each capture of the gate replayed
+  with MGE_XE_TABLE_ORDER=grouped and =engine, 0 pixels between them, and a capture whose orders differ (else NOT
+  SHOWN). The self-test fails when a tracked file under host/ or src/ outside ORDER_PATHS names the order's code
+  (ORDER_NAMES), so the list cannot miss a reader;
 - with the gate, the A/B stages of tools/instance_ab.py: `base set` makes, in the same take, the set of the current
   tips of the target branches of BOTH repos with the round's MWSE commit (a set that exists and passes its check is taken as it is), and
   `instance A/B grass` replays a capture of Outlander-test with the base set (--base-build), the round's set
@@ -273,6 +278,17 @@ GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.to
                          "host/.cargo/config.toml", "tools/hook-fixtures/"),
               "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "assets/Data Files/shaders/", "Cargo.toml", "Cargo.lock",
                       "mgeHost64/Cargo.toml", "mge-config/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml")}
+# The files of the table's order (W535): the switch MGE_XE_TABLE_ORDER, the order and its digest lines (Hob's merge
+# branch fix/w535-engine-order: the module and its `mod` line, the switch's read, the order's collection, the replay's
+# digest lines, the report's counts). A change of one of them adds the stage ORDER_STAGE after the replay gate: each
+# capture of the gate in both orders, 0 pixels between them (validate_retained.py order; the Architect's page
+# w535-w538-order-and-origin section 1, verdicts 595 and 597). ORDER_NAMES are the names of that code: a tracked file
+# under host/ or src/ outside this list that names one of them fails the self-test (`order_drift`), so the list cannot
+# miss a new reader. README.md names the switch too; it is not code, and a change of it does not run the stage.
+ORDER_PATHS = {"plugin": ("host/src/table_order.rs", "host/src/switches.rs", "host/src/retained.rs", "host/src/player/report.rs",
+                          "host/src/cli.rs", "host/src/lib.rs"), "mge": ()}
+ORDER_NAMES = ("MGE_XE_TABLE_ORDER", "table_order", "TableOrder", "collect_order", "order_keys", "add_to_digest", "digest_frame", "take_digest")
+ORDER_STAGE = "table order"
 D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
 # What a change must touch for a build and a deploy without the gate (W406): the plugin DLL and the mod's Lua, which the
 # replay gate cannot see (it replays old captures with the helper and never runs the plugin), and the contract between
@@ -307,6 +323,43 @@ BUILD_MOVERS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "NIRENDER_PLUGIN_D
 
 def touches(paths, wanted):
     return any(path == item or (item.endswith("/") and path.startswith(item)) for path in paths for item in wanted)
+
+
+# A name of the order's code as a word: `table_order` names the field, `stable_order` does not.
+ORDER_WORD = re.compile(r"\b(?:%s)\b" % "|".join(ORDER_NAMES))
+
+
+def order_drift(texts):
+    """The files of `texts` ({path: text}, paths under host/ and src/ of the nirender tree) that name the order's code
+    (ORDER_NAMES) and are not in ORDER_PATHS: a reader of the switch or of the order that the list misses."""
+    return sorted(path for path, text in texts.items() if not touches([path], ORDER_PATHS["plugin"]) and ORDER_WORD.search(text))
+
+
+def tracked_texts(repo, parts=("host/", "src/")):
+    """{path: text} of the files that git tracks under `parts` of `repo`, as a reader of the code sees them."""
+    listed = subprocess.run(["git", "-C", repo, "ls-files", "-z", "--", *parts], capture_output=True, check=True).stdout
+    texts = {}
+    for path in listed.decode("utf-8").split("\0"):
+        if path:
+            with open(os.path.join(repo, path), "rb") as file:
+                texts[path] = file.read().decode("utf-8", "replace")
+    return texts
+
+
+def self_test_order_drift():
+    """W535, verdict 595 C2: the order stage runs when a file of ORDER_PATHS changes, so a file outside the list that
+    names the order's code fails here. The plant: a file outside the list with the switch's name is named; one in the
+    list, one with a longer word and one under another folder are not. Then this tree: no file may drift."""
+    planted = {"host/src/retained.rs": "fn collect_order() { table_order }", "host/src/frame.rs": "let o = MGE_XE_TABLE_ORDER;",
+               "host/src/sort.rs": "fn stable_order() {}", "src/lua.rs": "TableOrder::Grouped", "host/src/table_order.rs": "pub enum TableOrder {}"}
+    assert order_drift(planted) == ["host/src/frame.rs", "src/lua.rs"], order_drift(planted)
+    assert order_drift({"host/src/player/report.rs": "table order digest"}) == []
+    # The functions of the order and of the digest (verdict 597 C1): named in the replay's loop, fine; elsewhere, drift.
+    assert order_drift({"host/src/cli.rs": "set.digest_frame(); set.take_digest()", "host/src/lib.rs": "mod table_order;",
+                        "host/src/frame.rs": "self.add_to_digest(draw)", "host/src/view.rs": "order_keys(&shapes)"}) == ["host/src/frame.rs", "host/src/view.rs"]
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    drift = order_drift(tracked_texts(here))
+    assert not drift, "files outside ORDER_PATHS name the table's order (%s): add them to ORDER_PATHS of merge_step.py" % ", ".join(drift)
 
 
 def repo_kind(folder):
@@ -436,6 +489,8 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
         stages.append((DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--set", folder, *commit_args)))
     if gate:
         stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
+        if touches(paths, ORDER_PATHS[kind]):
+            stages.append((ORDER_STAGE, plugin, tool("validate_retained.py", "order", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-order"))))
         under_test = commits or {}
         stages.append((HELPER_SOURCES_STAGE, plugin, [python, "-I", os.path.join(plugin, "tools", "merge_step.py"), HELPER_SOURCES,
                                                       os.path.join(maker_tree("render-link"), HELPER_DEP_INFO), HELPER_SOURCES_PATH,
@@ -763,8 +818,9 @@ def log_path_of(commit, folder=LOG_FOLDER):
 
 
 def clear_pictures(folder):
-    """Removes the files of the gate's folder of pictures and of its tour folder, one by one."""
-    for part in (folder, os.path.join(folder, "tour")):
+    """Removes the files of the gate's folder of pictures, of its tour folder and of the order stage's folder, one by
+    one."""
+    for part in (folder, os.path.join(folder, "tour"), os.path.join(folder, "order")):
         if os.path.isdir(part):
             for entry in os.scandir(part):
                 if entry.is_file(follow_symlinks=False):
@@ -788,7 +844,7 @@ def run_stages(stages, log, note_stage=lambda: None):
         return noted(name, NOT_RUN_WORD, reason)
 
     for name, folder, command in stages:
-        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE, INSTANCE_STAGE) and not made.get(SET_STAGE, True):
+        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE) and not made.get(SET_STAGE, True):
             results[name] = not_run(name, "the round's set was not made")
             continue
         if name == INSTANCE_STAGE and not made.get(BASE_STAGE, True):
@@ -798,7 +854,7 @@ def run_stages(stages, log, note_stage=lambda: None):
             failed = next(stage for stage, passed in results.items() if not passed)
             results[name] = not_run(name, "%s did not pass, and a set is put into the test installs only when every stage before it passed" % failed)
             continue
-        if name == "replay gate":
+        if name in ("replay gate", ORDER_STAGE):
             clear_pictures(command[command.index("--now") + 1])
         if note_stage() is False:
             results[name] = not_run(name, "the slot hold of this run ended and was not taken again")
@@ -1005,7 +1061,7 @@ def is_ancestor(repo, older, newer):
 # a capture of the game with three builds, and the deploy writes its set f<N> to E: and refuses while a game runs (W406:
 # a round can deploy with no gate). A new stage that starts the game or times the GPU belongs here. A check with
 # none of them leaves the game slot to the game runs; before D183 every check held it (D161), and the workers waited.
-GAME_STAGES = ("replay gate", INSTANCE_STAGE, DEPLOY_STAGE)
+GAME_STAGES = ("replay gate", ORDER_STAGE, INSTANCE_STAGE, DEPLOY_STAGE)
 
 
 def needs_game(stages):
@@ -1552,8 +1608,16 @@ def self_test():
         host_base = base + [HELPER_TEXT_STAGE]
         assert names("plugin", plugin, "host/src/shader.wgsl") == host_base + gate_tail
         assert names("plugin", plugin, "host/src/material.rs") == host_base + gate_tail
-        assert names("plugin", plugin, "host/src/retained.rs") == host_base + gate_tail
-        assert names("plugin", plugin, "host/src/retained.rs", "src/lib.rs") == host_base + gate_tail, "the gate round deploys once"
+        # W535: a change of a file of the table's order adds the order stage right after the gate; no other change does.
+        order_tail = [SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE]
+        for path in ORDER_PATHS["plugin"]:
+            assert names("plugin", plugin, path) == host_base + order_tail, path
+        assert names("plugin", plugin, "host/src/retained.rs", "src/lib.rs") == host_base + order_tail, "the gate round deploys once"
+        assert names("plugin", plugin, "host/src/retained_old.rs") == host_base + gate_tail, "a name that only starts the same ran the order stage"
+        assert ORDER_STAGE not in names("mge", mge, "mgeHost64/src/renderer.rs") and ORDER_STAGE in GAME_STAGES
+        order_command = {name: command for name, _, command in stages_for("plugin", plugin, ["host/src/switches.rs"])}[ORDER_STAGE]
+        assert order_command[3:5] == ["order", "--mge-build"] and order_command[-1] == os.path.join(plugin, "target", "merge-step-order"), order_command
+        self_test_order_drift()
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "srcx/lib.rs") == base, "a name that only starts the same deployed"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"] + deploy_tail
@@ -1563,7 +1627,7 @@ def self_test():
         mwse = "c" * 40
         the_set = os.path.join(sets.SETS, "s-aaaaaaaa-bbbbbbbb-cccccccc")
         assert set_folder_of(round_set(full, mwse)) == the_set and round_set(full, None) is None and set_folder_of(None) == UNPLANNED_SET
-        planned = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["host/src/retained.rs"], commits=full, mwse_commit=mwse, label="merge_step: x")}
+        planned = {name: (folder, command) for name, folder, command in stages_for("plugin", plugin, ["host/src/material.rs"], commits=full, mwse_commit=mwse, label="merge_step: x")}
         maker = planned[SET_STAGE]
         assert maker[0] == plugin and maker[1][2:] == [os.path.join("tools", "build_set.py"), "--nirender", "a" * 40, "--render-link", "b" * 40, "--mwse", mwse,
                                                        IN_HOLD, "merge_step: x"], maker
@@ -1595,7 +1659,7 @@ def self_test():
         assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], mwse_dlls=dlls)] == base + deploy_tail
         assert [name for name, _, _ in stages_for("mge", mge, ["src/hook.rs"], mwse_dlls=dlls)] == ["helper tests", GPU_STAGE, "clippy baseline", "checks", "docs"]
         assert not any(name.startswith("mwse sites") for kind, repo, path in (("mge", mge, "mgeHost64/src/renderer.rs"), ("plugin", plugin, "src/lib.rs"),
-                                                                              ("plugin", plugin, "host/src/retained.rs")) for name in names(kind, repo, path))
+                                                                              ("plugin", plugin, "host/src/material.rs")) for name in names(kind, repo, path))
         # The deployed DLL, never the copy of a live run in a Harness mod (2026-11-10: the stage read Ryker's Brief 6 DLL,
         # which sorts before mods/MWSE).
         assert not any(HARNESS_MOD.search(path) for path in MWSE_DEPLOYS.values()), MWSE_DEPLOYS
@@ -1611,7 +1675,7 @@ def self_test():
                 raise AssertionError("a Harness copy was read: " + harness)
         # The mod's Lua: the set holds it (part plugin-lua), and since W406 a change of it is deployed.
         assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua") == base + deploy_tail
-        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/retained.rs") == host_base + gate_tail
+        assert names("plugin", plugin, "mod/MWSE/mods/nirender/main.lua", "host/src/material.rs") == host_base + gate_tail
         assert needs_clean_sibling(stages_for("plugin", plugin, ["mod/MWSE/mods/nirender/noplugin.lua"]))
         for path in ("Cargo.toml", "Cargo.lock", "host/Cargo.toml", "host/Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "host/.cargo/config.toml"):
             assert names("plugin", plugin, path) == base + gate_tail, path
@@ -1839,7 +1903,7 @@ def self_test():
             text = log.read()
         assert "== WITHHELD deploy rest (" in text and "PASS replay gate" in text, text
 
-        gate_names = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"])]
+        gate_names = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"])]
         assert gate_names.index(SET_STAGE) + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index("replay gate") - 1
         assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("mge", mge, ["xtask/src/main.rs"])], "a build of the dist alone is not deployed"
         assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["tools/x.py"])]
@@ -1873,7 +1937,7 @@ def self_test():
         with_set = stages_for("plugin", plugin, ["src/lib.rs"], commits=full, mwse_commit=mwse)
         assert any(EVIDENCE_PATH.search(part) for _, _, command in with_set for part in command), "the set's folder is on E:"
         assert evidence_problem(with_set) is None, "the round holds the game slot, so its stages may name E:"
-        deploy = next(stage for stage in stages_for("plugin", plugin, ["host/src/retained.rs"]) if stage[0] == DEPLOY_STAGE)
+        deploy = next(stage for stage in stages_for("plugin", plugin, ["host/src/material.rs"]) if stage[0] == DEPLOY_STAGE)
         assert deploy[1] == plugin and deploy[2][deploy[2].index("--set") + 1] == UNPLANNED_SET, deploy
         assert deploy_refusal_in("x\nREFUSED: Morrowind.exe runs, and the deploy does not wait: end it\nFAIL: y") == "Morrowind.exe runs, and the deploy does not wait: end it"
         assert deploy_refusal_in("FAIL: x") is None
@@ -1887,7 +1951,7 @@ def self_test():
         # The A/B stages follow the gate, with the base pair of both repos, and only with it (addendum 10 C3, test 4): the
         # base set of the pair and the round's MWSE commit, made in the round's take.
         tips = {"plugin": "1" * 40, "mge": "2" * 40}
-        with_tips = stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE, tips, mwse, commits=full, label="merge_step: x")
+        with_tips = stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, tips, mwse, commits=full, label="merge_step: x")
         assert [name for name, _, _ in with_tips][-6:] == [SET_STAGE, DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE, BASE_STAGE, INSTANCE_STAGE]
         by_name = {name: (folder, command) for name, folder, command in with_tips}
         build = by_name[BASE_STAGE][1]
@@ -1897,14 +1961,14 @@ def self_test():
         assert run[run.index("--base-build") + 1] == os.path.join(sets.SETS, "s-11111111-22222222-cccccccc") and run[run.index("--now-build") + 1] == the_set, run
         assert run[run.index("--baseline") + 1] == BASELINE and not run[run.index("--out") + 1].startswith(BASELINE)
         assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, mwse)] == base + deploy_tail, "no gate, no A/B stage"
-        assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], BASELINE)][-1] == HELPER_SOURCES_STAGE, "no base pair, no A/B stage"
+        assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE)][-1] == HELPER_SOURCES_STAGE, "no base pair, no A/B stage"
         # deploy rest gets the commits under test (the tree's and the sibling's at the start of the round), not HEADs.
         assert under_test("plugin", "a" * 40, "b" * 40) == {"plugin": "a" * 40, "mge": "b" * 40}
         assert under_test("mge", "b" * 40, "a" * 40) == {"plugin": "a" * 40, "mge": "b" * 40}
         assert under_test("plugin", "a" * 40, None) is None and under_test("", "a", "b") is None
         deploy = by_name[DEPLOY_STAGE][1]
         assert deploy[deploy.index("--plugin-commit") + 1] == "a" * 40 and deploy[deploy.index("--mge-commit") + 1] == "b" * 40, deploy
-        assert "--plugin-commit" not in next(command for name, _, command in stages_for("plugin", plugin, ["host/src/retained.rs"]) if name == DEPLOY_STAGE)
+        assert "--plugin-commit" not in next(command for name, _, command in stages_for("plugin", plugin, ["host/src/material.rs"]) if name == DEPLOY_STAGE)
         assert tips_for("plugin", os.path.join(root, "alone", PLUGIN_NAME), "b")[0] is None
         # The sibling's side of the base is the pair that passed with the base, kept in the sibling's repo.
         pair = os.path.join(root, "pair")
@@ -2321,11 +2385,11 @@ def self_test():
         os.makedirs(empty)
         os.makedirs(filled)
         open(os.path.join(filled, "seyda.nircap"), "wb").close()
-        gate_round = stages_for("plugin", plugin, ["host/src/retained.rs"], empty)
+        gate_round = stages_for("plugin", plugin, ["host/src/material.rs"], empty)
         problem = baseline_problem(gate_round, empty)
         assert problem and empty in problem and "no capture" in problem, problem
         assert baseline_problem(gate_round, os.path.join(root, "no-such-folder")), "a missing folder"
-        assert baseline_problem(stages_for("plugin", plugin, ["host/src/retained.rs"], filled), filled) is None
+        assert baseline_problem(stages_for("plugin", plugin, ["host/src/material.rs"], filled), filled) is None
         assert baseline_problem(stages_for("plugin", plugin, ["src/lib.rs"], empty), empty) is None, "no gate, no baseline"
 
         # A refusal for lack of room ends the wait, and a place in the queue goes on.
@@ -2479,7 +2543,7 @@ def self_test():
             assert not any(name.startswith(HELPER_TEXT_STAGE) for name, _, _ in stages_for(kind, repo, [changed])), (kind, changed)
         named = helper_text_stage(plugin, mge, under_test("plugin", "a" * 40, "b" * 40))
         assert named[0] == HELPER_TEXT_STAGE + " (render-link bbbbbbbbbb)" and named[1:] == planned[0][1:], named
-        in_round = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/retained.rs"], commits=under_test("plugin", "a" * 40, "b" * 40))]
+        in_round = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"], commits=under_test("plugin", "a" * 40, "b" * 40))]
         assert in_round.index(named[0]) == in_round.index("docs") + 1 < in_round.index(SET_STAGE), in_round
         # The stage's wrapper (this file in place of the planted tree's) with a planted output: a test that ran passes,
         # 0 tests fail.
@@ -2673,7 +2737,7 @@ def self_test():
 
         # D183: the game slot only for a stage that needs it. The stage lists of the tool first.
         assert not needs_game(stages_for("plugin", plugin, ["tools/x.py", "host/src_old/x.rs"])), "the checks of a tools change took the game"
-        assert needs_game(stages_for("plugin", plugin, ["host/src/retained.rs"])), "the replay gate did not take the game"
+        assert needs_game(stages_for("plugin", plugin, ["host/src/material.rs"])), "the replay gate did not take the game"
         assert not needs_game(stages_for("mge", mge, ["xtask/src/main.rs"]))
         assert needs_game([(INSTANCE_STAGE, root, good)]) and not needs_game([("checks", root, good)])
         # The stage passes only when the round holds the build side, and has no hold and no waiter of the game slot.
@@ -2907,7 +2971,7 @@ def self_test():
         for kind, repo, paths in (("plugin", plugin, ["tools/x.py"]), ("plugin", plugin, ["mod/MWSE/mods/nirender/main.lua"]),
                                   ("plugin", plugin, ["contract/x"]), ("mge", mge, ["xtask/src/main.rs"]), ("mge", mge, ["d3d8/x.rs"])):
             assert evidence_problem(stages_for(kind, repo, paths)) is None, (kind, paths)
-        with_base = stages_for("plugin", plugin, ["host/src/retained.rs"], tips={"plugin": "a" * 40, "mge": "b" * 40},
+        with_base = stages_for("plugin", plugin, ["host/src/material.rs"], tips={"plugin": "a" * 40, "mge": "b" * 40},
                                mwse_commit="c" * 40, commits={"plugin": "d" * 40, "mge": "e" * 40})
         assert BASE_STAGE in [name for name, _, _ in with_base] and evidence_problem(with_base) is None, "the base set is made in the round that holds the game"
         for writer in (["robocopy", "x", "E:\\nirender-keep\\x"], ["tool", "--out=E:/nirender-keep/x"], ["cp", "x", "/e/nirender-keep/x"],
