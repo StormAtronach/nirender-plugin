@@ -83,7 +83,11 @@ EXIT_REFUSED = 2
 # The exit code of a build that is not a set, or of a local.json with the gone key: the runner's and play.py's code.
 EXIT_NOT_A_SET = 1
 # The key of local.json that named the build folder before W545.
-GONE_LOCAL_KEY = "mge_build"
+# The keys of local.json that replay.py no longer reads, with what takes their place (W545, W521 step 4).
+GONE_LOCAL_KEYS = {
+    "mge_build": "a replay takes the current set or --mge-build <set>",
+    "distant_land": "a replay takes the distant land mod of its key, or --distant-land <folder>",
+}
 
 
 class Refused(Exception):
@@ -190,7 +194,7 @@ def defaults():
     root = session.harness.MO2_ROOT
     return {
         "config_root": local("config_root", os.path.join(root, "mods", "Configuration", "Root")),
-        "distant_land": local("distant_land", os.path.join(root, "overwrite", "distantland")),
+        "distant_land": distant_land_of,
         "game_dir": local("game_dir", session.harness.GAME_DIR),
         # A replay is build work. The slot hook reads only a command line, so a replay that a script or
         # another tool starts is checked here. A harness from before the check has no such function.
@@ -199,20 +203,41 @@ def defaults():
 
 
 def gone_local_key(path):
-    """The refusal of a local.json at `path` that still has the old key of the build folder (W545), or None. Without the
-    refusal, a worktree with the key would replay the current set and not the folder its local.json names."""
+    """The refusal of a local.json at `path` that still has a key that replay.py no longer reads (GONE_LOCAL_KEYS), or
+    None. Without the refusal, a worktree with the key would replay another build or another distant land than the
+    one its local.json names."""
     if not path:
         return None
     with open(path, encoding="utf-8") as file:
         values = json.load(file)
-    if GONE_LOCAL_KEY not in values:
+    gone = [key for key in GONE_LOCAL_KEYS if key in values]
+    if not gone:
         return None
-    return ('%s has the key "%s", which replay.py no longer reads: a replay takes the current set or --mge-build <set>; '
-            "remove the key from that file; nothing started" % (path, GONE_LOCAL_KEY))
+    return ('%s has the key "%s", which replay.py no longer reads: %s; remove the key from that file; nothing started'
+            % (path, gone[0], GONE_LOCAL_KEYS[gone[0]]))
+
+
+def distant_land_of(mge_build, manifest, config_root):
+    """(the distant land folder of a replay, its line): the mod of the key of the set (or the archive) with the
+    mgeXE.toml of `config_root`, in the instance of the harness (W521 step 4). A mod that is not there, or has no
+    version file, is a distant_land.Problem: no other folder is taken (the Architect's ruling Q4)."""
+    import distant_land
+    import session
+    toml = os.path.join(config_root, CONFIG_FILE)
+    if manifest:
+        key = distant_land.key_of(mge_build, manifest, toml, [])
+    else:
+        key = distant_land.archive_key(mge_build, toml, [])
+    mod = os.path.join(distant_land.mods_folder(session.harness.MO2_ROOT), key.mod_name)
+    if not distant_land.has_data(mod):
+        raise distant_land.Problem("the distant land of this replay, %s, is not there or has no version file: a plain run of "
+                                   "that build makes it; no other folder is taken; nothing started" % mod)
+    return os.path.join(mod, distant_land.DATA), "distant land: the mod %s (key %s)" % (key.mod_name, key.text)
 
 
 def open_build(args, verify=None, current=None):
-    """The build of a replay and its line for standard error: (folder, line). --archive takes the unpacked release
+    """The build of a replay, its line for standard error and its manifest: (folder, line, manifest or None for an
+    archive). --archive takes the unpacked release
     archive as it is. Else the set of --mge-build, or the current set, after sets.verify, as the runner and play.py
     take theirs (`run_own_device.open_set`, `set_line`). Raises Refused for --archive with --mge-build, and SystemExit
     with the runner's line for a folder that is not a set or a set that fails its check. `verify` and `current` are
@@ -220,11 +245,11 @@ def open_build(args, verify=None, current=None):
     if args.archive:
         if args.mge_build:
             raise Refused("an archive is not a set: no --mge-build with --archive")
-        return args.archive, "build: the release archive %s" % args.archive
+        return args.archive, "build: the release archive %s" % args.archive, None
     # The runner's module is large; a call of --run-folder-for or --self-test does not need it.
     import run_own_device
     manifest = run_own_device.open_set(args, current, verify or sets.verify, who="replay")
-    return args.mge_build, run_own_device.set_line(args.mge_build, manifest)
+    return args.mge_build, run_own_device.set_line(args.mge_build, manifest), manifest
 
 
 def self_test():
@@ -386,7 +411,8 @@ def self_test():
         clean_local = join(temp, "local-clean.json")
         write(clean_local, '{"video_folder": "C:/videos"}')
         slot_checks = []
-        settings = {"config_root": source, "distant_land": join(temp, "distantland"), "game_dir": join(temp, "game-dir"),
+        planted_land = join(temp, "distantland")
+        settings = {"config_root": source, "distant_land": lambda *_: (planted_land, "distant land: planted"), "game_dir": join(temp, "game-dir"),
                     "check_build_slot": lambda: slot_checks.append("checked")}
 
         for flag in (["--run-folder-for", ""], ["--run-folder-for="]):
@@ -415,12 +441,12 @@ def build_tests(temp, write, build, manifest, good_set, clean_local, settings, s
         write(command[command.index("--log") + 1], "nirender-host v0 test\n")
         return 0, "", ""
 
-    def call(arguments, verify=good_set, current=None, local_path=clean_local):
+    def call(arguments, verify=good_set, current=None, local_path=clean_local, start=None):
         started.clear()
         slot_checks.clear()
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
-            code = main([join(temp, "c.nircap"), picture] + arguments, start=record, verify=verify, current=current,
+            code = main([join(temp, "c.nircap"), picture] + arguments, start=start or record, verify=verify, current=current,
                         local_path=local_path, settings=settings)
         return code, errors.getvalue()
 
@@ -504,6 +530,48 @@ def build_tests(temp, write, build, manifest, good_set, clean_local, settings, s
     assert code == 2 and not started and "has no %s" % join("Data Files", "textures", "MGE") in err, (code, err)
     assert err.startswith("replay: set: build "), err
 
+    # W521 step 4. T-N4a: a replay takes the mod of its key and names it; --distant-land wins over it (the override).
+    lands = []
+    planted_land = settings["distant_land"]()[0]
+
+    def land_env(command, folder, env):
+        # By its end, not its quoted name: tools/check_readme.py counts a quoted name as a switch that this file reads.
+        lands.append(next(value for name, value in env.items() if name.endswith("_DISTANT_LAND_DIR")))
+        return 0, "", ""
+
+    code, err = call(["--mge-build", build], start=land_env)
+    assert code == 0 and lands[-1] == planted_land and "replay: distant land: planted\n" in err, (code, err, lands)
+    code, err = call(["--mge-build", build, "--distant-land", join(temp, "other")], start=land_env)
+    assert code == 0 and lands[-1] == join(temp, "other") and "distant land: --distant-land %s" % join(temp, "other") in err, (code, err)
+    # T-N4b: local.json with the gone key distant_land is refused by name. Its null is T1.
+    old_land = join(temp, "local-land.json")
+    write(old_land, '{"distant_land": "D:/x/overwrite/distantland"}')
+    code, err = call(["--mge-build", build], local_path=old_land)
+    nothing_started("local.json with the gone key distant_land", code, err, EXIT_NOT_A_SET)
+    assert 'has the key "distant_land", which replay.py no longer reads: a replay takes the distant land mod of its key' in err, err
+    # T-N4c: the key's mod with no version file is refused, and no other folder is taken. The null: with a version file
+    # the mod's distantland folder is the answer.
+    import distant_land
+    import session
+    instance = join(temp, "Instance")
+    own = {"distant_land_format": "own-5296d863", "commits": {"render-link": {"commit": "5296d863" * 5, "clean": True}}}
+    saved_root = session.harness.MO2_ROOT
+    session.harness.MO2_ROOT = instance
+    try:
+        mod = join(instance, "mods", "Distant land own-5296d863-base")
+        os.makedirs(join(instance, "overwrite", "distantland"))
+        write(join(instance, "overwrite", "distantland", "version"), "22")
+        try:
+            distant_land_of("S", own, settings["config_root"])
+            raise AssertionError("a replay took a folder with no mod")
+        except distant_land.Problem as problem:
+            assert "Distant land own-5296d863-base" in str(problem) and "no other folder is taken" in str(problem), problem
+        write(join(mod, "distantland", "version"), "22")
+        folder, line = distant_land_of("S", own, settings["config_root"])
+        assert folder == join(mod, "distantland") and "Distant land own-5296d863-base" in line, (folder, line)
+    finally:
+        session.harness.MO2_ROOT = saved_root
+
     # T8, local.json with the gone key: refused, the key and the file named. Its null is T1, with a local.json without it.
     old_local = join(temp, "local-old.json")
     write(old_local, '{"mge_build": "C:/old/bin/MSVC-Release"}')
@@ -569,7 +637,7 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
         sys.stderr.write("replay: %s\n" % gone)
         return EXIT_NOT_A_SET
     try:
-        mge_build, build_line = open_build(args, verify, current)
+        mge_build, build_line, manifest = open_build(args, verify, current)
     except Refused as refused:
         sys.stderr.write("replay: refused: %s\n" % refused)
         return EXIT_REFUSED
@@ -578,6 +646,16 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
         return EXIT_NOT_A_SET
     sys.stderr.write("replay: %s\n" % build_line)
     default = settings or defaults()
+    if args.distant_land:
+        land, land_line = args.distant_land, "distant land: --distant-land %s" % args.distant_land
+    else:
+        import distant_land
+        try:
+            land, land_line = default["distant_land"](mge_build, manifest, args.config_root or default["config_root"])
+        except distant_land.Problem as problem:
+            sys.stderr.write("replay: %s\n" % problem)
+            return EXIT_NOT_A_SET
+    sys.stderr.write("replay: %s\n" % land_line)
     if default["check_build_slot"]:
         default["check_build_slot"]()
     missing = build_missing(mge_build)
@@ -599,7 +677,7 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
         command += ["--debug-view"] + args.debug_view
     if args.debug_lines is not None:
         command += ["--debug-lines", args.debug_lines]
-    env = dict(os.environ, MGE_XE_DISTANT_LAND_DIR=args.distant_land or default["distant_land"],
+    env = dict(os.environ, MGE_XE_DISTANT_LAND_DIR=land,
                MGE_XE_GAME_DIR=args.game_dir or default["game_dir"], **core_mods_env(args.core_mods))
     try:
         code, out, err = run_replay(command, args.picture, args.config_root or default["config_root"], env, args.keep_run_folder, start)
