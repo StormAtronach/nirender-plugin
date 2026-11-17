@@ -1,7 +1,7 @@
 """Replays the stops of a tour of a test level and compares the pictures with a baseline.
 
     python tools/validate_tour.py <run dir> [--against <baseline dir>] [--out <dir>] [--jobs N]
-                                  [--mge-build DIR]
+                                  [--mge-build DIR | --archive DIR]
 
 The run comes from `run_own_device.py --steps tour --tour-cells "@nifTest_1;@nifTest_2;@nifTest_3"`:
 its folder has `tour-<cell>.nircap` with two frames for each stop, and `progress.log` names
@@ -31,6 +31,10 @@ code, for a pair of mode gpu against mode off with a mean over MEAN_LIMIT or wit
 fewer stops than --least-stops. It is NOT RUN (exit code 3) for a replay that the slot check refused,
 for a replay whose output lacks a check line of the helper, and for a dual run with no pair to
 compare. A caller reads the exit code, not the table.
+
+The helper of the replays comes from the sealed set of --mge-build, or from the unpacked release archive of --archive
+(W545). Without either, the tool finds the current set once at the start, prints it, and gives it to each replay as
+--mge-build: one tour, one set.
 
     python tools/validate_tour.py --self-test   # a planted refusal and a planted fault, with no replay
 """
@@ -82,18 +86,28 @@ def stops_of(run):
     return stops, dual
 
 
-# replay.py's arguments that name the build of the replays (W545): ["--mge-build", <set>], ["--archive", <folder>] of
-# release.py's gate, or none (replay.py then takes the current set). main sets them.
+# replay.py's arguments that name the build of the replays (W545): ["--mge-build", <set>] or ["--archive", <folder>] of
+# release.py's gate. main sets them.
 BUILD_ARGS = []
+NO_CURRENT_SET = "no --mge-build and no current set (current.bat of the sets folder): name a set with --mge-build"
 
 
-def build_args(mge_build, archive):
-    """The arguments of replay.py for --mge-build or --archive. Raises ValueError for both."""
+def build_args(mge_build, archive, current=None):
+    """The arguments of replay.py for --mge-build or --archive. Without either, the folder of the current set
+    (`clean_common.current_set`; `current` is the self-test's stand-in), found once here: all the replays of the tour
+    then use one set, also when current.bat changes during the tour. Raises ValueError for both, and when there is no
+    current set."""
     if mge_build and archive:
         raise ValueError("an archive is not a set: no --mge-build with --archive")
     if archive:
         return ["--archive", archive]
-    return ["--mge-build", mge_build] if mge_build else []
+    if mge_build:
+        return ["--mge-build", mge_build]
+    import clean_common
+    name = (current or clean_common.current_set)()
+    if not name:
+        raise ValueError(NO_CURRENT_SET)
+    return ["--mge-build", os.path.join(clean_common.SETS, name)]
 
 
 def replay(capture, frame, picture):
@@ -176,20 +190,23 @@ def replay_all(work, jobs):
     return failures, not_run
 
 
-def main():
+def main(current=None):
+    """`current` is the self-test's stand-in for `clean_common.current_set`."""
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
     ap.add_argument("--against")
     ap.add_argument("--out")
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--mge-build", default=None, help="the sealed set whose helper replays (W545; replay.py's default, the current set, without it)")
+    ap.add_argument("--mge-build", default=None, help="the sealed set whose helper replays (W545; without it the current set, found once at the start)")
     ap.add_argument("--archive", default=None, help="the folder of an unpacked release archive whose helper replays: the release check")
     ap.add_argument("--least-stops", type=int, default=0, help="the tour fails with fewer stops than this (the play set: a much shorter tour did not run through)")
     args = ap.parse_args()
     try:
-        BUILD_ARGS[:] = build_args(args.mge_build, args.archive)
+        BUILD_ARGS[:] = build_args(args.mge_build, args.archive, current)
     except ValueError as problem:
         ap.error(str(problem))
+    if not (args.mge_build or args.archive):
+        print("the build: the current set %s" % BUILD_ARGS[1], flush=True)
     del STAGE_FAULTS[:], CHECK_GAPS[:]
     out = args.out or args.run
     os.makedirs(out, exist_ok=True)
@@ -323,6 +340,10 @@ def self_test():
     refusal = "Refused by the slot check: replay.py: the build slot is held by rob: caps helper compile (place 1); a replay needs the whole build side."
     calls = []
 
+    def planted_set():
+        """The stand-in for `clean_common.current_set`: no run of main reads the real sets folder."""
+        return "s-plant"
+
     def refused(command, **_):
         calls.append(command)
         return subprocess.CompletedProcess(command, 1, "", refusal + "\nTo pass anyway: SLOT_OVERRIDE=...\n")
@@ -382,7 +403,7 @@ def self_test():
                                                (refused, NOT_RUN_CODE, "0 pictures, 0 failed", "tour verdict: NOT RUN: 4 pictures of replays that the slot check refused")):
                     run_tool = tool
                     with contextlib.redirect_stdout(io.StringIO()) as printed:
-                        assert main() == code, (tool.__name__, printed.getvalue())
+                        assert main(planted_set) ==code, (tool.__name__, printed.getvalue())
                     assert text in printed.getvalue() and NOT_RUN in printed.getvalue(), printed.getvalue()
                     assert printed.getvalue().splitlines()[-1] == said, printed.getvalue()
                     assert STAGE_FAULTS == [] and CHECK_GAPS == [] and "FAILED replays" not in printed.getvalue(), printed.getvalue()
@@ -431,7 +452,7 @@ def self_test():
                     run_tool = tool
                     sys.argv = ["validate_tour.py", run, "--jobs", "1"] + arguments
                     with contextlib.redirect_stdout(io.StringIO()) as printed:
-                        assert main() == code, (name, printed.getvalue())
+                        assert main(planted_set) ==code, (name, printed.getvalue())
                     text = printed.getvalue()
                     assert "4 pictures, 0 failed" in text and "pairs: %s equal" % pairs in text and text.splitlines()[-1] == said, (name, text)
                     kept = os.path.join(run, "tour-frames-tour-1.replay.txt")
@@ -442,7 +463,7 @@ def self_test():
                     file.write("tour: dual\n")
                 sys.argv = ["validate_tour.py", run, "--jobs", "1"]
                 with contextlib.redirect_stdout(io.StringIO()) as printed:
-                    assert main() == NOT_RUN_CODE, printed.getvalue()
+                    assert main(planted_set) == NOT_RUN_CODE, printed.getvalue()
                 assert printed.getvalue().splitlines()[-1] == "tour verdict: NOT RUN: the dual run has no stop, so no pair of mode gpu against mode off to compare", printed.getvalue()
                 assert MEAN_LIMIT == 0.05
             finally:
@@ -451,14 +472,63 @@ def self_test():
         finally:
             run_tool = subprocess.run
     assert refusal_of("a\n" + refusal + "\nb") == refusal and refusal_of("replay of x: 3 pictures missing") == ""
-    # W545: the build goes to replay.py as --archive for an archive, as --mge-build for a set, and not at all for the
-    # current set; both together are refused. The null of the archive is the form of the set.
-    assert build_args(None, "A") == ["--archive", "A"] and build_args("S", None) == ["--mge-build", "S"] and build_args(None, None) == []
-    try:
-        build_args("S", "A")
-        raise AssertionError("--mge-build with --archive was taken")
-    except ValueError as problem:
-        assert str(problem) == "an archive is not a set: no --mge-build with --archive", problem
+    # W545: the build goes to replay.py as --archive for an archive, as --mge-build for a set, and as --mge-build with the
+    # folder of the current set without either; both together are refused, and so is no build with no current set. The
+    # null of the archive is the form of the set; a named build never asks for the current set.
+    import clean_common
+    planted_folder = os.path.join(clean_common.SETS, "s-plant")
+    assert build_args(None, "A") == ["--archive", "A"] and build_args("S", None, lambda: 1 / 0) == ["--mge-build", "S"]
+    assert build_args(None, None, planted_set) == ["--mge-build", planted_folder]
+    for both, current in ((("S", "A"), planted_set), ((None, None), lambda: None)):
+        try:
+            build_args(*both, current)
+            raise AssertionError("taken: %r" % (both,))
+        except ValueError as problem:
+            assert str(problem) == ("an archive is not a set: no --mge-build with --archive" if both[0] else NO_CURRENT_SET), problem
+
+    # The verdict 538 note: without --mge-build, main finds the current set once, and each replay of the tour gets its
+    # folder. The finder names another set at each call (current.bat changed during the tour): one call, one set. The
+    # null: with --mge-build the finder is not called, and each replay gets that set.
+    found = []
+
+    def changing_set():
+        found.append(1)
+        return "s-plant" if len(found) == 1 else "s-other-%d" % len(found)
+
+    with tempfile.TemporaryDirectory() as folder:
+        run = os.path.join(folder, "run")
+        os.makedirs(run)
+        with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
+            file.write("tour: cell 1 stop 1 a\ntour: cell 2 stop 1 b\n")
+        for cell in (1, 2):
+            open(os.path.join(run, "tour-%d.nircap" % cell), "wb").close()
+        real_argv = sys.argv
+        try:
+            run_tool = refused
+            for arguments, finder, times, folder_of_set in (([], changing_set, 1, planted_folder),
+                                                            (["--mge-build", "S"], lambda: 1 / 0, 0, "S")):
+                calls.clear()
+                del found[:]
+                sys.argv = ["validate_tour.py", run, "--jobs", "1"] + arguments
+                with contextlib.redirect_stdout(io.StringIO()) as printed:
+                    assert main(finder) == NOT_RUN_CODE, printed.getvalue()
+                assert len(found) == times and len(calls) == 2, (arguments, len(found), calls)
+                assert all(command[-2:] == ["--mge-build", folder_of_set] for command in calls), calls
+                assert ("the build: the current set %s" % planted_folder in printed.getvalue()) == (not arguments), printed.getvalue()
+            # No current set: refused before any replay.
+            calls.clear()
+            sys.argv = ["validate_tour.py", run, "--jobs", "1"]
+            with contextlib.redirect_stderr(io.StringIO()) as said:
+                try:
+                    main(lambda: None)
+                    raise AssertionError("a tour with no build ran")
+                except SystemExit as stop:
+                    assert stop.code == 2, stop.code
+            assert calls == [] and NO_CURRENT_SET in said.getvalue(), (calls, said.getvalue())
+        finally:
+            sys.argv = real_argv
+            BUILD_ARGS[:] = []
+            run_tool = subprocess.run
     try:
         BUILD_ARGS[:] = ["--archive", "A"]
         calls.clear()
