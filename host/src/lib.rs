@@ -96,6 +96,7 @@ mod particle_quads;
 mod player;
 use engine::{plan, scene};
 mod retained;
+mod table_order;
 /// The cull planes of a view, relative to its camera (for the views of an extension too).
 pub use retained::view_planes;
 mod request;
@@ -321,9 +322,6 @@ enum Item {
     /// The sorted blends of the retained table and the blends of the engine's path that
     /// waited for this item: the generation names the item within the frame.
     SortedBlends(u32),
-    /// A run of places of the table's blends in the engine's walk ([`engine::walk`]): the
-    /// number of the run in the frame.
-    WalkPlaces(usize),
     /// A run of places in a view of its own ([`engine::views`]): the group and the run.
     ViewPlaces(usize, usize),
     /// The places of a view of its own in the flush of the engine's queue: the group.

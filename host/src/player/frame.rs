@@ -520,7 +520,6 @@ impl Player {
         self.renderer.counts.places_sorted_lost += lost.tables;
         self.held_sorted_wait.clear();
         self.frame_sorted.clear();
-        self.retained.walk.frame_start();
         self.replaced = 0;
         self.world_end_facts = None;
         self.plane_ahead = None;
