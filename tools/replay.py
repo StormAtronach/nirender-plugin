@@ -554,7 +554,7 @@ def build_tests(temp, write, build, manifest, good_set, clean_local, settings, s
     import distant_land
     import session
     instance = join(temp, "Instance")
-    own = {"distant_land_format": "own-5296d863", "commits": {"render-link": "5296d863" * 5}}
+    own = {"distant_land_format": "own-5296d863", "commits": {"render-link": {"commit": "5296d863" * 5, "clean": True}}}
     saved_root = session.harness.MO2_ROOT
     session.harness.MO2_ROOT = instance
     try:

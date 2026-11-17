@@ -118,7 +118,7 @@ def content_part(changes, sources):
 def key_of(set_folder, manifest, toml, set_lines, content=None, run=subprocess.run):
     """The key of a run on the set at `set_folder` (its `manifest`) with the mgeXE.toml `toml`, made from the run's
     `set_lines`, and the content part or None."""
-    form = manifest.get("distant_land_format") or OWN + manifest["commits"]["render-link"][:8]
+    form = manifest.get("distant_land_format") or OWN + manifest["commits"]["render-link"]["commit"][:8]
     if form.startswith(OWN):
         return Key(form, form, own_settings(set_lines), content)
     got, text, settings = helper_key(os.path.join(set_folder, "numidium.exe"), toml, run)
@@ -401,10 +401,13 @@ def self_test():
                 file.write(text)
 
         # The key of an old helper is own-, with no helper call; its settings part follows the generation lines only.
-        manifest = {"distant_land_format": "own-5296d863", "commits": {"render-link": "5296d863aaaa"}}
+        manifest = {"distant_land_format": "own-5296d863", "commits": {"render-link": {"commit": "5296d863aaaa", "clean": True}}}
         never = lambda *a, **k: 1 / 0  # noqa: E731
         plain = key_of("S", manifest, "t.toml", ["[views] full_tier_max = 4", "[distant_land] automatic_rebuild = false"], run=never)
         assert plain.text == "own-5296d863-base" and plain.mod_name == "Distant land own-5296d863-base", plain
+        # A set made before the manifest named its format: own- with the render-link commit of its manifest.
+        older = {"commits": manifest["commits"]}
+        assert key_of("S", older, "t.toml", [], run=never) == plain
         tuned = key_of("S", manifest, "t.toml", ["[distant_land] far = 5"], run=never)
         assert tuned.settings != "base" and tuned.text != plain.text
         # The null of the old helper: a manifest with a format asks the helper, and takes its two lines.

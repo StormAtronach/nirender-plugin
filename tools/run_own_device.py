@@ -1750,7 +1750,7 @@ def self_test_run_land():
         made.set_for_run = run_settings(made)
         return made
 
-    manifest = {"distant_land_format": "own-5296d863", "commits": {"render-link": "5296d863" * 5}}
+    manifest = {"distant_land_format": "own-5296d863", "commits": {"render-link": {"commit": "5296d863" * 5, "clean": True}}}
     with tempfile.TemporaryDirectory() as temp:
         source = os.path.join(temp, "a.nif")
         with open(source, "w", encoding="utf-8") as file:
