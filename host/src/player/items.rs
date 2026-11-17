@@ -442,6 +442,7 @@ impl Player {
                 let mut facts = self.world_facts(true);
                 facts.own_root = self.plan_now().main_other_root();
                 self.note_early_world_draws("the main view's world start");
+                self.world_start_view = Some((facts.view, facts.projection));
                 self.items.push(Item::WorldStart(Box::new(facts)));
             }
             plan::Step::MainView => {

@@ -115,6 +115,7 @@ impl Player {
             view_early_draws: 0,
             split: None,
             world_matrices: None,
+            world_start_view: None,
             world_sun: None,
             retained_sun: None,
             world_sun_logged: 0,
@@ -530,6 +531,7 @@ impl Player {
         self.phase_world = false;
         self.phase_posted = false;
         self.world_matrices = None;
+        self.world_start_view = None;
         self.world_depth_kept = false;
         self.world_depth_projection = None;
         self.first_person_drawn = false;

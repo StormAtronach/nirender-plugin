@@ -529,7 +529,7 @@ impl Player {
                     kind,
                     &self.stream.view,
                     &self.stream.projection,
-                    self.world_matrices.as_ref(),
+                    self.world_start_view.as_ref(),
                 );
                 if let Err(refusal) = verdict {
                     renderer.counts.world_space_refused[refusal as usize] += 1;

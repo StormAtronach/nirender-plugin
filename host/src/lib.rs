@@ -1160,6 +1160,10 @@ struct Player {
     /// the world for a call after the world views, when the stream has those of the user
     /// interface.
     world_matrices: Option<([f32; 16], [f32; 16])>,
+    /// The view and the projection of the frame's world start: those the clusters of the
+    /// world's lights are binned with ([`engine::scene::world_space_lights`] compares a scene
+    /// with them).
+    world_start_view: Option<([f32; 16], [f32; 16])>,
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     /// The sun of the frame from the `RETAINED_SCENE` record (flag 64): the 26 words of the
     /// weather's sky light as the engine gives them to the device (`world_facts`).
