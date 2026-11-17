@@ -268,15 +268,37 @@ def videos_line(args):
 
 
 def videos_note(args):
-    """The line of the run's first lines (and of progress.log) that says what the run does with the videos."""
+    """The line of the run's first lines (and of progress.log) that says what the run asks for the videos. What
+    happened is in the line of [`videos_of_run`] after the run."""
     line = videos_line(args)
     if line is None:
         return "videos: the command's own --set line for skip_intro stands"
     if line == VIDEOS_PLAYED_LINE:
-        return "videos: played (--videos)"
+        return "videos: play asked (skip_intro = false, --videos)"
     if getattr(args, "plain_case", False):
-        return "videos: skipped (--videos plays them; a plain game without MWSE's native ABI plays them)"
-    return "videos: skipped (--videos plays them)"
+        return "videos: skip asked (skip_intro = true; --videos plays them; a plain game without MWSE's native ABI plays them)"
+    return "videos: skip asked (skip_intro = true; --videos plays them)"
+
+
+# The line of MWSE.log when MGE XE asked MWSE for the skip (MWSE NativeApi.cpp, requestIntroMovies). Matched in
+# full: a request to play them logs "... requests the intro movies played.".
+VIDEOS_SKIPPED_LOG = "requests the intro movies skipped."
+
+
+def videos_of_run(run_dir, direct3d9):
+    """The line after the run that says what happened to the videos, from the run's MWSE.log. MGE XE asks MWSE for
+    the skip with its renderer and, with E1's d3d8.dll (render-link f6e3af7), in the plain game; on Direct3D 9 it
+    writes the skip itself, before MWSE loads, with no line."""
+    try:
+        with open(os.path.join(run_dir, "MWSE.log"), encoding="utf-8", errors="replace") as log:
+            skipped = sum(VIDEOS_SKIPPED_LOG in line for line in log)
+    except OSError:
+        return "videos of the run: not known (no MWSE.log)"
+    if skipped:
+        return "videos of the run: skipped (MWSE.log: %d line%s \"%s\")" % (skipped, "" if skipped == 1 else "s", VIDEOS_SKIPPED_LOG)
+    if direct3d9:
+        return "videos of the run: not known from the logs (Direct3D 9: MGE XE writes the skip itself, with no line)"
+    return "videos of the run: played (MWSE.log has no line \"%s\")" % VIDEOS_SKIPPED_LOG
 
 
 # MGE XE's startup check of the distant land: with this key on (the default, and the testing instance's setting) a
@@ -1424,10 +1446,10 @@ def self_test_run_toml():
         values.update(mode)
         skipped = argparse.Namespace(**values)
         assert run_settings(skipped)[-1] == "[runtime] skip_intro = true", (mode, run_settings(skipped))
-        assert videos_note(skipped).startswith("videos: skipped (--videos plays them"), mode
+        assert videos_note(skipped).startswith("videos: skip asked (skip_intro = true; --videos plays them"), mode
         played = argparse.Namespace(videos=True, **values)
         assert run_settings(played)[-1] == "[runtime] skip_intro = false", mode
-        assert videos_note(played) == "videos: played (--videos)", mode
+        assert videos_note(played) == "videos: play asked (skip_intro = false, --videos)", mode
     assert "a plain game without MWSE's native ABI" in videos_note(argparse.Namespace(set=[], plain_case=True))
     for own in ("[runtime] skip_intro = false", "skip_intro = true"):
         stands = argparse.Namespace(set=[own], engine_reference=False, reference=False, mge_build="E:/b", videos=True)
@@ -1436,6 +1458,16 @@ def self_test_run_toml():
     written = lines_of([VIDEOS_SKIPPED_LINE], text="[runtime]\nrenderer_wgpu = true\nskip_intro = false\n\n[distant_land]\nnear = 1\n")
     assert "skip_intro = true" in written and "skip_intro = false" not in written, written
     assert written.index("skip_intro = true") < written.index("[distant_land]"), written
+    # What happened, from the run's MWSE.log: the full line counts, once or more (a second request logs again).
+    with tempfile.TemporaryDirectory() as folder:
+        assert videos_of_run(folder, False) == "videos of the run: not known (no MWSE.log)"
+        log = os.path.join(folder, "MWSE.log")
+        open(log, "w", encoding="utf-8").write("[NativeApi] MGE XE requests the intro movies skipped.\n" * 2)
+        assert videos_of_run(folder, False).startswith("videos of the run: skipped (MWSE.log: 2 lines"), videos_of_run(folder, False)
+        # The null of a match on the start of the line: a request to play them is no skip.
+        open(log, "w", encoding="utf-8").write("[NativeApi] MGE XE requests the intro movies played.\n")
+        assert videos_of_run(folder, False).startswith("videos of the run: played"), videos_of_run(folder, False)
+        assert videos_of_run(folder, True).startswith("videos of the run: not known from the logs (Direct3D 9"), videos_of_run(folder, True)
     # The guard of the distant land (W535): a run that changes what the game loads gets the line by itself.
     def guarded(**options):
         values = dict(set=[], engine_reference=False, add_file=[], enable_mod=[], disable_mod=[], enable_plugin=[], allow_distant_land_rebuild=False)
@@ -3175,6 +3207,10 @@ def main():
     fell_back = fallback_of_run(run.wgpu, run.fell_back, progress)
     if fell_back:
         print("ERROR: " + fell_back)
+    videos = videos_of_run(run.dir, bool(args.reference) and not args.engine_reference)
+    print(videos)
+    with open(run.path("videos-of-the-run.txt"), "w", encoding="utf-8") as record:
+        record.write("%s\n%s\n" % (videos_note(args), videos))
     closed = False
     if args.plain_case:
         mge_log = run.path("mgeXE.log")
