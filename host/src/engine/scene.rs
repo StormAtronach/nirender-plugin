@@ -14,6 +14,9 @@ pub(crate) const SCENE_SORTED_ALPHA: u32 = 2;
 /// The water scene: the water plane and the flush of the engine's queue, after the plane
 /// with the camera above the water, before it below.
 pub(crate) const SCENE_WATER: u32 = 3;
+/// The shadow casters' scene: the engine draws the actors that cast a stencil shadow, in
+/// colour, after the world scene and its shadow volumes, into the depth of the world.
+pub(crate) const SCENE_SHADOW_CASTERS: u32 = 5;
 /// The first-person scene: the arms and the weapon, after the world views and a clear of
 /// the depth, with the depth test on.
 pub(crate) const SCENE_FIRST_PERSON: u32 = 6;

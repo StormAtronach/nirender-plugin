@@ -29,6 +29,10 @@ pub(crate) enum Step {
     /// The first-person scene ends: its depth goes into the depth of the world that the
     /// post-processing reads, before the game clears the depth for its next scene.
     FirstPersonEnd,
+    /// The shadow casters' scene ends after the world, with no clear of the depth since the
+    /// world's end: the depth now holds the world and the shadowed actors, and goes into the
+    /// copy that the post-processing reads.
+    ShadowCastersEnd,
     /// The scenes of the world camera are done (the world and the water scene): the
     /// extension's classes that no draw brought get their call here, once in a frame.
     MissingClasses,
@@ -68,6 +72,8 @@ pub(crate) struct Plan {
     queue_open: bool,
     /// [`Step::MissingClasses`] was given in this frame.
     classes_checked: bool,
+    /// The game cleared the depth after the world's end ([`Plan::depth_clear`]).
+    depth_cleared_after_world: bool,
     /// The post-processing of this picture is in the items ([`Plan::take_post`]).
     posted: bool,
     /// A read of the back buffer ended the picture: the next world scene starts a new one
@@ -181,6 +187,9 @@ impl Plan {
     /// world camera they keep waiting for the flush (R22: above the water, after the plane).
     pub(crate) fn depth_clear(&mut self) -> Vec<Step> {
         let mut steps = Vec::new();
+        if self.world_ended {
+            self.depth_cleared_after_world = true;
+        }
         if self.world_ended && !self.classes_checked {
             self.classes_checked = true;
             steps.push(Step::MissingClasses);
@@ -256,6 +265,16 @@ impl Plan {
         // depth target until the game clears it for its next scene.
         if kind == scene::SCENE_FIRST_PERSON && in_back_buffer && drawing && self.world_ended {
             steps.push(Step::FirstPersonEnd);
+        }
+        // The end of the shadow casters' scene after the world: the shadowed actors are in the
+        // depth target, together with the world, while no clear of the depth came between.
+        if kind == scene::SCENE_SHADOW_CASTERS
+            && in_back_buffer
+            && drawing
+            && self.world_ended
+            && !self.depth_cleared_after_world
+        {
+            steps.push(Step::ShadowCastersEnd);
         }
         self.scene_kind = 0;
         steps
@@ -370,7 +389,9 @@ impl Plan {
 
 #[cfg(test)]
 mod tests {
-    use super::scene::{SCENE_FIRST_PERSON, SCENE_OTHER, SCENE_SORTED_ALPHA, SCENE_UI, SCENE_WATER, SCENE_WORLD};
+    use super::scene::{
+        SCENE_FIRST_PERSON, SCENE_OTHER, SCENE_SHADOW_CASTERS, SCENE_SORTED_ALPHA, SCENE_UI, SCENE_WATER, SCENE_WORLD,
+    };
     use super::{Plan, Step};
     use crate::engine::views::Views;
     use crate::ViewKind;
@@ -480,6 +501,31 @@ mod tests {
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::MissingClasses, Step::Post]);
         plan.scene_end(true, true, true, false, false);
         assert_eq!(plan.scene_begin(SCENE_UI), vec![Step::Post]);
+    }
+
+    /// W553 (Balmora at night): the world, then the shadow casters with no clear of the depth
+    /// between (the game clears only the stencil there). Their end gives the step. A scene
+    /// before the world's end, into a texture, in a frame not drawn, or after a clear of the
+    /// depth since the world's end gives none; the next frame starts without the clear.
+    #[test]
+    fn the_shadow_casters_end_after_the_world_gives_their_depth_to_the_post() {
+        let mut plan = Plan::default();
+        plan.scene_begin(SCENE_SHADOW_CASTERS);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
+        world_scene(&mut plan);
+        plan.scene_begin(SCENE_SHADOW_CASTERS);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ShadowCastersEnd]);
+        plan.scene_begin(SCENE_SHADOW_CASTERS);
+        assert_eq!(plan.scene_end(true, false, true, false, false), vec![]);
+        plan.scene_begin(SCENE_SHADOW_CASTERS);
+        assert_eq!(plan.scene_end(true, true, false, false, false), vec![]);
+        plan.depth_clear();
+        plan.scene_begin(SCENE_SHADOW_CASTERS);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![]);
+        plan.frame_start();
+        world_scene(&mut plan);
+        plan.scene_begin(SCENE_SHADOW_CASTERS);
+        assert_eq!(plan.scene_end(true, true, true, false, false), vec![Step::ShadowCastersEnd]);
     }
 
     /// A clear of the depth after the world gives the missing classes before it, once; the

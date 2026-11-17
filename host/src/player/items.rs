@@ -220,7 +220,8 @@ impl Player {
                 | Item::TierPost(..)
                 | Item::WorldEnd(_)
                 | Item::Post(_)
-                | Item::FirstPersonDepth(_) => None,
+                | Item::FirstPersonDepth(_)
+                | Item::ShadowCastersDepth => None,
             };
             if group.as_ref().map(|(name, _)| *name) != label {
                 if let Some((_, at)) = group.take() {
@@ -266,6 +267,7 @@ impl Player {
                         Item::Replace(..) => "replace",
                         Item::Post(_) => "post",
                         Item::FirstPersonDepth(_) => "first-person-depth",
+                        Item::ShadowCastersDepth => "shadow-casters-depth",
                         Item::Draw(_) => unreachable!(),
                     };
                     println!("run frame {} barrier {kind}", self.renderer.counts.frames);
@@ -321,6 +323,7 @@ impl Player {
                 Item::Replace(class, facts, drawn) => self.replace_class(class, &facts, drawn),
                 Item::Post(facts) => self.post_process(&facts),
                 Item::FirstPersonDepth(projection) => self.merge_first_person_depth(&projection),
+                Item::ShadowCastersDepth => self.copy_shadow_casters_depth(),
             }
         }
         if let Some((_, at)) = group.take() {
@@ -431,6 +434,11 @@ impl Player {
             plan::Step::FirstPersonEnd => {
                 if self.first_person_drawn && self.parameters.as_ref().is_some_and(|p| p.post) {
                     self.items.push(Item::FirstPersonDepth(self.stream.projection));
+                }
+            }
+            plan::Step::ShadowCastersEnd => {
+                if self.shadow_casters_drawn && self.parameters.as_ref().is_some_and(|p| p.post) {
+                    self.items.push(Item::ShadowCastersDepth);
                 }
             }
             plan::Step::NewPicture => self.picture_start(),
@@ -1433,6 +1441,22 @@ impl Player {
             stamp_end(&self.renderer.stamps, encoder, at);
             self.renderer.counts.depth_copies += 1;
         }
+        self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
+    }
+
+    /// The depth after the shadow casters' scene into the copy of the world depth that the
+    /// post-processing reads. The engine draws the actors it shadows in that scene, after the
+    /// world's end, into the depth of the world, and no clear of the depth came between
+    /// ([`plan::Step::ShadowCastersEnd`]). The scene has the world's camera and projection, so
+    /// the copy replaces the world's, and the projection of the copy stays.
+    pub(crate) fn copy_shadow_casters_depth(&mut self) {
+        const COPY: &str = "depth: the shadow casters, for the post chain";
+        pass_report::on_request(&[COPY]);
+        if !self.world_depth_kept {
+            pass_report::note_skipped(COPY, "no copy of the world depth kept");
+            return;
+        }
+        self.copy_depth(1, COPY);
         self.open_pass(crate::gpu::PassReason::AfterCopy, None, None, None);
     }
 

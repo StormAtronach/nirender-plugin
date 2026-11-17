@@ -372,9 +372,12 @@ impl Player {
             // passed to them in a way that reads the frame's targets. The post chain of a picture
             // (`TierPost`) copies the colour and the depth of the picture it draws into and reads
             // no other rendered texture.
-            Item::Post(_) | Item::FirstPersonDepth(_) | Item::TierStart(..) | Item::TierEnd(..) | Item::TierPost(..) => {
-                fixed(Reads::default())
-            }
+            Item::Post(_)
+            | Item::FirstPersonDepth(_)
+            | Item::ShadowCastersDepth
+            | Item::TierStart(..)
+            | Item::TierEnd(..)
+            | Item::TierPost(..) => fixed(Reads::default()),
         }
     }
 }
