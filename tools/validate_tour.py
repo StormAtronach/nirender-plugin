@@ -27,7 +27,8 @@ line of each such replay, and the exit code is 1.
 
 The tool gives the verdict itself (W526), in its last line "tour verdict: PASS", "FAIL: ..." or
 "NOT RUN: ...", and in its exit code. It fails for a picture that failed, for a replay with a fault
-code, for a pair of mode gpu against mode off with a mean over MEAN_LIMIT or with no numbers, and for
+code, for a pair of mode gpu against mode off with a mean over MEAN_LIMIT, with more pixels over 8 levels than
+COUNT_LIMIT (the count rule, W538; a stop of KNOWN_STOPS: than its own bound) or with no numbers, and for
 fewer stops than --least-stops. It is NOT RUN (exit code 3) for a replay that the slot check refused,
 for a replay whose output lacks a check line of the helper, and for a dual run with no pair to
 compare. A caller reads the exit code, not the table.
@@ -36,7 +37,7 @@ The helper of the replays comes from the sealed set of --mge-build, or from the 
 (W545). Without either, the tool finds the current set once at the start, prints it, and gives it to each replay as
 --mge-build: one tour, one set.
 
-    python tools/validate_tour.py --self-test   # a planted refusal and a planted fault, with no replay
+    python tools/validate_tour.py --self-test   # a planted refusal and planted faults (the count rule's null too), with no replay
 """
 import argparse
 import os
@@ -69,6 +70,27 @@ CHECK_GAPS = []
 # small differences. The gate's accepted pictures are the exact test: this is a second net. Its one home is here
 # (make_play_set.py had it before W526).
 MEAN_LIMIT = 0.05
+# The count rule of a pair (W538, with form 1 in play): the most pixels of a pair of mode gpu against mode off that
+# differ by more than 8 levels in a colour, and pass. The mean cannot show a small fault: 66 pixels move it by about
+# 0.001. With the table's origin at the camera (form 1) the two modes agree to the pixel but for texels that flip:
+# at the tour's 103 stops the count is 0 at 101 stops for a tour of today's plugin, and 1 at 2 stops for the tour of
+# the baseline (2026-11-17, the W538 merge's plan). So 8 has room for those, and a fault of a few tens of pixels fails.
+# The rule cannot pass on a build before form 1: there the count is up to some hundreds at a stop.
+COUNT_LIMIT = 8
+# The stops of the NIF test level's tour that are over COUNT_LIMIT for a cause that is known and has its own work
+# item, by the name of the stop's picture: the most pixels over 8 levels that pass there, and the cause. A known stop
+# is printed with its count in every run. It fails over its own bound, so a new fault there still shows. The work
+# item that removes the cause removes the entry: a known stop at or under COUNT_LIMIT fails the tour with a line
+# that says so, so that no wide bound stays behind.
+KNOWN_STOPS = {
+    "1-29-_nif_057.png": (1500, "W535: the order of two blended draws differs between the table and the engine's path (1369 on 2026-11-17)"),
+    "2-13-_nif_073.png": (80, "W535: the order of two blended draws differs between the table and the engine's path (65 on 2026-11-17)"),
+}
+
+
+def count_limit(name):
+    """The most pixels over 8 levels that pass for the pair of this picture."""
+    return KNOWN_STOPS.get(name, (COUNT_LIMIT, ""))[0]
 
 
 def stops_of(run):
@@ -250,6 +272,7 @@ def main(current=None):
 
     if pairs:
         rows = []
+        counts = []
         unrun = 0
         for gpu, off in pairs:
             if gpu in not_run or off in not_run:
@@ -264,6 +287,7 @@ def main(current=None):
                 rows.append((float("inf"), gpu, numbers["problem"]))
             else:
                 rows.append((numbers["mean"], gpu, "%.3f mean, %.2f %% different, %.2f %% over 8, largest %d" % (numbers["mean"], numbers["different"] * 100, numbers["over8"] * 100, numbers.get("largest", 0))))
+                counts.append((round(numbers["over8"] * numbers["pixels"]), gpu))
         rows.sort(reverse=True)
         print("mode gpu against mode off at each stop, the largest differences first:")
         for mean, name, text in rows[:40]:
@@ -277,6 +301,22 @@ def main(current=None):
             fails.append("%d pairs have no numbers, first %s" % (len(unmeasured), unmeasured[-1]))
         if over:
             fails.append("%d pairs of mode gpu against mode off differ by more than the limit %.3f, the largest %.3f at %s" % ((len(over), MEAN_LIMIT) + max(over)))
+        # The count rule (W538): the pixels over 8 levels of each pair, against COUNT_LIMIT or the bound of a known stop.
+        counts.sort(reverse=True)
+        some = [(count, name) for count, name in counts if count and name not in KNOWN_STOPS]
+        print("pixels over 8 levels of a pair: %d pairs have none; the others, the largest first: %s" % (
+            sum(1 for count, _ in counts if count == 0), ", ".join("%s %d" % (name, count) for count, name in some[:20]) or "none"))
+        for count, name in counts:
+            if name in KNOWN_STOPS:
+                print("  a known stop: %s has %d pixels over 8 levels; it passes to %d; %s" % ((name, count) + KNOWN_STOPS[name]))
+        counted = [(count, name) for count, name in counts if count > count_limit(name)]
+        if counted:
+            fails.append("%d pairs of mode gpu against mode off have more pixels over 8 levels than the limit %d (a known stop: than its own bound), the most %d at %s" % (
+                (len(counted), COUNT_LIMIT) + max(counted)))
+        # A known stop that passes the plain limit has lost its cause: its entry must go, or its wide bound stays
+        # behind the work item that removed the cause.
+        for name in sorted(name for count, name in counts if name in KNOWN_STOPS and count <= COUNT_LIMIT):
+            fails.append("the cause of %s is gone: remove its KNOWN_STOPS entry" % name)
         if not rows and not unrun:
             unjudged.append("the dual run has no pair of mode gpu against mode off to compare")
     elif dual:
@@ -423,12 +463,12 @@ def self_test():
                     pictures[colour, size] = os.path.join(folder, "plant-%d-%d.png" % (colour[0], size))
                     picture_diff.Image.new("RGB", (size, size), colour).save(pictures[colour, size])
 
-                def made(code=0, output=checks, last="", off=((10, 20, 30), 4)):
-                    """A replay that makes each picture: the frames of mode gpu grey, those of mode off as `off`."""
+                def made(code=0, output=checks, last="", off=((10, 20, 30), 4), gpu=((10, 20, 30), 4)):
+                    """A replay that makes each picture: the frames of mode gpu as `gpu` (grey), those of mode off as `off`."""
                     def tool(command, **_):
                         capture, prefix = command[2], command[3]
                         for frame in command[command.index("--frames-at") + 1].split(","):
-                            shutil.copyfile(pictures[off if int(frame) % 4 == 3 else ((10, 20, 30), 4)], "%s-%05d.png" % (prefix, int(frame)))
+                            shutil.copyfile(pictures[off if int(frame) % 4 == 3 else gpu], "%s-%05d.png" % (prefix, int(frame)))
                         return subprocess.CompletedProcess(command, code, output, last % os.path.basename(capture) + "\n" if last else "")
                     return tool
 
@@ -445,7 +485,8 @@ def self_test():
                         ("a check judged nothing", made(output=idle), [], NOT_RUN_CODE, 0, "2 of 2",
                          'tour verdict: NOT RUN: replay of tour-1.nircap: the check "gpu errors" judged nothing; replay of tour-2.nircap: the check "gpu errors" judged nothing'),
                         # Rob's plant of F-G-3: mode off differs from mode gpu at every stop. Before W526 the tool ended with 0.
-                        ("pairs differ", made(off=((250, 0, 250), 4)), [], 1, 0, "0 of 2", "tour verdict: FAIL: 2 pairs of mode gpu against mode off differ by more than the limit 0.050, the largest 160.000 at 2-01-b.png"),
+                        ("pairs differ", made(off=((250, 0, 250), 4)), [], 1, 0, "0 of 2", "tour verdict: FAIL: 2 pairs of mode gpu against mode off differ by more than the limit 0.050, the largest 160.000 at 2-01-b.png; "
+                         "2 pairs of mode gpu against mode off have more pixels over 8 levels than the limit 8 (a known stop: than its own bound), the most 16 at 2-01-b.png"),
                         ("no numbers", made(off=((10, 20, 30), 6)), [], 1, 0, "0 of 2", "tour verdict: FAIL: 2 pairs have no numbers, first 1-01-a.png"),
                         ("too few stops", made(), ["--least-stops", "100"], 1, 0, "2 of 2", "tour verdict: FAIL: the tour has 2 stops, fewer than the 100 of --least-stops"),
                         ("enough stops", made(), ["--least-stops", "2"], 0, 0, "2 of 2", "tour verdict: PASS")):
@@ -458,6 +499,58 @@ def self_test():
                     kept = os.path.join(run, "tour-frames-tour-1.replay.txt")
                     assert open(kept, encoding="utf-8").read().startswith("exit code %d\n" % (40 if faults else 0)), "the output of the replay is kept beside the pictures"
                     assert text.count("  STAGE SHADERS: the replay of tour-") == faults and ("FAILED replays: 2 replays" in text) == bool(faults), (name, text)
+
+                # The count rule (W538) and its planted null. Pictures of 400 by 300 pixels: grey; grey with a fault of
+                # 40, of 5 and of 100 pixels that differ by 100 levels; grey with every pixel 2 levels off.
+                def planted(name, colour, faults):
+                    image = picture_diff.Image.new("RGB", (400, 300), colour)
+                    for x in range(faults):
+                        image.putpixel((x, 7), (110, 20, 30))
+                    pictures[name] = os.path.join(folder, "plant-%s.png" % name)
+                    image.save(pictures[name])
+
+                for name, colour, faults in (("grey", (10, 20, 30), 0), ("fault 40", (10, 20, 30), 40), ("fault 5", (10, 20, 30), 5),
+                                             ("fault 100", (10, 20, 30), 100), ("haze", (12, 22, 32), 0)):
+                    planted(name, colour, faults)
+                count_fail = "%d pairs of mode gpu against mode off have more pixels over 8 levels than the limit 8 (a known stop: than its own bound), the most %d at %s"
+                mean_fail = "differ by more than the limit"
+
+                def tour(off):
+                    global run_tool
+                    run_tool = made(gpu="grey", off=off)
+                    sys.argv = ["validate_tour.py", run, "--jobs", "1"]
+                    with contextlib.redirect_stdout(io.StringIO()) as printed:
+                        code = main(planted_set)
+                    return code, printed.getvalue(), printed.getvalue().splitlines()[-1]
+
+                # THE PLANTED NULL: a fault of 40 pixels fails the count and passes the mean (a mean of 0.011).
+                code, text, said = tour("fault 40")
+                assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (2, 40, "2-01-b.png"), text
+                assert mean_fail not in text and "pixels over 8 levels of a pair: 0 pairs have none; the others, the largest first: 2-01-b.png 40, 1-01-a.png 40" in text, text
+                # Under the limit: 5 pixels pass both rules.
+                code, text, said = tour("fault 5")
+                assert code == 0 and said == "tour verdict: PASS" and "the others, the largest first: 2-01-b.png 5, 1-01-a.png 5" in text, text
+                # The other way: every pixel 2 levels off fails the mean and passes the count (no pixel over 8 levels).
+                code, text, said = tour("haze")
+                assert code == 1 and mean_fail in said and "more pixels over 8 levels" not in said, text
+                assert "pixels over 8 levels of a pair: 2 pairs have none; the others, the largest first: none" in text, text
+                # A known stop passes to its own bound and is printed; over its bound it fails. The stop beside it has
+                # the plain limit.
+                with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
+                    file.write("tour: dual\ntour: cell 1 stop 1 a\ntour: cell 2 stop 13 @nif_073\n")
+                assert count_limit("2-13-_nif_073.png") == 80 and count_limit("2-13-_nif_074.png") == COUNT_LIMIT == 8
+                code, text, said = tour("fault 40")
+                assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (1, 40, "1-01-a.png"), text
+                assert "  a known stop: 2-13-_nif_073.png has 40 pixels over 8 levels; it passes to 80; W535: " in text, text
+                assert "the others, the largest first: 1-01-a.png 40" in text and "2-13-_nif_073.png 40" not in text.split("the others, the largest first: ")[1].splitlines()[0], text
+                code, text, said = tour("fault 100")
+                assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (2, 100, "2-13-_nif_073.png"), text
+                # A known stop at or under the plain limit: its cause is gone, and the entry must go with it. The
+                # tour fails with that line, at 0 pixels and at 5; the stop beside it passes.
+                gone = "tour verdict: FAIL: the cause of 2-13-_nif_073.png is gone: remove its KNOWN_STOPS entry"
+                for off in ("grey", "fault 5"):
+                    code, text, said = tour(off)
+                    assert code == 1 and said == gone, (off, text)
                 # A dual run with no stop has no pair to compare: not judged.
                 with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
                     file.write("tour: dual\n")

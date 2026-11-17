@@ -783,7 +783,9 @@ struct Renderer {
     retained_records: usize,
     retained_instances: usize,
     /// The retained segment of the instance buffer as it was last written: a changed slot
-    /// writes its entry here, and the runs of changed entries go up from here.
+    /// writes its entry here, and the runs of changed entries go up from here. A change of the
+    /// origin's place writes the new place of each slot here ([`RetainedSet::rebase`]) and the
+    /// segment goes up from here whole.
     retained_instance_copy: Vec<Instance>,
     record_generation: u32,
     instance_generation: u32,

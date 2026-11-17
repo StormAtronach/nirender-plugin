@@ -388,6 +388,10 @@ pub(crate) struct Counts {
     pub(crate) upload_changed_cases: u64,
     pub(crate) upload_changed_seconds: f64,
     pub(crate) upload_all_seconds: f64,
+    /// The frames of the case "a new origin" (the instances whole, no record: the origin of the
+    /// set moved to the camera, `RetainedSet::rebase`) and their time.
+    pub(crate) instance_uploads_origin: u64,
+    pub(crate) upload_origin_seconds: f64,
     pub(crate) record_writes: u64,
     pub(crate) record_write_bytes: u64,
     pub(crate) instance_entries_moved: u64,
