@@ -279,13 +279,15 @@ GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.to
               "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "assets/Data Files/shaders/", "Cargo.toml", "Cargo.lock",
                       "mgeHost64/Cargo.toml", "mge-config/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml")}
 # The files of the table's order (W535): the switch MGE_XE_TABLE_ORDER, the order and its digest lines (Hob's merge
-# branch, his plan addendum 1, item A5). A change of one of them adds the stage ORDER_STAGE after the replay gate: each
+# branch fix/w535-engine-order: the module and its `mod` line, the switch's read, the order's collection, the replay's
+# digest lines, the report's counts). A change of one of them adds the stage ORDER_STAGE after the replay gate: each
 # capture of the gate in both orders, 0 pixels between them (validate_retained.py order; the Architect's page
-# w535-w538-order-and-origin section 1, verdict 595). ORDER_NAMES are the names of that code: a tracked file under
-# host/ or src/ outside this list that names one of them fails the self-test (`order_drift`), so the list cannot miss
-# a new reader.
-ORDER_PATHS = {"plugin": ("host/src/table_order.rs", "host/src/switches.rs", "host/src/retained.rs", "host/src/player/report.rs"), "mge": ()}
-ORDER_NAMES = ("MGE_XE_TABLE_ORDER", "table_order", "TableOrder")
+# w535-w538-order-and-origin section 1, verdicts 595 and 597). ORDER_NAMES are the names of that code: a tracked file
+# under host/ or src/ outside this list that names one of them fails the self-test (`order_drift`), so the list cannot
+# miss a new reader. README.md names the switch too; it is not code, and a change of it does not run the stage.
+ORDER_PATHS = {"plugin": ("host/src/table_order.rs", "host/src/switches.rs", "host/src/retained.rs", "host/src/player/report.rs",
+                          "host/src/cli.rs", "host/src/lib.rs"), "mge": ()}
+ORDER_NAMES = ("MGE_XE_TABLE_ORDER", "table_order", "TableOrder", "collect_order", "order_keys", "add_to_digest", "digest_frame", "take_digest")
 ORDER_STAGE = "table order"
 D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
 # What a change must touch for a build and a deploy without the gate (W406): the plugin DLL and the mod's Lua, which the
@@ -352,6 +354,9 @@ def self_test_order_drift():
                "host/src/sort.rs": "fn stable_order() {}", "src/lua.rs": "TableOrder::Grouped", "host/src/table_order.rs": "pub enum TableOrder {}"}
     assert order_drift(planted) == ["host/src/frame.rs", "src/lua.rs"], order_drift(planted)
     assert order_drift({"host/src/player/report.rs": "table order digest"}) == []
+    # The functions of the order and of the digest (verdict 597 C1): named in the replay's loop, fine; elsewhere, drift.
+    assert order_drift({"host/src/cli.rs": "set.digest_frame(); set.take_digest()", "host/src/lib.rs": "mod table_order;",
+                        "host/src/frame.rs": "self.add_to_digest(draw)", "host/src/view.rs": "order_keys(&shapes)"}) == ["host/src/frame.rs", "host/src/view.rs"]
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     drift = order_drift(tracked_texts(here))
     assert not drift, "files outside ORDER_PATHS name the table's order (%s): add them to ORDER_PATHS of merge_step.py" % ", ".join(drift)

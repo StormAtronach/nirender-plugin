@@ -9,7 +9,7 @@ minutes) and not after all of them.
 The build (W545): --mge-build names a sealed set, and without it the stages take the current set.
 The runs and the replays check the set themselves (the runner's rule of W521). --archive names an
 unpacked release archive, which has no manifest; it goes to replay.py and validate_tour.py as
---archive, and only the baseline stage takes it.
+--archive, and only the stages that only replay (baseline, order) take it.
 
 The helper draws from the records only, so a picture has no second path to compare with on
 the same capture. The reference of a change of the helper is a baseline: captures that are
@@ -162,7 +162,7 @@ WEATHER = {"pin": 0}
 # for the unpacked release archive of release.py's gate. main sets it.
 BUILD = {"option": "--mge-build"}
 # The stages that only replay. The others start the game, and a run of the game does not take an archive here.
-REPLAY_ONLY_STAGES = ("baseline",)
+REPLAY_ONLY_STAGES = ("baseline", "order")
 
 
 def build_option(mge_build):
@@ -177,7 +177,7 @@ def build_problem(stages, mge_build, archive):
         return "an archive is not a set: no --mge-build with --archive"
     games = [stage for stage in stages if stage not in REPLAY_ONLY_STAGES]
     if archive and games:
-        return "--archive is the release check, which only the baseline stage replays; the stages %s start the game" % ", ".join(games)
+        return "--archive is the release check, which only the stages %s replay; the stages %s start the game" % (", ".join(REPLAY_ONLY_STAGES), ", ".join(games))
     return None
 
 
@@ -659,6 +659,7 @@ def self_test():
     # baseline stage with --archive, and any stage with a set.
     assert build_problem(["baseline"], None, "a") is None and build_problem(["capture", "baseline"], "s", None) is None
     assert build_problem(["baseline"], "s", "a") == "an archive is not a set: no --mge-build with --archive"
+    assert build_problem(["baseline", "order"], None, "a") is None
     assert "the stages capture, only start the game" in build_problem(["capture", "baseline", "only"], None, "a")
     # Without --mge-build, the current set of the sets folder; with none, None. The null: --mge-build asks for no set.
     with contextlib.redirect_stdout(io.StringIO()):
@@ -758,7 +759,8 @@ def self_test_order_stage():
 
     def plant(change=None):
         """A run_code whose replay of <prefix>.nircap with MGE_XE_TABLE_ORDER=<value> writes frames 1 and 29 and prints
-        the route line, a digest of each and the line of all frames. `change(name, value, frames, lines)` alters
+        the route line, a digest of each and the counts line of the report's end ("table order <value>: ...", which
+        is not a route line). `change(name, value, frames, lines)` alters
         them, and may return (code, output) to replace the result."""
 
         def run(command, env=None):
@@ -768,7 +770,7 @@ def self_test_order_stage():
             name = os.path.basename(command[2])[:-len(".nircap")]
             frames = {1: grey, 29: grey}
             lines = ["table order: %s" % value] + ["table order digest: frame %d %s 120 draws" % (frame, digest) for frame in frames]
-            lines.append("table order digest: all 29 frames %s" % digest)
+            lines.append("table order %s: 40 groups, 120 draws" % value)
             replaced = change(name, value, frames, lines) if change else None
             for frame, colour in frames.items():
                 picture = picture_diff.Image.new("RGB", (8, 8), grey)
@@ -808,7 +810,7 @@ def self_test_order_stage():
             passed, said, _ = stage(folder, plant(differ_in("t")))
             assert passed and "the orders differed in 1 of 3 captures: t.nircap" in said and "  ok   table order: 3 captures" in said, said
             assert os.path.isfile(os.path.join(folder, "now", "order", "tour-t-engine-last.png")), os.listdir(os.path.join(folder, "now", "order"))
-            assert "tour-t, engine: table order digest: all 29 frames %s" % other_digest in said, said
+            assert "tour-t, engine: frame 1 %s, frame 29 %s" % (other_digest, other_digest) in said, said
 
             # The planted null: one pixel of b's engine picture of frame 29 differs. The stage fails and names it.
             def one_pixel(name, value, frames, lines):
@@ -1822,7 +1824,6 @@ ORDER_SWITCH = "MGE_XE_TABLE_ORDER"
 ORDER_VALUES = ("grouped", "engine")
 ORDER_ROUTE = re.compile(r"^table order: (\S+)[ \t\r]*$", re.MULTILINE)
 ORDER_DIGEST = re.compile(r"^table order digest: frame (\d+) ([0-9a-f]{16}) (\d+) draws[ \t\r]*$", re.MULTILINE)
-ORDER_ALL = re.compile(r"^table order digest: all \d+ frames [0-9a-f]{16}[ \t\r]*$", re.MULTILINE)
 
 
 def order_captures(baseline):
@@ -1857,8 +1858,7 @@ def order_capture(capture, out, mge_build):
             not_run("%s: the replay with %s=%s printed the route lines %s, not one \"table order: %s\": the build does "
                     "not take the switch, and the pictures cannot show the order" % (name, ORDER_SWITCH, value, routes or "none", value))
             return "not run", False
-        every = ORDER_ALL.search(output)
-        print("       %s, %s: %s" % (name, value, every.group(0).strip() if every else "no line of all frames"), flush=True)
+        print("       %s, %s: %s" % (name, value, ", ".join("frame %d %s" % (frame, digests[frame][0]) for frame in sorted(digests)) or "no digest"), flush=True)
         frames = {suffix: frame for suffix, frame in (("", 1), (LAST, last)) if frame is not None and os.path.isfile(prefix + suffix + ".png")}
         replays[value] = (prefix, frames, digests)
     (prefix_a, frames_a, digests_a), (prefix_b, frames_b, digests_b) = (replays[value] for value in ORDER_VALUES)
