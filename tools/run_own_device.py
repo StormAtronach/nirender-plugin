@@ -48,6 +48,7 @@ from ctypes import wintypes
 # The modules of this folder, also under `python -I` (checks.py runs the self-test so).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clean_common  # noqa: E402
+import distant_land  # noqa: E402
 import lua_checks  # noqa: E402
 import session  # noqa: E402
 import sets  # noqa: E402
@@ -352,64 +353,20 @@ def rebuild_guard_note(args):
     return "the run changes what the game loads (%s); the command's own --set line for automatic_rebuild stands" % named
 
 
-def distant_land_state(root):
-    """The md5 of the generator's state file of the Mod Organizer instance at `root`
-    (overwrite/distantland/generation_state.bin), or None when the instance has none. The generator writes the
-    file anew at each generation, so its md5 before a run and after it says whether the run rebuilt the distant
-    land."""
-    path = os.path.join(root, "overwrite", "distantland", "generation_state.bin")
-    if not os.path.isfile(path):
-        return None
-    digest = hashlib.md5()
-    try:
-        with open(path, "rb") as file:
-            for block in iter(lambda: file.read(1 << 20), b""):
-                digest.update(block)
-    except OSError:
-        # A file that cannot be read gives no md5: the run's end says that the distant land is not checked.
-        return NOT_READABLE
-    return digest.hexdigest()
-
-
-# The answer of [`distant_land_state`] for a state file that is there and cannot be read.
-NOT_READABLE = "not readable"
-
-
-def distant_land_cause(root):
-    """The generator's own cause of its last generation: the value of `rebuild_cause` in
-    overwrite/distantland/generation_report.toml of the instance at `root`, or None."""
-    try:
-        with open(os.path.join(root, "overwrite", "distantland", "generation_report.toml"), encoding="utf-8", errors="replace") as file:
-            found = re.search(r'^rebuild_cause\s*=\s*"(.*)"\s*$', file.read(), re.M)
-    except OSError:
-        return None
-    return found.group(1) if found else None
-
-
-def distant_land_line(before, after, allowed, cause=None):
-    """(the run's line about the distant land of the instance, whether it is an error). The state file's md5 before
-    the game started and after it closed: equal, or the run rebuilt the distant land, which is an error unless the
-    command allowed it. `cause` is the generator's own cause ([`distant_land_cause`]): it says which of the two
-    cases of the error's advice the rebuild is. A state file that could not be read, before the run or after it, is
-    an error of its own, also when both reads failed and also with the option: a check that could not run is no
-    pass (verdict 484, addendum)."""
-    if NOT_READABLE in (before, after):
-        when = " and ".join(word for word, state in (("before", before), ("after", after)) if state == NOT_READABLE)
-        return ("the generator's state file of the instance (overwrite/distantland/generation_state.bin) could not be read %s the "
-                "run; the distant land is not checked" % when), True
-    if before == after:
-        return "distant land: the generator's state file is as before the run (%s)" % (before[:8] if before else "none"), False
-    change = "%s -> %s" % (before[:8] if before else "none", after[:8] if after else "none")
-    said = "; the generator's cause: %s" % cause if cause else "; the generator's report has no cause line"
-    if allowed:
-        return ("distant land: the run rebuilt it, as --allow-distant-land-rebuild lets it (generation_state.bin %s); the instance "
-                "keeps the rebuilt data%s" % (change, said)), False
-    return ("the run CHANGED THE DISTANT LAND of the instance (overwrite/distantland/generation_state.bin %s): every later replay and "
-            "game start reads the rebuilt data%s. Two cases. (1) The run's own files made it (a mesh, a mod or a plugin of the "
-            "run): the instance is not as it was; restore the folder, or start the game with the instance's own files so that "
-            "MGE XE rebuilds it again. (2) The rebuild is right (a build with another generator or data version, a deploy that "
-            "changed the instance's files before the run, a --set line of a generation key): the new data is the instance's "
-            "now, and --allow-distant-land-rebuild says so in the command" % (change, said)), True
+def run_land(args, manifest, toml, commit=None):
+    """The distant land of the run (`distant_land.RunLand`): its key from the set (or the archive), the run's
+    mgeXE.toml `toml` and its --set lines; read-only when the rebuild guard holds ([`rebuild_guard`]), else with the
+    content part of the run's own files (the Architect's ruling Q1)."""
+    read_only = rebuild_guard(args)
+    content = None
+    if not read_only:
+        sources = {entry.partition("=")[2].replace("\\", "/"): entry.partition("=")[0] for entry in getattr(args, "add_file", None) or []}
+        content = distant_land.content_part(load_changes(args), sources)
+    if manifest:
+        key = distant_land.key_of(args.mge_build, manifest, toml, args.set_for_run, content)
+    else:
+        key = distant_land.archive_key(args.archive, toml, args.set_for_run, content)
+    return distant_land.RunLand(session.harness.MO2_ROOT, session.harness.PROFILE, key, read_only, commit or distant_land.tool_commit())
 
 
 def exit_with_distant_land(code, changed):
@@ -781,14 +738,20 @@ def weather_note(pinned, lines):
     return "".join(line + "\n" for line in ["weather: " + weather_summary(pinned, lines)] + kept)
 
 
-def launch_run(run, spec, args, mods, facts=()):
+def launch_run(run, spec, args, mods, facts=(), land=None):
     """Starts the run (`session.Run.launch`) with the options of the command line. A refusal of
     the renderer by the plugin ends the run at once, with its cause (`session.Run.refusal`), not at
     the end of the budget; not in a --plain-case run, which tests the game after that refusal. `facts` are the lines
-    for the record of the run: the set's line first."""
+    for the record of the run: the set's line first. `land` (`distant_land.RunLand`): the run's distant land mod is on
+    and every other one off, and its end is the step before the restore (W521 step 4)."""
     stop = None if getattr(args, "plain_case", False) else run.refusal
-    return run.launch(spec, args.budget, TAG, mods=mods, disable=args.disable_mod, facts=list(facts), full_dump=args.full_dump,
-                      enable=args.enable_mod, plugins=args.enable_plugin, stop=stop)
+    disable, enable = list(args.disable_mod), list(args.enable_mod)
+    if land:
+        off, own = land.switch(session.harness.read_modlist()[0])
+        disable += off
+        enable = [own] + enable
+    return run.launch(spec, args.budget, TAG, mods=mods, disable=disable, facts=list(facts), full_dump=args.full_dump,
+                      enable=enable, plugins=args.enable_plugin, stop=stop, before_restore=land.end if land else None)
 
 
 class ModuleEntry(ctypes.Structure):
@@ -1495,50 +1458,11 @@ def self_test_run_toml():
     assert "and 68 more" in rebuild_guard_note(many) and rebuild_guard_note(many).count("--add-file") == 4
     # The line goes into the run's mgeXE.toml as any --set line: a key that the section has is changed.
     assert "automatic_rebuild = false" in lines_of([REBUILD_OFF_LINE], text="[runtime]\nrenderer_wgpu = true\n\n[distant_land]\nautomatic_rebuild = true\n")
-    # The state file of the generator, before a run and after it.
-    with tempfile.TemporaryDirectory() as root:
-        assert distant_land_state(root) is None
-        folder = os.path.join(root, "overwrite", "distantland")
-        os.makedirs(folder)
-        with open(os.path.join(folder, "generation_state.bin"), "wb") as file:
-            file.write(b"one")
-        first = distant_land_state(root)
-        assert first == hashlib.md5(b"one").hexdigest()
-        with open(os.path.join(folder, "generation_state.bin"), "wb") as file:
-            file.write(b"two")
-        second = distant_land_state(root)
-    assert second != first
-    line, error = distant_land_line(first, first, False)
-    assert not error and "as before the run" in line and first[:8] in line
-    line, error = distant_land_line(first, second, False)
-    assert error and "CHANGED THE DISTANT LAND" in line and "%s -> %s" % (first[:8], second[:8]) in line
-    line, error = distant_land_line(first, second, True)
-    assert not error and "--allow-distant-land-rebuild" in line
-    # The error's advice names both cases (verdict 484): the run's own files made the rebuild, or the rebuild is right.
-    line, error = distant_land_line(first, second, False, "meshes +0/-0/~61; merge groups +0/-0/~511; textures +32/-0/~2")
-    assert error and "the generator's cause: meshes +0/-0/~61" in line and "(1) The run's own files made it" in line, line
-    assert "(2) The rebuild is right" in line and "--allow-distant-land-rebuild says so" in line, line
-    assert "the generator's report has no cause line" in distant_land_line(first, second, False)[0]
-    with tempfile.TemporaryDirectory() as root:
-        assert distant_land_cause(root) is None
-        os.makedirs(os.path.join(root, "overwrite", "distantland"))
-        with open(os.path.join(root, "overwrite", "distantland", "generation_report.toml"), "w", encoding="utf-8") as file:
-            file.write('report_version = 3\nrebuild_cause = "meshes +0/-0/~61; textures +32/-0/~2"\nwarnings = []\n')
-        assert distant_land_cause(root) == "meshes +0/-0/~61; textures +32/-0/~2"
     # Only a --set line that GIVES the key is the command's own value; the word in another line's value is not.
     quoted = guarded(enable_mod=["Trees"], set=['[statics] note = "automatic_rebuild = off"'])
     assert rebuild_guard(quoted) and run_settings(quoted)[-2:] == [REBUILD_OFF_LINE, VIDEOS_SKIPPED_LINE]
     for own_line in ("[distant_land] automatic_rebuild = true", "automatic_rebuild = false", "  [distant_land]automatic_rebuild=true"):
         assert not rebuild_guard(guarded(enable_mod=["Trees"], set=[own_line])), own_line
-    assert distant_land_line(None, None, False) == ("distant land: the generator's state file is as before the run (none)", False)
-    # A state file that could not be read is an error, also when both reads failed (equal answers are no pass) and
-    # also with the option; the run then ends with 7 as a run that changed the distant land.
-    for before, after, when in ((NOT_READABLE, NOT_READABLE, "before and after"), (first, NOT_READABLE, "after"), (NOT_READABLE, first, "before")):
-        for allowed in (False, True):
-            line, error = distant_land_line(before, after, allowed)
-            assert error and "could not be read %s the run; the distant land is not checked" % when in line, (before, after, allowed, line)
-    assert exit_with_distant_land(0, distant_land_line(NOT_READABLE, NOT_READABLE, False)[1]) == EXIT_DISTANT_LAND_CHANGED
-    assert distant_land_line(None, first, False)[1] and "none -> " in distant_land_line(None, first, False)[0]
     # The exit code: a run that would end with 0 and changed the distant land ends with 7; a failed run keeps its code.
     assert [exit_with_distant_land(code, True) for code in (0, 1, 2, 3, 4, 5, 6)] == [7, 1, 2, 3, 4, 5, 6]
     assert exit_with_distant_land(0, False) == 0 and EXIT_DISTANT_LAND_CHANGED == 7
@@ -1895,6 +1819,62 @@ def self_test_refusal():
             session.MGE_LOGS, session.RESULTS = saved
 
 
+def self_test_run_land():
+    """W521 step 4: the run's distant land. A guarded run is read-only with no content part; a run that lets the
+    generator run has the content part of its own files; a run on an archive has the archive's own format. launch_run
+    switches the other marked mods off and the run's own mod on, and gives the land's end as the step before the
+    restore. The null: with no land, launch_run passes the command's own mods and no step."""
+    import argparse
+
+    def args_of(**values):
+        base = dict(set=[], engine_reference=False, add_file=[], enable_mod=[], disable_mod=[], enable_plugin=[],
+                    allow_distant_land_rebuild=False, mge_build="S", archive=None, budget=10, full_dump=False, plain_case=False)
+        base.update(values)
+        made = argparse.Namespace(**base)
+        made.set_for_run = run_settings(made)
+        return made
+
+    manifest = {"distant_land_format": "own-5296d863", "commits": {"render-link": {"commit": "5296d863" * 5, "clean": True}}}
+    with tempfile.TemporaryDirectory() as temp:
+        source = os.path.join(temp, "a.nif")
+        with open(source, "w", encoding="utf-8") as file:
+            file.write("mesh")
+        guarded = run_land(args_of(add_file=[source + "=meshes/a.nif"]), manifest, "t.toml", commit="c0ffee")
+        assert guarded.read_only and guarded.key.content is None and guarded.key.text == "own-5296d863-base", guarded.key
+        allowed = run_land(args_of(add_file=[source + "=meshes/a.nif"], allow_distant_land_rebuild=True), manifest, "t.toml", commit="c0ffee")
+        assert not allowed.read_only and allowed.key.content and allowed.key.text.startswith("own-5296d863-base-"), allowed.key
+        plain = run_land(args_of(), manifest, "t.toml", commit="c0ffee")
+        assert not plain.read_only and plain.key.content is None
+        archived = run_land(args_of(mge_build=None, archive=temp), None, "t.toml", commit="c0ffee")
+        assert archived.key.form.startswith("archive-"), archived.key
+
+    class Land:
+        def switch(self, modlist):
+            return ["Distant land old"], "Distant land own"
+
+        def end(self):
+            pass
+
+    class Run:
+        refusal = None
+
+        def launch(self, *_, **kinds):
+            self.kinds = kinds
+            return True
+
+    saved = session.harness.read_modlist
+    session.harness.read_modlist = lambda: (["+Distant land old"], "\n")
+    try:
+        land, run = Land(), Run()
+        launch_run(run, {}, args_of(disable_mod=["Trees"], enable_mod=["Rocks"]), [], land=land)
+        assert run.kinds["disable"] == ["Trees", "Distant land old"] and run.kinds["enable"] == ["Distant land own", "Rocks"], run.kinds
+        assert run.kinds["before_restore"] == land.end
+        launch_run(run, {}, args_of(disable_mod=["Trees"], enable_mod=["Rocks"]), [])
+        assert run.kinds["disable"] == ["Trees"] and run.kinds["enable"] == ["Rocks"] and run.kinds["before_restore"] is None, run.kinds
+    finally:
+        session.harness.read_modlist = saved
+
+
 def self_test_live_mge_log():
     """W490: the run keeps the live mgeXE.log of the game folder. Root Builder (hash on) does not move back a log
     whose bytes equal the one in overwrite and clears the game folder: the overwrite log keeps its old time, and the run
@@ -2201,7 +2181,48 @@ def self_test_crash_after_done():
     assert run_exit_code(False, False, False, ENDED_OTHER, False, False) == 1, "a crash before DONE (Rob's 20261115-224206-rob-w344-ref-exit)"
     assert run_exit_code(False, False, True, ENDED_DONE, True, True) == EXIT_FELL_BACK
     assert run_exit_code(True, True, True, ENDED_DONE, False, True) == 2
-    assert len({0, 1, 2, EXIT_ENDED_BY_HAND, EXIT_FELL_BACK, EXIT_CRASHED_AFTER_DONE, EXIT_STAGE_SHADERS}) == 7, "one code for each ending"
+    assert len({0, 1, 2, EXIT_ENDED_BY_HAND, EXIT_FELL_BACK, EXIT_CRASHED_AFTER_DONE, EXIT_STAGE_SHADERS, EXIT_DISTANT_LAND_CHANGED,
+                EXIT_DEVICE_LOST}) == 9, "one code for each ending"
+
+
+def self_test_device_loss():
+    """W78: a run whose helper lost its GPU device (a reason of the driver) prints an ERROR line and the keep line for
+    the Archivist, and fails with EXIT_DEVICE_LOST, with DONE and after an end by hand; the codes 2, 4 and 1 win. A
+    test loss ("Destroyed" and "the test", the tune "gpu lose device") and no text of the helper pass. The null: the
+    runner before W78 had no reader, so the same real loss gave 0 (device_lost False)."""
+    import contextlib
+    import io
+    import tempfile
+
+    real = "gpu: the device is lost (Unknown): Device is lost\n"
+    with tempfile.TemporaryDirectory() as folder:
+        host = os.path.join(folder, "host.txt")
+
+        def of(text):
+            if text is None:
+                if os.path.isfile(host):
+                    os.remove(host)
+            else:
+                with open(host, "w", encoding="utf-8") as file:
+                    file.write("frames 10\n" + text + "check gpu errors: 10 judged, 0 faults\n")
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                return device_loss_of_run(host, "R:/results/20261021-134053-x", "2026-11-17"), said.getvalue()
+
+        lost, said = of(real)
+        assert lost == real.rstrip("\n"), lost
+        assert said == ("ERROR: the helper lost its GPU device (the W78 watch; risk 33 at a load, risk 71 with x8 anti-aliasing): "
+                        "gpu: the device is lost (Unknown): Device is lost\n"
+                        "KEEP for the Archivist (D71): R:/results/20261021-134053-x\topen: W78\t2026-11-17\n"), said
+        assert of("gpu: the device is lost (Destroyed): Device destroyed\ngpu: the device is lost (the test)\n") == (None, ""), "a test loss"
+        assert of("gpu error 1 (validation, adapter x): y\n") == (None, ""), "an error is not a loss"
+        assert of(None) == (None, ""), "a reference run has no text of the helper"
+    assert run_exit_code(False, False, True, ENDED_DONE, device_lost=True) == EXIT_DEVICE_LOST == 8
+    assert run_exit_code(False, False, True, ENDED_DONE, device_lost=False) == 0, "the null: the runner before W78"
+    assert run_exit_code(False, False, False, ENDED_BY_HAND, device_lost=True) == EXIT_DEVICE_LOST, "a live session ended by hand"
+    assert run_exit_code(False, False, True, ENDED_DONE, False, True, True, True) == EXIT_DEVICE_LOST, "over the stage shaders and the crash after DONE"
+    assert run_exit_code(False, False, False, ENDED_OTHER, device_lost=True) == 1, "the crash path first"
+    assert run_exit_code(False, False, True, ENDED_DONE, True, device_lost=True) == EXIT_FELL_BACK
+    assert run_exit_code(True, True, True, ENDED_DONE, device_lost=True) == 2
 
 
 def self_test_stage_shaders():
@@ -2783,6 +2804,7 @@ def self_test():
     self_test_mge_log_problems()
     self_test_refusal()
     self_test_live_mge_log()
+    self_test_run_land()
     self_test_refusal_guard()
     self_test_fallback_guard()
     self_test_ring_problem()
@@ -2802,6 +2824,7 @@ def self_test():
     self_test_ending()
     self_test_crash_after_done()
     self_test_stage_shaders()
+    self_test_device_loss()
     self_test_run_log()
     self_test_use_instance()
     self_test_set()
@@ -3161,11 +3184,15 @@ def main():
         files = next(files for name, files in mods if name == CONFIG_MOD)
         for name in os.listdir(bridge):
             files["MWSE/mods/mwseMCP/" + name] = os.path.join(bridge, name)
-    # The generator's state file before the game starts: a run that rebuilt the distant land of the instance is
-    # named at its end, and fails unless the command allowed the rebuild.
-    land_before = distant_land_state(session.harness.MO2_ROOT)
+    # The distant land of the run (W521 step 4): its own mod, the start move, the run file, the state before the game.
+    try:
+        land = run_land(args, manifest, switched)
+        for line in land.prepare(session.harness.read_modlist()[0], timing=is_timing_run(args)):
+            print(line, flush=True)
+    except distant_land.Problem as problem:
+        raise SystemExit("run_own_device: %s" % problem)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = launch_run(run, spec, args, mods, facts=[build_line, shadows, videos_note(args)])
+        done = launch_run(run, spec, args, mods, facts=[build_line, shadows, videos_note(args)], land=land)
 
     print()
     progress = run.progress_lines(TAG)
@@ -3181,6 +3208,7 @@ def main():
     else:
         print("\nhost: no text; the host program did not start")
     stage_failed = stage_shaders_of_run(run.path("host.txt"))
+    device_lost = device_loss_of_run(run.path("host.txt"), run.dir)
     # The plugin's lines: in mgeXE.log with MGE XE's d3d8.dll. Without its export the plugin
     # writes into nirender.log of the game folder until Lua names the log of the run.
     lines = run.plugin_lines()
@@ -3233,10 +3261,11 @@ def main():
     print_disk_limits()
     if closed:
         print("plain case: the close after the refusal, as designed; the run passes without DONE")
-    land_line, land_changed = distant_land_line(land_before, distant_land_state(session.harness.MO2_ROOT), args.allow_distant_land_rebuild,
-                                                distant_land_cause(session.harness.MO2_ROOT))
-    print(("ERROR: " if land_changed else "") + land_line)
-    code = run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed), bool(stage_failed))
+    land_lines, land_changed = land.result()
+    for line in land_lines:
+        print(("ERROR: " if land_changed else "") + line)
+    code = run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed), bool(stage_failed),
+                         bool(device_lost))
     return exit_with_distant_land(code, land_changed)
 
 
@@ -3261,6 +3290,13 @@ EXIT_STAGE_SHADERS = 6
 # file has another md5 after the run), without --allow-distant-land-rebuild: the run's own results can be right,
 # and the instance is not as it was (W535, 2026-11-16).
 EXIT_DISTANT_LAND_CHANGED = 7
+# A run whose helper lost its GPU device for a reason of the driver (the W78 watch; risk 33 at the quicksave load, risk
+# 71 with x8 anti-aliasing): the line of the device-lost
+# callback (nirender host gpu.rs `watch`). The test of a loss (`gpu::test_loss`, the tune "gpu lose device") gives
+# the reasons "Destroyed" and "the test", which are not a real loss. The run is not clean, and its folder is evidence.
+EXIT_DEVICE_LOST = 8
+DEVICE_LOST_LINE = re.compile(r"^gpu: the device is lost \(([^)]*)\)")
+DEVICE_LOST_TEST_REASONS = ("Destroyed", "the test")
 CLOSE_LINE = re.compile(r"^\[runner\] game closed in \d+ s, without /F, exit code (.+)$")
 # The copy of the --log stream in the run folder, from the run folder's start on: a --log file of the same name in a
 # later run does not take it (W417).
@@ -3405,10 +3441,30 @@ def stage_shaders_of_run(host_text):
     return problem
 
 
-def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, crashed_after_done=False, stage_failed=False):
+def device_loss_of_run(host_text, run_dir, today=None):
+    """The first line of a real loss of the helper's GPU device in the helper's text at the path `host_text` (W78), or
+    None. For a loss it prints an ERROR line and the line of the keep list for the Archivist (D71, D152: the run is
+    the evidence of risk 33). A run with no text of the helper (a reference run) and a test loss give None."""
+    if not os.path.isfile(host_text):
+        return None
+    with open(host_text, encoding="utf-8", errors="replace") as file:
+        for line in file:
+            lost = DEVICE_LOST_LINE.match(line)
+            if lost and lost.group(1) not in DEVICE_LOST_TEST_REASONS:
+                line = line.rstrip("\n")
+                print("ERROR: the helper lost its GPU device (the W78 watch; risk 33 at a load, risk 71 with x8 anti-aliasing): "
+                      + line)
+                print("KEEP for the Archivist (D71): %s\topen: W78\t%s" % (run_dir, today or time.strftime("%Y-%m-%d")))
+                return line
+    return None
+
+
+def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, crashed_after_done=False, stage_failed=False,
+                  device_lost=False):
     """2 for a run without the plugin that loaded it (no reference), 4 (EXIT_FELL_BACK) for a wgpu
     run that MGE XE took to the plain game, also with DONE, 1 for a run that ended without DONE and
-    not by hand (the crash path), 6 (EXIT_STAGE_SHADERS) for a run whose helper reports a failed
+    not by hand (the crash path), 8 (EXIT_DEVICE_LOST) for a run whose helper lost its GPU device (W78),
+    also with DONE and after an end by hand, 6 (EXIT_STAGE_SHADERS) for a run whose helper reports a failed
     rewrite or a failed pipeline of the stage shaders (W523), also with DONE and after an end by
     hand, 5 (EXIT_CRASHED_AFTER_DONE) for a run whose game crashed in its close after DONE (W417),
     else 0 when the steps were done in the budget, 3 for a run ended by hand (W372). The 6 wins
@@ -3421,6 +3477,8 @@ def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, 
         return EXIT_FELL_BACK
     if not done and ending != ENDED_BY_HAND:
         return 1
+    if device_lost:
+        return EXIT_DEVICE_LOST
     if stage_failed:
         return EXIT_STAGE_SHADERS
     if done and crashed_after_done:
