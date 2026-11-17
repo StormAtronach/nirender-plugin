@@ -80,7 +80,8 @@ COUNT_LIMIT = 8
 # The stops of the NIF test level's tour that are over COUNT_LIMIT for a cause that is known and has its own work
 # item, by the name of the stop's picture: the most pixels over 8 levels that pass there, and the cause. A known stop
 # is printed with its count in every run. It fails over its own bound, so a new fault there still shows. The work
-# item that removes the cause removes the entry.
+# item that removes the cause removes the entry: a known stop at or under COUNT_LIMIT fails the tour with a line
+# that says so, so that no wide bound stays behind.
 KNOWN_STOPS = {
     "1-29-_nif_057.png": (1500, "W535: the order of two blended draws differs between the table and the engine's path (1369 on 2026-11-17)"),
     "2-13-_nif_073.png": (80, "W535: the order of two blended draws differs between the table and the engine's path (65 on 2026-11-17)"),
@@ -312,6 +313,10 @@ def main(current=None):
         if counted:
             fails.append("%d pairs of mode gpu against mode off have more pixels over 8 levels than the limit %d (a known stop: than its own bound), the most %d at %s" % (
                 (len(counted), COUNT_LIMIT) + max(counted)))
+        # A known stop that passes the plain limit has lost its cause: its entry must go, or its wide bound stays
+        # behind the work item that removed the cause.
+        for name in sorted(name for count, name in counts if name in KNOWN_STOPS and count <= COUNT_LIMIT):
+            fails.append("the cause of %s is gone: remove its KNOWN_STOPS entry" % name)
         if not rows and not unrun:
             unjudged.append("the dual run has no pair of mode gpu against mode off to compare")
     elif dual:
@@ -540,6 +545,12 @@ def self_test():
                 assert "the others, the largest first: 1-01-a.png 40" in text and "2-13-_nif_073.png 40" not in text.split("the others, the largest first: ")[1].splitlines()[0], text
                 code, text, said = tour("fault 100")
                 assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (2, 100, "2-13-_nif_073.png"), text
+                # A known stop at or under the plain limit: its cause is gone, and the entry must go with it. The
+                # tour fails with that line, at 0 pixels and at 5; the stop beside it passes.
+                gone = "tour verdict: FAIL: the cause of 2-13-_nif_073.png is gone: remove its KNOWN_STOPS entry"
+                for off in ("grey", "fault 5"):
+                    code, text, said = tour(off)
+                    assert code == 1 and said == gone, (off, text)
                 # A dual run with no stop has no pair to compare: not judged.
                 with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
                     file.write("tour: dual\n")
