@@ -313,6 +313,9 @@ impl Player {
         if in_back_buffer && self.plan.scene_kind == scene::SCENE_FIRST_PERSON {
             self.first_person_drawn = true;
         }
+        if in_back_buffer && self.plan.scene_kind == scene::SCENE_SHADOW_CASTERS {
+            self.shadow_casters_drawn = true;
+        }
         // The first draw of the world scene (kind 1) into the back buffer: the answers of
         // the extension for the frame.
         if self.extension.is_some()

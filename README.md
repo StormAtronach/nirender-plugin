@@ -1,10 +1,49 @@
 # nirender
 
+nirender gives The Elder Scrolls III: Morrowind a new renderer. The game keeps its own world,
+its scripts and its mods, but it does not draw the picture. A plugin in the game sends each
+frame to a 64-bit program, `numidium.exe` of a fork of MGE XE G7, which draws it with wgpu on Vulkan or
+Direct3D 12 (the setting `renderer_backend`).
+
+## The state
+
+nirender is in test. Each release is a test build of MGE XE G7 with nirender, for testers, and
+the plugin's switches below are never for a player.
+
+The last test build is
+[v0.3.8](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.3.8)
+(MGE XE G7 0.21.0 with nirender 0.3.8, 2026-11-13). Its release notes list the changes, the
+known issues and the checks to do by hand.
+
+## What it needs
+
+- Morrowind with MWSE, on a 64-bit Windows.
+- A graphics card and driver that wgpu can use with Vulkan or Direct3D 12.
+- The `MWSE.dll` of the release archive. It is a build of our MWSE fork: the public MWSE does
+  not have the parts that the renderer uses, and with it the game runs on its own Direct3D 8.
+
+## How to try it
+
+1. Download the archive of the release and check its SHA-256 (the `.sha256` file beside it).
+2. Read `MGE XE Renderer Readme.md` in the archive first.
+3. Install the whole archive. `akulakhan.dll`, `numidium.exe` and `d3d8.dll` must all come
+   from it: they check each other at the start. Use the archive's `MWSE.dll` too: with the
+   public `MWSE.dll` the new renderer is not used for that session.
+4. Do not run `MWSE-Update.exe` while you test: it puts the public `MWSE.dll` back.
+5. Report a crash or a fault as an issue of this repo, with the logs that the release notes
+   name.
+
+## License
+
+MIT (`LICENSE`).
+
+## For developers
+
 Written for: a person or an agent who works on this repo.
 
 nirender is an MWSE plugin for Morrowind. It replaces the renderer of the game. The game
 makes no Direct3D device. The plugin writes each frame as records into a shared-memory ring.
-A 64-bit helper, `numidium.exe` of MGE XE G7, reads the ring and draws the frame with wgpu.
+A 64-bit helper, `numidium.exe` of a fork of MGE XE G7, reads the ring and draws the frame with wgpu.
 
 ## The parts
 
@@ -18,17 +57,18 @@ A 64-bit helper, `numidium.exe` of MGE XE G7, reads the ring and draws the frame
 | The tools | `tools/` | Python scripts (Python 3.12 with Pillow; the batch files take the interpreter from `local.bat`) |
 | The spike | `spikes/wgpu32/` | the test of 2026-10-10 that wgpu runs in a 32-bit process; kept for its numbers |
 
-The helper is in the sibling repo `MGE-XE-G7-render-link`. A change of `host/` changes the
-helper build. Build the plugin before `cargo xtask build` of that repo.
+The helper is in the repo [MGE-XE-G7](https://github.com/StormAtronach/MGE-XE-G7), branch
+feature/wgpu-renderer; the tools expect its worktree next to this repo as
+`MGE-XE-G7-render-link`. A change of `host/` changes the helper build. Build the plugin before `cargo xtask build` of that repo.
 
 ## Known items
 
 - **The renderer needs our MWSE fork.** Use the test line of our MWSE fork (today the branch
-  test/abi-fixes-15 of the MWSE repo). Stock MWSE does not have the native ABI that the plugin
+  test/abi-fixes-23 of [StormAtronach/MWSE](https://github.com/StormAtronach/MWSE)). Stock MWSE does not have the native ABI that the plugin
   and MGE XE use. It also does not have the fixes of the MWSE risks that the project closed in
   the fork (risks 25, 31 and 36; the owner's D158).
-- **The list of the fork-only changes** is `Numidium Project/notes/mwse-changes.md` in the docs
-  repo. It is checked each week against MWSE upstream (the owner's D157).
+- **The list of the fork-only changes** is kept apart from this repo. It is checked each week
+  against MWSE upstream (the owner's D157).
 - **The project may keep the MWSE fork for a while** (the owner's D159).
 
 ## How the plugin works
@@ -92,8 +132,32 @@ cargo test --release --features rig     the tests of the plugin with the compari
 cd host && cargo test --release         the tests of the host crate (its own workspace)
 ```
 
-The gate of a change: `tools/validate_retained.py --mge-build <folder>`. Pass the folder of
-the current helper build with its `d3d8.dll` and `Data Files`. The stages:
+### Sealed build sets
+
+A test run, a replay and a game by hand take every binary from one sealed build set (W521):
+one folder with the plugin, the `d3d8.dll`, the helper, `MWSE.dll`, `lua51.dll` and the MWSE
+core Lua, built from three commits (nirender, render-link and MWSE). Nothing writes into a set
+after it is made. The tools check the set before they start, and a folder that is not a set
+stops them.
+
+```text
+python -I tools/build_set.py [--nirender C] [--render-link C] [--mwse C]   make a set (default: the tips)
+python -I tools/sets.py <set folder>                                    check one set
+python tools/run_own_device.py --label L [--mge-build <set>]           a test run of the game
+python tools/replay.py <capture> <picture.png> [--mge-build <set>]     a frame of a capture, offline
+python tools/play.py [--mge-build <set>]                                a game by hand
+python -I tools/make_play_set.py                                        the set of the tips, tested
+```
+
+Without `--mge-build`, a tool takes the current set, the one that `current.bat` of the sets
+names. `--archive <folder>` in place of a set names an unpacked release archive, for the
+release check of `tools/release.py`. The form of a set, its parts and its check are in
+`tools/sets.py`.
+
+### The gate
+
+The gate of a change: `tools/validate_retained.py [--mge-build <set>]`. The stages `capture`,
+`baseline` and `only` run by default:
 
 1. `capture`: a run at Seyda Neen and at Narsis with a capture, the counts, a replay.
 2. `baseline`: the kept captures of `results/baseline-records` against the accepted pictures.
@@ -106,15 +170,14 @@ the current helper build with its `d3d8.dll` and `Data Files`. The stages:
 
 `results/` is not in git. The accepted pictures live only on disk.
 
-The checks of the repo itself: `tools/check_readme.py` (every switch the code reads is in
-this file; every path this file names exists) and `tools/check_contract.py` (the header and
-`src/link.rs` agree).
+The checks of the repo itself: `tools/checks.py plugin` runs the content checks of the commit
+hook, among them `tools/check_readme.py` (every switch the code reads is in this file; every
+path this file names exists) and `tools/check_contract.py` (the header and `src/link.rs`
+agree).
 
-Other tools: `tools/replay.py` (a capture to a picture), `tools/picture_diff.py` and
-`tools/diff_crops.py` (two pictures compared), `tools/capture_dump.py` (the records of a
-capture), `tools/lights_count.py` (what clustered distant lights would hold, from a
-`lights.data`), `tools/run_own_device.py` (a game run with the harness mods, on a sealed set of
-`tools/build_set.py`: `--mge-build <set>`, else the current set).
+Other tools: `tools/picture_diff.py` and `tools/diff_crops.py` (two pictures compared),
+`tools/capture_dump.py` (the records of a capture), `tools/lights_count.py` (what clustered
+distant lights would hold, from a `lights.data`). `tools/README.md` lists every tool.
 
 ## Switches
 
@@ -333,7 +396,21 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 - `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the
   world's start.
 
+## Since v0.3.8
+
+The last release is v0.3.8 (the tag on ec9b3f6, 2026-11-13). The merges on master after it
+include:
+
+- the world shader gives way to the extension's next text when a core mod's shader fails (W317,
+  f89a9ca);
+- the stage shaders take a stage key's facts as constants (W530 step 1, 03ac608);
+- the runner does not rebuild the instance's distant land unseen (W535, 665682a);
+- the tools build, run and deploy sealed build sets (W521, 7d57e29 and d37f68a), and the replay
+  tools take their helper from a set (W545, 7d83995 and 844aa5d);
+- the plugin keeps one eye value for one place of a still camera (W538, 1b62781).
+
+Work that is not merged is not in this list.
+
 ## Where the plan is
 
-The plan and the record of each step are in the docs repo:
-`moreFPS/docs/Numidium Project/plans/plan.md`.
+The plan and the record of each step are kept apart from this repo.
