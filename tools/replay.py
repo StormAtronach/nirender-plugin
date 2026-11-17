@@ -1,10 +1,18 @@
 """Draws a frame of a capture file with the MGE XE helper, offline: the same picture from the
 same file each time. For a check of a change of the renderer against the picture before it.
 
-    python tools/replay.py <capture file> <picture.png> [--frame N] [--mge-build DIR]
-    python tools/replay.py <capture file> <prefix> --frames-at 1,3,5 [--mge-build DIR]
+    python tools/replay.py <capture file> <picture.png> [--frame N] [--mge-build SET | --archive DIR]
+    python tools/replay.py <capture file> <prefix> --frames-at 1,3,5 [--mge-build SET | --archive DIR]
     python tools/replay.py --run-folder-for <picture.png> [--config-root DIR]
     python -I tools/replay.py --self-test
+
+THE BUILD (W545, the runner's rule of W521). A replay takes its helper from a sealed set of
+build_set.py: --mge-build names the set, and without it the replay takes the current set (the one
+that current.bat names). The set must pass sets.verify; a folder that is not a set, such as a run
+build folder f<N> or bin/MSVC-Release, is refused, and nothing starts. The tool writes the set's
+line (its name, the three commits, the manifest md5) to standard error before the helper starts.
+--archive names the folder of an unpacked release archive, which has no manifest: the release
+check of release.py. A local.json with the old key "mge_build" is refused: remove the key.
 
 With --frames-at, one run of the helper writes <prefix>-<frame as 5 digits>.png for each
 frame named (the frames count from 0, as --frame): one start of the helper for a capture of
@@ -50,6 +58,7 @@ is white: the same in each picture.
 import argparse
 import contextlib
 import io
+import json
 import locale
 import os
 import shutil
@@ -59,7 +68,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import BUILD_PARTS, SIBLINGS, build_missing, capture_format_line, local, replay_fault_line  # noqa: E402
+from common import BUILD_PARTS, build_missing, capture_format_line, local, local_file, replay_fault_line  # noqa: E402
+import sets  # noqa: E402
 
 CONFIG_FILE = "mgeXE.toml"
 LOG_NAME = "helper.txt"
@@ -70,6 +80,10 @@ OWN_FILES = (CONFIG_FILE, LOG_NAME)
 INSTANCE_MARK = "ModOrganizer.ini"
 GAME_MARK = "Morrowind.exe"
 EXIT_REFUSED = 2
+# The exit code of a build that is not a set, or of a local.json with the gone key: the runner's and play.py's code.
+EXIT_NOT_A_SET = 1
+# The key of local.json that named the build folder before W545.
+GONE_LOCAL_KEY = "mge_build"
 
 
 class Refused(Exception):
@@ -175,7 +189,6 @@ def defaults():
     import session
     root = session.harness.MO2_ROOT
     return {
-        "mge_build": local("mge_build", os.path.join(SIBLINGS, "MGE-XE-G7-render-link", "bin", "MSVC-Release")),
         "config_root": local("config_root", os.path.join(root, "mods", "Configuration", "Root")),
         "distant_land": local("distant_land", os.path.join(root, "overwrite", "distantland")),
         "game_dir": local("game_dir", session.harness.GAME_DIR),
@@ -183,6 +196,35 @@ def defaults():
         # another tool starts is checked here. A harness from before the check has no such function.
         "check_build_slot": getattr(session.harness, "check_build_slot", None),
     }
+
+
+def gone_local_key(path):
+    """The refusal of a local.json at `path` that still has the old key of the build folder (W545), or None. Without the
+    refusal, a worktree with the key would replay the current set and not the folder its local.json names."""
+    if not path:
+        return None
+    with open(path, encoding="utf-8") as file:
+        values = json.load(file)
+    if GONE_LOCAL_KEY not in values:
+        return None
+    return ('%s has the key "%s", which replay.py no longer reads: a replay takes the current set or --mge-build <set>; '
+            "remove the key from that file; nothing started" % (path, GONE_LOCAL_KEY))
+
+
+def open_build(args, verify=None, current=None):
+    """The build of a replay and its line for standard error: (folder, line). --archive takes the unpacked release
+    archive as it is. Else the set of --mge-build, or the current set, after sets.verify, as the runner and play.py
+    take theirs (`run_own_device.open_set`, `set_line`). Raises Refused for --archive with --mge-build, and SystemExit
+    with the runner's line for a folder that is not a set or a set that fails its check. `verify` and `current` are
+    the stand-ins of the self-test."""
+    if args.archive:
+        if args.mge_build:
+            raise Refused("an archive is not a set: no --mge-build with --archive")
+        return args.archive, "build: the release archive %s" % args.archive
+    # The runner's module is large; a call of --run-folder-for or --self-test does not need it.
+    import run_own_device
+    manifest = run_own_device.open_set(args, current, verify or sets.verify, who="replay")
+    return args.mge_build, run_own_device.set_line(args.mge_build, manifest)
 
 
 def self_test():
@@ -332,15 +374,143 @@ def self_test():
             started.append(command)
             return 0, "", ""
 
+        # The build of a replay (W545) in these tests: `build` is a stand-in set. It has a MANIFEST.json, so that the
+        # set line has an md5, and `good_set` stands for sets.verify. The local.json and the defaults are stand-ins too,
+        # so that no test reads this machine's files or slots.
+        manifest = {"name": "build", "commits": {repo: {"commit": repo[0] * 40} for repo in sets.REPOS}}
+        write(join(build, sets.MANIFEST), json.dumps(manifest))
+
+        def good_set(folder):
+            return manifest
+
+        clean_local = join(temp, "local-clean.json")
+        write(clean_local, '{"video_folder": "C:/videos"}')
+        slot_checks = []
+        settings = {"config_root": source, "distant_land": join(temp, "distantland"), "game_dir": join(temp, "game-dir"),
+                    "check_build_slot": lambda: slot_checks.append("checked")}
+
         for flag in (["--run-folder-for", ""], ["--run-folder-for="]):
             errors = io.StringIO()
             with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
                 code = main(flag + [join(temp, "c.nircap"), join(temp, "out", "fall.png"), "--config-root", source,
-                                    "--mge-build", build], start=never)
+                                    "--mge-build", build], start=never, verify=good_set, local_path=clean_local, settings=settings)
             assert code == EXIT_REFUSED and errors.getvalue() == "replay: refused: the picture path is empty\n", (flag, code, errors.getvalue())
             assert not started and not os.path.exists(run_folder_of(join(temp, "out", "fall.png"))), (flag, started)
+        build_tests(temp, write, build, manifest, good_set, clean_local, settings, slot_checks)
     print("replay self-test: ok")
     return 0
+
+
+def build_tests(temp, write, build, manifest, good_set, clean_local, settings, slot_checks):
+    """The tests of the build of a replay (W545), each with its null: a set, a folder that is not a set, a set that fails
+    its check, the current set, --archive, the order against the slot check, a set without a part, and local.json's
+    gone key. No helper starts: a stand-in records the command."""
+    import clean_common
+    join = os.path.join
+    started = []
+    picture = join(temp, "out", "build.png")
+
+    def record(command, folder, env):
+        started.append(command)
+        write(command[command.index("--log") + 1], "nirender-host v0 test\n")
+        return 0, "", ""
+
+    def call(arguments, verify=good_set, current=None, local_path=clean_local):
+        started.clear()
+        slot_checks.clear()
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+            code = main([join(temp, "c.nircap"), picture] + arguments, start=record, verify=verify, current=current,
+                        local_path=local_path, settings=settings)
+        return code, errors.getvalue()
+
+    def parts(folder):
+        write(join(folder, "numidium.exe"))
+        for part in BUILD_PARTS:
+            if not os.path.exists(join(folder, part)):
+                os.makedirs(join(folder, part))
+
+    def nothing_started(what, code, err, wanted):
+        assert code == wanted, (what, code, err)
+        assert not started and not slot_checks, (what, started, slot_checks)
+        assert not os.path.exists(run_folder_of(picture)), what
+
+    # T1, a set: its helper starts, after the slot check, and the set line comes first on standard error.
+    code, err = call(["--mge-build", build])
+    line = "replay: set: build (nirender %s, render-link %s, mwse %s), manifest md5 %s" % (
+        "n" * 40, "r" * 40, "m" * 40, sets.md5_of(join(build, sets.MANIFEST)))
+    assert code == 0 and err.splitlines()[0] == line, (code, err)
+    assert started[0][0] == join(build, "numidium.exe") and slot_checks == ["checked"], (started, slot_checks)
+    # Its null: the same folder as --archive has the archive's line and no set line.
+    code, err = call(["--archive", build])
+    assert code == 0 and err.splitlines()[0] == "replay: build: the release archive %s" % build and "set:" not in err, err
+    assert started[0][0] == join(build, "numidium.exe")
+
+    # T2, a folder that is not a set, with the real sets.verify: refused before the slot check and the run folder.
+    plain = join(temp, "plain")
+    parts(plain)
+    code, err = call(["--mge-build", plain], verify=None)
+    nothing_started("a folder that is not a set", code, err, EXIT_NOT_A_SET)
+    assert err.startswith("replay: ") and "is not a sealed set" in err and "nothing started" in err, err
+    # Its null: the same folder with a manifest and a check that passes replays, so the refusal came from the manifest.
+    write(join(plain, sets.MANIFEST), json.dumps(manifest))
+    code, err = call(["--mge-build", plain])
+    assert code == 0 and started[0][0] == join(plain, "numidium.exe"), (code, err)
+
+    # T3, a set that fails its check, with the real sets.verify: a file of its manifest is not there.
+    bad = join(temp, "bad-set")
+    parts(bad)
+    write(join(bad, sets.MANIFEST), json.dumps({"form": sets.FORM, "name": "bad-set", "folders": [],
+                                                 "files": {"lost.dll": {"size": 1, "md5": "0" * 32}}}))
+    code, err = call(["--mge-build", bad], verify=None)
+    nothing_started("a set that fails its check", code, err, EXIT_NOT_A_SET)
+    assert "the file lost.dll is missing" in err and "nothing started" in err, err
+
+    # T4, the default: without --mge-build, the current set of the sets folder.
+    sets_root = join(temp, "sets")
+    parts(join(sets_root, "s-current"))
+    write(join(sets_root, "s-current", sets.MANIFEST), json.dumps(manifest))
+    before = clean_common.SETS
+    clean_common.SETS = sets_root
+    try:
+        code, err = call([], current=lambda: "s-current")
+        assert code == 0 and started[0][0] == join(sets_root, "s-current", "numidium.exe"), (code, err, started)
+        code, err = call([], current=lambda: None)
+        nothing_started("no current set", code, err, EXIT_NOT_A_SET)
+        assert "no --mge-build and no current set" in err, err
+    finally:
+        clean_common.SETS = before
+
+    # Its null: with --mge-build, the current set is not asked for.
+    def no_current():
+        raise AssertionError("the current set was asked for with --mge-build")
+
+    code, err = call(["--mge-build", build], current=no_current)
+    assert code == 0, (code, err)
+
+    # T5, --archive with --mge-build: refused. Its null is T1's null.
+    code, err = call(["--archive", build, "--mge-build", build])
+    nothing_started("--archive with --mge-build", code, err, EXIT_REFUSED)
+    assert err == "replay: refused: an archive is not a set: no --mge-build with --archive\n", err
+
+    # T6, the order: T2, T3 and T5 show that a refused build reaches no slot check; T1 shows that a set does.
+
+    # T7, a set without a part of the build: the old refusal, after the set line. Its null is T1.
+    partial = join(temp, "set-without-textures")
+    write(join(partial, "numidium.exe"))
+    os.makedirs(join(partial, "Data Files", "shaders"))
+    write(join(partial, sets.MANIFEST), json.dumps(manifest))
+    code, err = call(["--mge-build", partial])
+    assert code == 2 and not started and "has no %s" % join("Data Files", "textures", "MGE") in err, (code, err)
+    assert err.startswith("replay: set: build "), err
+
+    # T8, local.json with the gone key: refused, the key and the file named. Its null is T1, with a local.json without it.
+    old_local = join(temp, "local-old.json")
+    write(old_local, '{"mge_build": "C:/old/bin/MSVC-Release"}')
+    code, err = call(["--mge-build", build], local_path=old_local)
+    nothing_started("local.json with the gone key", code, err, EXIT_NOT_A_SET)
+    assert err == ('replay: %s has the key "mge_build", which replay.py no longer reads: a replay takes the current set '
+                   "or --mge-build <set>; remove the key from that file; nothing started\n" % old_local), err
 
 
 def core_mods_env(value):
@@ -352,7 +522,9 @@ def core_mods_env(value):
     return {"MGE_XE_CORE_MODS_DIR": os.path.abspath(value)}
 
 
-def main(argv=None, start=start_helper):
+def main(argv=None, start=start_helper, verify=None, current=None, local_path=None, settings=None):
+    """The tool. The keywords are the stand-ins of the self-test: `start` of the helper, `verify` and `current` of the
+    set (`open_build`), `local_path` of the local.json that is read (None: `local_file()`), `settings` of `defaults()`."""
     ap = argparse.ArgumentParser()
     ap.add_argument("capture", nargs="?")
     ap.add_argument("picture", nargs="?")
@@ -361,7 +533,8 @@ def main(argv=None, start=start_helper):
     ap.add_argument("--keep-run-folder", action="store_true", help="keeps the run folder after a clean run too")
     ap.add_argument("--frame", type=int)
     ap.add_argument("--frames-at", help="frames to write, with commas; the picture argument is then the prefix of the files")
-    ap.add_argument("--mge-build")
+    ap.add_argument("--mge-build", help="the sealed set whose helper replays (W545); without it, the current set")
+    ap.add_argument("--archive", help="the folder of an unpacked release archive, which has no manifest: the release check")
     ap.add_argument("--config-root", help="the folder whose mgeXE.toml the replay uses; it is only read")
     ap.add_argument("--distant-land")
     ap.add_argument("--game-dir", help="the game folder with Morrowind.ini and the archives")
@@ -390,10 +563,23 @@ def main(argv=None, start=start_helper):
         ap.error("a capture file and a picture are needed")
     if args.debug_view and len(args.debug_view) > 2:
         ap.error("--debug-view takes a name and at most one term")
-    default = defaults()
+    # The build first: a call that names no set starts nothing, takes no look at the slots and makes no run folder.
+    gone = gone_local_key(local_file() if local_path is None else local_path)
+    if gone:
+        sys.stderr.write("replay: %s\n" % gone)
+        return EXIT_NOT_A_SET
+    try:
+        mge_build, build_line = open_build(args, verify, current)
+    except Refused as refused:
+        sys.stderr.write("replay: refused: %s\n" % refused)
+        return EXIT_REFUSED
+    except SystemExit as stop:
+        sys.stderr.write("%s\n" % stop)
+        return EXIT_NOT_A_SET
+    sys.stderr.write("replay: %s\n" % build_line)
+    default = settings or defaults()
     if default["check_build_slot"]:
         default["check_build_slot"]()
-    mge_build = args.mge_build or default["mge_build"]
     missing = build_missing(mge_build)
     if missing:
         sys.stderr.write("replay: the build folder %s has no %s: a replay without them draws another picture\n" % (mge_build, ", ".join(missing)))

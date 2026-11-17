@@ -2,8 +2,14 @@
 once and a failed stage stops the run, so a problem shows after one game run (about two
 minutes) and not after all of them.
 
-    python tools/validate_retained.py [stage ...] [--mge-build DIR] [--places seyda,narsis]
+    python tools/validate_retained.py [stage ...] [--mge-build SET] [--places seyda,narsis]
+    python tools/validate_retained.py baseline --archive DIR    # the release check of release.py
     python -I tools/validate_retained.py --self-test    # the tests of the pure parts, no game
+
+The build (W545): --mge-build names a sealed set, and without it the stages take the current set.
+The runs and the replays check the set themselves (the runner's rule of W521). --archive names an
+unpacked release archive, which has no manifest; it goes to replay.py and validate_tour.py as
+--archive, and only the baseline stage takes it.
 
 The helper draws from the records only, so a picture has no second path to compare with on
 the same capture. The reference of a change of the helper is a baseline: captures that are
@@ -144,6 +150,43 @@ RUNNER_CRASHED_AFTER_DONE = 5
 CRASH_AFTER_DONE_LINE = "ERROR: the game crashed after DONE"
 # The weather that the runs pin and hold (the runner's --weather), or None for --weather any.
 WEATHER = {"pin": 0}
+# The option that names the build to replay.py and validate_tour.py (W545): "--mge-build" for a sealed set, "--archive"
+# for the unpacked release archive of release.py's gate. main sets it.
+BUILD = {"option": "--mge-build"}
+# The stages that only replay. The others start the game, and a run of the game does not take an archive here.
+REPLAY_ONLY_STAGES = ("baseline",)
+
+
+def build_option(mge_build):
+    """The arguments of replay.py and validate_tour.py that name the build of the replays."""
+    return [BUILD["option"], mge_build]
+
+
+def build_problem(stages, mge_build, archive):
+    """The line of a build that the stages cannot take, or None: --archive with --mge-build, or --archive with a stage
+    that starts the game."""
+    if archive and mge_build:
+        return "an archive is not a set: no --mge-build with --archive"
+    games = [stage for stage in stages if stage not in REPLAY_ONLY_STAGES]
+    if archive and games:
+        return "--archive is the release check, which only the baseline stage replays; the stages %s start the game" % ", ".join(games)
+    return None
+
+
+def gate_build(mge_build, archive, current=None):
+    """The build of the stages, and BUILD's option for it: the archive, else --mge-build, else the folder of the current
+    set (`clean_common.current_set`; `current` is the self-test's stand-in). None when there is none. replay.py and the
+    runner check the set itself."""
+    import clean_common
+    BUILD["option"] = "--archive" if archive else "--mge-build"
+    if archive or mge_build:
+        return archive or mge_build
+    name = (current or clean_common.current_set)()
+    if not name:
+        return None
+    folder = os.path.join(clean_common.SETS, name)
+    print("the build: the current set %s" % folder, flush=True)
+    return folder
 
 
 def weather_pin(text):
@@ -332,7 +375,7 @@ def stage_capture(place, mge_build):
     ok &= check_counts(folder)
     capture = os.path.join(folder, "exterior.nircap")
     a = os.path.join(folder, "replay.png")
-    code, out = run_code([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--mge-build", mge_build], {})
+    code, out = run_code([PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20"] + build_option(mge_build), {})
     # A replay with a fault of a check ends with a code of its own (41), so `ran` fails it with its line.
     ok &= ran((code, out), "replay.py")
     ok &= check(os.path.isfile(a), "replay of the capture: %s" % ("a picture" if os.path.isfile(a) else "no picture"))
@@ -589,8 +632,31 @@ def self_test():
         assert "replay.py" in calls[0][0][1]
         # The replays of the gate run with the core mods off.
         assert calls[0][1].get("MGE_XE_CORE_MODS") == "0", calls[0][1]
+        # W545: a set goes to replay.py as --mge-build; the archive of release.py's gate as --archive, never as
+        # --mge-build, which replay.py would refuse for a folder with no manifest.
+        assert calls[0][0][-2:] == ["--mge-build", "no build"], calls[0][0]
+        assert gate_build(None, "the archive") == "the archive" and BUILD["option"] == "--archive"
+        with tempfile.TemporaryDirectory() as folder:
+            with open(os.path.join(folder, "a.nircap"), "wb") as file:
+                file.write(stream_rule.plant(right))
+            calls.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert not stage_baseline(folder, False, "the archive", os.path.join(folder, "now"), hooks=None)
+        assert calls[0][0][-2:] == ["--archive", "the archive"] and "--mge-build" not in calls[0][0], calls[0][0]
     finally:
         build_missing, run_code = real_build_missing, real_run_code
+        BUILD["option"] = "--mge-build"
+    # W545: the build of the stages. --archive only with the baseline stage and without --mge-build; the nulls: the
+    # baseline stage with --archive, and any stage with a set.
+    assert build_problem(["baseline"], None, "a") is None and build_problem(["capture", "baseline"], "s", None) is None
+    assert build_problem(["baseline"], "s", "a") == "an archive is not a set: no --mge-build with --archive"
+    assert "the stages capture, only start the game" in build_problem(["capture", "baseline", "only"], None, "a")
+    # Without --mge-build, the current set of the sets folder; with none, None. The null: --mge-build asks for no set.
+    with contextlib.redirect_stdout(io.StringIO()):
+        import clean_common
+        assert gate_build(None, None, current=lambda: "s-x") == os.path.join(clean_common.SETS, "s-x")
+        assert gate_build(None, None, current=lambda: None) is None
+        assert gate_build("the set", None, current=lambda: 1 / 0) == "the set" and BUILD["option"] == "--mge-build"
     # W417: a crash after DONE counts as ran, with its line; the null: any other code stays as it was.
     import run_own_device
     assert RUNNER_CRASHED_AFTER_DONE == run_own_device.EXIT_CRASHED_AFTER_DONE
@@ -1155,7 +1221,7 @@ def replay_frames(capture, prefix, mge_build, env):
     for stale in [prefix + ".png", prefix + LAST + ".png"] + [os.path.join(folder, entry) for entry in os.listdir(folder) if numbered.fullmatch(entry)]:
         if os.path.isfile(stale):
             os.remove(stale)
-    code, output = run_code([PY, os.path.join(HERE, "replay.py"), capture, prefix, "--frames-at", GATE_FRAMES, "--mge-build", mge_build], env)
+    code, output = run_code([PY, os.path.join(HERE, "replay.py"), capture, prefix, "--frames-at", GATE_FRAMES] + build_option(mge_build), env)
     frames = sorted(int(found.group(1)) for found in map(numbered.fullmatch, os.listdir(folder)) if found)
     last = None
     for frame in frames:
@@ -1325,7 +1391,7 @@ def baseline_pass(baseline, captures, accept, mge_build, out, add, env=None, acc
         if not any(checks.get(check_name, (0, 0))[0] for checks, _pictures in now_state.values()):
             ok &= not_run("%sno capture of the baseline judges the check \"%s\": the stage cannot show it" % (title, check_name))
     tour = os.path.join(baseline, "tour") if plain else None
-    if tour and os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4", "--mge-build", mge_build], env), "validate_tour.py", accept):
+    if tour and os.path.isdir(tour) and not ran(run_code([PY, os.path.join(HERE, "validate_tour.py"), tour, "--out", tour_out, "--jobs", "4"] + build_option(mge_build), env), "validate_tour.py", accept):
         return False
     adapter_path = os.path.join(accepted, ADAPTER_FILE)
     if accept:
@@ -1493,7 +1559,7 @@ def stage_objects(baseline, mge_build, keep=None, env=None, route=None):
         for backend in OBJECT_BACKENDS:
             steady_seen = False
             for capture in captures:
-                code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend, "--mge-build", mge_build], env)
+                code, output = run_code([PY, os.path.join(HERE, "replay.py"), os.path.join(baseline, capture), os.path.join(out, "%s-%s.png" % (capture[:-7], backend)), "--backend", backend] + build_option(mge_build), env)
                 keep_folder(code, output, "%s, %s" % (backend, capture))
                 if keep:
                     keep_replay_output(os.path.join(keep, "objects-%s-%s" % (backend, capture[:-7])), code, output)
@@ -1577,7 +1643,7 @@ def stage_clusters(place, mge_build, started):
     # The replays use the build under test: the default of replay.py is the folder of
     # `cargo xtask build`, which can hold an older helper.
     # A replay that failed fails the stage with its code: before W523 only a missing line or picture showed it.
-    replay = [PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder, "--mge-build", mge_build]
+    replay = [PY, os.path.join(HERE, "replay.py"), capture, a, "--frame", "20", "--config-root", folder] + build_option(mge_build)
     code, out = run_code(replay, {"MGE_XE_CLUSTERS": "1"})
     keep_replay_output(a, code, out)
     if not ran((code, out), "replay.py with the clusters"):
@@ -1650,7 +1716,7 @@ def stage_tour(mge_build):
     # the gate names it as not pinned, not as held.
     print("       weather: not pinned: the tour step pins none (the run's line: %s)" % (run_weather_line(folder) or "none"), flush=True)
     ok = check_counts(folder)
-    code, out = run_code([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4", "--mge-build", mge_build], {})
+    code, out = run_code([PY, os.path.join(HERE, "validate_tour.py"), folder, "--jobs", "4"] + build_option(mge_build), {})
     for line in out.strip().split("\n")[-45:]:
         print("       " + line[:160], flush=True)
     # The tool's exit code is its verdict (W526: its pictures, its replays' fault codes, each pair of mode gpu against
@@ -1663,7 +1729,8 @@ def stage_tour(mge_build):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("stages", nargs="*", default=["capture", "baseline", "only"])
-    ap.add_argument("--mge-build", default=os.path.join(REPO, "..", "MGE-XE-G7-render-link", "bin", "MSVC-Release"))
+    ap.add_argument("--mge-build", help="the sealed set of the runs and the replays (W545); without it, the current set")
+    ap.add_argument("--archive", help="the folder of an unpacked release archive: the release check, the baseline stage only")
     ap.add_argument("--places", default="seyda,narsis")
     ap.add_argument("--baseline", default=os.path.join(REPO, "results", "baseline-records"), help="the folder of the baseline stage")
     ap.add_argument("--accept", action="store_true", help="the baseline stage writes the accepted pictures and compares nothing")
@@ -1681,6 +1748,15 @@ def main():
         return 0
     if args.accept and args.accept_new:
         print("  FAIL --accept writes every accepted picture again, and --accept-new replaces none: give one of them", flush=True)
+        return 1
+    problem = build_problem(args.stages, args.mge_build, args.archive)
+    if problem:
+        print("  FAIL " + problem, flush=True)
+        return 1
+    mge_build = gate_build(args.mge_build, args.archive)
+    if mge_build is None:
+        print("  FAIL no --mge-build and no current set (current.bat of the sets folder): make a set of the commits with "
+              "tools/build_set.py and name it with --mge-build", flush=True)
         return 1
     problem = now_problem(args.baseline, args.accept, args.now)
     if problem:
@@ -1706,25 +1782,25 @@ def main():
     for stage in args.stages:
         if stage == "capture":
             for place in places:
-                if not stage_capture(place, args.mge_build):
+                if not stage_capture(place, mge_build):
                     return 1
         elif stage == "baseline":
-            if not stage_baseline(args.baseline, args.accept, args.mge_build, args.now, args.accept_new, os.path.abspath(args.hook_fixtures)):
+            if not stage_baseline(args.baseline, args.accept, mge_build, args.now, args.accept_new, os.path.abspath(args.hook_fixtures)):
                 return baseline_failure_code()
         elif stage == "only":
             for place in places:
-                if not stage_only(place, args.mge_build):
+                if not stage_only(place, mge_build):
                     return 1
         elif stage == "tour":
-            if not stage_tour(args.mge_build):
+            if not stage_tour(mge_build):
                 return 1
         elif stage == "clusters":
             for place in places:
-                if not stage_clusters(place, args.mge_build, started):
+                if not stage_clusters(place, mge_build, started):
                     return 1
         elif stage == "weathers":
             for place in places:
-                if not stage_weathers(place, args.mge_build):
+                if not stage_weathers(place, mge_build):
                     return 1
         else:
             print("unknown stage " + stage)
