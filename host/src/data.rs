@@ -548,13 +548,21 @@ pub(crate) struct Counts {
     pub(crate) caster_world_lights: u32,
     /// The draws of the world lit for each vertex in the mode `world` that took the world's
     /// point lights as their list, the lights in those lists, and those the cap of 64 left out
-    /// ([`crate::lights::world_lights_in_reach`]). Such draws with no bound, and those not
-    /// relative to the camera, keep the engine's lights.
+    /// ([`crate::lights::world_lights_in_reach`]). Such draws with no bound, and those in no
+    /// space of the world's lights ([`crate::lights::DrawSpace`]), keep the engine's lights.
     pub(crate) vertex_world_lists: u32,
     pub(crate) vertex_world_lights: u64,
     pub(crate) vertex_world_dropped: u32,
     pub(crate) vertex_world_no_bound: u32,
-    pub(crate) vertex_world_not_relative: u32,
+    pub(crate) vertex_world_no_space: u32,
+    /// The engine's own point lights of the draws with a world list, against those lists.
+    pub(crate) vertex_world_own: crate::lights::OwnLights,
+    /// The draws in the world's own space that took the world's lights for each pixel
+    /// ([`crate::WORLD_SPACE_LIGHTS_BIT`]), and the scenes whose draws in that space kept their
+    /// own, by [`crate::engine::scene::WorldSpaceRefusal`]: not lit, no world view, the view,
+    /// the projection.
+    pub(crate) world_space_lights: u32,
+    pub(crate) world_space_refused: [u32; 4],
     /// The particle draws that took their lights at their corners ([`crate::CORNER_LIGHT_BIT`]).
     pub(crate) corner_light_draws: u32,
     /// The shapes with a rule of the engine that this program does not follow: a material

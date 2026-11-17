@@ -380,6 +380,11 @@ struct Retained {
 /// draw of the world of the stream and a retained slot with lights have it.
 pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
 
+/// Bit 128 of `light_range[3]`, with [`WORLD_LIGHTS_BIT`]: the draw is in the world's own space
+/// ([`lights::DrawSpace::World`]), so the world's lights take the origin of the retained set
+/// (`clusters.origin`, `world_light` in the shader) in place of the translation to the camera.
+pub(crate) const WORLD_SPACE_LIGHTS_BIT: u32 = 128;
+
 /// Bit 128 of `counts.w`, set by the extension in its shade: it lights the draw for each pixel.
 /// Without it the vertex stage lights the draw with the draw's own list (shader.wgsl, the
 /// vertex stage), and a draw of the world takes the world's point lights as that list
@@ -1102,6 +1107,9 @@ struct Player {
     /// The world's point lights by place for the draws lit for each vertex, made again after a
     /// light record ([`player::draws`], W554).
     vertex_world: lights::VertexWorld,
+    /// Whether the draws in the world's own space of the scene in progress take the world's
+    /// lights ([`engine::scene::world_space_lights`]): found at the first such draw of the scene.
+    world_space_scene: Option<Result<(), engine::scene::WorldSpaceRefusal>>,
     /// The world matrices of the instances of the frame; the first is an identity, for
     /// the draws of their own.
     frame_instances: Vec<Instance>,

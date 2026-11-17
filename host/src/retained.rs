@@ -4042,6 +4042,27 @@ mod list_tests {
         assert_ne!(set.light_values[slot].position, before);
     }
 
+    /// W554 addendum 13: a light of the set reaches a draw in the world's own space by the set's
+    /// origin (`clusters.origin`), and a draw relative to the camera by the offset; the two
+    /// differ by the camera.
+    #[test]
+    fn the_sets_origin_is_the_offset_plus_the_camera() {
+        let (mut set, known) = world_set();
+        let camera = [150001.0, -90000.0, 2000.0];
+        assert!(set.rebase(Some(camera), &known, &mut []));
+        let slot = set.light_slot_of[&LIGHT] as usize;
+        let in_set = set.light_values[slot].position;
+        let origin = set.set_to_scene(None);
+        let offset = set.set_to_scene(Some([camera[0] - 30.0, camera[1], camera[2]]));
+        for axis in 0..3 {
+            assert_eq!(origin[axis], offset[axis] + [camera[0] - 30.0, camera[1], camera[2]][axis]);
+        }
+        // The light's place in the world: its place in the set plus the origin.
+        assert_eq!(in_set[0] as f64 + origin[0], NEAR_S[0] as f64);
+        // The null: the offset alone does not give the world's place.
+        assert_ne!(in_set[0] as f64 + offset[0], NEAR_S[0] as f64);
+    }
+
     /// Verdict 583 C1: a key that leaves the set goes from the runs near its kept place.
     #[test]
     fn a_light_that_leaves_the_set_leaves_the_runs() {

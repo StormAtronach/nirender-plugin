@@ -228,6 +228,7 @@ impl Player {
                 self.views.scene_begin(kind, in_target, camera_is_world);
                 self.view_world_begun = false;
                 self.view_sky_seen = false;
+                self.world_space_scene = None;
                 self.view_scene_draws = [0; 2];
                 self.view_early_draws = 0;
                 let in_back_buffer = plan::Plan::scene_in_back_buffer(in_target, self.stream.back_buffer);

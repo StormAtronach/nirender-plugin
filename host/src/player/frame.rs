@@ -98,6 +98,7 @@ impl Player {
             frame_lights: Vec::new(),
             frame_bones: Vec::new(),
             vertex_world: crate::lights::VertexWorld::default(),
+            world_space_scene: None,
             frame_instances: Vec::new(),
             parameters: None,
             plan: plan::Plan::default(),

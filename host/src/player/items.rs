@@ -165,6 +165,7 @@ impl Player {
                 Some((
                     self.retained.world_light_slots(),
                     self.retained.set_to_scene(facts.origin),
+                    self.retained.set_to_scene(None),
                     facts.origin,
                 ))
             }
@@ -175,7 +176,7 @@ impl Player {
         // lights of the extension have them.
         let scene = world_start.map(|facts| (facts.view, facts.projection, facts.depth_range()));
         match (world, self.table_shaded.as_ref()) {
-            (Some((slots, to_scene, camera)), Some((lights, _))) => {
+            (Some((slots, to_scene, to_world, camera)), Some((lights, _))) => {
                 renderer.clusters.build_world(
                     &renderer.device,
                     &renderer.queue,
@@ -184,6 +185,7 @@ impl Player {
                     scene,
                     camera,
                     to_scene,
+                    to_world,
                     self.frame_size,
                     &mut renderer.counts,
                 );
