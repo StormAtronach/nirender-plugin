@@ -180,6 +180,7 @@ CHECKS = {
     "sets": (PLUGIN / "tools" / "sets.py", PLUGIN, ["--self-test"]),
     "mwse sites parsing": (PLUGIN / "tools" / "check_mwse_sites.py", PLUGIN, ["--self-test"]),
     "bc7": (PLUGIN / "tools" / "bc7.py", PLUGIN, ["--self-test"]),
+    "the run wait": (PLUGIN / "tools" / "wait_once.py", PLUGIN, ["--self-test"]),
     "frame census": (PLUGIN / "tools" / "frame_census.py", PLUGIN, ["--self-test"]),
 }
 # The tools with a --self-test that no check runs, each with the reason. A new tool with a --self-test is a check, or a
