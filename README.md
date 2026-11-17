@@ -1,5 +1,43 @@
 # nirender
 
+nirender gives The Elder Scrolls III: Morrowind a new renderer. The game keeps its own world,
+its scripts and its mods, but it does not draw the picture. A plugin in the game sends each
+frame to a 64-bit program, `numidium.exe` of MGE XE G7, which draws it with wgpu on Vulkan or
+Direct3D 12 (the setting `renderer_backend`).
+
+## The state
+
+nirender is in test. Each release is a test build of MGE XE G7 with nirender, for testers, and
+the plugin's switches below are never for a player.
+
+The last test build is
+[v0.3.8](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.3.8)
+(MGE XE G7 0.21.0 with nirender 0.3.8, 2026-11-13). Its release notes list the changes, the
+known issues and the checks to do by hand.
+
+## What it needs
+
+- Morrowind with MWSE, on a 64-bit Windows.
+- A graphics card and driver that wgpu can use with Vulkan or Direct3D 12.
+- The `MWSE.dll` of the release archive. It is a build of our MWSE fork: the public MWSE does
+  not have the parts that the renderer uses, and with it the game runs on its own Direct3D 8.
+
+## How to try it
+
+1. Download the archive of the release and check its SHA-256 (the `.sha256` file beside it).
+2. Read `MGE XE Renderer Readme.md` in the archive first.
+3. Install the whole archive: `akulakhan.dll`, `numidium.exe`, `d3d8.dll` and `MWSE.dll` must
+   all come from it. They check each other at the start.
+4. Do not run `MWSE-Update.exe` while you test: it puts the public `MWSE.dll` back.
+5. Report a crash or a fault as an issue of this repo, with the logs that the release notes
+   name.
+
+## License
+
+MIT (`LICENSE`).
+
+## For developers
+
 Written for: a person or an agent who works on this repo.
 
 nirender is an MWSE plugin for Morrowind. It replaces the renderer of the game. The game
@@ -18,17 +56,18 @@ A 64-bit helper, `numidium.exe` of MGE XE G7, reads the ring and draws the frame
 | The tools | `tools/` | Python scripts (Python 3.12 with Pillow; the batch files take the interpreter from `local.bat`) |
 | The spike | `spikes/wgpu32/` | the test of 2026-10-10 that wgpu runs in a 32-bit process; kept for its numbers |
 
-The helper is in the sibling repo `MGE-XE-G7-render-link`. A change of `host/` changes the
-helper build. Build the plugin before `cargo xtask build` of that repo.
+The helper is in the repo [MGE-XE-G7](https://github.com/StormAtronach/MGE-XE-G7), branch
+feature/wgpu-renderer; the tools expect its worktree next to this repo as
+`MGE-XE-G7-render-link`. A change of `host/` changes the helper build. Build the plugin before `cargo xtask build` of that repo.
 
 ## Known items
 
 - **The renderer needs our MWSE fork.** Use the test line of our MWSE fork (today the branch
-  test/abi-fixes-23 of the MWSE repo). Stock MWSE does not have the native ABI that the plugin
+  test/abi-fixes-23 of [StormAtronach/MWSE](https://github.com/StormAtronach/MWSE)). Stock MWSE does not have the native ABI that the plugin
   and MGE XE use. It also does not have the fixes of the MWSE risks that the project closed in
   the fork (risks 25, 31 and 36; the owner's D158).
-- **The list of the fork-only changes** is `Numidium Project/notes/mwse-changes.md` in the docs
-  repo. It is checked each week against MWSE upstream (the owner's D157).
+- **The list of the fork-only changes** is kept apart from this repo. It is checked each week
+  against MWSE upstream (the owner's D157).
 - **The project may keep the MWSE fork for a while** (the owner's D159).
 
 ## How the plugin works
@@ -373,5 +412,4 @@ Work that is not merged is not in this list.
 
 ## Where the plan is
 
-The plan and the record of each step are in the docs repo:
-`moreFPS/docs/Numidium Project/plans/plan.md`.
+The plan and the record of each step are kept apart from this repo.

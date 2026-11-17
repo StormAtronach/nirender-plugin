@@ -10,11 +10,12 @@ itself. The places of this machine that a tool needs come from `local.json` at t
 (`common.local`; `local.example.json` names the keys), with a default next to this repo or
 under the home folder. A worktree without `local.json` reads the main checkout's file, and the
 tool names that file and its keys on stderr. Every key of that file then applies to the
-worktree: give a worktree its own `local.json` for a key that must differ in it. The docs
-repository (moreFPS: the harness, the state-page scripts, the batches) is always the one next to
-the main checkout, never one next to a worktree (`common.docs_root`): a group of worktrees in
-C:/tmp can hold a docs worktree of an old branch. The key `docs` names another docs tree, a
-branch under test, on purpose; the tool then names that tree and its branch on stderr. The keys
+worktree: give a worktree its own `local.json` for a key that must differ in it. Some tools read
+the separate docs checkout (the test harness, the state-page scripts, the batches). It is always
+the one next to the main checkout, never one next to a worktree (`common.docs_root`, its folder
+name in `common.DOCS_REPO`): a group of worktrees can hold a docs worktree of an old branch. The
+key `docs` names another docs tree, a branch under test, on purpose; the tool then names that tree
+and its branch on stderr. The keys
 `harness` and `obs_record` name one folder each and come before `docs`.
 
 ## The shared modules
@@ -22,7 +23,7 @@ branch under test, on purpose; the tool then names that tree and its branch on s
 | Tool | What it is |
 | --- | --- |
 | `common.py` | What the tools share: the names of the renderer functions, the port macros, the report reader. |
-| `session.py` | One run of the game with the nirender mod through the testing instance: the build, the mod, the run spec, the results folder. The harness itself is in the docs repo (`scripts/test-harness-2026-10-03`). |
+| `session.py` | One run of the game with the nirender mod through the testing instance: the build, the mod, the run spec, the results folder. The harness itself is in the separate docs checkout. |
 
 ## The game runs
 
