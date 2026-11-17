@@ -181,7 +181,9 @@ def has_data(folder):
 
 
 def overwrite_files(instance):
-    """The files of overwrite/distantland, relative and sorted."""
+    """The files of overwrite/distantland, relative and sorted. os.walk enters a junction or a folder link there (it does
+    not follow a symbolic link to a folder): the files below a junction count, and move_overwrite moves them, as files of
+    overwrite."""
     root = overwrite_folder(instance)
     found = []
     for folder, _, names in os.walk(root):
@@ -280,8 +282,8 @@ def end(instance, profile, mod, read_only, before, move=True):
     A run that may write: the files of overwrite move into `mod`. Then the run file goes, unless the read-only check
     failed (the next start then names the files). Returns (lines, fault)."""
     files = overwrite_files(instance)
-    after = state_md5(mod)
     if read_only:
+        after = state_md5(mod)
         faults = []
         if files:
             faults.append("overwrite/distantland holds %d files after a read-only run: %s" % (len(files), ", ".join(files[:6])))
@@ -294,6 +296,7 @@ def end(instance, profile, mod, read_only, before, move=True):
         os.remove(run_file(profile))
         return ["distant land: read-only, as before the run (%s)" % (before or "none")[:8]], False
     moved = move_overwrite(instance, mod) if move else 0
+    after = state_md5(mod)
     os.remove(run_file(profile))
     return ["distant land: %d files of overwrite moved into %s; state %s -> %s" % (moved, os.path.basename(mod), (before or "none")[:8], (after or "none")[:8])], False
 
@@ -520,18 +523,25 @@ def self_test():
         os.makedirs(os.path.join(other, DATA))
         with open(os.path.join(other, DATA, VERSION_FILE), "w") as file:
             file.write("old")
+        with open(os.path.join(other, DATA, STATE_FILE), "w") as file:
+            file.write("old state")
+        old_state = state_md5(other)
         for move in (False, True):
             plant("version", "new")
             plant("statics/usage.data")
+            plant(STATE_FILE, "new state")
             write_run_file(profile, tuned, instance, False, "c0ffee")
-            lines, fault = end(instance, profile, other, False, None, move=move)
+            lines, fault = end(instance, profile, other, False, old_state, move=move)
             assert not fault
+            # The line's "after" is the mod's state after the move (verdict 553); without the move it is the old one.
+            after = hashlib.md5(b"new state" if move else b"old state").hexdigest()[:8]
+            assert lines[0].endswith("state %s -> %s" % (old_state[:8], after)), (move, lines)
             if move:
                 assert overwrite_files(instance) == [] and not os.path.exists(run_file(profile)), lines
                 assert open(os.path.join(other, DATA, VERSION_FILE)).read() == "new" and has_data(other)
                 assert os.path.isfile(os.path.join(other, DATA, "statics", "usage.data"))
             else:
-                assert overwrite_files(instance) == ["statics/usage.data", "version"]
+                assert overwrite_files(instance) == [STATE_FILE, "statics/usage.data", "version"]
         assert os.path.isdir(overwrite_folder(instance)) and os.listdir(overwrite_folder(instance)) == []
 
         # C2 (T-N3b): a read-only run with a file in overwrite fails, and the file stays; the run file stays too.
