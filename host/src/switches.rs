@@ -63,7 +63,7 @@ pub(crate) struct Switches {
     pub(crate) depth24: bool,
     /// `MGE_XE_TABLE_ORDER=grouped|engine`: the order of the table's unsorted draws
     /// ([`crate::table_order::TableOrder`]); unset, or with a value that is not known,
-    /// `grouped`. The read prints the route line "table order: <the value in use>".
+    /// `grouped`. The read prints the route line `table order: ` and the value in use.
     pub(crate) table_order: crate::table_order::TableOrder,
     /// `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the
     /// setting of the extension ([`crate::Extension::frame_latency`]): for an A/B of the
