@@ -24,6 +24,7 @@ import time
 
 import session  # noqa: F401  (puts the harness on the path)
 import harness
+import distant_land  # noqa: E402  (W521 step 4)
 from common import local
 
 PACKAGE = local("mwse_mcp", os.path.join(os.path.expanduser("~"), "tools", "mwse-mcp", "mwse-mcp"))
@@ -65,8 +66,25 @@ def bridge_is_up():
         return False
 
 
+def resting_land():
+    """The distant land of the instance as it is (W521 step 4): what overwrite/distantland holds moves into the resting
+    mod, which must be on. Returns the lines to print; a Problem names what a person must look at."""
+    modlist = harness.read_modlist()[0]
+    lines = distant_land.start(harness.MO2_ROOT, harness.PROFILE, modlist)
+    resting = distant_land.resting_mod(harness.MO2_ROOT, modlist)
+    if not resting:
+        raise distant_land.Problem("no distant land mod is on in the mod list of %s: deploy_rest.py puts the resting one on" % harness.MO2_ROOT)
+    return lines + ["distant land: the resting mod %s" % resting]
+
+
 def start():
     harness.refuse_if_busy()
+    try:
+        for line in resting_land():
+            print(line, flush=True)
+    except distant_land.Problem as problem:
+        print("live: %s" % problem)
+        return 1
     subprocess.Popen(harness.launch_command(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print("starting the game", flush=True)
     deadline = time.time() + 180
@@ -91,6 +109,14 @@ def stop():
     # Mod Organizer ends by itself after Root Builder has cleared the game folder.
     harness.close_mo2()
     print("stopped: %d game" % len(game))
+    # The files that the generator made during the game go into the resting mod (verdict 547, C1).
+    if not harness.instance_game_may_run():
+        try:
+            for line in resting_land():
+                print(line, flush=True)
+        except distant_land.Problem as problem:
+            print("live: %s" % problem)
+            return 1
     return 0
 
 

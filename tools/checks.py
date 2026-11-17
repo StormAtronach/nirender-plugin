@@ -149,6 +149,9 @@ CHECKS = {
     "gate": (PLUGIN / "tools" / "validate_retained.py", PLUGIN, ["--self-test"]),
     # The tour's replays: a planted refusal of the slot check, and a planted fault of the stage shaders (W523).
     "tour": (PLUGIN / "tools" / "validate_tour.py", PLUGIN, ["--self-test"]),
+    # The distant land of a run (W521 step 4): the key, the switch of the mods, the moves and the read-only check, on a
+    # planted instance.
+    "distant land": (PLUGIN / "tools" / "distant_land.py", PLUGIN, ["--self-test"]),
     # The stream rule of the gate: the planted fault of risk 76 and the passes.
     "stream rule": (PLUGIN / "tools" / "stream_rule.py", PLUGIN, ["--self-test"]),
     "clean worktrees": (PLUGIN / "tools" / "clean_merged_worktrees.py", PLUGIN, ["--self-test"]),
@@ -177,6 +180,7 @@ CHECKS = {
     "sets": (PLUGIN / "tools" / "sets.py", PLUGIN, ["--self-test"]),
     "mwse sites parsing": (PLUGIN / "tools" / "check_mwse_sites.py", PLUGIN, ["--self-test"]),
     "bc7": (PLUGIN / "tools" / "bc7.py", PLUGIN, ["--self-test"]),
+    "the run wait": (PLUGIN / "tools" / "wait_once.py", PLUGIN, ["--self-test"]),
     "frame census": (PLUGIN / "tools" / "frame_census.py", PLUGIN, ["--self-test"]),
 }
 # The tools with a --self-test that no check runs, each with the reason. A new tool with a --self-test is a check, or a
@@ -185,7 +189,7 @@ SELF_TESTS_NOT_CHECKED = {
     "symbols.py": "about 11 s and symstore.exe: too slow for the hook of each commit",
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "replay run folder", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "sharedse layouts parsing", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "tour", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test", "lua checks", "build sets", "sets", "mwse sites parsing", "bc7", "frame census"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "replay run folder", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "sharedse layouts parsing", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "tour", "distant land", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test", "lua checks", "build sets", "sets", "mwse sites parsing", "bc7", "frame census"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects", "mge plain guards"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))

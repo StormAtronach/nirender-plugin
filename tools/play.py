@@ -39,6 +39,7 @@ This report only reads, and a fault in it stops nothing.
 import argparse
 import contextlib
 import ctypes
+import io
 import os
 import re
 import subprocess
@@ -52,6 +53,7 @@ import session  # noqa: E402, F401  (puts the harness on the path)
 import harness  # noqa: E402
 import run_own_device  # noqa: E402  (the set of a run and its staging, W521)
 import sets  # noqa: E402
+import distant_land  # noqa: E402  (W521 step 4)
 
 # The line of a game with no set (D 2.5): the tools that make one and that make it the current set.
 NO_SET_HINT = ("make a set with tools/build_set.py and name it with --mge-build, or make it the current set with "
@@ -182,6 +184,7 @@ def self_test():
     assert lines[-3:] == ["", "[views]", "full_tier_max = 4"], lines
     self_test_set()
     self_test_not_known()
+    self_test_end_and_restore()
     print("play self-test: ok")
 
 
@@ -218,6 +221,76 @@ def self_test_not_known():
         assert wait_for_start(0) is True
     finally:
         harness.processes, time.sleep = saved_processes, saved_sleep
+
+
+def end_and_restore(land, deployment, game_may_run=None):
+    """The end of a game's staging (verdict 547 C1, verdict 553): the distant land's end, only when no game of the
+    instance may run, then the restore of the mod list. The restore runs after any exception of the end; the end's
+    error is printed, and `land.result()` is then a fault. Returns (what the restore returns, the end's error or None)."""
+    game_may_run = game_may_run or harness.instance_game_may_run
+    error = None
+    try:
+        if land and not game_may_run():
+            land.end()
+    except Exception as fault:  # noqa: BLE001 - every fault of the end leaves the restore to run
+        error = "%s: %s" % (type(fault).__name__, fault)
+        print("ERROR: play: the distant land's end failed: %s" % error, flush=True)
+    finally:
+        restored = deployment.restore()
+    return restored, error
+
+
+def self_test_end_and_restore():
+    """Verdict 553: the restore runs once after the end, and also when the end raises any exception, not only OSError.
+    The null: an end that works gives no error and the same order. A game that may still run gets no end, and the
+    restore still runs."""
+
+    class Deployment:
+        def __init__(self, order):
+            self.order = order
+
+        def restore(self):
+            self.order.append("restore")
+            return True
+
+    class Land:
+        def __init__(self, order, fault=None):
+            self.order, self.fault = order, fault
+            self.ended = False
+
+        def end(self):
+            self.order.append("end")
+            if self.fault:
+                raise self.fault
+            self.ended = True
+
+        def result(self):
+            return (["ended"], False) if self.ended else (["not checked"], True)
+
+    for fault in (RuntimeError("planted"), KeyError("planted"), OSError("planted")):
+        order = []
+        land = Land(order, fault)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            restored, error = end_and_restore(land, Deployment(order), game_may_run=lambda: False)
+        assert order == ["end", "restore"] and restored is True, (fault, order)
+        assert error.startswith(type(fault).__name__ + ": ") and "ERROR: play: the distant land's end failed" in printed.getvalue(), error
+        assert land.result()[1] is True
+    # The null: an end that works.
+    order = []
+    land = Land(order)
+    assert end_and_restore(land, Deployment(order), game_may_run=lambda: False) == (True, None) and order == ["end", "restore"]
+    assert land.result() == (["ended"], False)
+    # A game that may still run: no end, the restore runs; with no land, only the restore.
+    for given, may_run in ((Land(order), lambda: True), (None, lambda: False)):
+        order.clear()
+        assert end_and_restore(given, Deployment(order), game_may_run=may_run) == (True, None) and order == ["restore"], order
+    # A KeyboardInterrupt in the end is not swallowed, and the restore still runs.
+    order = []
+    try:
+        end_and_restore(Land(order, KeyboardInterrupt()), Deployment(order), game_may_run=lambda: False)
+        raise AssertionError("a KeyboardInterrupt was swallowed")
+    except KeyboardInterrupt:
+        assert order == ["end", "restore"], order
 
 
 def game_files(folder, manifest, plugin):
@@ -337,11 +410,27 @@ def main():
             files["MWSE/mods/livecoding/main.lua"] = main
             files["MWSE/mods/livecoding/livecoding.lua"] = os.path.abspath(args.livecoding)
         mods.append((session.MOD_NAME, files))
+    # The distant land of this game (W521 step 4): the mod of its key on, every other marked mod off; the files that the
+    # generator makes go into that mod after the game. Not for --stage-only, which starts no game.
+    land = None
+    if not args.stage_only:
+        try:
+            land = distant_land.RunLand(harness.MO2_ROOT, harness.PROFILE, distant_land.key_of(args.mge_build, manifest, switched, args.set),
+                                        False, distant_land.tool_commit())
+            for line in land.prepare(harness.read_modlist()[0]):
+                print(line, flush=True)
+        except distant_land.Problem as problem:
+            raise SystemExit("play: %s" % problem)
     deployment = harness.Deployment()
-    handle, started, game_ended = None, time.time(), False
+    handle, started, game_ended, land_fault = None, time.time(), False, False
     try:
         for name, files in mods:
             deployment.use_mod(name, files)
+        if land:
+            off, own = land.switch(harness.read_modlist()[0])
+            for name in off:
+                deployment.disable_mod(name)
+            deployment.enable_mod(own)
         if args.stage_only:
             print("staged in %s for the profile %s; no game (--stage-only)" % (harness.MO2_ROOT, os.path.basename(harness.PROFILE)))
             return 0
@@ -359,16 +448,20 @@ def main():
         game_ended = True
     finally:
         harness.close_mo2()
-        restored = deployment.restore()
+        restored, _ = end_and_restore(land, deployment)
         if os.path.isfile(switched):
             os.remove(switched)
         os.rmdir(os.path.dirname(switched))
         if restored:
             print("the mod list of the instance is back")
+        if land:
+            land_lines, land_fault = land.result()
+            for line in land_lines:
+                print(("ERROR: " if land_fault else "") + line, flush=True)
     # After Mod Organizer has closed: it moves the game's log to overwrite/Root.
     if game_ended:
         report_close(handle, started)
-    return 0
+    return 1 if land_fault else 0
 
 
 if __name__ == "__main__":
