@@ -135,6 +135,7 @@ impl Player {
             late_depth: None,
             world_depth_projection: None,
             first_person_drawn: false,
+            shadow_casters_drawn: false,
             before_depth: None,
             before_depth_kept: false,
             mark_times: [0; TIME_COUNT],
@@ -530,6 +531,7 @@ impl Player {
         self.world_depth_kept = false;
         self.world_depth_projection = None;
         self.first_person_drawn = false;
+        self.shadow_casters_drawn = false;
         self.before_depth_kept = false;
         self.before_kept = false;
     }

@@ -337,6 +337,9 @@ enum Item {
     /// The depth of the first-person scene goes into the depth of the world for the
     /// post-processing, with the projection of the first person.
     FirstPersonDepth([f32; 16]),
+    /// The depth after the shadow casters' scene, with the actors the engine shadows in it,
+    /// becomes the copy of the world depth that the post-processing reads.
+    ShadowCastersDepth,
     /// A held shape that the extension draws in its place in the order of the game
     /// ([`Extension::draw_held_in_place`]), with the facts of the world there.
     HeldHere(Box<HeldDraw>, Box<WorldFacts>),
@@ -1177,6 +1180,8 @@ struct Player {
     late_after: Option<DepthTarget>,
     late_depth: Option<late_depth::LateDepth>,
     first_person_drawn: bool,
+    /// A draw of the shadow casters' scene went into the back buffer in this frame.
+    shadow_casters_drawn: bool,
     /// The depth of the draws of [`Extension::before_world`], for [`Extension::post`]: the
     /// renderer clears the depth after them.
     before_depth: Option<DepthTarget>,
