@@ -24,7 +24,7 @@ helper build. Build the plugin before `cargo xtask build` of that repo.
 ## Known items
 
 - **The renderer needs our MWSE fork.** Use the test line of our MWSE fork (today the branch
-  test/abi-fixes-15 of the MWSE repo). Stock MWSE does not have the native ABI that the plugin
+  test/abi-fixes-23 of the MWSE repo). Stock MWSE does not have the native ABI that the plugin
   and MGE XE use. It also does not have the fixes of the MWSE risks that the project closed in
   the fork (risks 25, 31 and 36; the owner's D158).
 - **The list of the fork-only changes** is `Numidium Project/notes/mwse-changes.md` in the docs
@@ -92,8 +92,32 @@ cargo test --release --features rig     the tests of the plugin with the compari
 cd host && cargo test --release         the tests of the host crate (its own workspace)
 ```
 
-The gate of a change: `tools/validate_retained.py --mge-build <folder>`. Pass the folder of
-the current helper build with its `d3d8.dll` and `Data Files`. The stages:
+### Sealed build sets
+
+A test run, a replay and a game by hand take every binary from one sealed build set (W521):
+one folder with the plugin, the `d3d8.dll`, the helper, `MWSE.dll`, `lua51.dll` and the MWSE
+core Lua, built from three commits (nirender, render-link and MWSE). Nothing writes into a set
+after it is made. The tools check the set before they start, and a folder that is not a set
+stops them.
+
+```text
+python -I tools/build_set.py [--nirender C] [--render-link C] [--mwse C]   make a set (default: the tips)
+python -I tools/sets.py <set folder>                                    check one set
+python tools/run_own_device.py --label L [--mge-build <set>]           a test run of the game
+python tools/replay.py <capture> <picture.png> [--mge-build <set>]     a frame of a capture, offline
+python tools/play.py [--mge-build <set>]                                a game by hand
+python -I tools/make_play_set.py                                        the set of the tips, tested
+```
+
+Without `--mge-build`, a tool takes the current set, the one that `current.bat` of the sets
+names. `--archive <folder>` in place of a set names an unpacked release archive, for the
+release check of `tools/release.py`. The form of a set, its parts and its check are in
+`tools/sets.py`.
+
+### The gate
+
+The gate of a change: `tools/validate_retained.py [--mge-build <set>]`. The stages `capture`,
+`baseline` and `only` run by default:
 
 1. `capture`: a run at Seyda Neen and at Narsis with a capture, the counts, a replay.
 2. `baseline`: the kept captures of `results/baseline-records` against the accepted pictures.
@@ -106,15 +130,14 @@ the current helper build with its `d3d8.dll` and `Data Files`. The stages:
 
 `results/` is not in git. The accepted pictures live only on disk.
 
-The checks of the repo itself: `tools/check_readme.py` (every switch the code reads is in
-this file; every path this file names exists) and `tools/check_contract.py` (the header and
-`src/link.rs` agree).
+The checks of the repo itself: `tools/checks.py plugin` runs the content checks of the commit
+hook, among them `tools/check_readme.py` (every switch the code reads is in this file; every
+path this file names exists) and `tools/check_contract.py` (the header and `src/link.rs`
+agree).
 
-Other tools: `tools/replay.py` (a capture to a picture), `tools/picture_diff.py` and
-`tools/diff_crops.py` (two pictures compared), `tools/capture_dump.py` (the records of a
-capture), `tools/lights_count.py` (what clustered distant lights would hold, from a
-`lights.data`), `tools/run_own_device.py` (a game run with the harness mods, on a sealed set of
-`tools/build_set.py`: `--mge-build <set>`, else the current set).
+Other tools: `tools/picture_diff.py` and `tools/diff_crops.py` (two pictures compared),
+`tools/capture_dump.py` (the records of a capture), `tools/lights_count.py` (what clustered
+distant lights would hold, from a `lights.data`). `tools/README.md` lists every tool.
 
 ## Switches
 
@@ -332,6 +355,21 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 - `MGE_XE_DRAW_DUMP=<geometry handle, hex>`: the words of each draw of that geometry.
 - `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the
   world's start.
+
+## The state
+
+The last release is v0.3.8 (the tag on ec9b3f6, 2026-11-13). The merges on master after it
+include:
+
+- the world shader gives way to the extension's next text when a core mod's shader fails (W317,
+  f89a9ca);
+- the stage shaders take a stage key's facts as constants (W530 step 1, 03ac608);
+- the runner does not rebuild the instance's distant land unseen (W535, 665682a);
+- the tools build, run and deploy sealed build sets (W521, 7d57e29 and d37f68a), and the replay
+  tools take their helper from a set (W545, 7d83995 and 844aa5d);
+- the plugin keeps one eye value for one place of a still camera (W538, 1b62781).
+
+Work that is not merged is not in this list.
 
 ## Where the plan is
 
