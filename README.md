@@ -11,8 +11,8 @@ nirender is in test. Each release is a test build of MGE XE G7 with nirender, fo
 the plugin's switches below are never for a player.
 
 The last test build is
-[v0.3.8](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.3.8)
-(MGE XE G7 0.21.0 with nirender 0.3.8, 2026-11-13). Its release notes list the changes, the
+[v0.3.9](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.3.9)
+(MGE XE G7 0.21.0 with nirender 0.3.9, 2026-11-17). Its release notes list the changes, the
 known issues and the checks to do by hand.
 
 ## What it needs
@@ -405,18 +405,10 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 - `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the
   world's start.
 
-## Since v0.3.8
+## Since v0.3.9
 
-The last release is v0.3.8 (the tag on ec9b3f6, 2026-11-13). The merges on master after it
-include:
-
-- the world shader gives way to the extension's next text when a core mod's shader fails (W317,
-  f89a9ca);
-- the stage shaders take a stage key's facts as constants (W530 step 1, 03ac608);
-- the runner does not rebuild the instance's distant land unseen (W535, 665682a);
-- the tools build, run and deploy sealed build sets (W521, 7d57e29 and d37f68a), and the replay
-  tools take their helper from a set (W545, 7d83995 and 844aa5d);
-- the plugin keeps one eye value for one place of a still camera (W538, 1b62781).
+The last release is v0.3.9 (the tag on c38312d, 2026-11-17). No merge on master came after it
+yet.
 
 Work that is not merged is not in this list.
 
