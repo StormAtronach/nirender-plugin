@@ -43,7 +43,7 @@ Written for: a person or an agent who works on this repo.
 
 nirender is an MWSE plugin for Morrowind. It replaces the renderer of the game. The game
 makes no Direct3D device. The plugin writes each frame as records into a shared-memory ring.
-A 64-bit helper, `numidium.exe` of MGE XE G7, reads the ring and draws the frame with wgpu.
+A 64-bit helper, `numidium.exe` of a fork of MGE XE G7, reads the ring and draws the frame with wgpu.
 
 ## The parts
 
