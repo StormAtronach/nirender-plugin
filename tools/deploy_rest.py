@@ -241,7 +241,9 @@ def lua51_line(folder, manifest, installs, change=None):
 def distant_land_keys(folder, manifest, installs):
     """{install name: the key of the set's distant land with the install's own mgeXE.toml, or None for an install whose
     entry names no profile} (W521 step 4). The key can start the set's helper: run() asks it before the first copy, so
-    a failing key leaves every install as it was (verdict 553 C3). A distant_land.Problem is a DeployError."""
+    a failing key leaves every install as it was (verdict 553 C3). A folder of the key's mod name with no marker of the
+    tool, which distant_land.rest refuses, is refused here too, before any write (C3b). A distant_land.Problem is a
+    DeployError."""
     import distant_land
     keys = {}
     for install_name, install in installs.items():
@@ -250,9 +252,14 @@ def distant_land_keys(folder, manifest, installs):
             continue
         toml = os.path.join(install["root"], "mods", install.get("config_mod", "Configuration"), "Root", "mgeXE.toml")
         try:
-            keys[install_name] = distant_land.key_of(folder, manifest, toml, [])
+            key = distant_land.key_of(folder, manifest, toml, [])
         except distant_land.Problem as problem:
             raise DeployError("%s: the key of the distant land: %s; nothing is deployed" % (install_name, problem))
+        mod = os.path.join(distant_land.mods_folder(install["root"]), key.mod_name)
+        if os.path.isdir(mod) and key.mod_name not in distant_land.marked_mods(install["root"]):
+            raise DeployError("%s: %s is there, but it is not a mod of the distant land tool (no marker for this key and "
+                              "instance); nothing is deployed" % (install_name, mod))
+        keys[install_name] = key
     return keys
 
 
@@ -746,8 +753,9 @@ def distant_land_test(root):
 
 def key_first_test(root, deploy=None):
     """Verdict 553 C3: the distant land key of every install comes before the first copy. A failing key stops the
-    deploy, and the install does not change. The null: the same deploy with a working key writes the files and puts the
-    key's mod on. `deploy` is run, or the run of an older deploy_rest for the null of the order."""
+    deploy, and the install does not change. C3b: so does a folder of the key's mod name with no marker. The null: the
+    same deploy with a working key and no such folder writes the files and puts the key's mod on. `deploy` is run, or
+    the run of an older deploy_rest for the null of the order."""
     import distant_land
     deploy = deploy or run
     sets_root = os.path.join(root, "c3-sets")
@@ -774,6 +782,22 @@ def key_first_test(root, deploy=None):
         distant_land.key_of = real_key_of
     assert not passed, "a deploy with no key passed"
     assert tree_of(instance) == before, "a deploy whose key failed wrote into the install"
+
+    # C3b: a folder of the key's mod name that the tool did not make (no marker).
+    planted = os.path.join(instance, "mods", "Distant land own-%s-base" % FAKE_COMMITS["render-link"][:8], "by hand.txt")
+    write(planted, "the owner's")
+    with_plant = tree_of(instance)
+    try:
+        deploy(folder, installs, sets_root=sets_root, tasklist=lambda: "", mwse_deploys=deploys)
+        passed = True
+    except Exception as error:  # noqa: BLE001 - the null runs an older module, with its own DeployError
+        passed = False
+        assert "not a mod of" in str(error), error
+    assert not passed, "a deploy over an unmarked mod folder passed"
+    assert tree_of(instance) == with_plant, "a deploy over an unmarked mod folder wrote into the install"
+    os.remove(planted)
+    os.rmdir(os.path.dirname(planted))
+
     assert deploy(folder, installs, sets_root=sets_root, tasklist=lambda: "", mwse_deploys=deploys) == 0
     assert tree_of(instance) != before
     assert "+Distant land own-%s-base" % FAKE_COMMITS["render-link"][:8] in open(modlist, encoding="utf-8").read().split("\n")
