@@ -173,9 +173,9 @@ struct Slot {
     /// the engine's sorted queue ([`tag::INSTANCE_QUEUED`]), where the engine flushes the
     /// queue.
     sorted: bool,
-    /// The shape's own alpha property blends and the engine does not sort it: the engine
-    /// draws it at its display, in the order of its walk ([`engine::walk`]).
-    in_place: bool,
+    /// The alpha test of the instance's material record: every slot of an instance has the
+    /// same value. The rule of a unit reads it ([`table_order::unit_fail`]).
+    alpha_test: bool,
     /// The texture handles the slot pinned ([`Renderer::pin_texture`]), one use each: their
     /// uses go when the slot goes.
     pinned: [u32; STAGES],
@@ -225,11 +225,9 @@ pub struct RetainedCounts {
     /// bones had not come.
     pub bone_records: u64,
     pub without_bones: u64,
-    /// In the main view with the walk's places on: the blends drawn in place by the engine
-    /// that had no place (drawn by bucket), and the places whose walk order differs from
-    /// their bucket order.
-    pub walk_without_place: u64,
-    pub walk_reordered: u64,
+    /// The order of the main view's unsorted draws: its groups and its bound instances
+    /// ([`table_order`]).
+    pub order: table_order::OrderCounts,
     /// The entries of the texture effects written ([`RetainedSet::turn_effects`]), the seconds
     /// of that, and the seconds of the upload of the table.
     pub entry_writes: u64,
@@ -502,17 +500,16 @@ pub struct RetainedSet {
     /// bucket, the key of the draw in it, the slot. Kept between the views so that a view
     /// does not allocate.
     order: Vec<(u64, u32, u32, u32)>,
-    /// The nearest depth and the group of each bucket in the view in progress.
-    bucket_depth: Vec<(f32, u8)>,
+    /// The lists of the keys of `order` ([`table_order::keys`]), kept between the views.
+    order_buffers: table_order::Buffers,
+    /// A replay asks for the digest of the order of the frame in progress
+    /// ([`RetainedSet::digest_frame`]): the main view adds its unsorted draws.
+    frame_digest: Option<table_order::Digest>,
     /// The sorted blends of the view in progress, back to front; and those of the main view
     /// kept for the flush of the engine's queue ([`Sorted::Keep`]), with the view.
     sorted_order: Vec<(u64, u32, u32, u32)>,
     kept_sorted: Vec<(u64, u32, u32, u32)>,
     pub sorted_view: Option<RetainedView>,
-    /// The places of the table's blends in the engine's walk, and the main view that left
-    /// their slots out for them.
-    pub(crate) walk: crate::engine::walk::Walk,
-    walk_view: Option<RetainedView>,
     /// The origin of the space of the instances: the translation of a slot and the
     /// position of a light are relative to it. With a relative scene (the packet has the
     /// exact position of the camera) the origin is the camera (`rebase`), so a slot's 32-bit
@@ -576,12 +573,11 @@ impl RetainedSet {
             buckets: Vec::new(),
             bucket_of: HashMap::new(),
             order: Vec::new(),
-            bucket_depth: Vec::new(),
+            order_buffers: Default::default(),
+            frame_digest: None,
             sorted_order: Vec::new(),
             kept_sorted: Vec::new(),
             sorted_view: None,
-            walk: Default::default(),
-            walk_view: None,
             origin: [0.0; 3],
             relative: false,
             bones: Vec::new(),
@@ -1373,9 +1369,13 @@ fn slot_verdict(cull: &CullEntry, tests_planes: bool, planes: &[[f32; 4]; 6]) ->
 }
 
 /// The slots of the listed instances, in the list's order and then in the order of each
-/// instance's slots. An id that the table does not have gives none.
-fn listed_slots<'a>(shown: &'a [u32], by_id: &'a HashMap<u32, Vec<u32>>) -> impl Iterator<Item = u32> + 'a {
-    shown.iter().filter_map(|id| by_id.get(id)).flatten().copied()
+/// instance's slots, each with the number of its pass: its place among the slots of its
+/// instance. An id that the table does not have gives none.
+fn listed_passes<'a>(shown: &'a [u32], by_id: &'a HashMap<u32, Vec<u32>>) -> impl Iterator<Item = (u32, u32)> + 'a {
+    shown
+        .iter()
+        .filter_map(|id| by_id.get(id))
+        .flat_map(|slots| slots.iter().enumerate().map(|(pass, &slot)| (pass as u32, slot)))
 }
 
 /// A light as the shader has it, from the `D3DLIGHT8` of 26 words of its record (after
@@ -2135,42 +2135,31 @@ impl RetainedSet {
     /// The draws of a view of the main view's instances in the order they go to the GPU, into
     /// `order`. The view draws the slots of the instances that the engine displayed in the main
     /// view (`INSTANCE_SHOWN`, form D):
-    /// 1. The buckets that do not blend and have no alpha test, front to back by their
-    ///    nearest draw in view, and the draws of each front to back: the early depth test
-    ///    then rejects the pixels behind what is drawn.
-    /// 2. The buckets with an alpha test, the same way after them (a discard in the shader
-    ///    can turn the early depth test off).
-    /// 3. The buckets that blend out of the sort (the no-sorter bit), in the order they were
-    ///    made, their draws in the engine's order of display. A shape draws a base pass and a
-    ///    blend pass that both write depth and test less-or-equal, in different buckets: the
-    ///    base must come first, or it overwrites the blend at the same depth (the game draws
-    ///    the two in a row). In the main view a slot of an instance with a place in the
-    ///    engine's walk ([`tag::INSTANCE_WALK`]) leaves this group: it draws at its place
-    ///    ([`engine::walk`]). This order is only for the blends without one.
-    /// The depth of a draw is that of the nearest point of its bound: the distance from the
-    /// near plane of the view less the radius, at least 0.
-    /// 4. The blends the engine would sort, into `sorted_order`: back to front by the depth
+    /// 1. The draws that the engine does not sort, in the engine's order: the order of the
+    ///    list, which holds each instance at its first display. The draws whose order cannot
+    ///    show are grouped, and a shape with more than one pass draws its passes in their
+    ///    order ([`table_order`], the switch `MGE_XE_TABLE_ORDER`). A blend that the engine
+    ///    does not sort draws at its place in the list, among the other draws.
+    /// 2. The blends the engine would sort, into `sorted_order`: back to front by the depth
     ///    of the bound centre along the view, ties by the order of the slots. This is not
     ///    the engine's order: the engine sorts screen-space boxes (`$2::Sort` 0x6FE830,
     ///    engine-rules R21). The main view keeps them for the flush of the engine's queue
     ///    ([`Sorted::Keep`], then `Only`). There a kept blend with a place in the engine's
     ///    queue ([`tag::INSTANCE_QUEUED`]) draws at its place, in the engine's order; this
     ///    order is only for the blends without one (`draw_retained_sorted`).
-    /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
+    /// Engine-rules R2, R3, R4, R20 (the skill wgpu-renderer-dev).
     fn collect_order(&mut self, view: &RetainedView) {
         self.order.clear();
         self.sorted_order.clear();
-        self.bucket_depth.clear();
-        self.bucket_depth.resize(self.buckets.len(), (f32::MAX, 0));
         let near = view.planes[4];
         let tests_planes = tests_planes(view);
         let mut sequence = 0u32;
         // The listed slots with their buckets, but those of the classes the view does not draw.
         let (slots, buckets) = (&self.slots, &self.buckets);
-        let listed = listed_slots(&self.shown, &self.by_id)
-            .filter_map(|slot| Some((slots[slot as usize].as_ref()?.bucket as usize, slot)))
-            .filter(|&(b, _)| view.classes & (1 << buckets[b].class.min(31)) != 0);
-        for (b, slot) in listed {
+        let listed = listed_passes(&self.shown, &self.by_id)
+            .filter_map(|(pass, slot)| Some((slots[slot as usize].as_ref()?.bucket as usize, pass, slot)))
+            .filter(|&(b, _, _)| view.classes & (1 << buckets[b].class.min(31)) != 0);
+        for (b, pass, slot) in listed {
             match slot_verdict(&self.cull[slot as usize], tests_planes, &view.planes) {
                 Verdict::Gone | Verdict::Held => continue,
                 Verdict::WithoutBones => {
@@ -2187,47 +2176,23 @@ impl RetainedSet {
                 continue;
             };
             self.counts.drawn += 1;
-            let centre = near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3];
             sequence += 1;
             if s.sorted {
+                let centre = near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3];
                 self.counts.sorted += 1;
                 self.sorted_order.push((sorted_key(centre, s.id), b as u32, sequence, slot));
                 continue;
             }
-            let blends = self.buckets[b].key.blend[0] != 0;
-            let depth = (centre - s.bound[3]).max(0.0);
-            let entry = &mut self.bucket_depth[b];
-            entry.0 = entry.0.min(depth);
-            if blends {
-                entry.1 = 2;
-            } else if s.data.more[2] != 0 {
-                entry.1 = entry.1.max(1);
-            }
-            // A depth of at least 0 orders as its bits; a blended draw keeps its place.
-            let within = if blends { sequence } else { depth.to_bits() };
-            self.order.push((0, b as u32, within, slot));
+            // The entry stands at its place in the list, with the number of its pass until
+            // `order_keys` writes its key.
+            self.order.push((0, b as u32, pass, slot));
         }
-        for entry in &mut self.order {
-            let (depth, group) = self.bucket_depth[entry.1 as usize];
-            entry.0 = bucket_key(group, entry.1, depth);
-        }
+        let main_view = view.sorted == Sorted::Keep;
+        self.order_keys(main_view);
         self.order.sort_unstable();
         self.sorted_order.sort_unstable();
-        // The main view: a blend out of the sort with a place in the engine's walk draws there.
-        if view.sorted == Sorted::Keep {
-            let slots = &self.slots;
-            self.counts.walk_reordered +=
-                self.walk
-                    .leave_out(&mut self.order, |slot| slots[slot as usize].as_ref().map(|s| s.id)) as u64;
-            self.counts.walk_without_place += self
-                .order
-                .iter()
-                .filter(|e| {
-                    e.0 >> 32 == crate::engine::walk::GROUP_IN_PLACE
-                        && slots[e.3 as usize].as_ref().is_some_and(|s| s.in_place)
-                })
-                .count() as u64;
-            self.walk_view = Some(*view);
+        if main_view {
+            self.add_to_digest();
         }
         match view.sorted {
             Sorted::Keep => {
@@ -2236,6 +2201,75 @@ impl RetainedSet {
                 self.sorted_view = Some(*view);
             }
             Sorted::Only => {}
+        }
+    }
+
+    /// Writes the key of each entry of `order` for the order of the switch
+    /// ([`table_order::keys`]). The entries stand in the order of the shown list, the entries
+    /// of one instance as neighbours, each with the number of its pass in the place of
+    /// `within`. An instance is judged on ALL its slots, in view or not. `main_view`: the
+    /// counts of the order go to the report.
+    fn order_keys(&mut self, main_view: bool) {
+        let order = crate::switches::switches().table_order;
+        let (slots, buckets, by_id, entries) = (&self.slots, &self.buckets, &self.by_id, &self.order);
+        let buffers = &mut self.order_buffers;
+        buffers.entries.clear();
+        buffers.entries.extend(
+            entries
+                .iter()
+                .map(|entry| (slots[entry.3 as usize].as_ref().map_or(0, |s| s.id), entry.1)),
+        );
+        let frame = table_order::keys(
+            order,
+            &buffers.entries,
+            &mut buffers.keys,
+            &mut buffers.first_of_bucket,
+            |id| {
+                let all = by_id.get(&id).map_or(&[][..], Vec::as_slice);
+                let passes = all.iter().filter_map(|&slot| slots[slot as usize].as_ref());
+                let alpha_test = passes.clone().next().is_some_and(|s| s.alpha_test);
+                table_order::Instance::of(
+                    alpha_test,
+                    passes.map(|s| table_order::PassFacts::of(&buckets[s.bucket as usize].key)),
+                )
+            },
+            |index| entries[index].2,
+        );
+        let drawn = buffers.entries.len() as u64;
+        for (entry, &(key, within)) in self.order.iter_mut().zip(&self.order_buffers.keys) {
+            entry.0 = key;
+            entry.2 = within;
+        }
+        if main_view {
+            self.counts.order.add(drawn, &frame);
+        }
+    }
+
+    /// A replay asks for the digest of the order of the frame that begins (`on`), or for none.
+    pub(crate) fn digest_frame(&mut self, on: bool) {
+        self.frame_digest = on.then(table_order::Digest::default);
+    }
+
+    /// The digest of the frame that ended, when the replay asked for it.
+    pub(crate) fn take_digest(&mut self) -> Option<table_order::Digest> {
+        self.frame_digest.take()
+    }
+
+    /// Adds the main view's unsorted draws, in the order in which they go to the GPU, to the
+    /// digest that the replay asked for.
+    fn add_to_digest(&mut self) {
+        let Some(digest) = self.frame_digest.as_mut() else {
+            return;
+        };
+        for entry in &self.order {
+            let slot = entry.3;
+            let id = self.slots[slot as usize].as_ref().map_or(0, |s| s.id);
+            let pass = self
+                .by_id
+                .get(&id)
+                .and_then(|all| all.iter().position(|&other| other == slot))
+                .unwrap_or(0);
+            digest.add(id, pass as u32);
         }
     }
 }
@@ -2588,7 +2622,6 @@ impl Player {
             if sorted != crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter) {
                 self.renderer.counts.sort_mark_differs += 1;
             }
-            let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
             set.slots[slot as usize] = Some(Slot {
                 id,
                 geometry: r.geometry,
@@ -2604,7 +2637,7 @@ impl Player {
                 ranges: ranges.clone(),
                 base_vertex,
                 sorted,
-                in_place,
+                alpha_test: m.flags & crate::material::ALPHA_TEST != 0,
                 pinned,
                 bones_first,
                 bones_needed,
@@ -3143,21 +3176,6 @@ impl Player {
         self.forget_bound();
     }
 
-    /// Draws a run of places of the table's blends in the engine's walk ([`Item::WalkPlaces`]):
-    /// the slots the main view left out for them, in the walk's order, with the main view.
-    /// The kept sorted blends stay for their item.
-    /// Engine-rules R2, R3 (the skill wgpu-renderer-dev).
-    pub(super) fn draw_walk_run(&mut self, run: usize) {
-        let (entries, late) = self.retained.walk.take_run(run);
-        self.renderer.counts.walk_late += late as u64;
-        if entries.is_empty() {
-            return;
-        }
-        let kept = core::mem::take(&mut self.retained.kept_sorted);
-        self.draw_sorted_run(self.retained.walk_view, entries);
-        self.retained.kept_sorted = kept;
-    }
-
     /// Draws the places `ids` of a view of its own ([`Item::ViewPlaces`], [`Item::ViewSorted`]):
     /// every slot of each instance, in the places' order, with the view of the group's scene in
     /// its own scene slot. The engine displayed each one: no cull. The main view's kept blends
@@ -3299,17 +3317,6 @@ fn sorted_key(centre: f32, id: u32) -> u64 {
     (!centre.max(0.0).to_bits() as u64) << 32 | id as u64
 }
 
-/// The key of a bucket of the other draws: the groups in order (0 no blend and no alpha test,
-/// 1 an alpha test, 2 a blend out of the sort), the first two front to back by the depth of
-/// their nearest draw, the blends in the order of their buckets.
-fn bucket_key(group: u8, bucket: u32, depth: f32) -> u64 {
-    if group == 2 {
-        2 << 32 | bucket as u64
-    } else {
-        (group as u64) << 32 | depth.to_bits() as u64
-    }
-}
-
 #[cfg(test)]
 mod bone_tests {
     use super::{slot_bones, NO_BONES};
@@ -3344,7 +3351,7 @@ mod list_tests {
             ranges: Vec::new(),
             base_vertex: 0,
             sorted: false,
-            in_place: false,
+            alpha_test: false,
             pinned: [0; STAGES],
             bones_first: NO_BONES,
             bones_needed: 0,
@@ -3580,7 +3587,8 @@ mod list_tests {
     /// The slots that the view draws, by the list and the verdicts of `collect_order` (a bucket
     /// needs a device, so the classes are not tested here).
     fn drawn(set: &RetainedSet, view: &RetainedView) -> Vec<u32> {
-        listed_slots(&set.shown, &set.by_id)
+        listed_passes(&set.shown, &set.by_id)
+            .map(|(_, slot)| slot)
             .filter(|&slot| slot_verdict(&set.cull[slot as usize], tests_planes(view), &view.planes) == Verdict::Drawn)
             .collect()
     }
@@ -3725,28 +3733,6 @@ mod order_tests {
     fn sorted_blends_at_one_depth_keep_the_order_of_their_ids() {
         assert!(sorted_key(10.0, 1) < sorted_key(10.0, 2));
         assert!(sorted_key(10.0, 2) < sorted_key(10.0, 300));
-    }
-
-    #[test]
-    fn the_groups_of_the_buckets_come_in_order() {
-        let opaque = bucket_key(0, 5, 1000.0);
-        let alpha_test = bucket_key(1, 3, 1.0);
-        let blend = bucket_key(2, 0, 0.0);
-        assert!(opaque < alpha_test && alpha_test < blend);
-    }
-
-    #[test]
-    fn the_walk_finds_the_group_of_the_blends_out_of_the_sort() {
-        assert_eq!(bucket_key(2, 7, 1.0) >> 32, crate::engine::walk::GROUP_IN_PLACE);
-        assert_ne!(bucket_key(0, 7, f32::MAX) >> 32, crate::engine::walk::GROUP_IN_PLACE);
-        assert_ne!(bucket_key(1, 7, f32::MAX) >> 32, crate::engine::walk::GROUP_IN_PLACE);
-    }
-
-    #[test]
-    fn the_opaque_buckets_go_front_to_back_and_the_blends_by_bucket() {
-        assert!(bucket_key(0, 9, 1.0) < bucket_key(0, 2, 50.0));
-        assert!(bucket_key(1, 9, 1.0) < bucket_key(1, 2, 50.0));
-        assert!(bucket_key(2, 2, 50.0) < bucket_key(2, 9, 1.0));
     }
 
     const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];

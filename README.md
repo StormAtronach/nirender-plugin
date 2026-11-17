@@ -258,6 +258,15 @@ The A/B:
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
   adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
   `depth:` names the format in use).
+- `MGE_XE_TABLE_ORDER=grouped|engine`: the order of the table's unsorted draws
+  (`host/src/table_order.rs`). Both values are the engine's order, from the list of the shapes
+  that the engine displayed. `grouped` (the default, also for a value that is not known) joins
+  the draws whose order cannot show into groups, and draws a shape with texture layers as one
+  unit of a group. `engine` draws every shape at its place, with no group. The helper's log
+  line `table order:` names the value in use. A replay prints the line `table order digest:
+  frame <N> <hash> <count> draws` for each frame of which it writes a picture: two replays of
+  one capture with the two values have equal counts, and equal hashes when the grouping moved
+  no draw of that frame.
 - `NIRENDER_ANIMATION=view|shadows|all`: which actors animate (`nirender.animationPolicy`);
   default the view and the shadow reach.
 - `NIRENDER_NOTE_EVERY=1`: the material and the geometry of every retained shape are noted at

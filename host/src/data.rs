@@ -567,13 +567,10 @@ pub(crate) struct Counts {
     /// The items of the table's sorted blends that went before a depth clear after the world
     /// (the engine's queue still open there, `Plan::depth_clear`).
     pub(crate) blends_before_clear: u64,
-    /// The places of the table's blends in the engine's walk ([`tag::INSTANCE_WALK`]): taken in
-    /// a world view, of an instance the table does not have, outside a world view, and after
-    /// the main view of the table drew its blends (a part of the frame ran before them).
-    pub(crate) walk_places: u64,
-    pub(crate) walk_unknown: u64,
-    pub(crate) walk_outside: u64,
-    pub(crate) walk_late: u64,
+    /// The places of the main view's blends in the engine's walk ([`tag::INSTANCE_WALK`] with
+    /// no view of its own open) that came and were not used: the main view draws such a blend
+    /// at its place in the shown list.
+    pub(crate) walk_places_unused: u64,
     /// The views of their own (`engine::views`): the views drawn, the places drawn in them,
     /// the places of an instance with no slot to draw, the places not drawn because their
     /// scene has no view (the scene did not set its camera), the places of an instance not known,

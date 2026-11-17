@@ -49,7 +49,9 @@ pub const COPY_TILE: u32 = 30;
 /// The place of a sorted blend of the table in the flush of the engine's queue: id
 /// (`Player::instance_queued`).
 pub const INSTANCE_QUEUED: u32 = 31;
-/// The place of a blend of the table in the engine's walk: id (`Player::walk_place`).
+/// The place of a shape of the table in the engine's walk: id. In a view of its own the
+/// helper draws the shape there (`Player::view_place`); a place of a blend of the main view is
+/// not used (the main view draws by the shown list).
 pub const INSTANCE_WALK: u32 = 32;
 /// A light of the game was destroyed: its key (`Player::light_gone`).
 pub const LIGHT_GONE: u32 = 33;

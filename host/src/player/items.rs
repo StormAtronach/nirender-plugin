@@ -10,7 +10,6 @@ use crate::*;
 /// and of its CPU time (`view_times`): both cover the same items. The sorted blends' items also
 /// draw the engine's blends that the sorted list took in (`merged_blends`).
 const MAIN_VIEW_OPAQUE: &str = "the table's opaque slots";
-const MAIN_VIEW_WALK: &str = "table: blends in the engine's walk";
 const MAIN_VIEW_SORTED: &str = "sorted blends (the engine's and the table's)";
 
 /// The copy of the depth before the world, for the post chain and the held shapes.
@@ -211,7 +210,6 @@ impl Player {
                 Item::Draw(_) | Item::Screen(_) if world_ended => Some("game: after the world (first person)"),
                 Item::Draw(_) | Item::Screen(_) if world_started => Some("game: draws in the world"),
                 Item::Draw(_) | Item::Screen(_) => Some("game: before the world (sky)"),
-                Item::WalkPlaces(_) => Some(MAIN_VIEW_WALK),
                 Item::ViewPlaces(group, _) | Item::ViewSorted(group) => Some(self.view_group_name(*group)),
                 Item::SortedBlends(_) => Some(MAIN_VIEW_SORTED),
                 Item::MainView(_) => Some(MAIN_VIEW_OPAQUE),
@@ -264,7 +262,6 @@ impl Player {
                         Item::MainView(_) => "main-view",
                         Item::WorldEnd(_) => "world-end",
                         Item::SortedBlends(_) => "sorted-blends",
-                        Item::WalkPlaces(_) => "walk-places",
                         Item::ViewPlaces(..) => "view-places",
                         Item::ViewSorted(_) => "view-sorted",
                         Item::HeldHere(..) => "held",
@@ -310,7 +307,6 @@ impl Player {
                 Item::SortedBlends(generation) => {
                     self.timed(MAIN_VIEW_SORTED, 0, |player| player.draw_retained_sorted(generation));
                 }
-                Item::WalkPlaces(run) => self.timed(MAIN_VIEW_WALK, 0, |player| player.draw_walk_run(run)),
                 Item::ViewPlaces(group, run) => {
                     let ids = self.views.take_run(group, run);
                     self.timed(self.view_group_name(group), ids.len() as u64, |player| {
