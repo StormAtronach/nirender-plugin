@@ -97,6 +97,7 @@ impl Player {
             held_sorted_wait: Vec::new(),
             frame_lights: Vec::new(),
             frame_bones: Vec::new(),
+            vertex_world: crate::lights::VertexWorld::default(),
             frame_instances: Vec::new(),
             parameters: None,
             plan: plan::Plan::default(),

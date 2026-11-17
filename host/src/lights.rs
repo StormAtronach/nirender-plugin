@@ -510,6 +510,88 @@ impl ExtensionLights {
     }
 }
 
+/// The most world lights in the list of one draw lit for each vertex: the plugin's cap of the
+/// lights of one record draw (`MAX_LIGHTS`, src/light_stream.rs of the plugin).
+pub(crate) const VERTEX_WORLD_CAP: usize = 64;
+
+/// A point light of the world for the lists by place: the key of the game's light, its slot in
+/// the table's lights, its place in absolute world space, and its reach.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PlacedLight {
+    pub(crate) key: u32,
+    pub(crate) slot: u32,
+    pub(crate) place: [f64; 3],
+    pub(crate) reach: f32,
+}
+
+impl PlacedLight {
+    /// A light of the game's record (the `D3DLIGHT8` after the key, the radius in the first
+    /// specular word: player/feed.rs, `tag::LIGHT`). [`None`] for a directional light. The
+    /// place is the record's own absolute place; the reach is the radius of the engine's light
+    /// (its choice of the lights of a node is by that radius), or without one the distance of
+    /// its attenuation ([`crate::extension::cluster_reach`]).
+    pub(crate) fn of_record(key: u32, slot: u32, record: &[u8]) -> Option<PlacedLight> {
+        let light = crate::retained::light_data(record, None);
+        if light.position[3] == 3.0 {
+            return None;
+        }
+        let reach = if light.cone[2] > 0.0 {
+            light.cone[2].min(crate::extension::LIGHT_REACH_MAX)
+        } else {
+            crate::extension::cluster_reach(&light)
+        };
+        Some(PlacedLight {
+            key,
+            slot,
+            place: core::array::from_fn(|axis| light.position[axis] as f64),
+            reach,
+        })
+    }
+
+    /// The light's sphere meets the sphere at `centre` (absolute) with `radius`.
+    pub(crate) fn meets(&self, centre: [f64; 3], radius: f32) -> bool {
+        self.gap(centre, radius) <= 0.0
+    }
+
+    /// How far the light's sphere is from a sphere at `centre` with `radius`: under 0 when they
+    /// overlap.
+    fn gap(&self, centre: [f64; 3], radius: f32) -> f64 {
+        let distance = (0..3).map(|i| (self.place[i] - centre[i]).powi(2)).sum::<f64>().sqrt();
+        distance - self.reach as f64 - radius as f64
+    }
+}
+
+/// The world's point lights by place for the record draws lit for each vertex, made at the
+/// first such draw of a frame, and the list of a draw to reuse.
+#[derive(Default)]
+pub(crate) struct VertexWorld {
+    pub(crate) lights: Vec<PlacedLight>,
+    /// The frame they were made in, plus 1 (0: never).
+    pub(crate) made_in: u64,
+    pub(crate) in_reach: Vec<usize>,
+}
+
+/// The world's point lights whose sphere meets the bound (`centre` in absolute world space,
+/// `radius`), into `out` as entries of `lights`: at most [`VERTEX_WORLD_CAP`], the nearest by
+/// the gap of the spheres. Returns the number left out by the cap.
+pub(crate) fn world_lights_in_reach(lights: &[PlacedLight], centre: [f64; 3], radius: f32, out: &mut Vec<usize>) -> u32 {
+    out.clear();
+    out.extend(
+        lights
+            .iter()
+            .enumerate()
+            .filter(|(_, light)| light.gap(centre, radius) <= 0.0)
+            .map(|(i, _)| i),
+    );
+    if out.len() <= VERTEX_WORLD_CAP {
+        return 0;
+    }
+    let dropped = (out.len() - VERTEX_WORLD_CAP) as u32;
+    out.sort_by(|&a, &b| lights[a].gap(centre, radius).total_cmp(&lights[b].gap(centre, radius)));
+    out.truncate(VERTEX_WORLD_CAP);
+    dropped
+}
+
 /// A buffer for the lights of a frame.
 pub(crate) fn light_buffer(device: &wgpu::Device, lights: usize) -> wgpu::Buffer {
     device.counted_buffer(&wgpu::BufferDescriptor {
@@ -595,5 +677,90 @@ mod tests {
     #[test]
     fn a_light_that_reaches_into_the_view_from_beside_it_is_in_clusters() {
         assert!(entries([150.0, 0.0, 100.0], 80.0) > 0);
+    }
+
+    fn placed(slot: u32, x: f64, reach: f32) -> PlacedLight {
+        PlacedLight {
+            key: slot,
+            slot,
+            place: [150000.0 + x, -90000.0, 2000.0],
+            reach,
+        }
+    }
+
+    const CENTRE: [f64; 3] = [150000.0, -90000.0, 2000.0];
+
+    #[test]
+    fn a_world_light_in_reach_is_in_the_list() {
+        let mut out = Vec::new();
+        // 300 units away, reach 400, a bound of 50: in. 451 away: out.
+        let lights = [placed(7, 300.0, 400.0), placed(8, 451.0, 400.0)];
+        assert_eq!(world_lights_in_reach(&lights, CENTRE, 50.0, &mut out), 0);
+        assert_eq!(out, [0]);
+        // Just in at 449.
+        let lights = [placed(9, 449.0, 400.0)];
+        world_lights_in_reach(&lights, CENTRE, 50.0, &mut out);
+        assert_eq!(out, [0]);
+        // The null: a reach of 0 and a bound of 0 give no light.
+        let lights = [placed(10, 300.0, 0.0)];
+        world_lights_in_reach(&lights, CENTRE, 0.0, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn the_cap_keeps_the_nearest_lights() {
+        let lights: Vec<PlacedLight> = (0..70).map(|i| placed(i, 100.0 + i as f64, 400.0)).collect();
+        let mut out = Vec::new();
+        assert_eq!(world_lights_in_reach(&lights, CENTRE, 50.0, &mut out), 6);
+        let mut kept = out.clone();
+        kept.sort_unstable();
+        assert_eq!(kept, (0..64).collect::<Vec<usize>>());
+    }
+
+    /// A light record of 104 bytes: the type, the place and the radius (the first specular
+    /// word), with a range.
+    fn record(kind: u32, place: [f32; 3], radius: f32) -> Vec<u8> {
+        let mut words = [0u32; 26];
+        words[0] = kind;
+        words[5] = radius.to_bits();
+        for axis in 0..3 {
+            words[13 + axis] = place[axis].to_bits();
+        }
+        words[19] = 10000.0f32.to_bits();
+        words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn a_directional_light_is_never_in_the_list() {
+        assert!(PlacedLight::of_record(1, 1, &record(3, [0.0; 3], 0.0)).is_none());
+        let point = PlacedLight::of_record(2, 2, &record(1, [150300.0, -90000.0, 2000.0], 400.0)).unwrap();
+        assert_eq!((point.place, point.reach), ([150300.0, -90000.0, 2000.0], 400.0));
+    }
+
+    /// Addendum 11: the test takes the record's absolute place, so the answer is the same at
+    /// each origin of the table. The null: the place relative to an origin, taken as absolute.
+    #[test]
+    fn the_test_by_absolute_place_does_not_change_with_the_origin() {
+        let record = record(1, [150300.0, -90000.0, 2000.0], 400.0);
+        let light = PlacedLight::of_record(0, 0, &record).unwrap();
+        let mut out = Vec::new();
+        world_lights_in_reach(&[light], CENTRE, 50.0, &mut out);
+        assert_eq!(out, [0]);
+        for origin in [[0.0; 3], CENTRE] {
+            let relative = crate::retained::light_data(&record, Some(origin));
+            let moved = PlacedLight {
+                place: core::array::from_fn(|i| relative.position[i] as f64 + origin[i]),
+                ..light
+            };
+            world_lights_in_reach(&[moved], CENTRE, 50.0, &mut out);
+            assert_eq!(out, [0], "origin {origin:?}");
+            // The null: the relative place taken as absolute misses at the far origin.
+            let wrong = PlacedLight {
+                place: core::array::from_fn(|i| relative.position[i] as f64),
+                ..light
+            };
+            world_lights_in_reach(&[wrong], CENTRE, 50.0, &mut out);
+            assert_eq!(out.is_empty(), origin == CENTRE, "origin {origin:?}");
+        }
     }
 }

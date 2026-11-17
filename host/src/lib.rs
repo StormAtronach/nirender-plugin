@@ -85,6 +85,7 @@ use d3d::{
     texture_format, INPUT_FORMATS,
 };
 pub use d3d::{d3d_compare, d3d_stencil_operation};
+mod bound;
 mod light_keys;
 mod lights;
 use influences::FVF_INFLUENCES;
@@ -378,6 +379,12 @@ struct Retained {
 /// cluster of its pixel (`MGE_XE_LIGHTS=world`, `world_lights_here` in the shader). A lit
 /// draw of the world of the stream and a retained slot with lights have it.
 pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
+
+/// Bit 128 of `counts.w`, set by the extension in its shade: it lights the draw for each pixel.
+/// Without it the vertex stage lights the draw with the draw's own list (shader.wgsl, the
+/// vertex stage), and a draw of the world takes the world's point lights as that list
+/// ([`lights::world_lights_in_reach`]).
+pub(crate) const PER_PIXEL_BIT: u32 = 128;
 
 /// Bit 32768 of `counts.w`, set by this crate: a lit draw with no lights, none of its own, none
 /// from the clusters and none of the world (the module `light_keys`). A fact of the stage key
@@ -1092,6 +1099,9 @@ struct Player {
     frame_lights: Vec<LightData>,
     /// The bones of the skinned draws of the frame, for the bone buffer.
     frame_bones: Vec<[f32; 16]>,
+    /// The world's point lights by place for the draws lit for each vertex, made again after a
+    /// light record ([`player::draws`], W554).
+    vertex_world: lights::VertexWorld,
     /// The world matrices of the instances of the frame; the first is an identity, for
     /// the draws of their own.
     frame_instances: Vec<Instance>,

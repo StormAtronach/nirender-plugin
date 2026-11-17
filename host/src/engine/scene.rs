@@ -42,6 +42,13 @@ pub(crate) fn world_camera(kind: u32) -> bool {
     (SCENE_WORLD..=SCENE_WATER).contains(&kind)
 }
 
+/// A scene whose draws take the lights of the world: the world camera's scenes, the
+/// first-person scene and the shadow casters' scene. A shadowed actor is thus lit as the wall
+/// beside it.
+pub(crate) fn lit_as_world(kind: u32) -> bool {
+    world_camera(kind) || kind == SCENE_FIRST_PERSON || kind == SCENE_SHADOW_CASTERS
+}
+
 /// A scene of the world camera after the world scene, where the engine flushes its sorted
 /// queue (engine-rules R22).
 pub(crate) fn later_world_scene(kind: u32) -> bool {
@@ -62,6 +69,25 @@ mod tests {
         assert!(world_camera(SCENE_WORLD) && world_camera(SCENE_SORTED_ALPHA) && world_camera(SCENE_WATER));
         assert!(!world_camera(0) && !world_camera(SCENE_UI));
         assert!(!later_world_scene(SCENE_WORLD) && later_world_scene(SCENE_SORTED_ALPHA) && later_world_scene(SCENE_WATER));
+    }
+
+    #[test]
+    fn the_shadow_casters_are_lit_as_the_world() {
+        for kind in [
+            SCENE_WORLD,
+            SCENE_SORTED_ALPHA,
+            SCENE_WATER,
+            SCENE_SHADOW_CASTERS,
+            SCENE_FIRST_PERSON,
+        ] {
+            assert!(lit_as_world(kind), "kind {kind}");
+        }
+        for kind in [SCENE_OTHER, 4, SCENE_UI, 8, 9, 10, 11, 12] {
+            assert!(!lit_as_world(kind), "kind {kind}");
+        }
+        // The null: the test before the shadow casters joined leaves kind 5 out.
+        let before = |kind: u32| world_camera(kind) || kind == SCENE_FIRST_PERSON;
+        assert!(!before(SCENE_SHADOW_CASTERS));
     }
 
     #[test]

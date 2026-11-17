@@ -1799,11 +1799,18 @@ impl Renderer {
             if fits(vertex_range, vertex_bytes) && fits(index_range, index_bytes) {
                 pool::Pool::rewrite(&self.queue, vertex_range, vertex_bytes);
                 pool::Pool::rewrite(&self.queue, index_range, index_bytes);
+                // The new positions: their bound, and no morph until the next step.
+                if let Some(old) = self.geometries.get_mut(&handle) {
+                    old.bound = crate::bound::geometry_bound(fvf, stride, vertex_bytes, None);
+                    old.morph_sphere = None;
+                }
                 self.counts.geometry_in_place += 1;
                 self.counts.times[TIME_BUFFERS] += clock.elapsed();
                 return true;
             }
         }
+        // The bound from the record's own bytes, before the list's entries are moved.
+        let bound = crate::bound::geometry_bound(fvf, stride, vertex_bytes, list);
         let (moved, influence_range) = match list {
             Some(list) => {
                 let (range, first) = self.influences.put(&self.device, &self.queue, list);
@@ -1834,6 +1841,8 @@ impl Renderer {
             uv: None,
             drawn_in: 0,
             particles: false,
+            bound,
+            morph_sphere: None,
         };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();
@@ -1909,7 +1918,17 @@ impl Renderer {
             self.counts.morph_missing += 1;
             return;
         };
-        morphs.step(&self.device, handle, unique, &weights, geometry);
+        if morphs.step(&self.device, handle, unique, &weights, geometry) {
+            let sphere = morphs.sphere(handle, &weights);
+            if let Some(geometry) = self.geometries.get_mut(&handle) {
+                // The job writes the positions: with no sphere of them there is no bound until
+                // the next record.
+                match sphere {
+                    Some(sphere) => geometry.morph_sphere = Some(sphere),
+                    None => geometry.bound = None,
+                }
+            }
+        }
     }
 
     /// The compute pass of the frame's morphs, into the frame's commands: before its draws.
@@ -2036,6 +2055,13 @@ impl Renderer {
             uv: None,
             drawn_in: 0,
             particles: true,
+            // The positions come with each record: so does the bound.
+            bound: crate::bound::particle_sphere(radius, right, up, particles).map(|sphere| crate::bound::ModelBound {
+                sphere,
+                spread: 1.0,
+                excess: 0.0,
+            }),
+            morph_sphere: None,
         };
         self.put_geometry(handle, geometry);
         self.counts.times[TIME_BUFFERS] += clock.elapsed();

@@ -197,6 +197,21 @@ struct Slot {
     uv_base: Option<Box<crate::uv_animation::StageBase>>,
     /// The entries of the texture effects its stages name.
     effect_entries: Vec<u32>,
+    /// The run of its instance's own lights in `light_indexes` (first, count), as
+    /// [`RetainedSet::set_lights`] made it.
+    engine_run: [u32; 2],
+    /// Its run of the world's lights by its bound: the directional lights of the engine's run,
+    /// then the world's point lights in reach ([`RetainedSet::refresh_world_runs`]). [`None`]
+    /// until it is made, and after a change that makes it stale.
+    world_run: Option<[u32; 2]>,
+}
+
+impl Slot {
+    /// Whether the slot draws with its world run: its kind is lit for each vertex in the mode
+    /// `world` (a bit of `vertex_kinds` for each [`slot_kind`]), and it takes light.
+    fn takes_world_run(&self, vertex_kinds: u8) -> bool {
+        !self.no_lights && vertex_kinds & (1 << (self.data.light_range[2] & 7)) != 0
+    }
 }
 
 #[derive(Default)]
@@ -219,6 +234,16 @@ pub struct RetainedCounts {
     /// space of the world (a change of the kind).
     pub rebases: u32,
     pub kind_changes: u32,
+    /// The world runs of the slots lit for each vertex (W554): the runs made, the world's
+    /// lights that moved, came or went, the tests of such a light against a slot, the
+    /// compactions of the runs, the frames that pointed every slot again, and the lights the
+    /// cap left out.
+    pub vertex_world_rebuilds: u64,
+    pub vertex_world_changed_lights: u64,
+    pub vertex_world_tests: u64,
+    pub vertex_world_compactions: u32,
+    pub vertex_world_repoints: u32,
+    pub vertex_world_dropped: u64,
     /// The slots made again for a geometry sent again under its handle (a live shape).
     pub refreshed: u64,
     /// The `INSTANCE_BONES` records taken, and the skinned slots not drawn because their
@@ -480,6 +505,18 @@ pub struct RetainedSet {
     /// The lights of the world that are on (`WORLD_LIGHTS`): their keys. Each has a slot in
     /// `light_values`, which is the light buffer of the world mode.
     world_keys: Vec<u32>,
+    /// The kinds of slot ([`slot_kind`]) lit for each vertex in the mode `world`, a bit each:
+    /// their slots draw with their world run. 0 in the mode `engine` or with per-pixel light.
+    vertex_kinds: u8,
+    /// The world's point lights as the game's records place them, by key: the place and the
+    /// reach a world run was made with (addendum 11: a rebase changes `light_values`, not these).
+    world_kept: HashMap<u32, crate::lights::PlacedLight>,
+    /// The world's lights that moved, came or went since the last refresh: the old and the new.
+    world_moves: Vec<(Option<crate::lights::PlacedLight>, Option<crate::lights::PlacedLight>)>,
+    /// The slots whose world run is to be made at the next refresh.
+    world_stale: Vec<u32>,
+    world_indexes_live: usize,
+    world_in_reach: Vec<usize>,
     /// The ambient light of each instance's own effect state (the lights record), the
     /// `D3DRS_AMBIENT` of its draws: the shader multiplies it by the scene's `ambient_scale`.
     /// An instance without one takes the scene's ambient at its insert.
@@ -596,6 +633,12 @@ impl RetainedSet {
             light_indexes_dirty: false,
             keys_of: HashMap::new(),
             world_keys: Vec::new(),
+            vertex_kinds: 0,
+            world_kept: HashMap::new(),
+            world_moves: Vec::new(),
+            world_stale: Vec::new(),
+            world_indexes_live: 0,
+            world_in_reach: Vec::new(),
             ambient_of: HashMap::new(),
             dirty: Vec::new(),
             moved: Vec::new(),
@@ -642,6 +685,9 @@ impl RetainedSet {
                 self.light_indexes_live = self
                     .light_indexes_live
                     .saturating_sub(self.keys_of.get(&id).map_or(0, |keys| keys.len()));
+                if let Some([_, count]) = taken.world_run {
+                    self.world_indexes_live = self.world_indexes_live.saturating_sub(count as usize);
+                }
                 pinned.extend(taken.pinned.iter().copied().filter(|&h| h != 0));
                 for entry in taken.effect_entries {
                     self.release_entry(entry);
@@ -674,15 +720,21 @@ impl RetainedSet {
         }
         let world = self.world_of(r);
         let exact = r.exact_translation();
-        for &slot in slots {
+        let slots = slots.clone();
+        for slot in slots {
+            let mut new_bound = false;
             if let Some(s) = self.slots[slot as usize].as_mut() {
                 s.world = world;
                 s.exact = exact;
                 // A skinned slot's bound comes with its bones.
                 if s.flags & INSTANCE_SKINNED == 0 {
+                    new_bound = s.bound != r.bound;
                     s.bound = r.bound;
                 }
                 s.data.world[0] = world;
+            }
+            if new_bound {
+                self.world_stale_slot(slot);
             }
             self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
             self.moved.push(slot);
@@ -928,18 +980,22 @@ impl RetainedSet {
         }
         self.bones_dirty = true;
         self.counts.bone_records += 1;
-        if let Some(slots) = self.by_id.get(&id) {
-            for &slot in slots {
-                if let Some(s) = self.slots[slot as usize].as_mut() {
-                    s.bound = bound;
-                    let wanted = slot_bones(first, count, s.bones_needed);
-                    if s.bones_first != wanted {
-                        s.bones_first = wanted;
-                        self.moved.push(slot);
-                    }
+        let slots = self.by_id.get(&id).cloned().unwrap_or_default();
+        for slot in slots {
+            let mut new_bound = false;
+            if let Some(s) = self.slots[slot as usize].as_mut() {
+                new_bound = s.bound != bound;
+                s.bound = bound;
+                let wanted = slot_bones(first, count, s.bones_needed);
+                if s.bones_first != wanted {
+                    s.bones_first = wanted;
+                    self.moved.push(slot);
                 }
-                self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
             }
+            if new_bound {
+                self.world_stale_slot(slot);
+            }
+            self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
         }
     }
 
@@ -1170,16 +1226,35 @@ impl RetainedSet {
             let origin = self.light_origin();
             self.light_values[slot as usize] = light_data(values, origin);
             self.light_dirty.push(slot);
+            if self.world_keys.contains(&key) {
+                self.keep_world_light(key, crate::lights::PlacedLight::of_record(key, slot, values));
+            }
         }
     }
 
     /// The lights of the world that are on: a slot for each key that has values.
     pub fn set_world_lights(&mut self, keys: &[u32], known: &HashMap<u32, [u8; 104]>) {
-        self.world_keys.clear();
+        let before = std::mem::take(&mut self.world_keys);
         for &key in keys {
             if self.light_slot(key, known).is_some() {
                 self.world_keys.push(key);
             }
+        }
+        // A key that left the set (its cell went) goes from the world runs near its kept place
+        // (verdict 583 C1); a key that came, or moved since, goes into those near its place.
+        for key in before {
+            if !self.world_keys.contains(&key) {
+                self.keep_world_light(key, None);
+            }
+        }
+        for i in 0..self.world_keys.len() {
+            let key = self.world_keys[i];
+            let placed = self
+                .light_slot_of
+                .get(&key)
+                .zip(known.get(&key))
+                .and_then(|(&slot, values)| crate::lights::PlacedLight::of_record(key, slot, values));
+            self.keep_world_light(key, placed);
         }
     }
 
@@ -1191,6 +1266,17 @@ impl RetainedSet {
             .filter_map(|key| self.light_slot_of.get(key).copied())
             .filter(|&slot| self.light_values.get(slot as usize).is_some_and(|l| l.position[3] != 3.0))
             .collect()
+    }
+
+    /// The point lights of the world that are on, with their absolute places and reaches from
+    /// the game's records (`known`), into `out` (addendum 11: never from `light_values`, which
+    /// each rebase writes again).
+    pub fn world_placed(&self, known: &HashMap<u32, [u8; 104]>, out: &mut Vec<crate::lights::PlacedLight>) {
+        out.clear();
+        out.extend(self.world_keys.iter().filter_map(|key| {
+            let slot = *self.light_slot_of.get(key)?;
+            crate::lights::PlacedLight::of_record(*key, slot, known.get(key)?)
+        }));
     }
 
     /// The translation from the space of the set (the positions of `light_values`) to the
@@ -1210,6 +1296,7 @@ impl RetainedSet {
             light.ambient = [0.0; 4];
             self.light_dirty.push(slot);
         }
+        self.keep_world_light(key, None);
     }
 
     fn light_slot(&mut self, key: u32, known: &HashMap<u32, [u8; 104]>) -> Option<u32> {
@@ -1249,9 +1336,7 @@ impl RetainedSet {
             if let Some(s) = self.slots[slot as usize].as_mut() {
                 // An emissive-only slot keeps no light and a black ambient.
                 let count = if s.no_lights { 0 } else { count };
-                s.data.light_range[0] = first;
-                s.data.light_range[1] = count;
-                s.data.counts[0] = count;
+                s.engine_run = [first, count];
                 if s.no_lights {
                     s.data.scene_ambient = [0.0, 0.0, 0.0, 1.0];
                 } else if let Some(ambient) = ambient {
@@ -1259,10 +1344,18 @@ impl RetainedSet {
                 }
                 self.dirty.push(slot);
             }
+            // The world run takes the directional lights of this run: it is made again.
+            self.world_stale_slot(slot);
+            self.point_slot(slot);
         }
-        // The runs that went away stay in the list until it is twice the live runs: then
-        // all runs are made again.
-        if self.light_indexes.len() > 2 * self.light_indexes_live + 1024 {
+        self.compact_when_due(known);
+    }
+
+    /// The runs that went away stay in the list until it is twice the live runs: then all runs
+    /// are made again.
+    fn compact_when_due(&mut self, known: &HashMap<u32, [u8; 104]>) {
+        let live = self.light_indexes_live + self.world_indexes_live;
+        if self.light_indexes.len() > 2 * live + 1024 {
             self.compact_light_runs(known);
         }
     }
@@ -1285,14 +1378,154 @@ impl RetainedSet {
             for slot in self.by_id.get(&id).cloned().unwrap_or_default() {
                 if let Some(s) = self.slots[slot as usize].as_mut() {
                     let count = if s.no_lights { 0 } else { count };
-                    s.data.light_range[0] = first;
-                    s.data.light_range[1] = count;
-                    s.data.counts[0] = count;
+                    s.engine_run = [first, count];
+                    // The world runs are gone with the old list: the refresh makes them again.
+                    s.world_run = None;
+                }
+                if self.vertex_kinds != 0 {
+                    self.world_stale.push(slot);
+                }
+                self.point_slot(slot);
+            }
+        }
+        self.world_indexes_live = 0;
+        self.counts.vertex_world_compactions += 1;
+        self.all_dirty = true;
+        self.light_indexes_dirty = true;
+    }
+
+    /// The world run of the slot is stale: it is made at the next refresh when its kind is lit
+    /// for each vertex. A slot that is not lit so keeps no run, and gets one when its kind is.
+    fn world_stale_slot(&mut self, slot: u32) {
+        let Some(s) = self.slots[slot as usize].as_mut() else { return };
+        if let Some([_, count]) = s.world_run.take() {
+            self.world_indexes_live = self.world_indexes_live.saturating_sub(count as usize);
+        }
+        if self.vertex_kinds != 0 {
+            self.world_stale.push(slot);
+        }
+    }
+
+    /// Points the slot's record at its world run or at its engine's run, and marks it for the
+    /// upload when that changes. A slot that takes the world run but has none yet keeps the
+    /// engine's run until the refresh makes it.
+    fn point_slot(&mut self, slot: u32) {
+        let Some(s) = self.slots[slot as usize].as_ref() else { return };
+        let run = match s.world_run {
+            Some(run) if s.takes_world_run(self.vertex_kinds) => run,
+            _ => s.engine_run,
+        };
+        let s = self.slots[slot as usize].as_mut().expect("the slot is there");
+        if s.data.light_range[0..2] != run[..] || s.data.counts[0] != run[1] {
+            s.data.light_range[0] = run[0];
+            s.data.light_range[1] = run[1];
+            s.data.counts[0] = run[1];
+            self.dirty.push(slot);
+        }
+    }
+
+    /// Makes the world runs of the slots lit for each vertex (W554, addenda 5, 6, 11 and verdict
+    /// 583 C1), before the upload of the frame. `vertex_kinds` are the kinds lit for each vertex
+    /// in the mode `world` ([`slot_kind`]; 0 otherwise). A change of them points every slot
+    /// again. A world light that moved, came or went makes stale the runs whose slot bound meets
+    /// its old or its new sphere.
+    pub fn refresh_world_runs(&mut self, vertex_kinds: u8, known: &HashMap<u32, [u8; 104]>) {
+        if vertex_kinds != self.vertex_kinds {
+            // No move is noted while no kind takes the world runs: every run is made again.
+            self.vertex_kinds = vertex_kinds;
+            self.world_stale.clear();
+            self.world_moves.clear();
+            self.world_indexes_live = 0;
+            self.counts.vertex_world_repoints += 1;
+            for slot in 0..self.slots.len() as u32 {
+                let Some(s) = self.slots[slot as usize].as_mut() else {
+                    continue;
+                };
+                s.world_run = None;
+                if s.takes_world_run(vertex_kinds) {
+                    self.world_stale.push(slot);
+                }
+                self.point_slot(slot);
+            }
+        }
+        let moves = std::mem::take(&mut self.world_moves);
+        if self.vertex_kinds == 0 {
+            return;
+        }
+        self.counts.vertex_world_changed_lights += moves.len() as u64;
+        if !moves.is_empty() {
+            for slot in 0..self.slots.len() as u32 {
+                let Some(s) = self.slots[slot as usize].as_ref() else {
+                    continue;
+                };
+                if s.world_run.is_none() {
+                    continue;
+                }
+                let centre = [s.bound[0] as f64, s.bound[1] as f64, s.bound[2] as f64];
+                let radius = s.bound[3];
+                self.counts.vertex_world_tests += moves.len() as u64;
+                if moves.iter().any(|(old, new)| {
+                    [old, new]
+                        .iter()
+                        .any(|light| light.is_some_and(|light| light.meets(centre, radius)))
+                }) {
+                    self.world_stale_slot(slot);
                 }
             }
         }
-        self.all_dirty = true;
-        self.light_indexes_dirty = true;
+        if self.world_stale.is_empty() {
+            return;
+        }
+        let placed: Vec<crate::lights::PlacedLight> = self.world_kept.values().copied().collect();
+        let mut in_reach = std::mem::take(&mut self.world_in_reach);
+        for slot in std::mem::take(&mut self.world_stale) {
+            let Some(s) = self.slots[slot as usize].as_ref() else {
+                continue;
+            };
+            if s.world_run.is_some() || !s.takes_world_run(self.vertex_kinds) {
+                continue;
+            }
+            let (engine, bound) = (s.engine_run, s.bound);
+            let first = self.light_indexes.len() as u32;
+            // The directional lights of the engine's run stay, as in the loop for each pixel.
+            for i in engine[0]..engine[0] + engine[1] {
+                let light = self.light_indexes[i as usize];
+                if self.light_values.get(light as usize).is_some_and(|l| l.position[3] == 3.0) {
+                    self.light_indexes.push(light);
+                }
+            }
+            let centre = [bound[0] as f64, bound[1] as f64, bound[2] as f64];
+            self.counts.vertex_world_dropped +=
+                crate::lights::world_lights_in_reach(&placed, centre, bound[3], &mut in_reach) as u64;
+            self.light_indexes.extend(in_reach.iter().map(|&i| placed[i].slot));
+            let count = self.light_indexes.len() as u32 - first;
+            self.world_indexes_live += count as usize;
+            if let Some(s) = self.slots[slot as usize].as_mut() {
+                s.world_run = Some([first, count]);
+            }
+            self.point_slot(slot);
+            self.counts.vertex_world_rebuilds += 1;
+            self.light_indexes_dirty = true;
+        }
+        self.world_in_reach = in_reach;
+        self.compact_when_due(known);
+    }
+
+    /// Keeps the place and the reach of a world light from its record, and notes a move when
+    /// they changed (`new` [`None`]: the light went).
+    fn keep_world_light(&mut self, key: u32, new: Option<crate::lights::PlacedLight>) {
+        let old = match new {
+            Some(light) => self.world_kept.insert(key, light),
+            None => self.world_kept.remove(&key),
+        };
+        let same = match (old, new) {
+            (Some(old), Some(new)) => old.place == new.place && old.reach == new.reach,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same && self.vertex_kinds != 0 {
+            self.world_moves.push((old, new));
+        }
     }
 }
 
@@ -2613,7 +2846,10 @@ impl Player {
                 held: false,
                 uv_base: None,
                 effect_entries,
+                engine_run: [0; 2],
+                world_run: None,
             });
+            set.world_stale_slot(slot);
             set.ranges_total += ranges.len();
             set.cull[slot as usize] = CullEntry::of(set.slots[slot as usize].as_ref());
             set.dirty.push(slot);
@@ -3353,6 +3589,8 @@ mod list_tests {
             held: false,
             uv_base: None,
             effect_entries: Vec::new(),
+            engine_run: [0; 2],
+            world_run: None,
         }
     }
 
@@ -3706,6 +3944,126 @@ mod list_tests {
         assert!(place_begins_world(Some(CLASS_SKY_LAST + 1)));
         assert!(place_begins_world(Some(0)));
         assert!(!place_begins_world(None));
+    }
+
+    /// A point light record of the game (the 104 bytes after the key): the place and the
+    /// radius in the first specular word.
+    fn world_light(place: [f32; 3], radius: f32) -> [u8; 104] {
+        let mut words = [0u32; 26];
+        words[0] = 1;
+        words[1] = 1.0f32.to_bits();
+        words[5] = radius.to_bits();
+        for axis in 0..3 {
+            words[13 + axis] = place[axis].to_bits();
+        }
+        words[19] = 10000.0f32.to_bits();
+        let mut bytes = [0u8; 104];
+        for (i, w) in words.iter().enumerate() {
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        bytes
+    }
+
+    const NEAR_S: [f32; 3] = [150300.0, -90000.0, 2000.0];
+    const LIGHT: u32 = 7;
+
+    /// A relative set with slot S (instance 1) at (150000, -90000, 2000) and slot T
+    /// (instance 2) 10000 units east, both of radius 50, the world light 7 of radius 400 near
+    /// S, and the world runs made with every kind lit for each vertex.
+    fn world_set() -> (RetainedSet, HashMap<u32, [u8; 104]>) {
+        let mut set = RetainedSet::new();
+        put(&mut set, 1);
+        put(&mut set, 2);
+        set.slots[0].as_mut().unwrap().bound = [150000.0, -90000.0, 2000.0, 50.0];
+        set.slots[1].as_mut().unwrap().bound = [160000.0, -90000.0, 2000.0, 50.0];
+        let known = HashMap::from([(LIGHT, world_light(NEAR_S, 400.0))]);
+        set.rebase(Some([150000.0, -90000.0, 2000.0]), &known, &mut []);
+        set.set_world_lights(&[LIGHT], &known);
+        set.refresh_world_runs(0xFF, &known);
+        assert_eq!(set.counts.vertex_world_rebuilds, 2);
+        assert_eq!(world_run_lights(&set, 0), [set.light_slot_of[&LIGHT]]);
+        assert!(world_run_lights(&set, 1).is_empty());
+        (set, known)
+    }
+
+    /// The light slots of a slot's world run, and the run its record names then.
+    fn world_run_lights(set: &RetainedSet, slot: usize) -> Vec<u32> {
+        let s = set.slots[slot].as_ref().unwrap();
+        let [first, count] = s.world_run.unwrap();
+        assert_eq!(s.data.light_range[0..2], [first, count]);
+        set.light_indexes[first as usize..(first + count) as usize].to_vec()
+    }
+
+    fn rebuilds_after(set: &mut RetainedSet, known: &HashMap<u32, [u8; 104]>) -> u64 {
+        let before = set.counts.vertex_world_rebuilds;
+        set.refresh_world_runs(0xFF, known);
+        set.counts.vertex_world_rebuilds - before
+    }
+
+    #[test]
+    fn a_light_that_moves_near_one_slot_rebuilds_that_slot_only() {
+        let (mut set, mut known) = world_set();
+        let t_run = set.slots[1].as_ref().unwrap().world_run;
+        // The null: no change rebuilds nothing.
+        assert_eq!(rebuilds_after(&mut set, &known), 0);
+        // The same bytes again: no change.
+        set.light_changed(LIGHT, &known[&LIGHT]);
+        assert_eq!(rebuilds_after(&mut set, &known), 0);
+        // Moved by 200 toward S: S only.
+        known.insert(LIGHT, world_light([150100.0, -90000.0, 2000.0], 400.0));
+        set.light_changed(LIGHT, &known[&LIGHT]);
+        assert_eq!(rebuilds_after(&mut set, &known), 1);
+        assert_eq!(set.slots[1].as_ref().unwrap().world_run, t_run);
+        // Only the radius changes: S again.
+        known.insert(LIGHT, world_light([150100.0, -90000.0, 2000.0], 300.0));
+        set.light_changed(LIGHT, &known[&LIGHT]);
+        assert_eq!(rebuilds_after(&mut set, &known), 1);
+    }
+
+    #[test]
+    fn a_new_bound_rebuilds_its_slot_only() {
+        let (mut set, known) = world_set();
+        set.set_bones(1, 1, [150010.0, -90000.0, 2000.0, 60.0], &[0u8; BONE_BYTES]);
+        assert_eq!(rebuilds_after(&mut set, &known), 1);
+        // The same bound again rebuilds nothing.
+        set.set_bones(1, 1, [150010.0, -90000.0, 2000.0, 60.0], &[0u8; BONE_BYTES]);
+        assert_eq!(rebuilds_after(&mut set, &known), 0);
+    }
+
+    /// Addendum 11: a rebase writes `light_values` again, and rebuilds no run.
+    #[test]
+    fn a_rebase_alone_rebuilds_no_run() {
+        let (mut set, known) = world_set();
+        let slot = set.light_slot_of[&LIGHT] as usize;
+        let before = set.light_values[slot].position;
+        assert!(set.rebase(Some([150001.0, -90000.0, 2000.0]), &known, &mut []));
+        assert_eq!(rebuilds_after(&mut set, &known), 0);
+        // The null: the light's values changed, so a rule on `light_values` would rebuild.
+        assert_ne!(set.light_values[slot].position, before);
+    }
+
+    /// Verdict 583 C1: a key that leaves the set goes from the runs near its kept place.
+    #[test]
+    fn a_light_that_leaves_the_set_leaves_the_runs() {
+        let (mut set, known) = world_set();
+        set.set_world_lights(&[], &known);
+        assert_eq!(rebuilds_after(&mut set, &known), 1);
+        assert!(world_run_lights(&set, 0).is_empty());
+        // The null: a rule that compares only the given keys leaves the light in S's run.
+        let (mut set, known) = world_set();
+        set.world_keys.clear();
+        assert_eq!(rebuilds_after(&mut set, &known), 0);
+        assert_eq!(world_run_lights(&set, 0), [set.light_slot_of[&LIGHT]]);
+    }
+
+    #[test]
+    fn a_slot_points_at_its_engine_run_without_the_vertex_kinds() {
+        let (mut set, known) = world_set();
+        set.slots[0].as_mut().unwrap().engine_run = [0, 0];
+        set.refresh_world_runs(0, &known);
+        assert_eq!(set.slots[0].as_ref().unwrap().data.light_range[0..2], [0, 0]);
+        // Back on: the runs are made again.
+        assert_eq!(rebuilds_after(&mut set, &known), 2);
     }
 }
 

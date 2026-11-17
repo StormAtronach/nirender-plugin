@@ -132,6 +132,14 @@ impl Player {
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
         println!("light keys: {} draws whose colour cannot take light dropped their lights; {} draws with no lights had no light loop", c.blind_light_draws, c.zero_light_draws);
         println!(
+            "shadow casters: {} draws shaded by the extension, {} of them with the world's lights",
+            c.caster_shaded, c.caster_world_lights
+        );
+        println!(
+            "vertex world: {} draws lit for each vertex took the world's lights ({} lights, {} left out by the cap); {} kept their own for want of a bound, {} for not being relative to the camera",
+            c.vertex_world_lists, c.vertex_world_lights, c.vertex_world_dropped, c.vertex_world_no_bound, c.vertex_world_not_relative
+        );
+        println!(
             "particle light: {} particle draws took their lights at their corners",
             c.corner_light_draws
         );
@@ -178,6 +186,10 @@ impl Player {
         println!(
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times to the camera's place and {} times with a change of the scene's kind",
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases, r.kind_changes
+        );
+        println!(
+            "retained vertex world: {} world runs made, {} world lights moved, came or went, {} tests of them against a slot, {} lights left out by the cap, {} compactions, {} times every slot pointed again",
+            r.vertex_world_rebuilds, r.vertex_world_changed_lights, r.vertex_world_tests, r.vertex_world_dropped, r.vertex_world_compactions, r.vertex_world_repoints
         );
         let j = &r.joins;
         let (views, pairs) = (r.views.max(1) as f64, j.pairs.max(1) as f64);
