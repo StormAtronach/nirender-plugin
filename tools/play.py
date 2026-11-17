@@ -52,6 +52,7 @@ import session  # noqa: E402, F401  (puts the harness on the path)
 import harness  # noqa: E402
 import run_own_device  # noqa: E402  (the set of a run and its staging, W521)
 import sets  # noqa: E402
+import distant_land  # noqa: E402  (W521 step 4)
 
 # The line of a game with no set (D 2.5): the tools that make one and that make it the current set.
 NO_SET_HINT = ("make a set with tools/build_set.py and name it with --mge-build, or make it the current set with "
@@ -337,11 +338,27 @@ def main():
             files["MWSE/mods/livecoding/main.lua"] = main
             files["MWSE/mods/livecoding/livecoding.lua"] = os.path.abspath(args.livecoding)
         mods.append((session.MOD_NAME, files))
+    # The distant land of this game (W521 step 4): the mod of its key on, every other marked mod off; the files that the
+    # generator makes go into that mod after the game. Not for --stage-only, which starts no game.
+    land = None
+    if not args.stage_only:
+        try:
+            land = distant_land.RunLand(harness.MO2_ROOT, harness.PROFILE, distant_land.key_of(args.mge_build, manifest, switched, args.set),
+                                        False, distant_land.tool_commit())
+            for line in land.prepare(harness.read_modlist()[0]):
+                print(line, flush=True)
+        except distant_land.Problem as problem:
+            raise SystemExit("play: %s" % problem)
     deployment = harness.Deployment()
     handle, started, game_ended = None, time.time(), False
     try:
         for name, files in mods:
             deployment.use_mod(name, files)
+        if land:
+            off, own = land.switch(harness.read_modlist()[0])
+            for name in off:
+                deployment.disable_mod(name)
+            deployment.enable_mod(own)
         if args.stage_only:
             print("staged in %s for the profile %s; no game (--stage-only)" % (harness.MO2_ROOT, os.path.basename(harness.PROFILE)))
             return 0
@@ -359,12 +376,23 @@ def main():
         game_ended = True
     finally:
         harness.close_mo2()
+        # The distant land's end before the restore (verdict 547, C1), only with no game of the instance left; a fault
+        # here does not keep the restore from running.
+        if land and not harness.instance_game_may_run():
+            try:
+                land.end()
+            except OSError as error:
+                print("play: the distant land's end failed: %s" % error, flush=True)
         restored = deployment.restore()
         if os.path.isfile(switched):
             os.remove(switched)
         os.rmdir(os.path.dirname(switched))
         if restored:
             print("the mod list of the instance is back")
+        if land:
+            land_lines, fault = land.result()
+            for line in land_lines:
+                print(("ERROR: " if fault else "") + line, flush=True)
     # After Mod Organizer has closed: it moves the game's log to overwrite/Root.
     if game_ended:
         report_close(handle, started)

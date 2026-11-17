@@ -297,6 +297,80 @@ def end(instance, profile, mod, read_only, before, move=True):
     return ["distant land: %d files of overwrite moved into %s; state %s -> %s" % (moved, os.path.basename(mod), (before or "none")[:8], (after or "none")[:8])], False
 
 
+def tool_commit():
+    """The commit of this tool's tree, for the marker and the run file; "unknown" when git does not answer."""
+    try:
+        return subprocess.run(["git", "-C", HERE, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30).stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def generation_cause(mod):
+    """The generator's own cause of its last generation in the mod folder `mod` (`rebuild_cause` of its
+    generation_report.toml), or None."""
+    try:
+        with open(os.path.join(mod, DATA, "generation_report.toml"), encoding="utf-8", errors="replace") as file:
+            found = re.search(r'^rebuild_cause\s*=\s*"(.*)"\s*$', file.read(), re.M)
+    except OSError:
+        return None
+    return found.group(1) if found else None
+
+
+def archive_key(archive, set_lines, content=None):
+    """The key of a run on an unpacked release archive, which has no manifest: a format of that folder's own."""
+    form = "archive-" + hashlib.md5(os.path.normcase(os.path.abspath(archive)).encode("utf-8")).hexdigest()[:8]
+    return Key(form, form, own_settings(set_lines), content)
+
+
+class RunLand:
+    """The distant land of one run on the instance at `instance` (profile folder `profile`): `prepare` before the
+    game, `switch` for the mod list of the run, and `end` as the harness's step before the restore (C1, C2).
+    `read_only` is the runner's rebuild guard: the run reads its mod and writes nothing (rulings Q1)."""
+
+    def __init__(self, instance, profile, key, read_only, commit):
+        self.instance, self.profile, self.key, self.read_only, self.commit = instance, profile, key, read_only, commit
+        self.mod = os.path.join(mods_folder(instance), key.mod_name)
+        self.before = None
+        self.lines, self.fault, self.ended = [], False, False
+
+    def prepare(self, modlist, timing=False):
+        """The start move, the mod (made with its marker when new), the refusal of a timing run on a mod with no
+        distant land, the run file, and the state before the game. Returns the lines for the run's head; a
+        Problem stops the run before the game."""
+        lines = start(self.instance, self.profile, modlist)
+        _, made = ensure_mod(self.instance, self.key, self.commit)
+        ready = has_data(self.mod)
+        if timing and not ready:
+            raise Problem("%s has no distant land yet, and a timing run does not make it: run a plain run of this set first" % self.key.mod_name)
+        write_run_file(self.profile, self.key, self.instance, self.read_only, self.commit)
+        self.before = state_md5(self.mod)
+        state = "made now, empty" if made else "with its distant land" if ready else "with no distant land yet"
+        lines.append("distant land: the mod %s (%s)" % (self.key.mod_name, state))
+        if self.read_only:
+            lines.append("distant land: the run changes what the game loads; the distant land is the mod %s, made without "
+                         "the run's files, and the run writes nothing there" % self.key.mod_name)
+        return lines
+
+    def switch(self, modlist):
+        """(the marked mods to switch off for the run, the run's own mod to switch on)."""
+        return switch_plan(self.instance, modlist, self.key.mod_name), self.key.mod_name
+
+    def end(self):
+        """The step before the restore: the check of a read-only run, or the move of a run that may write."""
+        self.lines, self.fault = end(self.instance, self.profile, self.mod, self.read_only, self.before)
+        if self.fault and generation_cause(self.mod):
+            self.lines.append("the generator's cause: %s" % generation_cause(self.mod))
+        self.ended = True
+
+    def result(self):
+        """(the lines for the run's end, whether it is a fault). A run whose step did not run is a fault: its run file
+        stays, and the next start acts on it."""
+        if not self.ended:
+            return ["distant land: not checked, the step before the restore did not run; the run file %s stays for the next start"
+                    % run_file(self.profile)], True
+        return self.lines, self.fault
+
+
 def self_test():
     import contextlib
     import io
@@ -418,6 +492,36 @@ def self_test():
         except Problem:
             pass
         os.remove(os.path.join(overwrite_folder(instance), "terrain.bin"))
+
+        # RunLand: a timing run on a mod with no distant land is refused before any file is written (T-N1d); the
+        # null: the mod with a version file passes. A read-only run says so in its head.
+        fresh = Key("own-0badf00d", "own-0badf00d", "base")
+        land = RunLand(instance, profile, fresh, True, "c0ffee")
+        try:
+            land.prepare(modlist, timing=True)
+            raise AssertionError("a timing run took an empty mod")
+        except Problem:
+            assert not os.path.exists(run_file(profile))
+        os.makedirs(os.path.join(land.mod, DATA))
+        with open(os.path.join(land.mod, DATA, VERSION_FILE), "w") as file:
+            file.write("22")
+        head = land.prepare(modlist, timing=True)
+        assert os.path.exists(run_file(profile)) and any("made without the run's files" in line for line in head), head
+        assert land.switch(modlist) == ([plain.mod_name], fresh.mod_name)
+        assert land.result()[1] and "not checked" in land.result()[0][0]
+        land.end()
+        assert land.result() == (["distant land: read-only, as before the run (none)"], False) and not os.path.exists(run_file(profile))
+        # A read-only run that changed its mod's state is a fault, with the generator's cause.
+        land.prepare(modlist)
+        with open(os.path.join(land.mod, DATA, STATE_FILE), "w") as file:
+            file.write("new")
+        with open(os.path.join(land.mod, DATA, "generation_report.toml"), "w") as file:
+            file.write('rebuild_cause = "meshes +0/-0/~61"\n')
+        land.end()
+        lines, fault = land.result()
+        assert fault and "changed" in lines[0] and lines[-1] == "the generator's cause: meshes +0/-0/~61", lines
+        os.remove(run_file(profile))
+        assert archive_key("D:/a", []).form.startswith("archive-") and archive_key("D:/a", []).text != archive_key("D:/b", []).text
     print("distant_land self-test: ok")
     return 0
 
