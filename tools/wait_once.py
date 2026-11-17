@@ -18,8 +18,12 @@ with a zone is turned into local time first. `--label` without `--after` is refu
 The harness writes "save loaded" once for each run: this tool serves the first load of a run only. A load that
 the session itself causes needs a mark taken before it (the skill morrowind-test-harness, mwse-mcp.md).
 
-Exit codes: 0 the fact is there; 2 the time limit; 3 the run ended without it (the line "DONE" in progress.log,
-or the runner's end line "pictures in" in runner-log.txt); 4 a refused call.
+`--label` looks in the `results` folder of this checkout. Run the tool from the checkout that runs the runner, or
+name that folder with `--results` (a worktree has its own `results`).
+
+Exit codes: 0 the fact is there; 2 the time limit; 3 the run ended without it (the line "DONE" or the runner's
+close line "[runner] game closed in" in progress.log, or the runner's end line "pictures in" in runner-log.txt);
+4 a refused call.
 """
 import argparse
 import datetime
@@ -45,9 +49,11 @@ def read_lines(path):
 
 
 def run_ended(folder):
-    """The run's end: "DONE" in progress.log, or the runner's line "pictures in" in its log."""
-    if any(line.endswith("] DONE") or line == "DONE" for line in read_lines(os.path.join(folder, "progress.log"))):
-        return True
+    """The run's end: "DONE" or the runner's close line "[runner] game closed in" in progress.log, or the runner's
+    line "pictures in" in its log."""
+    for line in read_lines(os.path.join(folder, "progress.log")):
+        if line.endswith("] DONE") or line == "DONE" or line.startswith("[runner] game closed in "):
+            return True
     return any(line.startswith("pictures in ") for line in read_lines(os.path.join(folder, "runner-log.txt")))
 
 
@@ -159,6 +165,9 @@ def self_test():
         with open(os.path.join(runner_end, "runner-log.txt"), "w", encoding="utf-8") as file:
             file.write("pictures in %s\n" % runner_end)
         assert wait(loaded, 0.2, 5, run=runner_end, say=quiet) == (ENDED, runner_end)
+        # A game that died without DONE, closed by the runner, with no runner-log.txt (the Reviewer's note to 573).
+        closed = make("20261117-100240", "closed", ["[runner] game closed in 10 s, without /F, exit code 0xC0000005\n"])
+        assert wait(loaded, 0.2, 5, run=closed, say=quiet) == (ENDED, closed)
         empty = make("20261117-100300", "empty", [])
         started = time.monotonic()
         assert wait(loaded, 0.1, 0.5, run=empty, say=quiet) == (TIMED_OUT, empty)
@@ -192,6 +201,7 @@ def main():
     ap.add_argument("--run", help="the run folder")
     ap.add_argument("--label", help="the label of the run; needs --after")
     ap.add_argument("--after", help="a time taken before the start: YYYYmmdd-HHMMSS (local) or ISO 8601")
+    ap.add_argument("--results", default=RESULTS, help="the results folder for --label (default: this checkout's)")
     ap.add_argument("--interval", type=float, default=10.0, help="seconds between two reads (default 10)")
     ap.add_argument("--timeout", type=float, default=300.0, help="the limit in seconds (default 300)")
     ap.add_argument("--self-test", action="store_true", help="the tests, with their nulls; no game")
@@ -207,7 +217,8 @@ def main():
         return REFUSED
     text = FACTS.get(args.fact, args.fact)
     after = local_time(args.after) if args.after else None
-    code, _folder = wait(text, args.interval, args.timeout, run=args.run, label=args.label, after=after)
+    code, _folder = wait(text, args.interval, args.timeout, run=args.run, label=args.label, after=after,
+                         results=args.results)
     return code
 
 
