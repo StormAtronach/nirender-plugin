@@ -238,19 +238,36 @@ def lua51_line(folder, manifest, installs, change=None):
             "Coordinator; nothing is written. On the Coordinator's word: --lua51-change %s" % (ours, sums, ours)), True
 
 
-def distant_land_lines(folder, manifest, installs, apply):
-    """The resting distant land of each install after a deploy of the set at `folder` (W521 step 4, `distant_land.rest`):
-    the mod of the set's key with the install's own mgeXE.toml goes on, every other marked mod off. An install whose
-    entry names no profile is passed over with a line. A distant_land.Problem is a DeployError."""
+def distant_land_keys(folder, manifest, installs):
+    """{install name: the key of the set's distant land with the install's own mgeXE.toml, or None for an install whose
+    entry names no profile} (W521 step 4). The key can start the set's helper: run() asks it before the first copy, so
+    a failing key leaves every install as it was (verdict 553 C3). A distant_land.Problem is a DeployError."""
     import distant_land
-    lines = []
+    keys = {}
     for install_name, install in installs.items():
         if not install.get("profile"):
-            lines.append("%s: no profile named; the distant land mod is not set" % install_name)
+            keys[install_name] = None
             continue
         toml = os.path.join(install["root"], "mods", install.get("config_mod", "Configuration"), "Root", "mgeXE.toml")
         try:
-            key = distant_land.key_of(folder, manifest, toml, [])
+            keys[install_name] = distant_land.key_of(folder, manifest, toml, [])
+        except distant_land.Problem as problem:
+            raise DeployError("%s: the key of the distant land: %s; nothing is deployed" % (install_name, problem))
+    return keys
+
+
+def distant_land_lines(keys, installs, apply):
+    """The resting distant land of each install after a deploy (`distant_land.rest`), with the keys of
+    distant_land_keys: the key's mod goes on, every other marked mod off. An install with no key is passed over with a
+    line. A distant_land.Problem is a DeployError."""
+    import distant_land
+    lines = []
+    for install_name, install in installs.items():
+        key = keys[install_name]
+        if key is None:
+            lines.append("%s: no profile named; the distant land mod is not set" % install_name)
+            continue
+        try:
             lines += distant_land.rest(install["root"], os.path.join(install["root"], "profiles", install["profile"]), key,
                                        distant_land.tool_commit(), apply)
         except distant_land.Problem as problem:
@@ -450,6 +467,7 @@ def run(folder, installs, plugin_commit=None, mge_commit=None, tag=None, dry_run
     say(line)
     if fault:
         raise DeployError(line)
+    land_keys = distant_land_keys(folder, manifest, installs)
     digests = [(label, manifest["files"][path]["md5"]) for label, path in NAMED_DIGESTS if path in manifest["files"]]
     kinds = sorted({kind for kind, _ in placed.values()})
     say("plan: %d files for each of %d installs (%s)" % (len(placed), len(installs), ", ".join(
@@ -460,7 +478,7 @@ def run(folder, installs, plugin_commit=None, mge_commit=None, tag=None, dry_run
             say("  %s: would copy %d, unchanged %d%s" % (install_name, len(changed), len(placed) - len(changed), first))
             say("  " + only_in_mod_line(install_name, only_in_mod(installs[install_name], placed)))
             say("  %s: would write the record %s: MWSE commit %s" % (install_name, os.path.join(installs[install_name]["root"], MWSE_NOTE), commits["mwse"]))
-        for line in distant_land_lines(folder, manifest, installs, apply=False):
+        for line in distant_land_lines(land_keys, installs, apply=False):
             say("  " + line)
         for label, digest in digests:
             say("md5 %s %s" % (label, digest))
@@ -479,7 +497,7 @@ def run(folder, installs, plugin_commit=None, mge_commit=None, tag=None, dry_run
         for install_name, install in installs.items():
             note = write_mwse_note(install, commits["mwse"], deploys[install_name], core_files, tag)
             say("%s: the record %s: MWSE commit %s" % (install_name, note, commits["mwse"]))
-    for line in distant_land_lines(folder, manifest, installs, apply=True):
+    for line in distant_land_lines(land_keys, installs, apply=True):
         say(line)
     for label, digest in digests:
         say("md5 %s %s" % (label, digest))
@@ -699,6 +717,7 @@ def self_test():
 
         core_check_test(root)
         distant_land_test(root)
+        key_first_test(root)
     print("deploy_rest self-test: ok")
 
 
@@ -715,12 +734,49 @@ def distant_land_test(root):
         file.write("# MO2\n+%s\n" % old.mod_name)
     manifest = {"distant_land_format": "own-5296d863", "commits": {"render-link": {"commit": "5296d863" * 5, "clean": True}}}
     installs = {"T": {"root": instance, "profile": "Default", "config_mod": "Configuration"}}
-    assert "would put" in distant_land_lines("S", manifest, installs, apply=False)[0]
+    keys = distant_land_keys("S", manifest, installs)
+    assert "would put" in distant_land_lines(keys, installs, apply=False)[0]
     assert open(os.path.join(profile, "modlist.txt"), encoding="utf-8").read() == "# MO2\n+%s\n" % old.mod_name
-    line = distant_land_lines("S", manifest, installs, apply=True)[0]
+    line = distant_land_lines(keys, installs, apply=True)[0]
     assert "Distant land own-5296d863-base on" in line, line
     assert open(os.path.join(profile, "modlist.txt"), encoding="utf-8").read() == "# MO2\n+Distant land own-5296d863-base\n-%s\n" % old.mod_name
-    assert distant_land_lines("S", manifest, {"U": {"root": instance}}, apply=True) == ["U: no profile named; the distant land mod is not set"]
+    bare = {"U": {"root": instance}}
+    assert distant_land_lines(distant_land_keys("S", manifest, bare), bare, apply=True) == ["U: no profile named; the distant land mod is not set"]
+
+
+def key_first_test(root, deploy=None):
+    """Verdict 553 C3: the distant land key of every install comes before the first copy. A failing key stops the
+    deploy, and the install does not change. The null: the same deploy with a working key writes the files and puts the
+    key's mod on. `deploy` is run, or the run of an older deploy_rest for the null of the order."""
+    import distant_land
+    deploy = deploy or run
+    sets_root = os.path.join(root, "c3-sets")
+    folder = fake_set(sets_root)
+    instance = os.path.join(root, "C3")
+    installs = {"C": dict(fake_install(instance, "MGE C", lua51="lua v1"), profile="Default", config_mod="Configuration")}
+    modlist = os.path.join(instance, "profiles", "Default", "modlist.txt")
+    write(modlist, "# MO2\n")
+    deploys = {"C": os.path.join(instance, "mods", "MWSE", "Root", "MWSE.dll")}
+    before = tree_of(instance)
+
+    def no_key(*args, **kwargs):
+        raise distant_land.Problem("planted: the set's helper gave no key")
+
+    real_key_of = distant_land.key_of
+    distant_land.key_of = no_key
+    try:
+        deploy(folder, installs, sets_root=sets_root, tasklist=lambda: "", mwse_deploys=deploys)
+        passed = True
+    except Exception as error:  # noqa: BLE001 - the null runs an older module, with its own DeployError
+        passed = False
+        assert "planted" in str(error), error
+    finally:
+        distant_land.key_of = real_key_of
+    assert not passed, "a deploy with no key passed"
+    assert tree_of(instance) == before, "a deploy whose key failed wrote into the install"
+    assert deploy(folder, installs, sets_root=sets_root, tasklist=lambda: "", mwse_deploys=deploys) == 0
+    assert tree_of(instance) != before
+    assert "+Distant land own-%s-base" % FAKE_COMMITS["render-link"][:8] in open(modlist, encoding="utf-8").read().split("\n")
 
 
 def core_check_test(root):
