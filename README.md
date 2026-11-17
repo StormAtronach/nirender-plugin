@@ -261,9 +261,6 @@ The A/B:
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
   adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
   `depth:` names the format in use).
-- `MGE_XE_ONE_DEPTH=1` draws the distant land and the game into one depth buffer, with an
-  infinite far plane for every perspective projection of the world view (step 6 of the depth
-  design; only with the reversed float depth). Off: depth step 6 stopped.
 - `NIRENDER_ANIMATION=view|shadows|all`: which actors animate (`nirender.animationPolicy`);
   default the view and the shadow reach.
 - `NIRENDER_NOTE_EVERY=1`: the material and the geometry of every retained shape are noted at
