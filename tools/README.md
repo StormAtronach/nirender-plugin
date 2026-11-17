@@ -20,7 +20,8 @@ and its branch on stderr. The keys
 
 In this file, `<keep>` is the keep folder: the fixed folder where the tools keep the build sets,
 the pdbs, the symbol store, the dumps and the kept runs. Its path is a constant of the code
-(`clean_common.KEEP_ROOT`, `sets.SETS`); no `local.json` key changes it.
+(`clean_common.KEEP_ROOT`; the sets folder in it is `sets.SETS`); no `local.json` key changes
+it.
 
 ## The shared modules
 
