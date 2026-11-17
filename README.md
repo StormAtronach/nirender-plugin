@@ -26,8 +26,9 @@ known issues and the checks to do by hand.
 
 1. Download the archive of the release and check its SHA-256 (the `.sha256` file beside it).
 2. Read `MGE XE Renderer Readme.md` in the archive first.
-3. Install the whole archive: `akulakhan.dll`, `numidium.exe`, `d3d8.dll` and `MWSE.dll` must
-   all come from it. They check each other at the start.
+3. Install the whole archive. `akulakhan.dll`, `numidium.exe` and `d3d8.dll` must all come
+   from it: they check each other at the start. Use the archive's `MWSE.dll` too: with the
+   public `MWSE.dll` the new renderer is not used for that session.
 4. Do not run `MWSE-Update.exe` while you test: it puts the public `MWSE.dll` back.
 5. Report a crash or a fault as an issue of this repo, with the logs that the release notes
    name.
@@ -395,7 +396,7 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 - `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the
   world's start.
 
-## The state
+## Since v0.3.8
 
 The last release is v0.3.8 (the tag on ec9b3f6, 2026-11-13). The merges on master after it
 include:
