@@ -176,8 +176,8 @@ impl Player {
         );
         let r = &self.retained.counts;
         println!(
-            "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
-            r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
+            "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times to the camera's place and {} times with a change of the scene's kind",
+            r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases, r.kind_changes
         );
         let j = &r.joins;
         let (views, pairs) = (r.views.max(1) as f64, j.pairs.max(1) as f64);
@@ -250,8 +250,10 @@ impl Player {
             c.uv_bases, c.uv_steps, c.uv_missing
         );
         println!(
-            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB",
+            "retained instance uploads: {} whole, {} of the instances alone for a new origin in {:.3} s, {} runs of changed entries with {:.1} MB",
             c.instance_uploads_whole,
+            c.instance_uploads_origin,
+            c.upload_origin_seconds,
             c.instance_upload_runs,
             c.instance_upload_bytes as f64 / 1e6
         );

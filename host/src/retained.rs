@@ -214,8 +214,11 @@ pub struct RetainedCounts {
     pub no_material: u32,
     /// The instance records that moved an instance in place.
     pub moves: u64,
-    /// The times the origin of the set moved to the camera.
+    /// The times the origin of the set moved to the camera of a relative scene (a change of the
+    /// place), and the times the set changed between the space of a relative scene and the
+    /// space of the world (a change of the kind).
     pub rebases: u32,
+    pub kind_changes: u32,
     /// The slots made again for a geometry sent again under its handle (a live shape).
     pub refreshed: u64,
     /// The `INSTANCE_BONES` records taken, and the skinned slots not drawn because their
@@ -453,10 +456,6 @@ impl CullEntry {
     }
 }
 
-/// The origin of the set moves to the camera when the camera is farther from it than this,
-/// in units of the world. A 32-bit float has steps of 0.0005 units at 4096.
-const REBASE_DISTANCE: f64 = 4096.0;
-
 pub struct RetainedSet {
     slots: Vec<Option<Slot>>,
     /// The cull's record of each slot (`refresh_cull`), and the draw ranges of all slots.
@@ -490,6 +489,8 @@ pub struct RetainedSet {
     dirty: Vec<u32>,
     moved: Vec<u32>,
     all_dirty: bool,
+    /// Every instance changed and no record did: the origin moved to the camera (`rebase`).
+    instances_dirty: bool,
     /// The slots that draw a stage from a slot of the frame in the frame they were made,
     /// with the pinned texture and sampler slots of each stage for the next frame
     /// ([`Player::retained_settle_late`]).
@@ -514,8 +515,9 @@ pub struct RetainedSet {
     walk_view: Option<RetainedView>,
     /// The origin of the space of the instances: the translation of a slot and the
     /// position of a light are relative to it. With a relative scene (the packet has the
-    /// exact position of the camera) the origin follows the camera (`rebase`), so the
-    /// 32-bit translations stay small. Without one the origin is 0: the space of the world.
+    /// exact position of the camera) the origin is the camera (`rebase`), so a slot's 32-bit
+    /// translation is the one of a record draw. Without one the origin is 0: the space of the
+    /// world.
     origin: [f64; 3],
     relative: bool,
     /// The bones of the skinned instances, as their records give them (the matrix of the
@@ -598,6 +600,7 @@ impl RetainedSet {
             dirty: Vec::new(),
             moved: Vec::new(),
             all_dirty: false,
+            instances_dirty: false,
             late: Vec::new(),
             record_generation: 0,
             instance_generation: 0,
@@ -967,16 +970,27 @@ impl RetainedSet {
 
     /// The origin of the set follows the camera of the world: `camera` is the exact
     /// position of the camera of a relative scene, or [`None`] for a scene that is not
-    /// relative. When the scene changes kind, or the camera is farther than
-    /// [`REBASE_DISTANCE`] from the origin, every slot and every light is made again for the
-    /// new origin, and the segments are written whole. Returns true then.
+    /// relative. Returns true when the origin changed.
+    ///
+    /// In a relative scene the origin is the camera. When the camera's place is not the origin
+    /// to the bit, every slot that is not skinned gets its translation again: its exact place
+    /// less the camera in 64 bits, rounded one time, which is the arithmetic of a record draw
+    /// (`stream::draw_data`, whose view has no translation). The lights are made again, the
+    /// bones are marked, and the plain effect entries follow in `turn_effects`. The instances
+    /// are written whole and the records are not: no draw of the table reads its record's copy
+    /// of the matrix (`vs` of shader.wgsl takes the instance's, and a skinned draw the table's
+    /// palette), and a held draw is a copy of the slot of each frame (`retained_hold`).
+    ///
+    /// When the scene changes kind (relative, or in the space of the world), everything is
+    /// made again and both segments are written whole.
     pub fn rebase(&mut self, camera: Option<[f64; 3]>, known: &HashMap<u32, [u8; 104]>) -> bool {
         let (relative, target) = match camera {
             Some(camera) => (true, camera),
             None => (false, [0.0; 3]),
         };
-        let distance = (0..3).map(|i| (target[i] - self.origin[i]).powi(2)).sum::<f64>().sqrt();
-        if relative == self.relative && (!relative || distance <= REBASE_DISTANCE) {
+        // The test of the kind comes first: a scene with no origin keeps the space of the world.
+        let kind_changes = relative != self.relative;
+        if !kind_changes && (!relative || target.map(f64::to_bits) == self.origin.map(f64::to_bits)) {
             return false;
         }
         self.relative = relative;
@@ -999,8 +1013,13 @@ impl RetainedSet {
                 self.light_values[slot as usize] = light_data(values, origin);
             }
         }
-        self.all_dirty = true;
-        self.counts.rebases += 1;
+        if kind_changes {
+            self.all_dirty = true;
+            self.counts.kind_changes += 1;
+        } else {
+            self.instances_dirty = true;
+            self.counts.rebases += 1;
+        }
         true
     }
 
@@ -1639,6 +1658,8 @@ impl Renderer {
         set.record_generation = self.record_generation;
         set.instance_generation = self.instance_generation;
         set.all_dirty = false;
+        // The origin moved to the camera: every instance again, and no record for it.
+        let instances = std::mem::take(&mut set.instances_dirty) && !all;
         // The slots that have room (all of them but past the device's limit).
         let room = set.slots.len().min(self.retained_records);
         set.dirty.retain(|&i| (i as usize) < room);
@@ -1681,6 +1702,29 @@ impl Renderer {
                     self.counts.record_write_bytes += RECORD_SIZE as u64;
                 }
             }
+            if instances {
+                // Every entry of the instances in one write. The changed and the moved slots are
+                // in it; the records of the changed slots went up above.
+                let copy = &mut self.retained_instance_copy;
+                copy.clear();
+                copy.resize(room, Instance::zeroed());
+                for (i, slot) in set.slots.iter().take(room).enumerate() {
+                    if let Some(slot) = slot {
+                        copy[i] = slot_instance(i, slot);
+                    }
+                }
+                if room != 0 {
+                    self.queue.write_buffer(
+                        &self.instance_buffer,
+                        0,
+                        bytemuck::cast_slice(&self.retained_instance_copy[..]),
+                    );
+                }
+                self.counts.instance_uploads_origin += 1;
+                self.counts.upload_origin_seconds += case_began.elapsed().as_secs_f64();
+                set.dirty.clear();
+                set.moved.clear();
+            }
             // The entries of the changed and the moved slots go into the copy, then up as runs:
             // slots at most `RUN_GAP` apart share a write (the entries between are the copy's,
             // the same as the buffer's).
@@ -1718,8 +1762,11 @@ impl Renderer {
                 self.counts.instance_entries_moved += entries as u64;
                 self.counts.instance_gap_bytes += ((run.len() - entries) * INSTANCE_SIZE) as u64;
             }
-            self.counts.upload_changed_cases += 1;
-            self.counts.upload_changed_seconds += case_began.elapsed().as_secs_f64();
+            // After the case of a new origin the two lists are empty: no run went up here.
+            if !instances {
+                self.counts.upload_changed_cases += 1;
+                self.counts.upload_changed_seconds += case_began.elapsed().as_secs_f64();
+            }
             set.dirty.clear();
             set.moved.clear();
         }
@@ -3291,6 +3338,89 @@ mod list_tests {
         let index = set.slots.len() - 1;
         set.slots[index].as_mut().unwrap().bound[0] = 100.0;
         set.cull[index] = CullEntry::of(set.slots[index].as_ref());
+    }
+
+    /// A set in a relative scene whose camera is at `camera`, with two slots: one that is not
+    /// skinned at the exact place `PLACE`, and a skinned one.
+    const PLACE: [f64; 3] = [400000.04, -250000.125, 1234.5];
+    fn set_at(camera: [f64; 3]) -> RetainedSet {
+        let mut set = RetainedSet::new();
+        put(&mut set, 1);
+        put(&mut set, 2);
+        set.slots[0].as_mut().unwrap().exact = PLACE;
+        let skinned = set.slots[1].as_mut().unwrap();
+        skinned.flags = INSTANCE_SKINNED;
+        skinned.exact = PLACE;
+        // The first start of a world: the scene's kind changes, and everything goes up whole.
+        assert!(set.rebase(Some(camera), &HashMap::new()));
+        assert!(set.all_dirty && !set.instances_dirty);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 1));
+        set.all_dirty = false;
+        set.bones_dirty = false;
+        set
+    }
+
+    #[test]
+    fn the_origin_is_the_camera_at_each_change_of_its_place() {
+        let first = [400010.0, -250000.0, 1200.0];
+        let mut set = set_at(first);
+        // The camera stands: no rebase, to the bit.
+        assert!(!set.rebase(Some(first), &HashMap::new()));
+        assert!(!set.instances_dirty && !set.all_dirty && !set.bones_dirty);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 1));
+
+        // The smallest change of the place is a change: the next double on one axis.
+        let next = [f64::from_bits(first[0].to_bits() + 1), first[1], first[2]];
+        assert!(set.rebase(Some(next), &HashMap::new()));
+        assert_eq!(set.origin, next);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (1, 1));
+        // The instances go up whole, the records do not, and the bones are made again.
+        assert!(set.instances_dirty && !set.all_dirty && set.bones_dirty);
+        assert!(set.dirty.is_empty() && set.moved.is_empty());
+
+        // A slot that is not skinned: its exact place less the camera in 64 bits, rounded one
+        // time, in the slot and in the copy that a held draw takes.
+        let moved = [399000.5, -251000.25, 1000.0];
+        assert!(set.rebase(Some(moved), &HashMap::new()));
+        let slot = set.slots[0].as_ref().unwrap();
+        for i in 0..3 {
+            assert_eq!(
+                slot.world[12 + i].to_bits(),
+                ((PLACE[i] - moved[i]) as f32).to_bits(),
+                "axis {i}"
+            );
+        }
+        assert_eq!(slot.data.world[0], slot.world);
+        // A skinned slot is not touched: its bones carry the place.
+        assert_eq!(set.slots[1].as_ref().unwrap().world, [0.0; 16]);
+        // The view of the scene has no translation then.
+        let mut view = [0.0f32; 16];
+        (view[0], view[5], view[10], view[15]) = (1.0, 1.0, 1.0, 1.0);
+        (view[12], view[13], view[14]) = (7.0, 8.0, 9.0);
+        assert_eq!(&set.scene_view(&view, Some(moved))[12..15], &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_change_of_the_scenes_kind_makes_everything_again() {
+        let camera = [100.0, 200.0, 300.0];
+        let mut set = set_at(camera);
+        // A scene with no origin: the space of the world, whole.
+        assert!(set.rebase(None, &HashMap::new()));
+        assert!(set.all_dirty && !set.instances_dirty && !set.relative);
+        assert_eq!(set.origin, [0.0; 3]);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 2));
+        let slot = set.slots[0].as_ref().unwrap();
+        for i in 0..3 {
+            assert_eq!(slot.world[12 + i], PLACE[i] as f32);
+        }
+        // The same kind again: nothing to do, whatever the place was before.
+        set.all_dirty = false;
+        assert!(!set.rebase(None, &HashMap::new()));
+        assert!(!set.all_dirty && !set.instances_dirty);
+        // Back to a relative scene at the old camera: a change of the kind, not of the place.
+        assert!(set.rebase(Some(camera), &HashMap::new()));
+        assert!(set.all_dirty && !set.instances_dirty);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 3));
     }
 
     /// The planes of a box of 10 units around the origin.
