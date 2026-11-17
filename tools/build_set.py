@@ -390,7 +390,30 @@ def tool_version():
     return head + ("-dirty" if dirty else "")
 
 
-def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, session, records):
+# The source of render-link's option --distant-land-key (W521 step 4). A render-link commit without it has a helper
+# that cannot give its format, and the set gets a format of its own (design 3.4).
+KEY_SOURCE = "mgeHost64/src/distant_land_key.rs"
+
+
+def distant_land_format(builder, commit, making, run=subprocess.run):
+    """(the set's distant land format, its text or None): the 8 hex and the text of the set's helper in `making`
+    (`numidium.exe --distant-land-key`) when the render-link `commit` has the option, else own-<8 hex of the commit>
+    and None. A helper with the option that gives no key is a SetFault: the set is not made."""
+    if not builder.has_file("render-link", commit, KEY_SOURCE):
+        return "own-%s" % commit[:8], None
+    import distant_land
+    with tempfile.TemporaryDirectory(prefix="build-set-key-") as temp:
+        toml = os.path.join(temp, "mgeXE.toml")
+        with open(toml, "w", encoding="utf-8") as file:
+            file.write("")
+        try:
+            form, text, _ = distant_land.helper_key(os.path.join(making, "numidium.exe"), toml, run)
+        except (distant_land.Problem, OSError, subprocess.SubprocessError) as problem:
+            raise SetFault("the set's helper gave no distant land key: %s" % problem)
+    return form, text
+
+
+def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, session, records, form=None):
     folders, files, links = sets.walk(folder)
     if links:
         raise SetFault("the new set holds links or junctions: %s" % ", ".join(links))
@@ -401,8 +424,8 @@ def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, 
         "commits": {repo: {"commit": commits[repo], "clean": True} for repo in sets.REPOS},
         "patches": {repo: {"file": "%s/%s.patch" % (sets.PATCHES, repo), "md5": md5} for repo, (_, md5) in sorted(patches.items())},
         "parts": {part: {"key": keys[part], "from": parts_from[part], "record": records[part]} for part in sets.PARTS},
-        # The helper of this build cannot give its format yet (step 4 of the design): a format of its own (3.4).
-        "distant_land_format": "own-%s" % commits["render-link"][:8],
+        # The format of the set's helper (distant_land_format), or own-<8 hex> for a helper without the option (3.4).
+        "distant_land_format": (form or ("own-%s" % commits["render-link"][:8], None))[0],
         "tool": {"name": "build_set.py", "commit": tool_version()},
         "made": now.isoformat(timespec="seconds"),
         "session": session,
@@ -410,6 +433,8 @@ def write_manifest(folder, name, kind, commits, patches, parts_from, keys, now, 
         "files": {path: {"size": os.path.getsize(os.path.join(folder, *path.split("/"))),
                          "md5": sets.md5_of(os.path.join(folder, *path.split("/")))} for path in files if path != sets.MANIFEST},
     }
+    if form and form[1]:
+        manifest["distant_land_format_text"] = form[1]
     with open(os.path.join(folder, sets.MANIFEST), "w", encoding="utf-8", newline="\n") as file:
         json.dump(manifest, file, indent=1, sort_keys=True)
         file.write("\n")
@@ -518,6 +543,10 @@ class Trees:
     def has_text(self, repo, commit, path, text):
         """True when the file `path` of `repo` at `commit` holds `text` (fixed, not a pattern)."""
         return git_code(SOURCE_REPOS[repo], "grep", "-q", "-F", text, commit, "--", path) == 0
+
+    def distant_land_format(self, commit, making):
+        """The set's distant land format ([`distant_land_format`])."""
+        return distant_land_format(self, commit, making)
 
     def step(self, command, folder, env=None):
         self.room(" ".join(os.path.basename(part) for part in command[:2]))
@@ -949,7 +978,8 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
             # The record of each part (the plan's addendum 1 A3): a built part's from the builder, a copied part's from
             # the manifest of its set.
             records = {part: found[part][1]["parts"][part].get("record", {}) if found[part] else builder.record(part) for part in sets.PARTS}
-            write_manifest(making, name, kind, commits, patches, parts_from, keys, now, session(), records)
+            form = builder.distant_land_format(commits["render-link"], making)
+            write_manifest(making, name, kind, commits, patches, parts_from, keys, now, session(), records, form)
             os.rename(making, folder)
     except SetFault as fault:
         return fault.code, lines + builder.size_lines() + [str(fault)]
@@ -994,6 +1024,12 @@ class FakeBuilder:
 
     def has_text(self, repo, commit, path, text):
         return (repo, path, text) not in self.lacks
+
+    def distant_land_format(self, commit, making):
+        """The real function, with a planted helper that gives a key: the fake numidium.exe cannot run."""
+        def helper(command, **_):
+            return subprocess.CompletedProcess(command, 0, "format abcd1234 MGE_DL_VERSION=22\nsettings 00112233\n", "")
+        return distant_land_format(self, commit, making, helper)
 
     def ready(self, repo, commit):
         self.trees[repo] = commit
@@ -1145,7 +1181,33 @@ def self_test():
         first = lines[-1]
         assert os.path.basename(first) == "s-6d1b214a-d9741dbb-89198b53" and builder.cargo_builds == 1 and builder.mwse_builds == 1, lines
         manifest = sets.check(first)
-        assert manifest["parts"]["plugin"]["from"] == "built" and manifest["distant_land_format"] == "own-d9741dbb"
+        assert manifest["parts"]["plugin"]["from"] == "built" and manifest["distant_land_format"] == "abcd1234"
+        assert manifest["distant_land_format_text"] == "MGE_DL_VERSION=22", manifest.get("distant_land_format_text")
+        # W521 step 4: a render-link commit without the option gives own-<8 hex> and asks no helper (the null); one
+        # with it takes the helper's format; a helper with the option that gives no key makes no set.
+        class Tree:
+            def __init__(self, has):
+                self.has = has
+
+            def has_file(self, repo, commit, path):
+                return self.has and path == KEY_SOURCE
+
+        def never(*_, **__):
+            raise AssertionError("an old helper was started")
+
+        def no_key(command, **_):
+            return subprocess.CompletedProcess(command, 2, "", "usage")
+
+        def gives_key(command, **_):
+            return subprocess.CompletedProcess(command, 0, "format 0f0f0f0f A=1\nsettings 1\n", "")
+
+        assert distant_land_format(Tree(False), "d9741dbb" * 5, scratch, never) == ("own-d9741dbb", None)
+        assert distant_land_format(Tree(True), "d9741dbb" * 5, scratch, gives_key) == ("0f0f0f0f", "A=1")
+        try:
+            distant_land_format(Tree(True), "d9741dbb" * 5, scratch, no_key)
+            raise AssertionError("a set was made with a helper that gives no key")
+        except SetFault as fault:
+            assert "gave no distant land key" in str(fault), fault
         assert manifest["commits"]["mwse"] == {"commit": commits["mwse"], "clean": True}
         assert "akulakhan-6d1b214.dll" in manifest["files"] and "MWSE.dll" in manifest["files"]
         assert "Data Files/MWSE/core/initialize.lua" in manifest["files"] or "Data Files/mwse/core/initialize.lua" in manifest["files"]
