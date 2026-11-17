@@ -61,10 +61,6 @@ pub(crate) struct Switches {
     /// `MGE_XE_DEPTH_FORMAT=24`: the depth of the frame in `Depth24PlusStencil8` even when the
     /// adapter has `Depth32FloatStencil8`: for an A/B of the format and the test of its fallback.
     pub(crate) depth24: bool,
-    /// `MGE_XE_ONE_DEPTH=1`: the distant land and the game in one depth buffer, with an
-    /// infinite far plane (`depth::one_buffer`). Temporary, for the test of step 6 of the depth
-    /// design.
-    pub(crate) one_depth: bool,
     /// `MGE_XE_FRAME_LATENCY=<n>` (1 to 3): the frames that may wait for the GPU, over the
     /// setting of the extension ([`crate::Extension::frame_latency`]): for an A/B of the
     /// mouse's lag.
@@ -145,7 +141,6 @@ impl Switches {
             record_limit: read.number::<usize>("MGE_XE_RECORD_LIMIT").map(|n| n.max(1024)),
             samples: read.number::<u32>("MGE_XE_SAMPLES").map(|n| n.clamp(1, 8)),
             depth24: read.choice("MGE_XE_DEPTH_FORMAT", &["24", "32"]) == Some("24"),
-            one_depth: read.on("MGE_XE_ONE_DEPTH") == Some(true),
             frame_latency: read.number::<u32>("MGE_XE_FRAME_LATENCY").map(|n| n.clamp(1, 3)),
             wait_yields: read.number::<u32>("MGE_XE_WAIT_YIELDS"),
             wake_batch: crate::stream_format::wake_batch_of(read.parsed_or(

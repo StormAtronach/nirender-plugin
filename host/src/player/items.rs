@@ -648,9 +648,8 @@ impl Player {
             } else {
                 pass_report::note_skipped(BEFORE_DEPTH, "no post chain, no held shapes and no watched class read it");
             }
-            // The draws of the game start with a depth target of their own; with one depth
-            // buffer they test against the extension's draws, in a pass that keeps the depth.
-            let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
+            // The draws of the game start with a depth target of their own.
+            let clear = Some(depth::clear(1.0));
             self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         } else {
             pass_report::note_skipped(BEFORE_DEPTH, "the extension drew nothing before the world");
@@ -712,7 +711,7 @@ impl Player {
         self.extension = Some(extension);
         if clear_depth {
             self.renderer.counts.tier_drew += 1;
-            let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
+            let clear = Some(depth::clear(1.0));
             self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         }
     }

@@ -178,8 +178,7 @@ impl WorldFacts {
         camera_place(self.origin, &self.view)
     }
 
-    /// The near and far planes of the camera, from its frustum: the projection that the frame
-    /// draws with can have an infinite far plane ([`depth::world_projection`]).
+    /// The near and far planes of the camera, from its frustum.
     fn depth_range(&self) -> [f32; 2] {
         [self.frustum[4], self.frustum[5]]
     }
