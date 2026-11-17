@@ -167,6 +167,9 @@ The gate of a change: `tools/validate_retained.py [--mge-build <set>]`. The stag
 5. `weathers`: the frame rate in each of the 10 weathers, two passes.
 6. `tour`: the test level in one session; at each stop two frames in mode gpu and two in mode
    off, which `tools/validate_tour.py` replays and compares.
+7. `order`: each kept capture (the tour's too) replayed with `MGE_XE_TABLE_ORDER=grouped` and
+   with `engine`, the pictures and the order digests compared (W535). `tools/merge_step.py`
+   runs it when a change touches a file of the table's order.
 
 `results/` is not in git. The accepted pictures live only on disk.
 
