@@ -298,6 +298,71 @@ def end(instance, profile, mod, read_only, before, move=True):
     return ["distant land: %d files of overwrite moved into %s; state %s -> %s" % (moved, os.path.basename(mod), (before or "none")[:8], (after or "none")[:8])], False
 
 
+def set_modlist(instance, profile, own):
+    """Puts the mod `own` on in the profile's modlist.txt and every other marked mod off; a line for `own` goes in under
+    the comment lines when the list has none. Keeps the file's line ending. Returns the changes, as texts."""
+    path = os.path.join(profile, "modlist.txt")
+    with open(path, "rb") as file:
+        data = file.read()
+    ending = "\r\n" if b"\r\n" in data else "\n"
+    marked = marked_mods(instance)
+    lines, changes, found = [], [], False
+    for line in data.decode("utf-8").splitlines():
+        name = line[1:] if line[:1] in ("+", "-") else None
+        if name == own:
+            found = True
+            if line != "+" + own:
+                changes.append("on: " + own)
+            lines.append("+" + own)
+        elif name in marked and line.startswith("+"):
+            changes.append("off: " + name)
+            lines.append("-" + name)
+        else:
+            lines.append(line)
+    if not found:
+        at = next((index for index, line in enumerate(lines) if not line.startswith("#")), len(lines))
+        lines.insert(at, "+" + own)
+        changes.append("added, on: " + own)
+    if changes:
+        with open(path, "wb") as file:
+            file.write((ending.join(lines) + ending).encode("utf-8"))
+    return changes
+
+
+def rest(instance, profile, key, commit, apply=True):
+    """The resting distant land of an install after a deploy (deploy_rest.py): the key's mod (made with its marker when
+    new) on in the mod list, every other marked mod off. Returns the lines; with `apply` False, what it would do."""
+    folder = os.path.join(mods_folder(instance), key.mod_name)
+    state = "with its distant land" if has_data(folder) else "new or empty: the first start of the game generates it"
+    if not apply:
+        return ["distant land of %s: would put %s on (%s)" % (instance, key.mod_name, state)]
+    ensure_mod(instance, key, commit)
+    changes = set_modlist(instance, profile, key.mod_name)
+    return ["distant land of %s: %s on (%s); mod list: %s" % (instance, key.mod_name, state, "; ".join(changes) or "as it was")]
+
+
+def adopt(instance, profile, key, commit, apply=False):
+    """The one-time move (design 3.3): the distant land in overwrite/distantland of `instance` goes into the mod of `key`,
+    which goes on in the mod list. A dry run by default. A Problem when overwrite is empty, when the key's mod holds a
+    distant land already, or when a run file says that a run did not end."""
+    if read_run_file(profile):
+        raise Problem("%s is there: a run did not end; a start of the runner acts on it first" % run_file(profile))
+    files = overwrite_files(instance)
+    if not files:
+        raise Problem("nothing to adopt: %s is empty" % overwrite_folder(instance))
+    folder = os.path.join(mods_folder(instance), key.mod_name)
+    if has_data(folder):
+        raise Problem("%s holds a distant land already: nothing is moved" % folder)
+    size = sum(os.path.getsize(os.path.join(overwrite_folder(instance), *name.split("/"))) for name in files)
+    lines = ["adopt: %d files, %d bytes, from %s into %s" % (len(files), size, overwrite_folder(instance), os.path.join(folder, DATA))]
+    if not apply:
+        return lines + ["adopt: a dry run; nothing is moved (--apply moves the files and puts the mod on)"]
+    ensure_mod(instance, key, commit)
+    moved = move_overwrite(instance, folder)
+    changes = set_modlist(instance, profile, key.mod_name)
+    return lines + ["adopt: %d files moved; mod list: %s" % (moved, "; ".join(changes) or "as it was")]
+
+
 def tool_commit():
     """The commit of this tool's tree, for the marker and the run file; "unknown" when git does not answer."""
     try:
@@ -540,6 +605,39 @@ def self_test():
         assert archive_key("D:/a", "t.toml", [], run=old).form.startswith("archive-")
         assert archive_key("D:/a", "t.toml", [], run=old).text != archive_key("D:/b", "t.toml", [], run=old).text
         assert archive_key("D:/a", "t.toml", [], run=helper).text == "abcd1234-99887766"
+
+        # adopt (N5): a dry run moves nothing; --apply moves and puts the mod on, the other marked mods off. The nulls:
+        # an empty overwrite, and a key whose mod holds a distant land, are refused.
+        listing = os.path.join(profile, "modlist.txt")
+        with open(listing, "wb") as file:
+            file.write(b"# by Mod Organizer\r\n+%s\r\n+Distant Lights OAAB patched and improved\r\n" % plain.mod_name.encode())
+        resting = Key("own-12345678", "own-12345678", "base")
+        try:
+            adopt(instance, profile, resting, "c0ffee")
+            raise AssertionError("an empty overwrite was adopted")
+        except Problem as problem:
+            assert "is empty" in str(problem)
+        plant("version", "22")
+        plant("statics/usage.data")
+        dry = adopt(instance, profile, resting, "c0ffee")
+        assert "2 files" in dry[0] and "dry run" in dry[-1] and overwrite_files(instance) == ["statics/usage.data", "version"], dry
+        applied = adopt(instance, profile, resting, "c0ffee", apply=True)
+        target = os.path.join(mods_folder(instance), resting.mod_name)
+        assert has_data(target) and overwrite_files(instance) == [], applied
+        with open(listing, "rb") as file:
+            assert file.read() == ("# by Mod Organizer\r\n+%s\r\n-%s\r\n+Distant Lights OAAB patched and improved\r\n"
+                                   % (resting.mod_name, plain.mod_name)).encode(), applied
+        plant("version", "22")
+        try:
+            adopt(instance, profile, resting, "c0ffee")
+            raise AssertionError("a second adopt into a full mod was taken")
+        except Problem as problem:
+            assert "holds a distant land already" in str(problem)
+        os.remove(os.path.join(overwrite_folder(instance), "version"))
+        # rest (deploy_rest.py): the key's mod on, the others off; a second call changes nothing.
+        assert "would put" in rest(instance, profile, plain, "c0ffee", apply=False)[0]
+        assert "on: " + plain.mod_name in rest(instance, profile, plain, "c0ffee")[0]
+        assert rest(instance, profile, plain, "c0ffee")[0].endswith("mod list: as it was")
     print("distant_land self-test: ok")
     return 0
 
@@ -548,12 +646,46 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("command", nargs="?", choices=("adopt", "path"), help="adopt: the one-time move; path: print the key's mod folder")
+    ap.add_argument("--instance", default="D:/Modlists/Morrowind75testing", help="the Mod Organizer instance")
+    ap.add_argument("--profile", default="Default", help="its profile")
+    ap.add_argument("--config-mod", default="Configuration", help="the mod of the instance with mgeXE.toml")
+    ap.add_argument("--mge-build", help="the sealed set; without it the current set")
+    ap.add_argument("--apply", action="store_true", help="adopt: move the files (without it, a dry run)")
     ap.add_argument("--self-test", action="store_true", help="the rules on a planted instance in a temporary folder")
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
-    ap.print_help()
-    return 2
+    if not args.command:
+        ap.print_help()
+        return 2
+    import clean_common
+    import sets
+    folder = args.mge_build or (os.path.join(clean_common.SETS, clean_common.current_set()) if clean_common.current_set() else None)
+    if not folder:
+        print("distant_land: no --mge-build and no current set")
+        return 1
+    try:
+        manifest = sets.verify(folder)
+        toml = os.path.join(args.instance, "mods", args.config_mod, "Root", "mgeXE.toml")
+        key = key_of(folder, manifest, toml, [])
+        if args.command == "path":
+            mod = os.path.join(mods_folder(args.instance), key.mod_name)
+            if not has_data(mod):
+                raise Problem("%s is not there or has no version file: a plain run of that set makes it" % mod)
+            print(os.path.join(mod, DATA))
+            return 0
+        import deploy_rest
+        try:
+            deploy_rest.check_nothing_runs()
+        except deploy_rest.Refused as refused:
+            raise Problem(str(refused))
+        for line in adopt(args.instance, os.path.join(args.instance, "profiles", args.profile), key, tool_commit(), args.apply):
+            print(line)
+    except (Problem, sets.SetError) as problem:
+        print("distant_land: %s" % problem)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

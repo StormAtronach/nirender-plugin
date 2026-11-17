@@ -75,8 +75,10 @@ from sets import CURRENT_BAT, write_current_bat  # noqa: E402  (W500)
 # The test installs, by name: the folder of the install (MO2 instance) and the names of its two mods. The key
 # "rest_installs" of local.json changes the places.
 REST_INSTALLS = local("rest_installs", {
-    "Morrowind75testing": {"root": "D:/Modlists/Morrowind75testing", "mge_mod": "MGE XE G7 Fork", "nirender_mod": "nirender"},
-    "Outlander-test": {"root": "D:/Modlists/Outlander-test", "mge_mod": "MGE XE G7", "nirender_mod": "nirender"},
+    "Morrowind75testing": {"root": "D:/Modlists/Morrowind75testing", "mge_mod": "MGE XE G7 Fork", "nirender_mod": "nirender",
+                           "profile": "Default", "config_mod": "Configuration"},
+    "Outlander-test": {"root": "D:/Modlists/Outlander-test", "mge_mod": "MGE XE G7", "nirender_mod": "nirender",
+                       "profile": "Outlander", "config_mod": "MGE XE G7"},
 })
 # The MWSE.dll that each test install has deployed (the line build), by install: the "mwse features" and "mwse sites"
 # stages of merge_step.py check these, and the deploy of a set writes them. The MWSE mod of an install is the folder two
@@ -234,6 +236,26 @@ def lua51_line(folder, manifest, installs, change=None):
         return "LUA51 CHANGE: --lua51-change %s is not the set's lua51.dll (md5 %s); %s" % (change, ours, sums), True
     return ("LUA51 CHANGE: the set's lua51.dll (md5 %s) is not each install's (%s): the change-over of D 11.2 goes to the "
             "Coordinator; nothing is written. On the Coordinator's word: --lua51-change %s" % (ours, sums, ours)), True
+
+
+def distant_land_lines(folder, manifest, installs, apply):
+    """The resting distant land of each install after a deploy of the set at `folder` (W521 step 4, `distant_land.rest`):
+    the mod of the set's key with the install's own mgeXE.toml goes on, every other marked mod off. An install whose
+    entry names no profile is passed over with a line. A distant_land.Problem is a DeployError."""
+    import distant_land
+    lines = []
+    for install_name, install in installs.items():
+        if not install.get("profile"):
+            lines.append("%s: no profile named; the distant land mod is not set" % install_name)
+            continue
+        toml = os.path.join(install["root"], "mods", install.get("config_mod", "Configuration"), "Root", "mgeXE.toml")
+        try:
+            key = distant_land.key_of(folder, manifest, toml, [])
+            lines += distant_land.rest(install["root"], os.path.join(install["root"], "profiles", install["profile"]), key,
+                                       distant_land.tool_commit(), apply)
+        except distant_land.Problem as problem:
+            raise DeployError("%s: the distant land mod: %s" % (install_name, problem))
+    return lines
 
 
 def backup_of(install, kind, dest, tag):
@@ -416,7 +438,7 @@ def run(folder, installs, plugin_commit=None, mge_commit=None, tag=None, dry_run
         pdb_keep=PDB_KEEP):
     """The whole deploy of the set `folder`. Returns the exit code. `add_symbols` (symbols.add from the command line)
     puts the set's pdbs (`pdb_keep`/<name>) into the symbol store. Each install gets the record MWSE_NOTE of the set's MWSE
-    commit. A deploy appends a DEPLOYED line to `deploys_file` (common.DEPLOYS_FILE from the command line; None writes
+    commit and the distant land mod of the set's key on in its profile (distant_land_lines). A deploy appends a DEPLOYED line to `deploys_file` (common.DEPLOYS_FILE from the command line; None writes
     none): it closes the WITHHELD deploys of a merge round of the same or older commits (W528)."""
     installs = with_mwse_mods(installs, MWSE_DEPLOYS if mwse_deploys is None else mwse_deploys)
     check_installs(installs)
@@ -438,6 +460,8 @@ def run(folder, installs, plugin_commit=None, mge_commit=None, tag=None, dry_run
             say("  %s: would copy %d, unchanged %d%s" % (install_name, len(changed), len(placed) - len(changed), first))
             say("  " + only_in_mod_line(install_name, only_in_mod(installs[install_name], placed)))
             say("  %s: would write the record %s: MWSE commit %s" % (install_name, os.path.join(installs[install_name]["root"], MWSE_NOTE), commits["mwse"]))
+        for line in distant_land_lines(folder, manifest, installs, apply=False):
+            say("  " + line)
         for label, digest in digests:
             say("md5 %s %s" % (label, digest))
         say("dry run: nothing is written")
@@ -455,6 +479,8 @@ def run(folder, installs, plugin_commit=None, mge_commit=None, tag=None, dry_run
         for install_name, install in installs.items():
             note = write_mwse_note(install, commits["mwse"], deploys[install_name], core_files, tag)
             say("%s: the record %s: MWSE commit %s" % (install_name, note, commits["mwse"]))
+    for line in distant_land_lines(folder, manifest, installs, apply=True):
+        say(line)
     for label, digest in digests:
         say("md5 %s %s" % (label, digest))
     pdbs = [path for install in installs.values() for kind in sets.DEPLOY_KINDS for path in files_below(mod_folder(install, kind))
@@ -672,7 +698,29 @@ def self_test():
         assert {name_: tree_of(install["root"]) for name_, install in installs.items()} == {"A": before["A"]}, "a refused deploy wrote"
 
         core_check_test(root)
+        distant_land_test(root)
     print("deploy_rest self-test: ok")
+
+
+def distant_land_test(root):
+    """W521 step 4: after a deploy, the set's mod is on in the install's mod list and a marked mod of another key is off;
+    the dry run changes nothing. The null: an install entry with no profile is passed over with a line."""
+    import distant_land
+    instance = os.path.join(root, "dl-instance")
+    profile = os.path.join(instance, "profiles", "Default")
+    os.makedirs(profile)
+    old = distant_land.Key("own-00000000", "own-00000000", "base")
+    distant_land.ensure_mod(instance, old, "c0ffee")
+    with open(os.path.join(profile, "modlist.txt"), "w", encoding="utf-8") as file:
+        file.write("# MO2\n+%s\n" % old.mod_name)
+    manifest = {"distant_land_format": "own-5296d863", "commits": {"render-link": {"commit": "5296d863" * 5, "clean": True}}}
+    installs = {"T": {"root": instance, "profile": "Default", "config_mod": "Configuration"}}
+    assert "would put" in distant_land_lines("S", manifest, installs, apply=False)[0]
+    assert open(os.path.join(profile, "modlist.txt"), encoding="utf-8").read() == "# MO2\n+%s\n" % old.mod_name
+    line = distant_land_lines("S", manifest, installs, apply=True)[0]
+    assert "Distant land own-5296d863-base on" in line, line
+    assert open(os.path.join(profile, "modlist.txt"), encoding="utf-8").read() == "# MO2\n+Distant land own-5296d863-base\n-%s\n" % old.mod_name
+    assert distant_land_lines("S", manifest, {"U": {"root": instance}}, apply=True) == ["U: no profile named; the distant land mod is not set"]
 
 
 def core_check_test(root):
