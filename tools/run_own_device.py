@@ -2097,7 +2097,47 @@ def self_test_crash_after_done():
     assert run_exit_code(False, False, False, ENDED_OTHER, False, False) == 1, "a crash before DONE (Rob's 20261115-224206-rob-w344-ref-exit)"
     assert run_exit_code(False, False, True, ENDED_DONE, True, True) == EXIT_FELL_BACK
     assert run_exit_code(True, True, True, ENDED_DONE, False, True) == 2
-    assert len({0, 1, 2, EXIT_ENDED_BY_HAND, EXIT_FELL_BACK, EXIT_CRASHED_AFTER_DONE, EXIT_STAGE_SHADERS}) == 7, "one code for each ending"
+    assert len({0, 1, 2, EXIT_ENDED_BY_HAND, EXIT_FELL_BACK, EXIT_CRASHED_AFTER_DONE, EXIT_STAGE_SHADERS, EXIT_DISTANT_LAND_CHANGED,
+                EXIT_DEVICE_LOST}) == 9, "one code for each ending"
+
+
+def self_test_device_loss():
+    """W78: a run whose helper lost its GPU device (a reason of the driver) prints an ERROR line and the keep line for
+    the Archivist, and fails with EXIT_DEVICE_LOST, with DONE and after an end by hand; the codes 2, 4 and 1 win. A
+    test loss ("Destroyed" and "the test", the tune "gpu lose device") and no text of the helper pass. The null: the
+    runner before W78 had no reader, so the same real loss gave 0 (device_lost False)."""
+    import contextlib
+    import io
+    import tempfile
+
+    real = "gpu: the device is lost (Unknown): Device is lost\n"
+    with tempfile.TemporaryDirectory() as folder:
+        host = os.path.join(folder, "host.txt")
+
+        def of(text):
+            if text is None:
+                if os.path.isfile(host):
+                    os.remove(host)
+            else:
+                with open(host, "w", encoding="utf-8") as file:
+                    file.write("frames 10\n" + text + "check gpu errors: 10 judged, 0 faults\n")
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                return device_loss_of_run(host, "R:/results/20261021-134053-x", "2026-11-17"), said.getvalue()
+
+        lost, said = of(real)
+        assert lost == real.rstrip("\n"), lost
+        assert said == ("ERROR: the helper lost its GPU device (W78, risk 33): gpu: the device is lost (Unknown): Device is lost\n"
+                        "KEEP for the Archivist (D71): R:/results/20261021-134053-x\topen: W78\t2026-11-17\n"), said
+        assert of("gpu: the device is lost (Destroyed): Device destroyed\ngpu: the device is lost (the test)\n") == (None, ""), "a test loss"
+        assert of("gpu error 1 (validation, adapter x): y\n") == (None, ""), "an error is not a loss"
+        assert of(None) == (None, ""), "a reference run has no text of the helper"
+    assert run_exit_code(False, False, True, ENDED_DONE, device_lost=True) == EXIT_DEVICE_LOST == 8
+    assert run_exit_code(False, False, True, ENDED_DONE, device_lost=False) == 0, "the null: the runner before W78"
+    assert run_exit_code(False, False, False, ENDED_BY_HAND, device_lost=True) == EXIT_DEVICE_LOST, "a live session ended by hand"
+    assert run_exit_code(False, False, True, ENDED_DONE, False, True, True, True) == EXIT_DEVICE_LOST, "over the stage shaders and the crash after DONE"
+    assert run_exit_code(False, False, False, ENDED_OTHER, device_lost=True) == 1, "the crash path first"
+    assert run_exit_code(False, False, True, ENDED_DONE, True, device_lost=True) == EXIT_FELL_BACK
+    assert run_exit_code(True, True, True, ENDED_DONE, device_lost=True) == 2
 
 
 def self_test_stage_shaders():
@@ -2699,6 +2739,7 @@ def self_test():
     self_test_ending()
     self_test_crash_after_done()
     self_test_stage_shaders()
+    self_test_device_loss()
     self_test_run_log()
     self_test_use_instance()
     self_test_set()
@@ -3076,6 +3117,7 @@ def main():
     else:
         print("\nhost: no text; the host program did not start")
     stage_failed = stage_shaders_of_run(run.path("host.txt"))
+    device_lost = device_loss_of_run(run.path("host.txt"), run.dir)
     # The plugin's lines: in mgeXE.log with MGE XE's d3d8.dll. Without its export the plugin
     # writes into nirender.log of the game folder until Lua names the log of the run.
     lines = run.plugin_lines()
@@ -3127,7 +3169,8 @@ def main():
     land_lines, land_changed = land.result()
     for line in land_lines:
         print(("ERROR: " if land_changed else "") + line)
-    code = run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed), bool(stage_failed))
+    code = run_exit_code(no_plugin, loaded, done or closed, ending, bool(fell_back), bool(crashed), bool(stage_failed),
+                         bool(device_lost))
     return exit_with_distant_land(code, land_changed)
 
 
@@ -3152,6 +3195,12 @@ EXIT_STAGE_SHADERS = 6
 # file has another md5 after the run), without --allow-distant-land-rebuild: the run's own results can be right,
 # and the instance is not as it was (W535, 2026-11-16).
 EXIT_DISTANT_LAND_CHANGED = 7
+# A run whose helper lost its GPU device for a reason of the driver (W78, risk 33): the line of the device-lost
+# callback (nirender host gpu.rs `watch`). The test of a loss (`gpu::test_loss`, the tune "gpu lose device") gives
+# the reasons "Destroyed" and "the test", which are not a real loss. The run is not clean, and its folder is evidence.
+EXIT_DEVICE_LOST = 8
+DEVICE_LOST_LINE = re.compile(r"^gpu: the device is lost \(([^)]*)\)")
+DEVICE_LOST_TEST_REASONS = ("Destroyed", "the test")
 CLOSE_LINE = re.compile(r"^\[runner\] game closed in \d+ s, without /F, exit code (.+)$")
 # The copy of the --log stream in the run folder, from the run folder's start on: a --log file of the same name in a
 # later run does not take it (W417).
@@ -3296,10 +3345,29 @@ def stage_shaders_of_run(host_text):
     return problem
 
 
-def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, crashed_after_done=False, stage_failed=False):
+def device_loss_of_run(host_text, run_dir, today=None):
+    """The first line of a real loss of the helper's GPU device in the helper's text at the path `host_text` (W78), or
+    None. For a loss it prints an ERROR line and the line of the keep list for the Archivist (D71, D152: the run is
+    the evidence of risk 33). A run with no text of the helper (a reference run) and a test loss give None."""
+    if not os.path.isfile(host_text):
+        return None
+    with open(host_text, encoding="utf-8", errors="replace") as file:
+        for line in file:
+            lost = DEVICE_LOST_LINE.match(line)
+            if lost and lost.group(1) not in DEVICE_LOST_TEST_REASONS:
+                line = line.rstrip("\n")
+                print("ERROR: the helper lost its GPU device (W78, risk 33): " + line)
+                print("KEEP for the Archivist (D71): %s\topen: W78\t%s" % (run_dir, today or time.strftime("%Y-%m-%d")))
+                return line
+    return None
+
+
+def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, crashed_after_done=False, stage_failed=False,
+                  device_lost=False):
     """2 for a run without the plugin that loaded it (no reference), 4 (EXIT_FELL_BACK) for a wgpu
     run that MGE XE took to the plain game, also with DONE, 1 for a run that ended without DONE and
-    not by hand (the crash path), 6 (EXIT_STAGE_SHADERS) for a run whose helper reports a failed
+    not by hand (the crash path), 8 (EXIT_DEVICE_LOST) for a run whose helper lost its GPU device (W78),
+    also with DONE and after an end by hand, 6 (EXIT_STAGE_SHADERS) for a run whose helper reports a failed
     rewrite or a failed pipeline of the stage shaders (W523), also with DONE and after an end by
     hand, 5 (EXIT_CRASHED_AFTER_DONE) for a run whose game crashed in its close after DONE (W417),
     else 0 when the steps were done in the budget, 3 for a run ended by hand (W372). The 6 wins
@@ -3312,6 +3380,8 @@ def run_exit_code(no_plugin, loaded, done, ending=ENDED_OTHER, fell_back=False, 
         return EXIT_FELL_BACK
     if not done and ending != ENDED_BY_HAND:
         return 1
+    if device_lost:
+        return EXIT_DEVICE_LOST
     if stage_failed:
         return EXIT_STAGE_SHADERS
     if done and crashed_after_done:
