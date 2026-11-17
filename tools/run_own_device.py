@@ -237,13 +237,46 @@ def read_text(path):
 
 
 def run_settings(args):
-    """The --set lines of the run: the lines of the command, the line that --engine-reference adds, and the line
+    """The --set lines of the run: the lines of the command, the line that --engine-reference adds, the line
     that keeps MGE XE from a rebuild of the install's distant land in a run that changes what the game loads
-    ([`rebuild_guard`])."""
+    ([`rebuild_guard`]), and the line of the videos at the game's start ([`videos_line`])."""
     lines = list(args.set) + (["[runtime] disabled = true"] if args.engine_reference else [])
     if rebuild_guard(args):
         lines.append(REBUILD_OFF_LINE)
+    videos = videos_line(args)
+    if videos:
+        lines.append(videos)
     return lines
+
+
+# The two logos at the game's start (32.4 s together). The owner, 2026-11-17: "we should skip the videos by default
+# again in the test runs unless we want to test the videos specifically". MGE XE's key skips them in every mode: with
+# its renderer, and also while it is off ([runtime] disabled = true, the engine reference) or in the plain game after
+# a refusal (--plain-case), where it asks MWSE for the skip.
+VIDEOS_SKIPPED_LINE = "[runtime] skip_intro = true"
+VIDEOS_PLAYED_LINE = "[runtime] skip_intro = false"
+# A --set line of the command that gives the key itself: "[runtime] skip_intro = ..." or the key alone.
+OWN_VIDEOS_LINE = re.compile(r"\s*(\[[^\]]*\]\s*)?skip_intro\s*=")
+
+
+def videos_line(args):
+    """The line of the run for the videos at the game's start: [`VIDEOS_SKIPPED_LINE`], or [`VIDEOS_PLAYED_LINE`]
+    with --videos. None when a --set line of the command names the key: the command's own value stands."""
+    if any(OWN_VIDEOS_LINE.match(line) for line in args.set):
+        return None
+    return VIDEOS_PLAYED_LINE if getattr(args, "videos", False) else VIDEOS_SKIPPED_LINE
+
+
+def videos_note(args):
+    """The line of the run's first lines (and of progress.log) that says what the run does with the videos."""
+    line = videos_line(args)
+    if line is None:
+        return "videos: the command's own --set line for skip_intro stands"
+    if line == VIDEOS_PLAYED_LINE:
+        return "videos: played (--videos)"
+    if getattr(args, "plain_case", False):
+        return "videos: skipped (--videos plays them; a plain game without MWSE's native ABI plays them)"
+    return "videos: skipped (--videos plays them)"
 
 
 # MGE XE's startup check of the distant land: with this key on (the default, and the testing instance's setting) a
@@ -1380,10 +1413,29 @@ def self_test_run_toml():
         raise AssertionError("a toml with no [runtime] was taken")
     # --engine-reference adds its line, and the reference switch is off for it.
     args = argparse.Namespace(set=["a = 1"], engine_reference=True, reference=False, mge_build=None)
-    assert run_settings(args) == ["a = 1", "[runtime] disabled = true"] and args.set == ["a = 1"]
+    assert run_settings(args) == ["a = 1", "[runtime] disabled = true", VIDEOS_SKIPPED_LINE] and args.set == ["a = 1"]
     assert wgpu_switch(args) is False
     args = argparse.Namespace(set=[], engine_reference=False, reference=False, mge_build="E:/b")
-    assert run_settings(args) == [] and wgpu_switch(args) is True
+    assert run_settings(args) == [VIDEOS_SKIPPED_LINE] and wgpu_switch(args) is True
+    # The videos at the game's start: skipped in every mode, played with --videos; the command's own key stands.
+    # The null: the old run_settings gave no skip_intro line, and the first assert fails on it.
+    for mode in (dict(), dict(engine_reference=True), dict(plain_case=True), dict(reference=True)):
+        values = dict(set=[], engine_reference=False, reference=False, mge_build="E:/b")
+        values.update(mode)
+        skipped = argparse.Namespace(**values)
+        assert run_settings(skipped)[-1] == "[runtime] skip_intro = true", (mode, run_settings(skipped))
+        assert videos_note(skipped).startswith("videos: skipped (--videos plays them"), mode
+        played = argparse.Namespace(videos=True, **values)
+        assert run_settings(played)[-1] == "[runtime] skip_intro = false", mode
+        assert videos_note(played) == "videos: played (--videos)", mode
+    assert "a plain game without MWSE's native ABI" in videos_note(argparse.Namespace(set=[], plain_case=True))
+    for own in ("[runtime] skip_intro = false", "skip_intro = true"):
+        stands = argparse.Namespace(set=[own], engine_reference=False, reference=False, mge_build="E:/b", videos=True)
+        assert run_settings(stands) == [own] and "stands" in videos_note(stands), own
+    # The line goes into the run's mgeXE.toml as any --set line: the key that [runtime] has is changed, in place.
+    written = lines_of([VIDEOS_SKIPPED_LINE], text="[runtime]\nrenderer_wgpu = true\nskip_intro = false\n\n[distant_land]\nnear = 1\n")
+    assert "skip_intro = true" in written and "skip_intro = false" not in written, written
+    assert written.index("skip_intro = true") < written.index("[distant_land]"), written
     # The guard of the distant land (W535): a run that changes what the game loads gets the line by itself.
     def guarded(**options):
         values = dict(set=[], engine_reference=False, add_file=[], enable_mod=[], disable_mod=[], enable_plugin=[], allow_distant_land_rebuild=False)
@@ -1393,20 +1445,20 @@ def self_test_run_toml():
     assert load_changes(guarded()) == [] and not rebuild_guard(guarded()) and rebuild_guard_note(guarded()) is None
     mesh = guarded(add_file=["E:/a.nif=meshes/f/a.nif", "E:/b.dll=Root/b.dll", "E:/c.dll=root\\MWSE.dll"])
     assert load_changes(mesh) == ["--add-file meshes/f/a.nif"], load_changes(mesh)
-    assert rebuild_guard(mesh) and run_settings(mesh) == [REBUILD_OFF_LINE] and mesh.set == []
+    assert rebuild_guard(mesh) and run_settings(mesh) == [REBUILD_OFF_LINE, VIDEOS_SKIPPED_LINE] and mesh.set == []
     assert "automatic_rebuild = false" in rebuild_guard_note(mesh) and "meshes/f/a.nif" in rebuild_guard_note(mesh)
     # A file of the game folder alone is no change for the generator.
     root_only = guarded(add_file=["E:/b.dll=Root/b.dll"])
-    assert load_changes(root_only) == [] and run_settings(root_only) == [] and rebuild_guard_note(root_only) is None
+    assert load_changes(root_only) == [] and run_settings(root_only) == [VIDEOS_SKIPPED_LINE] and rebuild_guard_note(root_only) is None
     for option, text in (("enable_mod", "--enable-mod Trees"), ("disable_mod", "--disable-mod Trees"), ("enable_plugin", "--enable-plugin Trees")):
         changed = guarded(**{option: ["Trees"]})
-        assert load_changes(changed) == [text] and run_settings(changed) == [REBUILD_OFF_LINE], (option, load_changes(changed))
+        assert load_changes(changed) == [text] and run_settings(changed) == [REBUILD_OFF_LINE, VIDEOS_SKIPPED_LINE], (option, load_changes(changed))
     # The command can allow the rebuild, or give the key itself: then no line is added, and the note says which.
     allowed = guarded(add_file=["E:/a.nif=meshes/a.nif"], allow_distant_land_rebuild=True)
-    assert not rebuild_guard(allowed) and run_settings(allowed) == [] and "--allow-distant-land-rebuild is given" in rebuild_guard_note(allowed)
+    assert not rebuild_guard(allowed) and run_settings(allowed) == [VIDEOS_SKIPPED_LINE] and "--allow-distant-land-rebuild is given" in rebuild_guard_note(allowed)
     own = guarded(enable_mod=["Trees"], set=["[distant_land] automatic_rebuild = true"])
-    assert not rebuild_guard(own) and run_settings(own) == ["[distant_land] automatic_rebuild = true"] and "stands" in rebuild_guard_note(own)
-    assert run_settings(guarded(enable_mod=["Trees"], engine_reference=True)) == ["[runtime] disabled = true", REBUILD_OFF_LINE]
+    assert not rebuild_guard(own) and run_settings(own) == ["[distant_land] automatic_rebuild = true", VIDEOS_SKIPPED_LINE] and "stands" in rebuild_guard_note(own)
+    assert run_settings(guarded(enable_mod=["Trees"], engine_reference=True)) == ["[runtime] disabled = true", REBUILD_OFF_LINE, VIDEOS_SKIPPED_LINE]
     many = guarded(add_file=["E:/%d.nif=meshes/%d.nif" % (index, index) for index in range(72)])
     assert "and 68 more" in rebuild_guard_note(many) and rebuild_guard_note(many).count("--add-file") == 4
     # The line goes into the run's mgeXE.toml as any --set line: a key that the section has is changed.
@@ -1443,7 +1495,7 @@ def self_test_run_toml():
         assert distant_land_cause(root) == "meshes +0/-0/~61; textures +32/-0/~2"
     # Only a --set line that GIVES the key is the command's own value; the word in another line's value is not.
     quoted = guarded(enable_mod=["Trees"], set=['[statics] note = "automatic_rebuild = off"'])
-    assert rebuild_guard(quoted) and run_settings(quoted)[-1] == REBUILD_OFF_LINE
+    assert rebuild_guard(quoted) and run_settings(quoted)[-2:] == [REBUILD_OFF_LINE, VIDEOS_SKIPPED_LINE]
     for own_line in ("[distant_land] automatic_rebuild = true", "automatic_rebuild = false", "  [distant_land]automatic_rebuild=true"):
         assert not rebuild_guard(guarded(enable_mod=["Trees"], set=[own_line])), own_line
     assert distant_land_line(None, None, False) == ("distant land: the generator's state file is as before the run (none)", False)
@@ -2837,6 +2889,10 @@ def main():
                     "\"[distant_land] automatic_rebuild = false\" for the run, so that the instance's distant land is not made anew from "
                     "the run's files; and any run whose game start rebuilt it ends with the exit code 7. A --set line with "
                     "automatic_rebuild stands as given")
+    ap.add_argument("--videos", action="store_true",
+                    help="play the two logos at the game's start. Without this, every run gets the line \"[runtime] skip_intro = "
+                    "true\" in its mgeXE.toml copy, in every mode (with MGE XE off, MGE XE asks MWSE for the skip). A --set line "
+                    "with skip_intro stands as given")
     ap.add_argument("--find-water", action="store_true", help="after the cell loads, put the player under the water at the "
                     "nearest spot where the land is deep enough (a test of the view from under the water)")
     ap.add_argument("--find-dry", action="store_true", help="after the interior cell loads, put the player on the nearest floor above "
@@ -2951,6 +3007,7 @@ def main():
             print("run_own_device: " + note)
         if rebuild_guard_note(args):
             print("run_own_device: " + rebuild_guard_note(args))
+        print("run_own_device: " + videos_note(args))
         if weather_warning(args):
             print("run_own_device: " + weather_warning(args))
         if weather_pin_warning(args):
@@ -3007,6 +3064,7 @@ def main():
     args.set_for_run = run_settings(args)
     if rebuild_guard_note(args):
         print("run_own_device: " + rebuild_guard_note(args), flush=True)
+    print("run_own_device: " + videos_note(args), flush=True)
     registry, source = registry_shadows()
     shadows, level = shadow_level_line(registry, ini_shadows(read_profile_ini()), source)
     print("run_own_device: " + shadows, flush=True)
@@ -3075,7 +3133,7 @@ def main():
     # named at its end, and fails unless the command allowed the rebuild.
     land_before = distant_land_state(session.harness.MO2_ROOT)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = launch_run(run, spec, args, mods, facts=[build_line, shadows])
+        done = launch_run(run, spec, args, mods, facts=[build_line, shadows, videos_note(args)])
 
     print()
     progress = run.progress_lines(TAG)
