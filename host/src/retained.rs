@@ -981,9 +981,15 @@ impl RetainedSet {
     /// of the matrix (`vs` of shader.wgsl takes the instance's, and a skinned draw the table's
     /// palette), and a held draw is a copy of the slot of each frame (`retained_hold`).
     ///
+    /// `copy` is the renderer's kept copy of the instance buffer's segment of the table. At a
+    /// change of the place the three numbers of a slot go into its entry there too, when the
+    /// copy has that entry (the slot's number is under the copy's length), so the upload has
+    /// no entry to make again for the new origin. An entry that the copy does not have yet is
+    /// of a slot that is new in the frame: the upload makes it from the slot.
+    ///
     /// When the scene changes kind (relative, or in the space of the world), everything is
-    /// made again and both segments are written whole.
-    pub fn rebase(&mut self, camera: Option<[f64; 3]>, known: &HashMap<u32, [u8; 104]>) -> bool {
+    /// made again and both segments are written whole; the copy is not touched here.
+    pub fn rebase(&mut self, camera: Option<[f64; 3]>, known: &HashMap<u32, [u8; 104]>, copy: &mut [Instance]) -> bool {
         let (relative, target) = match camera {
             Some(camera) => (true, camera),
             None => (false, [0.0; 3]),
@@ -998,14 +1004,21 @@ impl RetainedSet {
         // The bones are made again for the new origin at the upload; a skinned slot keeps the
         // identity.
         self.bones_dirty = true;
-        for slot in self.slots.iter_mut().flatten() {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let Some(slot) = slot else { continue };
             if slot.flags & INSTANCE_SKINNED != 0 {
                 continue;
             }
-            for i in 0..3 {
-                slot.world[12 + i] = (slot.exact[i] - target[i]) as f32;
+            // The record's copy of the matrix is the slot's matrix at every writer of the two
+            // (the insert, `update_place`, here), so the three numbers are all that changes.
+            let place: [f32; 3] = core::array::from_fn(|i| (slot.exact[i] - target[i]) as f32);
+            slot.world[12..15].copy_from_slice(&place);
+            slot.data.world[0][12..15].copy_from_slice(&place);
+            if !kind_changes {
+                if let Some(entry) = copy.get_mut(index) {
+                    entry.world[12..15].copy_from_slice(&place);
+                }
             }
-            slot.data.world[0] = slot.world;
         }
         let origin = self.light_origin();
         for (key, &slot) in &self.light_slot_of {
@@ -1021,6 +1034,41 @@ impl RetainedSet {
             self.counts.rebases += 1;
         }
         true
+    }
+
+    /// The entries of the frame's changed and moved slots, made again in the kept copy of the
+    /// instance buffer's segment (`copy`), which grows to `room` entries. After it `moved`
+    /// holds both lists, sorted, each slot one time. The lists hold no slot at or past `room`
+    /// ([`Renderer::retained_upload`] drops those before).
+    fn changed_entries_into(&mut self, copy: &mut Vec<Instance>, room: usize) {
+        self.moved.extend_from_slice(&self.dirty);
+        self.moved.sort_unstable();
+        self.moved.dedup();
+        if copy.len() < room {
+            copy.resize(room, Instance::zeroed());
+        }
+        for &i in &self.moved {
+            if let Some(slot) = self.slots[i as usize].as_ref() {
+                copy[i as usize] = slot_instance(i as usize, slot);
+            }
+        }
+    }
+
+    /// The live slots under `room` whose entry in the kept copy is not, to the byte, the entry
+    /// that the slot makes now. None after an upload: that is what lets a change of the
+    /// origin's place write the copy as it is. An empty slot has no entry to make (its old one
+    /// stays in the copy; no draw names an empty slot).
+    fn stale_entries(&self, copy: &[Instance], room: usize) -> Vec<u32> {
+        self.slots
+            .iter()
+            .take(room)
+            .enumerate()
+            .filter_map(|(i, slot)| {
+                let made = slot_instance(i, slot.as_ref()?);
+                let kept = copy.get(i).map(bytemuck::bytes_of);
+                (kept != Some(bytemuck::bytes_of(&made))).then_some(i as u32)
+            })
+            .collect()
     }
 
     /// The view of a scene for the instances: the view of the game, with its translation
@@ -1702,44 +1750,28 @@ impl Renderer {
                     self.counts.record_write_bytes += RECORD_SIZE as u64;
                 }
             }
+            // The entries of the changed and the moved slots go into the copy.
+            let copy = &mut self.retained_instance_copy;
+            set.changed_entries_into(copy, room);
             if instances {
-                // Every entry of the instances in one write. The changed and the moved slots are
-                // in it; the records of the changed slots went up above.
-                let copy = &mut self.retained_instance_copy;
-                copy.clear();
-                copy.resize(room, Instance::zeroed());
-                for (i, slot) in set.slots.iter().take(room).enumerate() {
-                    if let Some(slot) = slot {
-                        copy[i] = slot_instance(i, slot);
-                    }
-                }
+                // The origin moved: `rebase` wrote the new place of every slot into the copy, so
+                // the copy is the segment as it must be, and it goes up in one write. The changed
+                // and the moved slots are in it; the records of the changed slots went up above.
+                debug_assert!(
+                    set.stale_entries(copy, room).is_empty(),
+                    "the kept copy of the instances is not the slots' at a new origin: slots {:?}",
+                    set.stale_entries(copy, room)
+                );
                 if room != 0 {
-                    self.queue.write_buffer(
-                        &self.instance_buffer,
-                        0,
-                        bytemuck::cast_slice(&self.retained_instance_copy[..]),
-                    );
+                    self.queue
+                        .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&copy[..room]));
                 }
                 self.counts.instance_uploads_origin += 1;
                 self.counts.upload_origin_seconds += case_began.elapsed().as_secs_f64();
-                set.dirty.clear();
                 set.moved.clear();
             }
-            // The entries of the changed and the moved slots go into the copy, then up as runs:
-            // slots at most `RUN_GAP` apart share a write (the entries between are the copy's,
-            // the same as the buffer's).
-            set.moved.extend_from_slice(&set.dirty);
-            set.moved.sort_unstable();
-            set.moved.dedup();
-            let copy = &mut self.retained_instance_copy;
-            if copy.len() < room {
-                copy.resize(room, Instance::zeroed());
-            }
-            for &i in &set.moved {
-                if let Some(slot) = set.slots[i as usize].as_ref() {
-                    copy[i as usize] = slot_instance(i as usize, slot);
-                }
-            }
+            // Without a new origin the entries go up as runs: slots at most `RUN_GAP` apart share
+            // a write (the entries between are the copy's, the same as the buffer's).
             let mut k = 0;
             while k < set.moved.len() {
                 let first = set.moved[k] as usize;
@@ -3352,7 +3384,7 @@ mod list_tests {
         skinned.flags = INSTANCE_SKINNED;
         skinned.exact = PLACE;
         // The first start of a world: the scene's kind changes, and everything goes up whole.
-        assert!(set.rebase(Some(camera), &HashMap::new()));
+        assert!(set.rebase(Some(camera), &HashMap::new(), &mut []));
         assert!(set.all_dirty && !set.instances_dirty);
         assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 1));
         set.all_dirty = false;
@@ -3365,13 +3397,13 @@ mod list_tests {
         let first = [400010.0, -250000.0, 1200.0];
         let mut set = set_at(first);
         // The camera stands: no rebase, to the bit.
-        assert!(!set.rebase(Some(first), &HashMap::new()));
+        assert!(!set.rebase(Some(first), &HashMap::new(), &mut []));
         assert!(!set.instances_dirty && !set.all_dirty && !set.bones_dirty);
         assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 1));
 
         // The smallest change of the place is a change: the next double on one axis.
         let next = [f64::from_bits(first[0].to_bits() + 1), first[1], first[2]];
-        assert!(set.rebase(Some(next), &HashMap::new()));
+        assert!(set.rebase(Some(next), &HashMap::new(), &mut []));
         assert_eq!(set.origin, next);
         assert_eq!((set.counts.rebases, set.counts.kind_changes), (1, 1));
         // The instances go up whole, the records do not, and the bones are made again.
@@ -3381,7 +3413,7 @@ mod list_tests {
         // A slot that is not skinned: its exact place less the camera in 64 bits, rounded one
         // time, in the slot and in the copy that a held draw takes.
         let moved = [399000.5, -251000.25, 1000.0];
-        assert!(set.rebase(Some(moved), &HashMap::new()));
+        assert!(set.rebase(Some(moved), &HashMap::new(), &mut []));
         let slot = set.slots[0].as_ref().unwrap();
         for i in 0..3 {
             assert_eq!(
@@ -3405,7 +3437,7 @@ mod list_tests {
         let camera = [100.0, 200.0, 300.0];
         let mut set = set_at(camera);
         // A scene with no origin: the space of the world, whole.
-        assert!(set.rebase(None, &HashMap::new()));
+        assert!(set.rebase(None, &HashMap::new(), &mut []));
         assert!(set.all_dirty && !set.instances_dirty && !set.relative);
         assert_eq!(set.origin, [0.0; 3]);
         assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 2));
@@ -3415,12 +3447,110 @@ mod list_tests {
         }
         // The same kind again: nothing to do, whatever the place was before.
         set.all_dirty = false;
-        assert!(!set.rebase(None, &HashMap::new()));
+        assert!(!set.rebase(None, &HashMap::new(), &mut []));
         assert!(!set.all_dirty && !set.instances_dirty);
         // Back to a relative scene at the old camera: a change of the kind, not of the place.
-        assert!(set.rebase(Some(camera), &HashMap::new()));
+        assert!(set.rebase(Some(camera), &HashMap::new(), &mut []));
         assert!(set.all_dirty && !set.instances_dirty);
         assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 3));
+    }
+
+    /// The segment of the instances as the whole upload of `Renderer::retained_upload` makes it.
+    fn whole_copy(set: &RetainedSet) -> Vec<Instance> {
+        let mut copy = vec![Instance::zeroed(); set.slots.len()];
+        for (i, slot) in set.slots.iter().enumerate() {
+            if let Some(slot) = slot {
+                copy[i] = slot_instance(i, slot);
+            }
+        }
+        copy
+    }
+
+    /// A change of the origin's place writes the kept copy of the instances as it is. So after
+    /// the change and the making of the frame's changed entries, the copy's entry of each live
+    /// slot is, to the byte, the entry that the slot makes.
+    #[test]
+    fn a_change_of_the_place_keeps_the_copy_of_the_instances_equal_to_the_slots() {
+        let first = [400010.0, -250000.0, 1200.0];
+        let moved = [399000.5, -251000.25, 1000.0];
+        let known = HashMap::new();
+        fn live(set: &RetainedSet, index: usize) -> &Slot {
+            set.slots[index].as_ref().unwrap()
+        }
+        // The slots 0 (plain) and 1 (skinned) of `set_at`, and the instances 3, 4 and 5 in the
+        // slots 2, 3 and 4, each at a place of its own. All are at the origin `first`.
+        let mut set = set_at([400000.0, -250000.0, 1000.0]);
+        for (step, id) in [3, 4, 5].into_iter().enumerate() {
+            put(&mut set, id);
+            let slot = set.slots.last_mut().unwrap().as_mut().unwrap();
+            slot.exact = [PLACE[0] + 10.0 * (step + 1) as f64, PLACE[1], PLACE[2]];
+        }
+        assert!(set.rebase(Some(first), &known, &mut []));
+        // An upload: the copy has every slot's entry, and the frame's lists are empty.
+        set.instances_dirty = false;
+        let mut copy = whole_copy(&set);
+        assert!(set.stale_entries(&copy, 5).is_empty());
+        assert!(set.dirty.is_empty() && set.moved.is_empty());
+
+        // The frame: the instance 3 goes (its slot 2 is empty), the slot 3 changes, the slot 4
+        // moves in place, and a new instance takes the slot 5, past the copy's end.
+        let _pinned = set.remove(3);
+        set.slots[3].as_mut().unwrap().world[0] = 2.0;
+        set.dirty.push(3);
+        let place = Retained {
+            class: 0,
+            flags: 0,
+            geometry: 0,
+            material: 0,
+            rotation: [1.0, 2.0, 3.0, 0.0, 4.0, 5.0, 6.0, 0.0, 7.0, 8.0, 9.0, 0.0],
+            exact: [PLACE[0] - 7.5, PLACE[1] + 3.25, PLACE[2]],
+            stored: [0.0; 3],
+            colours: [0.0; 14],
+            bound: [0.0, 0.0, 0.0, 1.0],
+        };
+        assert!(set.update_place(5, &place));
+        put(&mut set, 6);
+        set.slots[5].as_mut().unwrap().exact = PLACE;
+        set.dirty.push(5);
+        let before = copy.clone();
+
+        // The change of the place. The copy has the new place of the slot 0 already; the frame's
+        // changed, moved and new slots wait for the making.
+        assert!(set.rebase(Some(moved), &known, &mut copy));
+        assert!(set.instances_dirty && !set.all_dirty);
+        assert_eq!(set.stale_entries(&copy, 6), [3, 4, 5]);
+        set.changed_entries_into(&mut copy, 6);
+        assert_eq!(copy.len(), 6);
+        assert_eq!(set.moved, [3, 4, 5]);
+        assert!(set.stale_entries(&copy, 6).is_empty());
+
+        // The plain slot: its exact place less the camera, rounded one time, in the slot, in the
+        // record's copy and in the kept copy.
+        for i in 0..3 {
+            let wanted = ((PLACE[i] - moved[i]) as f32).to_bits();
+            assert_eq!(live(&set, 0).world[12 + i].to_bits(), wanted, "axis {i}");
+            assert_eq!(copy[0].world[12 + i].to_bits(), wanted, "axis {i}");
+        }
+        assert_ne!(copy[0].world, before[0].world);
+        assert_eq!(live(&set, 0).data.world[0], live(&set, 0).world);
+        assert_eq!(live(&set, 4).data.world[0], live(&set, 4).world);
+        // The skinned slot's entry is not touched.
+        assert_eq!(bytemuck::bytes_of(&copy[1]), bytemuck::bytes_of(&before[1]));
+        // The empty slot: no entry is made for it (its old one stays), it is not live for the
+        // cull, and no list of a view has it, whatever the engine showed.
+        assert!(set.slots[2].is_none());
+        assert_eq!(bytemuck::bytes_of(&copy[2]), bytemuck::bytes_of(&before[2]));
+        assert_eq!(set.cull[2].state & CULL_LIVE, 0);
+        set.set_shown([1, 2, 3, 4, 5, 6]);
+        assert!(!drawn(&set, &main_view()).contains(&2));
+
+        // The null of this test: with the three numbers of one slot left out of the copy, that
+        // slot's entry is not the slot's, and no other.
+        let mut left_out = copy.clone();
+        left_out[0].world[12..15].copy_from_slice(&before[0].world[12..15]);
+        assert_eq!(set.stale_entries(&left_out, 6), [0]);
+        // A copy that is too short lacks its last slot's entry.
+        assert_eq!(set.stale_entries(&copy[..5], 6), [5]);
     }
 
     /// The planes of a box of 10 units around the origin.

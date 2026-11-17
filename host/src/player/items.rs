@@ -40,7 +40,11 @@ impl Player {
     /// The world's start: the origin of the instances follows its camera, and the texture
     /// effects under a turning billboard turn for that camera.
     pub(crate) fn prepare_world(&mut self, facts: &WorldFacts) {
-        self.retained.rebase(facts.origin, &self.renderer.lights_known);
+        self.retained.rebase(
+            facts.origin,
+            &self.renderer.lights_known,
+            &mut self.renderer.retained_instance_copy,
+        );
         let began = std::time::Instant::now();
         self.retained
             .turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, facts.eye()));
