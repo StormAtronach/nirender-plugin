@@ -75,14 +75,31 @@ class InstanceStage:
     # The instance's name, as the label of a game run names it, and its folder.
     instance: str = ""
     instance_dir: str = ""
+    # The profile of the instance, whose mod list names its resting distant land mod.
+    profile: str = ""
+
+    def land(self):
+        """The distant land of the replays: `distant_land` when the stage names one (a test), else the distantland folder
+        of the instance's resting mod, the marked mod that is on in its mod list (W521 step 4, `distant_land.py`). With
+        no such mod the path names that, and `inputs_missing` lists it."""
+        if self.distant_land:
+            return self.distant_land
+        import distant_land
+        try:
+            with open(os.path.join(self.instance_dir, "profiles", self.profile, "modlist.txt"), encoding="utf-8", errors="replace") as file:
+                name = distant_land.resting_mod(self.instance_dir, file.read().splitlines())
+        except (OSError, distant_land.Problem):
+            name = None
+        return os.path.join(distant_land.mods_folder(self.instance_dir), name or "(no distant land mod is on)", distant_land.DATA)
 
 
 OUTLANDER = "D:/Modlists/Outlander-test"
 GRASS = InstanceStage(name="grass", capture="outlander-pelagiad.nircap", config="mgeXE.toml",
-                      distant_land=local("outlander_distant_land", OUTLANDER + "/overwrite/distantland"),
+                      distant_land="",
                       game_dir=local("outlander_game_dir", OUTLANDER + "/Stock Game Folder"),
                       frames="1,15,29", guard=("generation_report.toml", "generation_state.bin"),
-                      env={"MGE_XE_GRASS_HASH": "1"}, instance="Outlander-test", instance_dir=local("outlander_dir", OUTLANDER))
+                      env={"MGE_XE_GRASS_HASH": "1"}, instance="Outlander-test", instance_dir=local("outlander_dir", OUTLANDER),
+                      profile="Outlander")
 STAGES = {stage.name: stage for stage in (GRASS,)}
 
 
@@ -95,8 +112,8 @@ def stage_folder(baseline, stage):
 
 def inputs_missing(stage, folder):
     """The inputs of a stage that are not there, as paths."""
-    wanted = [os.path.join(folder, stage.capture), os.path.join(folder, stage.config), stage.distant_land, stage.game_dir]
-    wanted += [os.path.join(stage.distant_land, name) for name in stage.guard]
+    wanted = [os.path.join(folder, stage.capture), os.path.join(folder, stage.config), stage.land(), stage.game_dir]
+    wanted += [os.path.join(stage.land(), name) for name in stage.guard]
     return [path for path in wanted if not os.path.exists(path)]
 
 
@@ -308,7 +325,7 @@ def replay(stage, folder, build, out, tag):
     clear_files(pictures)
     shutil.copyfile(os.path.join(folder, stage.config), os.path.join(config, stage.config))
     command = [sys.executable, os.path.join(HERE, "replay.py"), os.path.join(folder, stage.capture), os.path.join(pictures, "p"),
-               "--frames-at", stage.frames, "--mge-build", build, "--config-root", config, "--distant-land", stage.distant_land,
+               "--frames-at", stage.frames, "--mge-build", build, "--config-root", config, "--distant-land", stage.land(),
                "--game-dir", stage.game_dir]
     done = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=dict(os.environ, **stage.env))
     return done.returncode, done.stdout + done.stderr, pictures
@@ -379,7 +396,7 @@ def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare
         out("NOT RUN %s: %s" % (stage.name, blocker))
         return NOT_RUN
 
-    guarded = [os.path.join(stage.distant_land, name) for name in stage.guard]
+    guarded = [os.path.join(stage.land(), name) for name in stage.guard]
     before = file_state(guarded)
     runs = {}
     for tag, build in (("base", args.base_build), ("now", args.now_build), ("base-again", args.base_build)):
@@ -428,16 +445,16 @@ def self_test():
         assert folder == os.path.join(root, "base", "instance", "t")
         assert len(inputs_missing(stage, folder)) == 6
         os.makedirs(folder)
-        os.makedirs(stage.distant_land)
+        os.makedirs(stage.land())
         os.makedirs(stage.game_dir)
-        for path in (os.path.join(folder, "c.nircap"), os.path.join(folder, "m.toml"), os.path.join(stage.distant_land, "a.toml"), os.path.join(stage.distant_land, "b.bin")):
+        for path in (os.path.join(folder, "c.nircap"), os.path.join(folder, "m.toml"), os.path.join(stage.land(), "a.toml"), os.path.join(stage.land(), "b.bin")):
             open(path, "w").write("x")
         assert inputs_missing(stage, folder) == []
         os.remove(os.path.join(folder, "m.toml"))
         assert inputs_missing(stage, folder) == [os.path.join(folder, "m.toml")]
 
         # The race guard: a change of time or size of a generated file, and a file that appears or goes.
-        guarded = [os.path.join(stage.distant_land, name) for name in stage.guard]
+        guarded = [os.path.join(stage.land(), name) for name in stage.guard]
         before = file_state(guarded)
         assert guard_problem(before, file_state(guarded)) is None
         open(guarded[0], "w").write("longer")
@@ -531,7 +548,7 @@ def self_test():
         assert run_stage(stage_args, said.append, lambda: ["game: free"], same) == NOT_RUN and any("missing" in line for line in said) and any(line.startswith("inputs of grass from") for line in said) and said[0].startswith("the named baseline")
 
         # A game slot that cannot be read is a NOT RUN, with the reason (a stage with its inputs in place).
-        full = InstanceStage("g", "c.nircap", "m.toml", stage.distant_land, stage.game_dir, "1", ())
+        full = InstanceStage("g", "c.nircap", "m.toml", stage.land(), stage.game_dir, "1", ())
         STAGES["g"] = full
         try:
             os.makedirs(os.path.join(root, "base", "instance", "g"), exist_ok=True)
@@ -593,6 +610,20 @@ def self_test():
                 replay = real_replay
         finally:
             del STAGES["g"]
+    # W521 step 4: the stage's distant land is the instance's resting mod, the marked mod that is on. The null: with no
+    # marked mod on, the path names that, and inputs_missing lists it.
+    import distant_land
+    with tempfile.TemporaryDirectory() as instance:
+        os.makedirs(os.path.join(instance, "profiles", "P"))
+        stage = InstanceStage("g", "c.nircap", "m.toml", "", "G", "1", (), instance_dir=instance, profile="P")
+        key = distant_land.Key("own-0badf00d", "own-0badf00d", "base")
+        mod, _ = distant_land.ensure_mod(instance, key, "c0ffee")
+        for state, expected in (("-", os.path.join(instance, "mods", "(no distant land mod is on)", "distantland")),
+                                ("+", os.path.join(mod, "distantland"))):
+            with open(os.path.join(instance, "profiles", "P", "modlist.txt"), "w", encoding="utf-8") as file:
+                file.write("%s%s\n" % (state, key.mod_name))
+            assert stage.land() == expected, (state, stage.land())
+        assert stage.land() in inputs_missing(stage, instance)
     print("instance_ab self-test: ok")
 
 

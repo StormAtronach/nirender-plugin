@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -316,8 +317,18 @@ def generation_cause(mod):
     return found.group(1) if found else None
 
 
-def archive_key(archive, set_lines, content=None):
-    """The key of a run on an unpacked release archive, which has no manifest: a format of that folder's own."""
+def archive_key(archive, toml, set_lines, content=None, run=subprocess.run):
+    """The key of a run on an unpacked release archive, which has no manifest: its helper's key when the helper has the
+    option (the same mod as a set of that format), else a format of that folder's own. An old helper does not know
+    the option and ends at once in its IPC host mode, which writes its log into the current folder: the call runs in a
+    temporary folder."""
+    with tempfile.TemporaryDirectory(prefix="distant-land-key-") as temp:
+        try:
+            form, text, settings = helper_key(os.path.join(archive, "numidium.exe"), toml,
+                                              lambda command, **kinds: run(command, cwd=temp, **kinds))
+            return Key(form, text, settings, content)
+        except (Problem, OSError, subprocess.SubprocessError):
+            pass
     form = "archive-" + hashlib.md5(os.path.normcase(os.path.abspath(archive)).encode("utf-8")).hexdigest()[:8]
     return Key(form, form, own_settings(set_lines), content)
 
@@ -521,7 +532,11 @@ def self_test():
         lines, fault = land.result()
         assert fault and "changed" in lines[0] and lines[-1] == "the generator's cause: meshes +0/-0/~61", lines
         os.remove(run_file(profile))
-        assert archive_key("D:/a", []).form.startswith("archive-") and archive_key("D:/a", []).text != archive_key("D:/b", []).text
+        # An archive whose helper has no option has a format of its own (the null); one with it takes the helper's key.
+        old = lambda command, **kinds: subprocess.CompletedProcess(command, 1, "", "")  # noqa: E731
+        assert archive_key("D:/a", "t.toml", [], run=old).form.startswith("archive-")
+        assert archive_key("D:/a", "t.toml", [], run=old).text != archive_key("D:/b", "t.toml", [], run=old).text
+        assert archive_key("D:/a", "t.toml", [], run=helper).text == "abcd1234-99887766"
     print("distant_land self-test: ok")
     return 0
 

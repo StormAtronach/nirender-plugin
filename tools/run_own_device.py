@@ -310,7 +310,7 @@ def run_land(args, manifest, toml, commit=None):
     if manifest:
         key = distant_land.key_of(args.mge_build, manifest, toml, args.set_for_run, content)
     else:
-        key = distant_land.archive_key(args.archive, args.set_for_run, content)
+        key = distant_land.archive_key(args.archive, toml, args.set_for_run, content)
     return distant_land.RunLand(session.harness.MO2_ROOT, session.harness.PROFILE, key, read_only, commit or distant_land.tool_commit())
 
 
