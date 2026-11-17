@@ -2,7 +2,7 @@
 
 nirender gives The Elder Scrolls III: Morrowind a new renderer. The game keeps its own world,
 its scripts and its mods, but it does not draw the picture. A plugin in the game sends each
-frame to a 64-bit program, `numidium.exe` of MGE XE G7, which draws it with wgpu on Vulkan or
+frame to a 64-bit program, `numidium.exe` of a fork of MGE XE G7, which draws it with wgpu on Vulkan or
 Direct3D 12 (the setting `renderer_backend`).
 
 ## The state
