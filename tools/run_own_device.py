@@ -2126,7 +2126,8 @@ def self_test_device_loss():
 
         lost, said = of(real)
         assert lost == real.rstrip("\n"), lost
-        assert said == ("ERROR: the helper lost its GPU device (W78, risk 33): gpu: the device is lost (Unknown): Device is lost\n"
+        assert said == ("ERROR: the helper lost its GPU device (the W78 watch; risk 33 at a load, risk 71 with x8 anti-aliasing): "
+                        "gpu: the device is lost (Unknown): Device is lost\n"
                         "KEEP for the Archivist (D71): R:/results/20261021-134053-x\topen: W78\t2026-11-17\n"), said
         assert of("gpu: the device is lost (Destroyed): Device destroyed\ngpu: the device is lost (the test)\n") == (None, ""), "a test loss"
         assert of("gpu error 1 (validation, adapter x): y\n") == (None, ""), "an error is not a loss"
@@ -3195,7 +3196,8 @@ EXIT_STAGE_SHADERS = 6
 # file has another md5 after the run), without --allow-distant-land-rebuild: the run's own results can be right,
 # and the instance is not as it was (W535, 2026-11-16).
 EXIT_DISTANT_LAND_CHANGED = 7
-# A run whose helper lost its GPU device for a reason of the driver (W78, risk 33): the line of the device-lost
+# A run whose helper lost its GPU device for a reason of the driver (the W78 watch; risk 33 at the quicksave load, risk
+# 71 with x8 anti-aliasing): the line of the device-lost
 # callback (nirender host gpu.rs `watch`). The test of a loss (`gpu::test_loss`, the tune "gpu lose device") gives
 # the reasons "Destroyed" and "the test", which are not a real loss. The run is not clean, and its folder is evidence.
 EXIT_DEVICE_LOST = 8
@@ -3356,7 +3358,8 @@ def device_loss_of_run(host_text, run_dir, today=None):
             lost = DEVICE_LOST_LINE.match(line)
             if lost and lost.group(1) not in DEVICE_LOST_TEST_REASONS:
                 line = line.rstrip("\n")
-                print("ERROR: the helper lost its GPU device (W78, risk 33): " + line)
+                print("ERROR: the helper lost its GPU device (the W78 watch; risk 33 at a load, risk 71 with x8 anti-aliasing): "
+                      + line)
                 print("KEEP for the Archivist (D71): %s\topen: W78\t%s" % (run_dir, today or time.strftime("%Y-%m-%d")))
                 return line
     return None
