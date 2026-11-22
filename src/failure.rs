@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::capture::{ticks, ticks_per_second};
-use crate::stream_format::{EXIT_HELPER_TOO_OLD, EXIT_NOT_ANSWERING, EXIT_STALLED, STALL_SECONDS};
+use crate::stream_format::{EXIT_HELPER_TOO_OLD, EXIT_NOT_ANSWERING, EXIT_STALLED, EXIT_STALLED_DISK, STALL_SECONDS};
 
 #[link(name = "user32")]
 extern "system" {
@@ -58,6 +58,9 @@ pub enum Cause {
     /// its limit of the moment, which it writes as its allowance word (5 s, 30 s while its
     /// extension loads).
     Stalled(u64),
+    /// As [`Cause::Stalled`], while the disk held a write of the helper's log or of a picture
+    /// file (`EXIT_STALLED_DISK`).
+    StalledOnDisk(u64),
     /// The plugin ended it (`EXIT_NOT_ANSWERING`) after that many seconds without a read of the
     /// ring while records waited (`capture.rs`, the limit from the helper's allowance).
     NotAnswering(u64),
@@ -149,8 +152,10 @@ impl Cause {
     /// `allowance` is the helper's allowance word (`stream_format::RING_ALLOWANCE`), 0 before
     /// its frames start, when its watchdog has its first limit.
     pub fn of_exit_code(code: u32, allowance: u32) -> Cause {
+        let step_seconds = if allowance == 0 { STALL_SECONDS } else { u64::from(allowance) };
         match code {
-            EXIT_STALLED => Cause::Stalled(if allowance == 0 { STALL_SECONDS } else { u64::from(allowance) }),
+            EXIT_STALLED => Cause::Stalled(step_seconds),
+            EXIT_STALLED_DISK => Cause::StalledOnDisk(step_seconds),
             EXIT_NOT_ANSWERING => Cause::NotAnswering(NOT_ANSWERING_AFTER.load(Ordering::Relaxed)),
             EXIT_HELPER_TOO_OLD => Cause::TooOld,
             other => Cause::Crashed(other),
@@ -163,6 +168,7 @@ impl Cause {
         match self {
             Cause::Crashed(code) => code,
             Cause::Stalled(_) => EXIT_STALLED,
+            Cause::StalledOnDisk(_) => EXIT_STALLED_DISK,
             Cause::NotAnswering(_) => EXIT_NOT_ANSWERING,
             Cause::TooOld => EXIT_HELPER_TOO_OLD,
             Cause::LostDevice | Cause::NotStarted(_) => 0,
@@ -177,6 +183,7 @@ impl Cause {
             Cause::Crashed(0) => "ended without a reason (exit code 0)".to_string(),
             Cause::Crashed(code) => format!("crashed (exit code {code:#x})"),
             Cause::Stalled(seconds) => format!("stalled for {seconds} s (exit code {EXIT_STALLED})"),
+            Cause::StalledOnDisk(seconds) => format!("stalled for {seconds} s while the disk held its writes; another program can keep the disk busy (exit code {EXIT_STALLED_DISK})"),
             Cause::NotAnswering(seconds) => format!("did not answer for {seconds} s (exit code {EXIT_NOT_ANSWERING})"),
             Cause::TooOld => format!("is an older build than the plugin: install akulakhan.dll, numidium.exe and d3d8.dll from one archive (exit code {EXIT_HELPER_TOO_OLD})"),
             Cause::LostDevice => "lost its graphics device".to_string(),
@@ -447,6 +454,14 @@ mod tests {
         assert_eq!(Cause::Stalled(5).word(), "stalled for 5 s (exit code 30)");
         // A stall while the extension loads: the box names the watchdog's 30 s.
         assert_eq!(Cause::of_exit_code(30, 30).word(), "stalled for 30 s (exit code 30)");
+        // A stall while the disk held a write of the helper: the box names the disk.
+        assert_eq!(Cause::of_exit_code(33, 5), Cause::StalledOnDisk(5));
+        assert_eq!(Cause::of_exit_code(33, 0), Cause::StalledOnDisk(5));
+        assert_eq!(Cause::StalledOnDisk(5).code(), 33);
+        assert_eq!(
+            Cause::StalledOnDisk(5).word(),
+            "stalled for 5 s while the disk held its writes; another program can keep the disk busy (exit code 33)"
+        );
         not_answering_after(10);
         assert_eq!(Cause::of_exit_code(31, 5).word(), "did not answer for 10 s (exit code 31)");
         assert_eq!(Cause::NotAnswering(35).word(), "did not answer for 35 s (exit code 31)");
