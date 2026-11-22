@@ -524,7 +524,9 @@ mod tests {
         let (radius, right, up) = (4.0, [0.6, 0.8, 0.0], [0.0, 0.0, 1.0]);
         let bound = particle_sphere(radius, right, up, &particles).unwrap();
         let corners: Vec<[f32; 3]> = particles
-            .chunks_exact(20)
+            .as_chunks::<20>()
+            .0
+            .iter()
             .flat_map(|particle| {
                 let p: [f32; 3] = core::array::from_fn(|axis| float_at(particle, axis * 4));
                 let size = float_at(particle, 12);

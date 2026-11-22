@@ -604,7 +604,9 @@ impl Player {
                     let own = &self.frame_lights[own_first..own_first + own_count];
                     let own_keys = shape
                         .lights
-                        .chunks_exact(STATE_LIGHT_SIZE)
+                        .as_chunks::<STATE_LIGHT_SIZE>()
+                        .0
+                        .iter()
                         .zip(own)
                         .filter(|(_, light)| light.position[3] != 3.0)
                         .map(|(record, _)| word(record, 0));

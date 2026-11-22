@@ -1102,7 +1102,7 @@ struct Player {
     /// The bones of the skinned draws of the frame, for the bone buffer.
     frame_bones: Vec<[f32; 16]>,
     /// The world's point lights by place for the draws lit for each vertex, made again after a
-    /// light record ([`player::draws`], W554).
+    /// light record (`player::draws`, W554).
     vertex_world: lights::VertexWorld,
     /// Whether the draws in the world's own space of the scene in progress take the world's
     /// lights ([`engine::scene::world_space_lights`]): found at the first such draw of the scene.
