@@ -176,6 +176,9 @@ struct Slot {
     /// The alpha test of the instance's material record: every slot of an instance has the
     /// same value. The rule of a unit reads it ([`table_order::unit_fail`]).
     alpha_test: bool,
+    /// The material record has a fog map, as [`Slot::alpha_test`]: one value for every slot of
+    /// an instance, read by the rule of a unit.
+    fog_map: bool,
     /// The texture handles the slot pinned ([`Renderer::pin_texture`]), one use each: their
     /// uses go when the slot goes.
     pinned: [u32; STAGES],
@@ -2390,9 +2393,12 @@ impl RetainedSet {
     ///    of the bound centre along the view, ties by the order of the slots. This is not
     ///    the engine's order: the engine sorts screen-space boxes (`$2::Sort` 0x6FE830,
     ///    engine-rules R21). The main view keeps them for the flush of the engine's queue
-    ///    ([`Sorted::Keep`], then `Only`). There a kept blend with a place in the engine's
-    ///    queue ([`tag::INSTANCE_QUEUED`]) draws at its place, in the engine's order; this
-    ///    order is only for the blends without one (`draw_retained_sorted`).
+    ///    ([`Sorted::Keep`]). There a kept blend with a place in the engine's queue
+    ///    ([`tag::INSTANCE_QUEUED`]) draws at its place, in the engine's order, with its slots
+    ///    in their order (`placed_entries`). A kept blend without a place is not drawn: it is
+    ///    only counted (`sorted_without_place`, risk 34; `draw_retained_sorted`). So no draw
+    ///    reads this order now. A change that draws it needs the pass in the key: the sort
+    ///    compares the bucket before the sequence, and the passes of one instance have one key.
     /// Engine-rules R2, R3, R4, R20 (the skill wgpu-renderer-dev).
     fn collect_order(&mut self, view: &RetainedView) {
         self.order.clear();
@@ -2473,9 +2479,10 @@ impl RetainedSet {
             |id| {
                 let all = by_id.get(&id).map_or(&[][..], Vec::as_slice);
                 let passes = all.iter().filter_map(|&slot| slots[slot as usize].as_ref());
-                let alpha_test = passes.clone().next().is_some_and(|s| s.alpha_test);
+                let first = passes.clone().next();
                 table_order::Instance::of(
-                    alpha_test,
+                    first.is_some_and(|s| s.alpha_test),
+                    first.is_some_and(|s| s.fog_map),
                     passes.map(|s| table_order::PassFacts::of(&buckets[s.bucket as usize].key)),
                 )
             },
@@ -2884,6 +2891,7 @@ impl Player {
                 base_vertex,
                 sorted,
                 alpha_test: m.flags & crate::material::ALPHA_TEST != 0,
+                fog_map: m.fog_map.present,
                 pinned,
                 bones_first,
                 bones_needed,
@@ -3601,6 +3609,7 @@ mod list_tests {
             base_vertex: 0,
             sorted: false,
             alpha_test: false,
+            fog_map: false,
             pinned: [0; STAGES],
             bones_first: NO_BONES,
             bones_needed: 0,
