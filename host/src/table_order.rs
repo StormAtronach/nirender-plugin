@@ -90,15 +90,19 @@ pub(crate) const KINDS: [&str; 6] = [
 pub(crate) const KIND_BLEND: usize = 1;
 
 /// The lines of the unit's rule that an instance with more than one pass can fail, in the
-/// order of the test.
-pub(crate) const UNIT_FAILS: [&str; 6] = [
+/// order of the test. A new line goes at the end: the readers of the report know the lines by
+/// their index.
+pub(crate) const UNIT_FAILS: [&str; 7] = [
     "first pass not free",
     "first pass's alpha test",
     "a later pass's depth test or function",
     "a later pass's stencil",
     "a later pass's colour write",
     "over 255 passes",
+    "a fog map",
 ];
+/// The index of "a fog map" in [`UNIT_FAILS`].
+pub(crate) const UNIT_FAIL_FOG_MAP: usize = 6;
 
 /// The facts of an instance: the number of its slots, and what its passes have.
 #[derive(Clone, Copy, Debug, Default)]
@@ -158,15 +162,23 @@ impl Facts {
 
 /// The unit's rule. [`None`] when an instance with more than one pass is a unit; else the
 /// index in [`UNIT_FAILS`] of the first line that fails. `passes` are ALL the passes of the
-/// instance in the order of its slots; `alpha_test` is the alpha test of the instance's
-/// material record.
+/// instance in the order of its slots; `alpha_test` and `fog_map` are the alpha test and the
+/// fog map of the instance's material record.
 /// - The first pass is free by the six facts, and has no alpha test: with one it leaves holes
 ///   in its depth, and a later pass would draw there over what the other order has not drawn
 ///   yet.
 /// - Every later pass has the depth test on with "less or equal" (4): it draws on its own
 ///   first pass and nowhere behind it. Its stencil is off and it writes red, green and blue.
 ///   Its blend, its depth write and its alpha test are free.
-pub(crate) fn unit_fail(slots: usize, alpha_test: bool, passes: impl Iterator<Item = PassFacts>) -> Option<usize> {
+/// - The material has no fog map. The fog map's pass blends over the colour of the pixel, so
+///   two shapes in one plane give the engine's picture only when each one draws all its
+///   passes before the next shape.
+pub(crate) fn unit_fail(
+    slots: usize,
+    alpha_test: bool,
+    fog_map: bool,
+    passes: impl Iterator<Item = PassFacts>,
+) -> Option<usize> {
     if slots > 255 {
         return Some(5);
     }
@@ -194,6 +206,10 @@ pub(crate) fn unit_fail(slots: usize, alpha_test: bool, passes: impl Iterator<It
             (before, now) => before.or(now),
         };
     }
+    // The last line: a line before it wins.
+    if fog_map {
+        fail = fail.or(Some(UNIT_FAIL_FOG_MAP));
+    }
     fail
 }
 
@@ -209,11 +225,11 @@ pub(crate) struct Instance {
 
 impl Instance {
     /// The answer for an instance from all its passes in the order of its slots.
-    pub(crate) fn of(alpha_test: bool, passes: impl Iterator<Item = PassFacts> + Clone) -> Instance {
+    pub(crate) fn of(alpha_test: bool, fog_map: bool, passes: impl Iterator<Item = PassFacts> + Clone) -> Instance {
         let slots = passes.clone().count();
         Instance {
             kind: Facts::of(slots, passes.clone()).bound_kind(),
-            unit: (slots > 1).then(|| unit_fail(slots, alpha_test, passes)),
+            unit: (slots > 1).then(|| unit_fail(slots, alpha_test, fog_map, passes)),
         }
     }
 }
@@ -232,7 +248,7 @@ pub(crate) struct FrameOrder {
     /// The instances with more than one pass that are units.
     pub(crate) units: u64,
     /// The instances with more than one pass that stay bound, by [`UNIT_FAILS`].
-    pub(crate) unit_fails: [u64; 6],
+    pub(crate) unit_fails: [u64; UNIT_FAILS.len()],
 }
 
 /// The first number of a group or of a bound draw in the high word of a key.
@@ -356,7 +372,7 @@ pub struct OrderCounts {
     pub(crate) most_bound: u64,
     pub(crate) blend_runs: u64,
     pub(crate) units: u64,
-    pub(crate) unit_fails: [u64; 6],
+    pub(crate) unit_fails: [u64; UNIT_FAILS.len()],
 }
 
 impl OrderCounts {
@@ -380,10 +396,10 @@ impl OrderCounts {
     /// The line of the report's end: the order's counts of a frame of the main view, as means.
     pub(crate) fn line(&self, order: TableOrder) -> String {
         let frames = self.frames.max(1) as f64;
-        let mean = |names: &[&str], counts: [u64; 6]| -> String {
+        let mean = |names: &[&str], counts: &[u64]| -> String {
             let parts: Vec<String> = names
                 .iter()
-                .zip(counts)
+                .zip(counts.iter().copied())
                 .map(|(name, count)| format!("{name} {:.2}", count as f64 / frames))
                 .collect();
             parts.join(", ")
@@ -398,10 +414,10 @@ impl OrderCounts {
             self.most_groups,
             self.bound.iter().sum::<u64>() as f64 / frames,
             self.most_bound,
-            mean(&KINDS, self.bound),
+            mean(&KINDS, &self.bound),
             self.blend_runs as f64 / frames,
             self.units as f64 / frames,
-            mean(&UNIT_FAILS, self.unit_fails)
+            mean(&UNIT_FAILS, &self.unit_fails)
         )
     }
 }
@@ -690,45 +706,100 @@ mod tests {
             ..FREE
         };
         assert_eq!(
-            unit_fail(2, false, [FREE, layer].into_iter()),
+            unit_fail(2, false, false, [FREE, layer].into_iter()),
             None,
             "the land: a base pass and a layer that blends"
         );
-        assert_eq!(unit_fail(3, false, [FREE, layer, layer_that_writes].into_iter()), None);
+        assert_eq!(unit_fail(3, false, false, [FREE, layer, layer_that_writes].into_iter()), None);
         // The first pass: free by the six facts, also with "less"; no alpha test.
-        assert_eq!(unit_fail(2, false, [less, layer].into_iter()), None);
+        assert_eq!(unit_fail(2, false, false, [less, layer].into_iter()), None);
         assert_eq!(
-            unit_fail(2, false, [PassFacts { blend: true, ..FREE }, layer].into_iter()),
+            unit_fail(2, false, false, [PassFacts { blend: true, ..FREE }, layer].into_iter()),
             Some(0)
         );
-        assert_eq!(unit_fail(2, false, [no_write, layer].into_iter()), Some(0));
-        assert_eq!(unit_fail(2, true, [FREE, layer].into_iter()), Some(1));
+        assert_eq!(unit_fail(2, false, false, [no_write, layer].into_iter()), Some(0));
+        assert_eq!(unit_fail(2, true, false, [FREE, layer].into_iter()), Some(1));
         // A later pass: "less or equal" only; "less", "always" (the test off) and "equal" fail.
         for function in [2, 8, 3] {
             let later = PassFacts {
                 depth: [1, 0, function],
                 ..layer
             };
-            assert_eq!(unit_fail(2, false, [FREE, later].into_iter()), Some(2));
+            assert_eq!(unit_fail(2, false, false, [FREE, later].into_iter()), Some(2));
         }
         assert_eq!(
-            unit_fail(2, false, [FREE, PassFacts { stencil: true, ..layer }].into_iter()),
+            unit_fail(2, false, false, [FREE, PassFacts { stencil: true, ..layer }].into_iter()),
             Some(3)
         );
         assert_eq!(
-            unit_fail(2, false, [FREE, PassFacts { colours: 5, ..layer }].into_iter()),
+            unit_fail(2, false, false, [FREE, PassFacts { colours: 5, ..layer }].into_iter()),
             Some(4)
         );
-        assert_eq!(unit_fail(256, false, [FREE, layer].into_iter()), Some(5));
+        assert_eq!(unit_fail(256, false, false, [FREE, layer].into_iter()), Some(5));
         // The first line that fails, whatever the order of the passes that fail.
         let bad_depth = PassFacts {
             depth: [1, 0, 2],
             ..layer
         };
         let bad_colour = PassFacts { colours: 5, ..layer };
-        assert_eq!(unit_fail(3, false, [FREE, bad_colour, bad_depth].into_iter()), Some(2));
-        assert_eq!(unit_fail(3, true, [FREE, bad_colour, bad_depth].into_iter()), Some(1));
+        assert_eq!(unit_fail(3, false, false, [FREE, bad_colour, bad_depth].into_iter()), Some(2));
+        assert_eq!(unit_fail(3, true, false, [FREE, bad_colour, bad_depth].into_iter()), Some(1));
         assert_eq!(UNIT_FAILS.len(), FrameOrder::default().unit_fails.len());
+    }
+
+    /// W568: a material with a fog map binds a unit that passes every other line, by the last
+    /// line; a line before it wins.
+    #[test]
+    fn a_fog_map_binds_a_unit_by_the_last_line() {
+        let layer = PassFacts {
+            blend: true,
+            depth: [1, 0, 4],
+            ..FREE
+        };
+        assert_eq!(UNIT_FAILS[UNIT_FAIL_FOG_MAP], "a fog map");
+        assert_eq!(UNIT_FAIL_FOG_MAP, UNIT_FAILS.len() - 1, "the new line is the last");
+        assert_eq!(unit_fail(2, false, true, [FREE, layer].into_iter()), Some(UNIT_FAIL_FOG_MAP));
+        assert_eq!(unit_fail(2, false, false, [FREE, layer].into_iter()), None);
+        // A failing first pass, an alpha test, a later pass's depth and too many passes win.
+        let blended_first = PassFacts { blend: true, ..FREE };
+        assert_eq!(unit_fail(2, false, true, [blended_first, layer].into_iter()), Some(0));
+        assert_eq!(unit_fail(2, true, true, [FREE, layer].into_iter()), Some(1));
+        let bad_depth = PassFacts {
+            depth: [1, 0, 2],
+            ..layer
+        };
+        assert_eq!(unit_fail(2, false, true, [FREE, bad_depth].into_iter()), Some(2));
+        assert_eq!(unit_fail(256, false, true, [FREE, layer].into_iter()), Some(5));
+        // The instance: bound, of the kind "passes", and counted by the line. One pass has no
+        // unit answer, with a fog map too.
+        let fogged = Instance::of(false, true, [FREE, layer].into_iter());
+        assert_eq!((fogged.kind, fogged.unit), (Some(0), Some(Some(UNIT_FAIL_FOG_MAP))));
+        let one = Instance::of(false, true, [FREE].into_iter());
+        assert_eq!((one.kind, one.unit), (None, None));
+    }
+
+    /// W568: two fog-map instances of two passes in one group draw A0 A1 B0 B1, the engine's
+    /// order; as units they would draw A0 B0 A1 B1. The 3-03 stop of the NIF test level.
+    #[test]
+    fn two_fog_map_instances_draw_their_passes_in_a_row() {
+        let layer = PassFacts {
+            blend: true,
+            depth: [1, 0, 4],
+            ..FREE
+        };
+        let entries = [(1, 8), (1, 2), (2, 8), (2, 2)];
+        let passes = [0, 1, 0, 1];
+        let run = |fog_map: bool| {
+            sorted_with(TableOrder::Grouped, &entries, &passes, |_| {
+                Instance::of(false, fog_map, [FREE, layer].into_iter())
+            })
+        };
+        let (order, frame) = run(true);
+        assert_eq!(order, [0, 1, 2, 3]);
+        assert_eq!((frame.units, frame.unit_fails[UNIT_FAIL_FOG_MAP]), (0, 2));
+        let (order, frame) = run(false);
+        assert_eq!(order, [0, 2, 1, 3], "the null: as units, the first passes come first");
+        assert_eq!((frame.units, frame.unit_fails[UNIT_FAIL_FOG_MAP]), (2, 0));
     }
 
     /// The answer for an instance from its passes: one pass has no unit answer; more than one
@@ -740,13 +811,13 @@ mod tests {
             depth: [1, 0, 4],
             ..FREE
         };
-        let one = Instance::of(false, [FREE].into_iter());
+        let one = Instance::of(false, false, [FREE].into_iter());
         assert_eq!((one.kind, one.unit), (None, None));
-        let land = Instance::of(false, [FREE, layer].into_iter());
+        let land = Instance::of(false, false, [FREE, layer].into_iter());
         assert_eq!((land.kind, land.unit), (Some(0), Some(None)));
-        let with_alpha_test = Instance::of(true, [FREE, layer].into_iter());
+        let with_alpha_test = Instance::of(true, false, [FREE, layer].into_iter());
         assert_eq!((with_alpha_test.kind, with_alpha_test.unit), (Some(0), Some(Some(1))));
-        let leaf = Instance::of(true, [PassFacts { blend: true, ..FREE }].into_iter());
+        let leaf = Instance::of(true, false, [PassFacts { blend: true, ..FREE }].into_iter());
         assert_eq!((leaf.kind, leaf.unit), (Some(KIND_BLEND), None));
     }
 
