@@ -537,18 +537,18 @@ impl Player {
             draw_data.counts[3] |= crate::NO_LIGHTS_BIT;
             renderer.counts.zero_light_draws += 1;
         }
+        // A draw before the answers of this frame (a save's picture at the head of a frame)
+        // takes the particle answers of the last frame.
+        let answers = ParticleAnswers::for_draw(self.parameters.as_ref(), self.particle_answers_last);
         // A particle with lights takes them at its corners when the frame asks for it (the
         // setting `per_pixel_particles` off): a look, so also while a debug view is on.
-        let corners = self.parameters.as_ref().is_some_and(|p| p.particle_corners);
-        if corners && crate::light_keys::lights_at_corners(&draw_data, particles) {
+        if answers.corners && crate::light_keys::lights_at_corners(&draw_data, particles) {
             draw_data.counts[3] |= crate::CORNER_LIGHT_BIT;
             renderer.counts.corner_light_draws += 1;
         }
         // A particle takes the extension's colour function when the frame has one: in every
-        // scene and into every target, shaded or not. A draw before the answers of this frame
-        // (a save's picture at the head of a frame) takes the answer of the last frame.
-        let hook = self.parameters.as_ref().map_or(self.particles_last, |p| p.particles);
-        if particles && hook {
+        // scene and into every target, shaded or not.
+        if particles && answers.hook {
             draw_data.counts[3] |= crate::PARTICLE_HOOK_BIT;
             renderer.counts.particle_hook_draws += 1;
         }
@@ -640,9 +640,61 @@ fn takes_clusters(masked: bool, noted: usize) -> bool {
     masked && noted > 0
 }
 
+/// The answers of the extension that a particle's draw takes: the colour function
+/// ([`FrameParameters::particles`], [`crate::PARTICLE_HOOK_BIT`]) and the light at the corners
+/// ([`FrameParameters::particle_corners`], [`crate::CORNER_LIGHT_BIT`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ParticleAnswers {
+    pub(crate) hook: bool,
+    pub(crate) corners: bool,
+}
+
+impl ParticleAnswers {
+    pub(crate) fn of(parameters: &FrameParameters) -> ParticleAnswers {
+        ParticleAnswers {
+            hook: parameters.particles,
+            corners: parameters.particle_corners,
+        }
+    }
+
+    /// The answers for a draw: this frame's, or the last frame's before this frame has its
+    /// answers (a save's picture at the head of a frame).
+    pub(crate) fn for_draw(this_frame: Option<&FrameParameters>, last_frame: ParticleAnswers) -> ParticleAnswers {
+        this_frame.map_or(last_frame, ParticleAnswers::of)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::takes_clusters;
+    use super::{takes_clusters, FrameParameters, ParticleAnswers};
+
+    /// A save's picture draws before the frame asks the extension: its particles take the last
+    /// frame's answers, the colour function and the light at the corners alike (W571). With
+    /// the answers of this frame, those win.
+    #[test]
+    fn a_particle_before_the_frames_answers_takes_the_last_frames() {
+        let last = ParticleAnswers {
+            hook: true,
+            corners: true,
+        };
+        assert_eq!(ParticleAnswers::for_draw(None, last), last);
+        assert_eq!(
+            ParticleAnswers::for_draw(None, ParticleAnswers::default()),
+            ParticleAnswers::default()
+        );
+        let this_frame = FrameParameters {
+            particles: false,
+            particle_corners: false,
+            ..FrameParameters::default()
+        };
+        assert_eq!(ParticleAnswers::for_draw(Some(&this_frame), last), ParticleAnswers::default());
+        let this_frame = FrameParameters {
+            particles: true,
+            particle_corners: true,
+            ..FrameParameters::default()
+        };
+        assert_eq!(ParticleAnswers::for_draw(Some(&this_frame), ParticleAnswers::default()), last);
+    }
 
     #[test]
     fn a_draw_without_a_light_does_not_take_the_clusters() {
