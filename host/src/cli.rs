@@ -78,22 +78,8 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
         return;
     }
-    // `--depth-control k=<near scale>,sink=on|off,raise=<units>`: the fault injections of the
-    // distant land's depth for a replay (step 6 of the depth design); a live run has none.
-    if let Some(text) = option(&args, "--depth-control") {
-        match crate::depth::Control::parse(&text) {
-            Ok(control) => {
-                println!("depth control: {control:?}");
-                crate::depth::set_control(control);
-            }
-            Err(problem) => {
-                eprintln!("--depth-control {problem}");
-                std::process::exit(2);
-            }
-        }
-    }
     if args.len() < 3 {
-        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N | --frames-at N,M,...] [--marks-every N] [--depth-control k=1,sink=off,raise=50]");
+        eprintln!("use: nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N | --frames-at N,M,...] [--marks-every N]");
         eprintln!("     nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]");
         std::process::exit(2);
     }
@@ -205,21 +191,29 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
     );
     let depth_view = Rc::new(depth.counted_view(&Default::default()));
+    // The frames of which the replay writes a picture.
+    let pictured = |frame: usize| {
+        if frames_at.is_empty() {
+            frame == wanted
+        } else {
+            frames_at.contains(&frame)
+        }
+    };
+    // The digest of the table's order of each pictured frame, for the end of the report
+    // (`table_order::Digest`): a frame without a picture pays nothing for it.
+    let mut order_digests = Vec::new();
     let mut frame = 0;
     for (tag, data) in &records {
         // Each frame up to the wanted one is drawn: the game can draw into a rendered texture
         // in one frame and use it in the frames after that.
         if frame <= wanted && !player.drawing() {
             player.begin_frame(&target, Rc::clone(&depth_view), false);
+            player.retained.digest_frame(pictured(frame));
         }
         if player.feed(*tag, data) {
             if player.drawing() {
                 let mut read = None;
-                let this_one = if frames_at.is_empty() {
-                    frame == wanted
-                } else {
-                    frames_at.contains(&frame)
-                };
+                let this_one = pictured(frame);
                 player.end_frame(|encoder| {
                     if this_one {
                         read = Some(copy_picture(&device, encoder, &target, width, height));
@@ -234,6 +228,9 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
                     save_picture(&device, &buffer, row, width, height, false, &path);
                     buffer.unmap();
                 }
+                if let Some(digest) = player.retained.take_digest() {
+                    order_digests.push(digest.line(frame));
+                }
             }
             frame += 1;
             // The bench waits for the GPU after each frame, out of the timed parts: a replay
@@ -247,6 +244,9 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         }
     }
     player.print_counts();
+    for line in &order_digests {
+        println!("{line}");
+    }
     // A replay with a fault of a check ends with a code of its own, after its pictures and its
     // report: a failed stage shader has the right pictures and the wrong speed, and a fault of
     // the draw order can leave frame 1 equal. Each fault has its line.

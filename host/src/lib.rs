@@ -96,6 +96,7 @@ mod particle_quads;
 mod player;
 use engine::{plan, scene};
 mod retained;
+mod table_order;
 /// The cull planes of a view, relative to its camera (for the views of an extension too).
 pub use retained::view_planes;
 mod request;
@@ -178,8 +179,7 @@ impl WorldFacts {
         camera_place(self.origin, &self.view)
     }
 
-    /// The near and far planes of the camera, from its frustum: the projection that the frame
-    /// draws with can have an infinite far plane ([`depth::world_projection`]).
+    /// The near and far planes of the camera, from its frustum.
     fn depth_range(&self) -> [f32; 2] {
         [self.frustum[4], self.frustum[5]]
     }
@@ -322,9 +322,6 @@ enum Item {
     /// The sorted blends of the retained table and the blends of the engine's path that
     /// waited for this item: the generation names the item within the frame.
     SortedBlends(u32),
-    /// A run of places of the table's blends in the engine's walk ([`engine::walk`]): the
-    /// number of the run in the frame.
-    WalkPlaces(usize),
     /// A run of places in a view of its own ([`engine::views`]): the group and the run.
     ViewPlaces(usize, usize),
     /// The places of a view of its own in the flush of the engine's queue: the group.
@@ -400,6 +397,14 @@ pub const CORNER_LIGHT_BIT: u32 = 1 << 14;
 /// stage gives it the direction from the camera, as for the sky dome. A fact of the stage key:
 /// no other draw's shader has the function's code.
 pub const CLOUDS_HOOK_BIT: u32 = 1 << 10;
+
+/// Bit 2048 of `counts.w`, set by this crate: a draw of the quads of a particle system whose
+/// colour goes through `extension_particle_color`, when the extension says for the frame that it
+/// has the function ([`FrameParameters::particles`]; before the frame's answers, the last
+/// frame's). The fragment stage calls the function after
+/// the texture stages and before the draw's alpha test; the fog, the finish and the draw's state
+/// stay as they are. A fact of the stage key: no other draw's shader has the function's code.
+pub const PARTICLE_HOOK_BIT: u32 = 1 << 11;
 
 /// A line of WGSL that an extension puts into its text only for W317's test of a core mod that
 /// fails in the driver: each world pipeline of a text with it names a fragment entry point that
@@ -783,7 +788,9 @@ struct Renderer {
     retained_records: usize,
     retained_instances: usize,
     /// The retained segment of the instance buffer as it was last written: a changed slot
-    /// writes its entry here, and the runs of changed entries go up from here.
+    /// writes its entry here, and the runs of changed entries go up from here. A change of the
+    /// origin's place writes the new place of each slot here ([`RetainedSet::rebase`]) and the
+    /// segment goes up from here whole.
     retained_instance_copy: Vec<Instance>,
     record_generation: u32,
     instance_generation: u32,
@@ -1099,6 +1106,9 @@ struct Player {
     /// that the game draws into ([`None`] for the back buffer), and whether the game named a
     /// rendered texture as its target.
     parameters: Option<FrameParameters>,
+    /// The particle answers of the last frame that had answers: what a particle takes before the
+    /// answers of this frame come (a save's picture at the head of a frame).
+    particle_answers_last: player::ParticleAnswers,
     plan: plan::Plan,
     /// The blended world draws of the frame that the engine sorts, and the places of the
     /// table's blends in the engine's queue: they wait for the item `SortedBlends` and keep

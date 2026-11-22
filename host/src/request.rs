@@ -175,8 +175,13 @@ pub fn world_shader_source(extension_text: &str) -> String {
     } else {
         NO_LIGHTS_SHADE
     };
+    let particles = if extension.contains("fn extension_particle_color(") {
+        ""
+    } else {
+        PLAIN_PARTICLE_COLOR
+    };
     format!(
-        "{}\n{}\n{}\n{EXTENSION_BEGIN}{extension}\n{EXTENSION_END}{corner}{clouds}{no_lights}",
+        "{}\n{}\n{}\n{EXTENSION_BEGIN}{extension}\n{EXTENSION_END}{corner}{clouds}{no_lights}{particles}",
         include_str!("shader.wgsl"),
         depth::wgsl(),
         crate::spot::WGSL
@@ -217,6 +222,10 @@ const NO_LIGHTS_SHADE: &str = "fn extension_no_lights_shade(vertex_color: vec4f,
 /// first texture ([`crate::CLOUDS_HOOK_BIT`]).
 const PLAIN_CLOUDS_COLOR: &str =
     "fn extension_clouds_color(p: CloudPixel) -> vec4f { return p.color * cloud_texture(p.texcoords); }\n";
+
+/// `extension_particle_color` of an extension that has none: the colour of the stages stays
+/// ([`crate::PARTICLE_HOOK_BIT`]).
+const PLAIN_PARTICLE_COLOR: &str = "fn extension_particle_color(p: ParticlePixel) -> vec4f { return p.color; }\n";
 
 fn array_features() -> wgpu::Features {
     wgpu::Features::TEXTURE_BINDING_ARRAY
@@ -707,10 +716,6 @@ fn try_backend(
         DEPTH_FORMAT
     };
     depth::set_reversed(float_depth);
-    depth::set_one_buffer(switches().one_depth);
-    if switches().one_depth && !depth::one_buffer() {
-        println!("depth: MGE_XE_ONE_DEPTH needs the reversed float depth; the land keeps its own depth");
-    }
     // The samples. The adapter's flags for a format hold only on a device that has
     // TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES (the request asks for it below when the adapter
     // has it); any other device takes the counts that the WebGPU spec guarantees.
@@ -1498,5 +1503,27 @@ mod tests {
         // The bit has one value in the crate and in the shader.
         assert_eq!(crate::CLOUDS_HOOK_BIT, 1024);
         assert!(plain.contains("(draw_counts_w() & 1024u) != 0u") && plain.contains("(draw_counts_w() & 1036u) != 0u"));
+    }
+
+    /// The fragment stage calls `extension_particle_color` for a particle with PARTICLE_HOOK_BIT:
+    /// the world shader has one, the extension's own or the plain one; both pass naga, in tier A
+    /// and in tier C, where `particle_texture` reads the first stage's own pair.
+    #[test]
+    fn the_world_shader_has_one_particle_color() {
+        let defaults = crate::extension::extension_shaders(None);
+        let plain = world_shader_source(&defaults);
+        assert_eq!(plain.matches("fn extension_particle_color(").count(), 1);
+        assert!(plain.contains(PLAIN_PARTICLE_COLOR));
+        let own = "fn extension_particle_color(p: ParticlePixel) -> vec4f { if particle_adds() { return p.color * p.vertex_color.a; } return p.color * particle_texture(p.texcoords + p.pixel * 0.001) * (1.0 - p.distance * 0.0001); }\n";
+        let with_own = world_shader_source(&format!("{defaults}{own}"));
+        assert_eq!(with_own.matches("fn extension_particle_color(").count(), 1);
+        assert!(!with_own.contains(PLAIN_PARTICLE_COLOR));
+        crate::assert_wgsl("shader.wgsl with a particle colour", &with_own);
+        let tier_c = tier_c_shader_source(&with_own);
+        assert!(tier_c.contains("return textureSampleGrad(t0, s0, uv, first_stage_dx, first_stage_dy);"));
+        crate::assert_wgsl("shader.wgsl of tier C with a particle colour", &tier_c);
+        // The bit has one value in the crate and in the shader.
+        assert_eq!(crate::PARTICLE_HOOK_BIT, 2048);
+        assert!(plain.contains("(draw_counts_w() & 2048u) != 0u"));
     }
 }

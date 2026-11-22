@@ -135,14 +135,19 @@ impl Player {
             "particle light: {} particle draws took their lights at their corners",
             c.corner_light_draws
         );
+        println!(
+            "particle hook: {} particle draws took the extension's colour function",
+            c.particle_hook_draws
+        );
         println!("instances: {} records and {} moves ({} checked against a full record, {} different), {} draws from them, {} draws of an instance not known, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_moves, c.moves_checked, c.moves_different, c.instance_draws, c.instance_missing, c.merged_blends);
         println!(
             "sorted queue: {} places of the table's blends drawn in the engine's order, {} of an instance not known, {} outside the world scene, {} of an instance the table does not sort; {} sorted blends of the table without a place, not displayed by the engine ({} of them in frames with no place at all); {} places after the frame's first sorted blends; {} items of the table's blends before a depth clear after the world (the queue still open); {} instances whose sort mark differs from the rule of their material",
             c.queued_places, c.queued_unknown, c.queued_outside, c.queued_not_sorted, c.sorted_without_place, c.sorted_without_place_no_places, c.queued_late_places, c.blends_before_clear, c.sort_mark_differs
         );
+        println!("{}", self.retained.counts.order.line(crate::switches().table_order));
         println!(
-            "walk places: {} places of the table's blends in the engine's walk, {} of an instance not known, {} outside a world view, {} after the table's main view; {} blends drawn in place by the engine that had no place, drawn by bucket; {} places whose walk order differs from their bucket order; {} places of an instance in a second view of its frame",
-            c.walk_places, c.walk_unknown, c.walk_outside, c.walk_late, self.retained.counts.walk_without_place, self.retained.counts.walk_reordered, self.retained.walk.in_two_views
+            "main view's walk places not used: {} places of the table's blends in the engine's walk (the main view draws such a blend at its place in the shown list)",
+            c.walk_places_unused
         );
         println!(
             "views of their own: {} views drawn (a save's picture, a mod's camera), {} places drawn in them, {} of an instance with no slot to draw, {} not drawn because their scene has no view, {} of an instance not known; {} views not drawn because the scene slots were full; {} views of another camera with the last frame's shade",
@@ -176,8 +181,8 @@ impl Player {
         );
         let r = &self.retained.counts;
         println!(
-            "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times",
-            r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases
+            "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times to the camera's place and {} times with a change of the scene's kind",
+            r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases, r.kind_changes
         );
         let j = &r.joins;
         let (views, pairs) = (r.views.max(1) as f64, j.pairs.max(1) as f64);
@@ -250,8 +255,10 @@ impl Player {
             c.uv_bases, c.uv_steps, c.uv_missing
         );
         println!(
-            "retained instance uploads: {} whole, {} runs of changed entries with {:.1} MB",
+            "retained instance uploads: {} whole, {} of the instances alone for a new origin in {:.3} s, {} runs of changed entries with {:.1} MB",
             c.instance_uploads_whole,
+            c.instance_uploads_origin,
+            c.upload_origin_seconds,
             c.instance_upload_runs,
             c.instance_upload_bytes as f64 / 1e6
         );

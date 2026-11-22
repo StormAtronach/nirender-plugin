@@ -11,8 +11,8 @@ nirender is in test. Each release is a test build of MGE XE G7 with nirender, fo
 the plugin's switches below are never for a player.
 
 The last test build is
-[v0.3.8](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.3.8)
-(MGE XE G7 0.21.0 with nirender 0.3.8, 2026-11-13). Its release notes list the changes, the
+[v0.3.9](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.3.9)
+(MGE XE G7 0.21.0 with nirender 0.3.9, 2026-11-17). Its release notes list the changes, the
 known issues and the checks to do by hand.
 
 ## What it needs
@@ -167,6 +167,9 @@ The gate of a change: `tools/validate_retained.py [--mge-build <set>]`. The stag
 5. `weathers`: the frame rate in each of the 10 weathers, two passes.
 6. `tour`: the test level in one session; at each stop two frames in mode gpu and two in mode
    off, which `tools/validate_tour.py` replays and compares.
+7. `order`: each kept capture (the tour's too) replayed with `MGE_XE_TABLE_ORDER=grouped` and
+   with `engine`, the pictures and the order digests compared (W535). `tools/merge_step.py`
+   runs it when a change touches a file of the table's order.
 
 `results/` is not in git. The accepted pictures live only on disk.
 
@@ -258,9 +261,15 @@ The A/B:
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
   adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
   `depth:` names the format in use).
-- `MGE_XE_ONE_DEPTH=1` draws the distant land and the game into one depth buffer, with an
-  infinite far plane for every perspective projection of the world view (step 6 of the depth
-  design; only with the reversed float depth). Off: depth step 6 stopped.
+- `MGE_XE_TABLE_ORDER=grouped|engine`: the order of the table's unsorted draws
+  (`host/src/table_order.rs`). Both values are the engine's order, from the list of the shapes
+  that the engine displayed. `grouped` (the default, also for a value that is not known) joins
+  the draws whose order cannot show into groups, and draws a shape with texture layers as one
+  unit of a group. `engine` draws every shape at its place, with no group. The helper's log
+  line `table order:` names the value in use. A replay prints the line `table order digest:
+  frame <N> <hash> <count> draws` for each frame of which it writes a picture: two replays of
+  one capture with the two values have equal counts, and equal hashes when the grouping moved
+  no draw of that frame.
 - `NIRENDER_ANIMATION=view|shadows|all`: which actors animate (`nirender.animationPolicy`);
   default the view and the shadow reach.
 - `NIRENDER_NOTE_EVERY=1`: the material and the geometry of every retained shape are noted at
@@ -396,18 +405,10 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 - `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the
   world's start.
 
-## Since v0.3.8
+## Since v0.3.9
 
-The last release is v0.3.8 (the tag on ec9b3f6, 2026-11-13). The merges on master after it
-include:
-
-- the world shader gives way to the extension's next text when a core mod's shader fails (W317,
-  f89a9ca);
-- the stage shaders take a stage key's facts as constants (W530 step 1, 03ac608);
-- the runner does not rebuild the instance's distant land unseen (W535, 665682a);
-- the tools build, run and deploy sealed build sets (W521, 7d57e29 and d37f68a), and the replay
-  tools take their helper from a set (W545, 7d83995 and 844aa5d);
-- the plugin keeps one eye value for one place of a still camera (W538, 1b62781).
+The last release is v0.3.9 (the tag on c38312d, 2026-11-17). No merge on master came after it
+yet.
 
 Work that is not merged is not in this list.
 

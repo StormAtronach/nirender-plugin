@@ -350,6 +350,11 @@ struct Tables {
 /// last send. A send goes at Present and at a read of the back buffer, whichever comes first,
 /// and the list then starts again. Each send has a number; an instance keeps the number of the
 /// send it joined last ([`Instance::listed_send`]), so it joins a send once.
+///
+/// The order of the ids is a part of the stream's contract (W535): the ids are in the order of
+/// each instance's first display of the send, and an instance that leaves the list
+/// ([`ShownList::remove`]) does not move the others. The helper draws the table's unsorted
+/// draws in this order.
 struct ShownList {
     ids: Vec<u32>,
     /// The number of the send in progress, from 1; 0 is never a number.
@@ -385,14 +390,15 @@ impl ShownList {
         }
     }
 
-    /// The instance leaves the send in progress, if it joined it.
+    /// The instance leaves the send in progress, if it joined it. The other ids keep their
+    /// order (the contract of the list).
     fn remove(&mut self, id: u32, listed_send: &mut u32) {
         if *listed_send != self.send {
             return;
         }
         *listed_send = 0;
         if let Some(index) = self.ids.iter().position(|&listed| listed == id) {
-            self.ids.swap_remove(index);
+            self.ids.remove(index);
         }
     }
 
@@ -3873,6 +3879,28 @@ mod tests {
             capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
         }
+    }
+
+    /// The order of the main view's list is a part of the stream's contract (W535): the ids
+    /// are in the order of their first add of the send, an id joins once, and an id that
+    /// leaves does not move the others. An id that left and comes again joins at the end.
+    #[test]
+    fn the_shown_list_keeps_the_order_of_the_first_displays() {
+        let mut list = ShownList::new();
+        list.open = true;
+        let mut sends = [0u32; 5];
+        for (id, send) in [10u32, 11, 12, 13, 14].into_iter().zip(sends.iter_mut()) {
+            list.add(id, send);
+        }
+        list.add(11, &mut sends[1]);
+        assert_eq!(list.ids, [10, 11, 12, 13, 14], "an id joins once, at its first add");
+        list.remove(11, &mut sends[1]);
+        assert_eq!(list.ids, [10, 12, 13, 14], "a removal keeps the order of the others");
+        list.remove(10, &mut sends[0]);
+        assert_eq!(list.ids, [12, 13, 14]);
+        list.add(11, &mut sends[1]);
+        assert_eq!(list.ids, [12, 13, 14, 11]);
+        assert_eq!(list.take(false), Some(vec![12, 13, 14, 11]));
     }
 
     /// A kept shape whose depth function a Lua write changes in place to "greater", with no

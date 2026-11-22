@@ -94,6 +94,10 @@ PICTURE_DAYS = 2  # D442 (was 7)
 TEXT_DAYS = 30
 DUMP_DAYS = TEXT_DAYS
 SET_DAYS = 30
+# The sealed sets s-<nir8>-<rl8>-<mwse8> (W567 part C, the Coordinator's word): the newest SEALED_NEWEST of those that no
+# other reason keeps stay; an uncited other goes SEALED_DAYS after it was made. The f<N> and named folders keep SET_DAYS.
+SEALED_NEWEST = 20
+SEALED_DAYS = 7
 
 
 def same_path(path, other):
@@ -689,8 +693,11 @@ def run_treatment(age_days, cited, kept=False):
     return "expired"
 
 
-def set_treatment(age_days, cited, kept, used, current_known=True):
-    """What happens to a set of mgebuilds: "stay" with the reason, or "go". With no current set known, no set goes."""
+def set_treatment(age_days, cited, kept, used, current_known=True, sealed=False, pair=False, newest=False):
+    """What happens to a set of mgebuilds: "stay" with the reason, or "go". With no current set known, no set goes.
+    `sealed`: a sealed set (W567 part C), whose age counts from its making: it stays as the set of a kept merge-step
+    pair (`pair`) or as one of the newest SEALED_NEWEST of the rest (`newest`), else for SEALED_DAYS. Every other set
+    stays for SET_DAYS. `age_days` None: the age is not known, and the set stays."""
     if not current_known:
         return "stay: current.bat, else local.bat, names no set that is here"
     if kept:
@@ -699,8 +706,15 @@ def set_treatment(age_days, cited, kept, used, current_known=True):
         return "stay: in use"
     if cited:
         return "stay: cited"
-    if age_days < SET_DAYS:
-        return "stay: younger than %d days" % SET_DAYS
+    if pair:
+        return "stay: the set of a kept merge-step pair"
+    if newest:
+        return "stay: one of the newest %d sealed sets" % SEALED_NEWEST
+    if age_days is None:
+        return "stay: its age is not known"
+    days = SEALED_DAYS if sealed else SET_DAYS
+    if age_days < days:
+        return "stay: younger than %d days" % days
     return "go"
 
 
@@ -956,6 +970,13 @@ def self_test_common():
     for kept, used, cited in ((True, False, False), (False, True, False), (False, False, True)):
         assert "stay" in set_treatment(400, cited, kept, used)
     assert "names no set" in set_treatment(400, False, False, False, False)
+    # W567 part C: a sealed set goes after SEALED_DAYS, unless it is a kept pair's set or one of the newest; the null: the
+    # same age keeps a set of another kind.
+    assert set_treatment(SEALED_DAYS, False, False, False, sealed=True) == "go" and "younger than %d" % SEALED_DAYS in set_treatment(SEALED_DAYS - 1, False, False, False, sealed=True)
+    assert "younger than %d" % SET_DAYS in set_treatment(SEALED_DAYS, False, False, False)
+    assert "merge-step pair" in set_treatment(400, False, False, False, sealed=True, pair=True)
+    assert "newest %d" % SEALED_NEWEST in set_treatment(400, False, False, False, sealed=True, newest=True)
+    assert "not known" in set_treatment(None, False, False, False)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
         with open(os.path.join(temp, "local.bat"), "w", encoding="ascii") as file:
             file.write('set "OTHER=1"\nset "MGE_BUILD=E:\\nirender-keep\\mgebuilds\\f195"\n')

@@ -10,7 +10,6 @@ use crate::*;
 /// and of its CPU time (`view_times`): both cover the same items. The sorted blends' items also
 /// draw the engine's blends that the sorted list took in (`merged_blends`).
 const MAIN_VIEW_OPAQUE: &str = "the table's opaque slots";
-const MAIN_VIEW_WALK: &str = "table: blends in the engine's walk";
 const MAIN_VIEW_SORTED: &str = "sorted blends (the engine's and the table's)";
 
 /// The copy of the depth before the world, for the post chain and the held shapes.
@@ -40,7 +39,11 @@ impl Player {
     /// The world's start: the origin of the instances follows its camera, and the texture
     /// effects under a turning billboard turn for that camera.
     pub(crate) fn prepare_world(&mut self, facts: &WorldFacts) {
-        self.retained.rebase(facts.origin, &self.renderer.lights_known);
+        self.retained.rebase(
+            facts.origin,
+            &self.renderer.lights_known,
+            &mut self.renderer.retained_instance_copy,
+        );
         let began = std::time::Instant::now();
         self.retained
             .turn_effects(&crate::effect_turn::Camera::of_view(&facts.view, facts.eye()));
@@ -207,7 +210,6 @@ impl Player {
                 Item::Draw(_) | Item::Screen(_) if world_ended => Some("game: after the world (first person)"),
                 Item::Draw(_) | Item::Screen(_) if world_started => Some("game: draws in the world"),
                 Item::Draw(_) | Item::Screen(_) => Some("game: before the world (sky)"),
-                Item::WalkPlaces(_) => Some(MAIN_VIEW_WALK),
                 Item::ViewPlaces(group, _) | Item::ViewSorted(group) => Some(self.view_group_name(*group)),
                 Item::SortedBlends(_) => Some(MAIN_VIEW_SORTED),
                 Item::MainView(_) => Some(MAIN_VIEW_OPAQUE),
@@ -260,7 +262,6 @@ impl Player {
                         Item::MainView(_) => "main-view",
                         Item::WorldEnd(_) => "world-end",
                         Item::SortedBlends(_) => "sorted-blends",
-                        Item::WalkPlaces(_) => "walk-places",
                         Item::ViewPlaces(..) => "view-places",
                         Item::ViewSorted(_) => "view-sorted",
                         Item::HeldHere(..) => "held",
@@ -306,7 +307,6 @@ impl Player {
                 Item::SortedBlends(generation) => {
                     self.timed(MAIN_VIEW_SORTED, 0, |player| player.draw_retained_sorted(generation));
                 }
-                Item::WalkPlaces(run) => self.timed(MAIN_VIEW_WALK, 0, |player| player.draw_walk_run(run)),
                 Item::ViewPlaces(group, run) => {
                     let ids = self.views.take_run(group, run);
                     self.timed(self.view_group_name(group), ids.len() as u64, |player| {
@@ -587,6 +587,7 @@ impl Player {
         clusters.world = switches().world_lights || parameters.world_lights;
         self.renderer
             .set_debug_variant(crate::debug_lines::world_variant(parameters.debug_view));
+        self.particle_answers_last = super::draws::ParticleAnswers::of(&parameters);
         self.parameters = Some(parameters);
         self.takes = self
             .parameters
@@ -644,9 +645,8 @@ impl Player {
             } else {
                 pass_report::note_skipped(BEFORE_DEPTH, "no post chain, no held shapes and no watched class read it");
             }
-            // The draws of the game start with a depth target of their own; with one depth
-            // buffer they test against the extension's draws, in a pass that keeps the depth.
-            let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
+            // The draws of the game start with a depth target of their own.
+            let clear = Some(depth::clear(1.0));
             self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         } else {
             pass_report::note_skipped(BEFORE_DEPTH, "the extension drew nothing before the world");
@@ -708,7 +708,7 @@ impl Player {
         self.extension = Some(extension);
         if clear_depth {
             self.renderer.counts.tier_drew += 1;
-            let clear = (!depth::one_buffer()).then(|| depth::clear(1.0));
+            let clear = Some(depth::clear(1.0));
             self.open_pass(crate::gpu::PassReason::WorldStart, None, clear, None);
         }
     }

@@ -99,6 +99,7 @@ impl Player {
             frame_bones: Vec::new(),
             frame_instances: Vec::new(),
             parameters: None,
+            particle_answers_last: Default::default(),
             plan: plan::Plan::default(),
             frame_sorted: Vec::new(),
             replaced: 0,
@@ -520,7 +521,6 @@ impl Player {
         self.renderer.counts.places_sorted_lost += lost.tables;
         self.held_sorted_wait.clear();
         self.frame_sorted.clear();
-        self.retained.walk.frame_start();
         self.replaced = 0;
         self.world_end_facts = None;
         self.plane_ahead = None;

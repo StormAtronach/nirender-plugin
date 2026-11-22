@@ -2983,8 +2983,9 @@ def main():
     ap.add_argument("--full-dump", action="store_true", help="MWSE writes a full-memory dump at a crash (its setting CreateFullMinidumps, set only in "
                     "the run's copy of MWSE.json): about " + FULL_DUMP_SIZE + " in the run folder, so that the objects and the heap of a crash can be read")
     ap.add_argument("--settle", type=float, default=None, help="the seconds to wait at the interior and at the exterior before the picture (6 without this)")
-    ap.add_argument("--keep-fade", action="store_true", help="keep the fade-in of the distant statics and the grass (the tunable statics.fade); "
-                    "without this the mod sets it to 0 at the start, so that a picture does not depend on the moment of an arrival")
+    ap.add_argument("--keep-fade", action="store_true", help="no effect since W53 (render-link a6c1cee), whose helper has no fade-in; for a set "
+                    "before W53: keep the fade-in of the distant statics and the grass (the tunable statics.fade), which the mod "
+                    "otherwise sets to 0 at the start, so that a picture does not depend on the moment of an arrival")
     ap.add_argument("--keep-ai", action="store_true", help="keep the AI of the actors on; without this the mod turns it off after the load, so "
                     "that two pictures of a place show the same thing (a measurement of the game's cost needs the AI on)")
     ap.add_argument("--port-times", action="store_true", help="the mod reports the port times at each step (it turns the timing of every live port call on: not for a profile)")

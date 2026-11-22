@@ -702,12 +702,13 @@ return function(nirender, spec)
         say("steps: %s (%d)", tostring(spec.steps), #steps)
     end
 
-    -- The fade-in of the distant statics and the grass after their arrival depends on the
-    -- moment of the arrival: a picture of a run would depend on it. A replay has no fade. The
-    -- runner's --keep-fade keeps it (a test of the fade itself).
+    -- A helper of a set before W53 (render-link a6c1cee) fades the distant statics and the grass
+    -- in after their arrival, and a picture of a run would depend on the moment of the arrival.
+    -- That helper takes the tunable statics.fade; the helper of W53 on has no fade and no such
+    -- tunable, and ignores the line. The runner's --keep-fade keeps the old fade.
     if not spec.keepFade then
         local ok = pcall(nirender.tune, "set statics.fade 0")
-        say("fade-in of the distant statics off for the run: %s", tostring(ok))
+        say("fade-in of the distant statics off for the run (a helper before W53 only; W53 on has no fade): %s", tostring(ok))
     end
 
     local function step(index)

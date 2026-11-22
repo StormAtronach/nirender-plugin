@@ -173,9 +173,12 @@ struct Slot {
     /// the engine's sorted queue ([`tag::INSTANCE_QUEUED`]), where the engine flushes the
     /// queue.
     sorted: bool,
-    /// The shape's own alpha property blends and the engine does not sort it: the engine
-    /// draws it at its display, in the order of its walk ([`engine::walk`]).
-    in_place: bool,
+    /// The alpha test of the instance's material record: every slot of an instance has the
+    /// same value. The rule of a unit reads it ([`table_order::unit_fail`]).
+    alpha_test: bool,
+    /// The material record has a fog map, as [`Slot::alpha_test`]: one value for every slot of
+    /// an instance, read by the rule of a unit.
+    fog_map: bool,
     /// The texture handles the slot pinned ([`Renderer::pin_texture`]), one use each: their
     /// uses go when the slot goes.
     pinned: [u32; STAGES],
@@ -214,19 +217,20 @@ pub struct RetainedCounts {
     pub no_material: u32,
     /// The instance records that moved an instance in place.
     pub moves: u64,
-    /// The times the origin of the set moved to the camera.
+    /// The times the origin of the set moved to the camera of a relative scene (a change of the
+    /// place), and the times the set changed between the space of a relative scene and the
+    /// space of the world (a change of the kind).
     pub rebases: u32,
+    pub kind_changes: u32,
     /// The slots made again for a geometry sent again under its handle (a live shape).
     pub refreshed: u64,
     /// The `INSTANCE_BONES` records taken, and the skinned slots not drawn because their
     /// bones had not come.
     pub bone_records: u64,
     pub without_bones: u64,
-    /// In the main view with the walk's places on: the blends drawn in place by the engine
-    /// that had no place (drawn by bucket), and the places whose walk order differs from
-    /// their bucket order.
-    pub walk_without_place: u64,
-    pub walk_reordered: u64,
+    /// The order of the main view's unsorted draws: its groups and its bound instances
+    /// ([`table_order`]).
+    pub order: table_order::OrderCounts,
     /// The entries of the texture effects written ([`RetainedSet::turn_effects`]), the seconds
     /// of that, and the seconds of the upload of the table.
     pub entry_writes: u64,
@@ -453,10 +457,6 @@ impl CullEntry {
     }
 }
 
-/// The origin of the set moves to the camera when the camera is farther from it than this,
-/// in units of the world. A 32-bit float has steps of 0.0005 units at 4096.
-const REBASE_DISTANCE: f64 = 4096.0;
-
 pub struct RetainedSet {
     slots: Vec<Option<Slot>>,
     /// The cull's record of each slot (`refresh_cull`), and the draw ranges of all slots.
@@ -490,6 +490,8 @@ pub struct RetainedSet {
     dirty: Vec<u32>,
     moved: Vec<u32>,
     all_dirty: bool,
+    /// Every instance changed and no record did: the origin moved to the camera (`rebase`).
+    instances_dirty: bool,
     /// The slots that draw a stage from a slot of the frame in the frame they were made,
     /// with the pinned texture and sampler slots of each stage for the next frame
     /// ([`Player::retained_settle_late`]).
@@ -501,21 +503,21 @@ pub struct RetainedSet {
     /// bucket, the key of the draw in it, the slot. Kept between the views so that a view
     /// does not allocate.
     order: Vec<(u64, u32, u32, u32)>,
-    /// The nearest depth and the group of each bucket in the view in progress.
-    bucket_depth: Vec<(f32, u8)>,
+    /// The lists of the keys of `order` ([`table_order::keys`]), kept between the views.
+    order_buffers: table_order::Buffers,
+    /// A replay asks for the digest of the order of the frame in progress
+    /// ([`RetainedSet::digest_frame`]): the main view adds its unsorted draws.
+    frame_digest: Option<table_order::Digest>,
     /// The sorted blends of the view in progress, back to front; and those of the main view
     /// kept for the flush of the engine's queue ([`Sorted::Keep`]), with the view.
     sorted_order: Vec<(u64, u32, u32, u32)>,
     kept_sorted: Vec<(u64, u32, u32, u32)>,
     pub sorted_view: Option<RetainedView>,
-    /// The places of the table's blends in the engine's walk, and the main view that left
-    /// their slots out for them.
-    pub(crate) walk: crate::engine::walk::Walk,
-    walk_view: Option<RetainedView>,
     /// The origin of the space of the instances: the translation of a slot and the
     /// position of a light are relative to it. With a relative scene (the packet has the
-    /// exact position of the camera) the origin follows the camera (`rebase`), so the
-    /// 32-bit translations stay small. Without one the origin is 0: the space of the world.
+    /// exact position of the camera) the origin is the camera (`rebase`), so a slot's 32-bit
+    /// translation is the one of a record draw. Without one the origin is 0: the space of the
+    /// world.
     origin: [f64; 3],
     relative: bool,
     /// The bones of the skinned instances, as their records give them (the matrix of the
@@ -574,12 +576,11 @@ impl RetainedSet {
             buckets: Vec::new(),
             bucket_of: HashMap::new(),
             order: Vec::new(),
-            bucket_depth: Vec::new(),
+            order_buffers: Default::default(),
+            frame_digest: None,
             sorted_order: Vec::new(),
             kept_sorted: Vec::new(),
             sorted_view: None,
-            walk: Default::default(),
-            walk_view: None,
             origin: [0.0; 3],
             relative: false,
             bones: Vec::new(),
@@ -598,6 +599,7 @@ impl RetainedSet {
             dirty: Vec::new(),
             moved: Vec::new(),
             all_dirty: false,
+            instances_dirty: false,
             late: Vec::new(),
             record_generation: 0,
             instance_generation: 0,
@@ -967,16 +969,33 @@ impl RetainedSet {
 
     /// The origin of the set follows the camera of the world: `camera` is the exact
     /// position of the camera of a relative scene, or [`None`] for a scene that is not
-    /// relative. When the scene changes kind, or the camera is farther than
-    /// [`REBASE_DISTANCE`] from the origin, every slot and every light is made again for the
-    /// new origin, and the segments are written whole. Returns true then.
-    pub fn rebase(&mut self, camera: Option<[f64; 3]>, known: &HashMap<u32, [u8; 104]>) -> bool {
+    /// relative. Returns true when the origin changed.
+    ///
+    /// In a relative scene the origin is the camera. When the camera's place is not the origin
+    /// to the bit, every slot that is not skinned gets its translation again: its exact place
+    /// less the camera in 64 bits, rounded one time, which is the arithmetic of a record draw
+    /// (`stream::draw_data`, whose view has no translation). The lights are made again, the
+    /// bones are marked, and the plain effect entries follow in `turn_effects`. The instances
+    /// are written whole and the records are not: no draw of the table reads its record's copy
+    /// of the matrix (`vs` of shader.wgsl takes the instance's, and a skinned draw the table's
+    /// palette), and a held draw is a copy of the slot of each frame (`retained_hold`).
+    ///
+    /// `copy` is the renderer's kept copy of the instance buffer's segment of the table. At a
+    /// change of the place the three numbers of a slot go into its entry there too, when the
+    /// copy has that entry (the slot's number is under the copy's length), so the upload has
+    /// no entry to make again for the new origin. An entry that the copy does not have yet is
+    /// of a slot that is new in the frame: the upload makes it from the slot.
+    ///
+    /// When the scene changes kind (relative, or in the space of the world), everything is
+    /// made again and both segments are written whole; the copy is not touched here.
+    pub fn rebase(&mut self, camera: Option<[f64; 3]>, known: &HashMap<u32, [u8; 104]>, copy: &mut [Instance]) -> bool {
         let (relative, target) = match camera {
             Some(camera) => (true, camera),
             None => (false, [0.0; 3]),
         };
-        let distance = (0..3).map(|i| (target[i] - self.origin[i]).powi(2)).sum::<f64>().sqrt();
-        if relative == self.relative && (!relative || distance <= REBASE_DISTANCE) {
+        // The test of the kind comes first: a scene with no origin keeps the space of the world.
+        let kind_changes = relative != self.relative;
+        if !kind_changes && (!relative || target.map(f64::to_bits) == self.origin.map(f64::to_bits)) {
             return false;
         }
         self.relative = relative;
@@ -984,14 +1003,21 @@ impl RetainedSet {
         // The bones are made again for the new origin at the upload; a skinned slot keeps the
         // identity.
         self.bones_dirty = true;
-        for slot in self.slots.iter_mut().flatten() {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let Some(slot) = slot else { continue };
             if slot.flags & INSTANCE_SKINNED != 0 {
                 continue;
             }
-            for i in 0..3 {
-                slot.world[12 + i] = (slot.exact[i] - target[i]) as f32;
+            // The record's copy of the matrix is the slot's matrix at every writer of the two
+            // (the insert, `update_place`, here), so the three numbers are all that changes.
+            let place: [f32; 3] = core::array::from_fn(|i| (slot.exact[i] - target[i]) as f32);
+            slot.world[12..15].copy_from_slice(&place);
+            slot.data.world[0][12..15].copy_from_slice(&place);
+            if !kind_changes {
+                if let Some(entry) = copy.get_mut(index) {
+                    entry.world[12..15].copy_from_slice(&place);
+                }
             }
-            slot.data.world[0] = slot.world;
         }
         let origin = self.light_origin();
         for (key, &slot) in &self.light_slot_of {
@@ -999,9 +1025,49 @@ impl RetainedSet {
                 self.light_values[slot as usize] = light_data(values, origin);
             }
         }
-        self.all_dirty = true;
-        self.counts.rebases += 1;
+        if kind_changes {
+            self.all_dirty = true;
+            self.counts.kind_changes += 1;
+        } else {
+            self.instances_dirty = true;
+            self.counts.rebases += 1;
+        }
         true
+    }
+
+    /// The entries of the frame's changed and moved slots, made again in the kept copy of the
+    /// instance buffer's segment (`copy`), which grows to `room` entries. After it `moved`
+    /// holds both lists, sorted, each slot one time. The lists hold no slot at or past `room`
+    /// ([`Renderer::retained_upload`] drops those before).
+    fn changed_entries_into(&mut self, copy: &mut Vec<Instance>, room: usize) {
+        self.moved.extend_from_slice(&self.dirty);
+        self.moved.sort_unstable();
+        self.moved.dedup();
+        if copy.len() < room {
+            copy.resize(room, Instance::zeroed());
+        }
+        for &i in &self.moved {
+            if let Some(slot) = self.slots[i as usize].as_ref() {
+                copy[i as usize] = slot_instance(i as usize, slot);
+            }
+        }
+    }
+
+    /// The live slots under `room` whose entry in the kept copy is not, to the byte, the entry
+    /// that the slot makes now. None after an upload: that is what lets a change of the
+    /// origin's place write the copy as it is. An empty slot has no entry to make (its old one
+    /// stays in the copy; no draw names an empty slot).
+    fn stale_entries(&self, copy: &[Instance], room: usize) -> Vec<u32> {
+        self.slots
+            .iter()
+            .take(room)
+            .enumerate()
+            .filter_map(|(i, slot)| {
+                let made = slot_instance(i, slot.as_ref()?);
+                let kept = copy.get(i).map(bytemuck::bytes_of);
+                (kept != Some(bytemuck::bytes_of(&made))).then_some(i as u32)
+            })
+            .collect()
     }
 
     /// The view of a scene for the instances: the view of the game, with its translation
@@ -1306,9 +1372,13 @@ fn slot_verdict(cull: &CullEntry, tests_planes: bool, planes: &[[f32; 4]; 6]) ->
 }
 
 /// The slots of the listed instances, in the list's order and then in the order of each
-/// instance's slots. An id that the table does not have gives none.
-fn listed_slots<'a>(shown: &'a [u32], by_id: &'a HashMap<u32, Vec<u32>>) -> impl Iterator<Item = u32> + 'a {
-    shown.iter().filter_map(|id| by_id.get(id)).flatten().copied()
+/// instance's slots, each with the number of its pass: its place among the slots of its
+/// instance. An id that the table does not have gives none.
+fn listed_passes<'a>(shown: &'a [u32], by_id: &'a HashMap<u32, Vec<u32>>) -> impl Iterator<Item = (u32, u32)> + 'a {
+    shown
+        .iter()
+        .filter_map(|id| by_id.get(id))
+        .flat_map(|slots| slots.iter().enumerate().map(|(pass, &slot)| (pass as u32, slot)))
 }
 
 /// A light as the shader has it, from the `D3DLIGHT8` of 26 words of its record (after
@@ -1639,6 +1709,8 @@ impl Renderer {
         set.record_generation = self.record_generation;
         set.instance_generation = self.instance_generation;
         set.all_dirty = false;
+        // The origin moved to the camera: every instance again, and no record for it.
+        let instances = std::mem::take(&mut set.instances_dirty) && !all;
         // The slots that have room (all of them but past the device's limit).
         let room = set.slots.len().min(self.retained_records);
         set.dirty.retain(|&i| (i as usize) < room);
@@ -1681,21 +1753,28 @@ impl Renderer {
                     self.counts.record_write_bytes += RECORD_SIZE as u64;
                 }
             }
-            // The entries of the changed and the moved slots go into the copy, then up as runs:
-            // slots at most `RUN_GAP` apart share a write (the entries between are the copy's,
-            // the same as the buffer's).
-            set.moved.extend_from_slice(&set.dirty);
-            set.moved.sort_unstable();
-            set.moved.dedup();
+            // The entries of the changed and the moved slots go into the copy.
             let copy = &mut self.retained_instance_copy;
-            if copy.len() < room {
-                copy.resize(room, Instance::zeroed());
-            }
-            for &i in &set.moved {
-                if let Some(slot) = set.slots[i as usize].as_ref() {
-                    copy[i as usize] = slot_instance(i as usize, slot);
+            set.changed_entries_into(copy, room);
+            if instances {
+                // The origin moved: `rebase` wrote the new place of every slot into the copy, so
+                // the copy is the segment as it must be, and it goes up in one write. The changed
+                // and the moved slots are in it; the records of the changed slots went up above.
+                debug_assert!(
+                    set.stale_entries(copy, room).is_empty(),
+                    "the kept copy of the instances is not the slots' at a new origin: slots {:?}",
+                    set.stale_entries(copy, room)
+                );
+                if room != 0 {
+                    self.queue
+                        .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&copy[..room]));
                 }
+                self.counts.instance_uploads_origin += 1;
+                self.counts.upload_origin_seconds += case_began.elapsed().as_secs_f64();
+                set.moved.clear();
             }
+            // Without a new origin the entries go up as runs: slots at most `RUN_GAP` apart share
+            // a write (the entries between are the copy's, the same as the buffer's).
             let mut k = 0;
             while k < set.moved.len() {
                 let first = set.moved[k] as usize;
@@ -1718,8 +1797,11 @@ impl Renderer {
                 self.counts.instance_entries_moved += entries as u64;
                 self.counts.instance_gap_bytes += ((run.len() - entries) * INSTANCE_SIZE) as u64;
             }
-            self.counts.upload_changed_cases += 1;
-            self.counts.upload_changed_seconds += case_began.elapsed().as_secs_f64();
+            // After the case of a new origin the two lists are empty: no run went up here.
+            if !instances {
+                self.counts.upload_changed_cases += 1;
+                self.counts.upload_changed_seconds += case_began.elapsed().as_secs_f64();
+            }
             set.dirty.clear();
             set.moved.clear();
         }
@@ -2056,42 +2138,34 @@ impl RetainedSet {
     /// The draws of a view of the main view's instances in the order they go to the GPU, into
     /// `order`. The view draws the slots of the instances that the engine displayed in the main
     /// view (`INSTANCE_SHOWN`, form D):
-    /// 1. The buckets that do not blend and have no alpha test, front to back by their
-    ///    nearest draw in view, and the draws of each front to back: the early depth test
-    ///    then rejects the pixels behind what is drawn.
-    /// 2. The buckets with an alpha test, the same way after them (a discard in the shader
-    ///    can turn the early depth test off).
-    /// 3. The buckets that blend out of the sort (the no-sorter bit), in the order they were
-    ///    made, their draws in the engine's order of display. A shape draws a base pass and a
-    ///    blend pass that both write depth and test less-or-equal, in different buckets: the
-    ///    base must come first, or it overwrites the blend at the same depth (the game draws
-    ///    the two in a row). In the main view a slot of an instance with a place in the
-    ///    engine's walk ([`tag::INSTANCE_WALK`]) leaves this group: it draws at its place
-    ///    ([`engine::walk`]). This order is only for the blends without one.
-    /// The depth of a draw is that of the nearest point of its bound: the distance from the
-    /// near plane of the view less the radius, at least 0.
-    /// 4. The blends the engine would sort, into `sorted_order`: back to front by the depth
+    /// 1. The draws that the engine does not sort, in the engine's order: the order of the
+    ///    list, which holds each instance at its first display. The draws whose order cannot
+    ///    show are grouped, and a shape with more than one pass draws its passes in their
+    ///    order ([`table_order`], the switch `MGE_XE_TABLE_ORDER`). A blend that the engine
+    ///    does not sort draws at its place in the list, among the other draws.
+    /// 2. The blends the engine would sort, into `sorted_order`: back to front by the depth
     ///    of the bound centre along the view, ties by the order of the slots. This is not
     ///    the engine's order: the engine sorts screen-space boxes (`$2::Sort` 0x6FE830,
     ///    engine-rules R21). The main view keeps them for the flush of the engine's queue
-    ///    ([`Sorted::Keep`], then `Only`). There a kept blend with a place in the engine's
-    ///    queue ([`tag::INSTANCE_QUEUED`]) draws at its place, in the engine's order; this
-    ///    order is only for the blends without one (`draw_retained_sorted`).
-    /// Engine-rules R3, R4, R20 (the skill wgpu-renderer-dev).
+    ///    ([`Sorted::Keep`]). There a kept blend with a place in the engine's queue
+    ///    ([`tag::INSTANCE_QUEUED`]) draws at its place, in the engine's order, with its slots
+    ///    in their order (`placed_entries`). A kept blend without a place is not drawn: it is
+    ///    only counted (`sorted_without_place`, risk 34; `draw_retained_sorted`). So no draw
+    ///    reads this order now. A change that draws it needs the pass in the key: the sort
+    ///    compares the bucket before the sequence, and the passes of one instance have one key.
+    /// Engine-rules R2, R3, R4, R20 (the skill wgpu-renderer-dev).
     fn collect_order(&mut self, view: &RetainedView) {
         self.order.clear();
         self.sorted_order.clear();
-        self.bucket_depth.clear();
-        self.bucket_depth.resize(self.buckets.len(), (f32::MAX, 0));
         let near = view.planes[4];
         let tests_planes = tests_planes(view);
         let mut sequence = 0u32;
         // The listed slots with their buckets, but those of the classes the view does not draw.
         let (slots, buckets) = (&self.slots, &self.buckets);
-        let listed = listed_slots(&self.shown, &self.by_id)
-            .filter_map(|slot| Some((slots[slot as usize].as_ref()?.bucket as usize, slot)))
-            .filter(|&(b, _)| view.classes & (1 << buckets[b].class.min(31)) != 0);
-        for (b, slot) in listed {
+        let listed = listed_passes(&self.shown, &self.by_id)
+            .filter_map(|(pass, slot)| Some((slots[slot as usize].as_ref()?.bucket as usize, pass, slot)))
+            .filter(|&(b, _, _)| view.classes & (1 << buckets[b].class.min(31)) != 0);
+        for (b, pass, slot) in listed {
             match slot_verdict(&self.cull[slot as usize], tests_planes, &view.planes) {
                 Verdict::Gone | Verdict::Held => continue,
                 Verdict::WithoutBones => {
@@ -2108,47 +2182,23 @@ impl RetainedSet {
                 continue;
             };
             self.counts.drawn += 1;
-            let centre = near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3];
             sequence += 1;
             if s.sorted {
+                let centre = near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3];
                 self.counts.sorted += 1;
                 self.sorted_order.push((sorted_key(centre, s.id), b as u32, sequence, slot));
                 continue;
             }
-            let blends = self.buckets[b].key.blend[0] != 0;
-            let depth = (centre - s.bound[3]).max(0.0);
-            let entry = &mut self.bucket_depth[b];
-            entry.0 = entry.0.min(depth);
-            if blends {
-                entry.1 = 2;
-            } else if s.data.more[2] != 0 {
-                entry.1 = entry.1.max(1);
-            }
-            // A depth of at least 0 orders as its bits; a blended draw keeps its place.
-            let within = if blends { sequence } else { depth.to_bits() };
-            self.order.push((0, b as u32, within, slot));
+            // The entry stands at its place in the list, with the number of its pass until
+            // `order_keys` writes its key.
+            self.order.push((0, b as u32, pass, slot));
         }
-        for entry in &mut self.order {
-            let (depth, group) = self.bucket_depth[entry.1 as usize];
-            entry.0 = bucket_key(group, entry.1, depth);
-        }
+        let main_view = view.sorted == Sorted::Keep;
+        self.order_keys(main_view);
         self.order.sort_unstable();
         self.sorted_order.sort_unstable();
-        // The main view: a blend out of the sort with a place in the engine's walk draws there.
-        if view.sorted == Sorted::Keep {
-            let slots = &self.slots;
-            self.counts.walk_reordered +=
-                self.walk
-                    .leave_out(&mut self.order, |slot| slots[slot as usize].as_ref().map(|s| s.id)) as u64;
-            self.counts.walk_without_place += self
-                .order
-                .iter()
-                .filter(|e| {
-                    e.0 >> 32 == crate::engine::walk::GROUP_IN_PLACE
-                        && slots[e.3 as usize].as_ref().is_some_and(|s| s.in_place)
-                })
-                .count() as u64;
-            self.walk_view = Some(*view);
+        if main_view {
+            self.add_to_digest();
         }
         match view.sorted {
             Sorted::Keep => {
@@ -2157,6 +2207,76 @@ impl RetainedSet {
                 self.sorted_view = Some(*view);
             }
             Sorted::Only => {}
+        }
+    }
+
+    /// Writes the key of each entry of `order` for the order of the switch
+    /// ([`table_order::keys`]). The entries stand in the order of the shown list, the entries
+    /// of one instance as neighbours, each with the number of its pass in the place of
+    /// `within`. An instance is judged on ALL its slots, in view or not. `main_view`: the
+    /// counts of the order go to the report.
+    fn order_keys(&mut self, main_view: bool) {
+        let order = crate::switches::switches().table_order;
+        let (slots, buckets, by_id, entries) = (&self.slots, &self.buckets, &self.by_id, &self.order);
+        let buffers = &mut self.order_buffers;
+        buffers.entries.clear();
+        buffers.entries.extend(
+            entries
+                .iter()
+                .map(|entry| (slots[entry.3 as usize].as_ref().map_or(0, |s| s.id), entry.1)),
+        );
+        let frame = table_order::keys(
+            order,
+            &buffers.entries,
+            &mut buffers.keys,
+            &mut buffers.first_of_bucket,
+            |id| {
+                let all = by_id.get(&id).map_or(&[][..], Vec::as_slice);
+                let passes = all.iter().filter_map(|&slot| slots[slot as usize].as_ref());
+                let first = passes.clone().next();
+                table_order::Instance::of(
+                    first.is_some_and(|s| s.alpha_test),
+                    first.is_some_and(|s| s.fog_map),
+                    passes.map(|s| table_order::PassFacts::of(&buckets[s.bucket as usize].key)),
+                )
+            },
+            |index| entries[index].2,
+        );
+        let drawn = buffers.entries.len() as u64;
+        for (entry, &(key, within)) in self.order.iter_mut().zip(&self.order_buffers.keys) {
+            entry.0 = key;
+            entry.2 = within;
+        }
+        if main_view {
+            self.counts.order.add(drawn, &frame);
+        }
+    }
+
+    /// A replay asks for the digest of the order of the frame that begins (`on`), or for none.
+    pub(crate) fn digest_frame(&mut self, on: bool) {
+        self.frame_digest = on.then(table_order::Digest::default);
+    }
+
+    /// The digest of the frame that ended, when the replay asked for it.
+    pub(crate) fn take_digest(&mut self) -> Option<table_order::Digest> {
+        self.frame_digest.take()
+    }
+
+    /// Adds the main view's unsorted draws, in the order in which they go to the GPU, to the
+    /// digest that the replay asked for.
+    fn add_to_digest(&mut self) {
+        let Some(digest) = self.frame_digest.as_mut() else {
+            return;
+        };
+        for entry in &self.order {
+            let slot = entry.3;
+            let id = self.slots[slot as usize].as_ref().map_or(0, |s| s.id);
+            let pass = self
+                .by_id
+                .get(&id)
+                .and_then(|all| all.iter().position(|&other| other == slot))
+                .unwrap_or(0);
+            digest.add(id, pass as u32);
         }
     }
 }
@@ -2509,7 +2629,6 @@ impl Player {
             if sorted != crate::engine::alpha::sorted_by_engine(r.class, &derived.blends, derived.no_sorter) {
                 self.renderer.counts.sort_mark_differs += 1;
             }
-            let in_place = !sorted && derived.blends.first().is_some_and(|b| b[0] != 0);
             set.slots[slot as usize] = Some(Slot {
                 id,
                 geometry: r.geometry,
@@ -2525,7 +2644,8 @@ impl Player {
                 ranges: ranges.clone(),
                 base_vertex,
                 sorted,
-                in_place,
+                alpha_test: m.flags & crate::material::ALPHA_TEST != 0,
+                fog_map: m.fog_map.present,
                 pinned,
                 bones_first,
                 bones_needed,
@@ -3064,21 +3184,6 @@ impl Player {
         self.forget_bound();
     }
 
-    /// Draws a run of places of the table's blends in the engine's walk ([`Item::WalkPlaces`]):
-    /// the slots the main view left out for them, in the walk's order, with the main view.
-    /// The kept sorted blends stay for their item.
-    /// Engine-rules R2, R3 (the skill wgpu-renderer-dev).
-    pub(super) fn draw_walk_run(&mut self, run: usize) {
-        let (entries, late) = self.retained.walk.take_run(run);
-        self.renderer.counts.walk_late += late as u64;
-        if entries.is_empty() {
-            return;
-        }
-        let kept = core::mem::take(&mut self.retained.kept_sorted);
-        self.draw_sorted_run(self.retained.walk_view, entries);
-        self.retained.kept_sorted = kept;
-    }
-
     /// Draws the places `ids` of a view of its own ([`Item::ViewPlaces`], [`Item::ViewSorted`]):
     /// every slot of each instance, in the places' order, with the view of the group's scene in
     /// its own scene slot. The engine displayed each one: no cull. The main view's kept blends
@@ -3220,17 +3325,6 @@ fn sorted_key(centre: f32, id: u32) -> u64 {
     (!centre.max(0.0).to_bits() as u64) << 32 | id as u64
 }
 
-/// The key of a bucket of the other draws: the groups in order (0 no blend and no alpha test,
-/// 1 an alpha test, 2 a blend out of the sort), the first two front to back by the depth of
-/// their nearest draw, the blends in the order of their buckets.
-fn bucket_key(group: u8, bucket: u32, depth: f32) -> u64 {
-    if group == 2 {
-        2 << 32 | bucket as u64
-    } else {
-        (group as u64) << 32 | depth.to_bits() as u64
-    }
-}
-
 #[cfg(test)]
 mod bone_tests {
     use super::{slot_bones, NO_BONES};
@@ -3265,7 +3359,8 @@ mod list_tests {
             ranges: Vec::new(),
             base_vertex: 0,
             sorted: false,
-            in_place: false,
+            alpha_test: false,
+            fog_map: false,
             pinned: [0; STAGES],
             bones_first: NO_BONES,
             bones_needed: 0,
@@ -3291,6 +3386,187 @@ mod list_tests {
         let index = set.slots.len() - 1;
         set.slots[index].as_mut().unwrap().bound[0] = 100.0;
         set.cull[index] = CullEntry::of(set.slots[index].as_ref());
+    }
+
+    /// A set in a relative scene whose camera is at `camera`, with two slots: one that is not
+    /// skinned at the exact place `PLACE`, and a skinned one.
+    const PLACE: [f64; 3] = [400000.04, -250000.125, 1234.5];
+    fn set_at(camera: [f64; 3]) -> RetainedSet {
+        let mut set = RetainedSet::new();
+        put(&mut set, 1);
+        put(&mut set, 2);
+        set.slots[0].as_mut().unwrap().exact = PLACE;
+        let skinned = set.slots[1].as_mut().unwrap();
+        skinned.flags = INSTANCE_SKINNED;
+        skinned.exact = PLACE;
+        // The first start of a world: the scene's kind changes, and everything goes up whole.
+        assert!(set.rebase(Some(camera), &HashMap::new(), &mut []));
+        assert!(set.all_dirty && !set.instances_dirty);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 1));
+        set.all_dirty = false;
+        set.bones_dirty = false;
+        set
+    }
+
+    #[test]
+    fn the_origin_is_the_camera_at_each_change_of_its_place() {
+        let first = [400010.0, -250000.0, 1200.0];
+        let mut set = set_at(first);
+        // The camera stands: no rebase, to the bit.
+        assert!(!set.rebase(Some(first), &HashMap::new(), &mut []));
+        assert!(!set.instances_dirty && !set.all_dirty && !set.bones_dirty);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 1));
+
+        // The smallest change of the place is a change: the next double on one axis.
+        let next = [f64::from_bits(first[0].to_bits() + 1), first[1], first[2]];
+        assert!(set.rebase(Some(next), &HashMap::new(), &mut []));
+        assert_eq!(set.origin, next);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (1, 1));
+        // The instances go up whole, the records do not, and the bones are made again.
+        assert!(set.instances_dirty && !set.all_dirty && set.bones_dirty);
+        assert!(set.dirty.is_empty() && set.moved.is_empty());
+
+        // A slot that is not skinned: its exact place less the camera in 64 bits, rounded one
+        // time, in the slot and in the copy that a held draw takes.
+        let moved = [399000.5, -251000.25, 1000.0];
+        assert!(set.rebase(Some(moved), &HashMap::new(), &mut []));
+        let slot = set.slots[0].as_ref().unwrap();
+        for i in 0..3 {
+            assert_eq!(
+                slot.world[12 + i].to_bits(),
+                ((PLACE[i] - moved[i]) as f32).to_bits(),
+                "axis {i}"
+            );
+        }
+        assert_eq!(slot.data.world[0], slot.world);
+        // A skinned slot is not touched: its bones carry the place.
+        assert_eq!(set.slots[1].as_ref().unwrap().world, [0.0; 16]);
+        // The view of the scene has no translation then.
+        let mut view = [0.0f32; 16];
+        (view[0], view[5], view[10], view[15]) = (1.0, 1.0, 1.0, 1.0);
+        (view[12], view[13], view[14]) = (7.0, 8.0, 9.0);
+        assert_eq!(&set.scene_view(&view, Some(moved))[12..15], &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_change_of_the_scenes_kind_makes_everything_again() {
+        let camera = [100.0, 200.0, 300.0];
+        let mut set = set_at(camera);
+        // A scene with no origin: the space of the world, whole.
+        assert!(set.rebase(None, &HashMap::new(), &mut []));
+        assert!(set.all_dirty && !set.instances_dirty && !set.relative);
+        assert_eq!(set.origin, [0.0; 3]);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 2));
+        let slot = set.slots[0].as_ref().unwrap();
+        for i in 0..3 {
+            assert_eq!(slot.world[12 + i], PLACE[i] as f32);
+        }
+        // The same kind again: nothing to do, whatever the place was before.
+        set.all_dirty = false;
+        assert!(!set.rebase(None, &HashMap::new(), &mut []));
+        assert!(!set.all_dirty && !set.instances_dirty);
+        // Back to a relative scene at the old camera: a change of the kind, not of the place.
+        assert!(set.rebase(Some(camera), &HashMap::new(), &mut []));
+        assert!(set.all_dirty && !set.instances_dirty);
+        assert_eq!((set.counts.rebases, set.counts.kind_changes), (0, 3));
+    }
+
+    /// The segment of the instances as the whole upload of `Renderer::retained_upload` makes it.
+    fn whole_copy(set: &RetainedSet) -> Vec<Instance> {
+        let mut copy = vec![Instance::zeroed(); set.slots.len()];
+        for (i, slot) in set.slots.iter().enumerate() {
+            if let Some(slot) = slot {
+                copy[i] = slot_instance(i, slot);
+            }
+        }
+        copy
+    }
+
+    /// A change of the origin's place writes the kept copy of the instances as it is. So after
+    /// the change and the making of the frame's changed entries, the copy's entry of each live
+    /// slot is, to the byte, the entry that the slot makes.
+    #[test]
+    fn a_change_of_the_place_keeps_the_copy_of_the_instances_equal_to_the_slots() {
+        let first = [400010.0, -250000.0, 1200.0];
+        let moved = [399000.5, -251000.25, 1000.0];
+        let known = HashMap::new();
+        fn live(set: &RetainedSet, index: usize) -> &Slot {
+            set.slots[index].as_ref().unwrap()
+        }
+        // The slots 0 (plain) and 1 (skinned) of `set_at`, and the instances 3, 4 and 5 in the
+        // slots 2, 3 and 4, each at a place of its own. All are at the origin `first`.
+        let mut set = set_at([400000.0, -250000.0, 1000.0]);
+        for (step, id) in [3, 4, 5].into_iter().enumerate() {
+            put(&mut set, id);
+            let slot = set.slots.last_mut().unwrap().as_mut().unwrap();
+            slot.exact = [PLACE[0] + 10.0 * (step + 1) as f64, PLACE[1], PLACE[2]];
+        }
+        assert!(set.rebase(Some(first), &known, &mut []));
+        // An upload: the copy has every slot's entry, and the frame's lists are empty.
+        set.instances_dirty = false;
+        let mut copy = whole_copy(&set);
+        assert!(set.stale_entries(&copy, 5).is_empty());
+        assert!(set.dirty.is_empty() && set.moved.is_empty());
+
+        // The frame: the instance 3 goes (its slot 2 is empty), the slot 3 changes, the slot 4
+        // moves in place, and a new instance takes the slot 5, past the copy's end.
+        let _pinned = set.remove(3);
+        set.slots[3].as_mut().unwrap().world[0] = 2.0;
+        set.dirty.push(3);
+        let place = Retained {
+            class: 0,
+            flags: 0,
+            geometry: 0,
+            material: 0,
+            rotation: [1.0, 2.0, 3.0, 0.0, 4.0, 5.0, 6.0, 0.0, 7.0, 8.0, 9.0, 0.0],
+            exact: [PLACE[0] - 7.5, PLACE[1] + 3.25, PLACE[2]],
+            stored: [0.0; 3],
+            colours: [0.0; 14],
+            bound: [0.0, 0.0, 0.0, 1.0],
+        };
+        assert!(set.update_place(5, &place));
+        put(&mut set, 6);
+        set.slots[5].as_mut().unwrap().exact = PLACE;
+        set.dirty.push(5);
+        let before = copy.clone();
+
+        // The change of the place. The copy has the new place of the slot 0 already; the frame's
+        // changed, moved and new slots wait for the making.
+        assert!(set.rebase(Some(moved), &known, &mut copy));
+        assert!(set.instances_dirty && !set.all_dirty);
+        assert_eq!(set.stale_entries(&copy, 6), [3, 4, 5]);
+        set.changed_entries_into(&mut copy, 6);
+        assert_eq!(copy.len(), 6);
+        assert_eq!(set.moved, [3, 4, 5]);
+        assert!(set.stale_entries(&copy, 6).is_empty());
+
+        // The plain slot: its exact place less the camera, rounded one time, in the slot, in the
+        // record's copy and in the kept copy.
+        for i in 0..3 {
+            let wanted = ((PLACE[i] - moved[i]) as f32).to_bits();
+            assert_eq!(live(&set, 0).world[12 + i].to_bits(), wanted, "axis {i}");
+            assert_eq!(copy[0].world[12 + i].to_bits(), wanted, "axis {i}");
+        }
+        assert_ne!(copy[0].world, before[0].world);
+        assert_eq!(live(&set, 0).data.world[0], live(&set, 0).world);
+        assert_eq!(live(&set, 4).data.world[0], live(&set, 4).world);
+        // The skinned slot's entry is not touched.
+        assert_eq!(bytemuck::bytes_of(&copy[1]), bytemuck::bytes_of(&before[1]));
+        // The empty slot: no entry is made for it (its old one stays), it is not live for the
+        // cull, and no list of a view has it, whatever the engine showed.
+        assert!(set.slots[2].is_none());
+        assert_eq!(bytemuck::bytes_of(&copy[2]), bytemuck::bytes_of(&before[2]));
+        assert_eq!(set.cull[2].state & CULL_LIVE, 0);
+        set.set_shown([1, 2, 3, 4, 5, 6]);
+        assert!(!drawn(&set, &main_view()).contains(&2));
+
+        // The null of this test: with the three numbers of one slot left out of the copy, that
+        // slot's entry is not the slot's, and no other.
+        let mut left_out = copy.clone();
+        left_out[0].world[12..15].copy_from_slice(&before[0].world[12..15]);
+        assert_eq!(set.stale_entries(&left_out, 6), [0]);
+        // A copy that is too short lacks its last slot's entry.
+        assert_eq!(set.stale_entries(&copy[..5], 6), [5]);
     }
 
     /// The planes of a box of 10 units around the origin.
@@ -3320,7 +3596,8 @@ mod list_tests {
     /// The slots that the view draws, by the list and the verdicts of `collect_order` (a bucket
     /// needs a device, so the classes are not tested here).
     fn drawn(set: &RetainedSet, view: &RetainedView) -> Vec<u32> {
-        listed_slots(&set.shown, &set.by_id)
+        listed_passes(&set.shown, &set.by_id)
+            .map(|(_, slot)| slot)
             .filter(|&slot| slot_verdict(&set.cull[slot as usize], tests_planes(view), &view.planes) == Verdict::Drawn)
             .collect()
     }
@@ -3465,28 +3742,6 @@ mod order_tests {
     fn sorted_blends_at_one_depth_keep_the_order_of_their_ids() {
         assert!(sorted_key(10.0, 1) < sorted_key(10.0, 2));
         assert!(sorted_key(10.0, 2) < sorted_key(10.0, 300));
-    }
-
-    #[test]
-    fn the_groups_of_the_buckets_come_in_order() {
-        let opaque = bucket_key(0, 5, 1000.0);
-        let alpha_test = bucket_key(1, 3, 1.0);
-        let blend = bucket_key(2, 0, 0.0);
-        assert!(opaque < alpha_test && alpha_test < blend);
-    }
-
-    #[test]
-    fn the_walk_finds_the_group_of_the_blends_out_of_the_sort() {
-        assert_eq!(bucket_key(2, 7, 1.0) >> 32, crate::engine::walk::GROUP_IN_PLACE);
-        assert_ne!(bucket_key(0, 7, f32::MAX) >> 32, crate::engine::walk::GROUP_IN_PLACE);
-        assert_ne!(bucket_key(1, 7, f32::MAX) >> 32, crate::engine::walk::GROUP_IN_PLACE);
-    }
-
-    #[test]
-    fn the_opaque_buckets_go_front_to_back_and_the_blends_by_bucket() {
-        assert!(bucket_key(0, 9, 1.0) < bucket_key(0, 2, 50.0));
-        assert!(bucket_key(1, 9, 1.0) < bucket_key(1, 2, 50.0));
-        assert!(bucket_key(2, 2, 50.0) < bucket_key(2, 9, 1.0));
     }
 
     const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];

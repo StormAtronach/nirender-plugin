@@ -5,7 +5,7 @@
 //! samples, and nothing that a held item draws or samples:
 //!
 //! - (i) every item of the run is of a kind that reads no target of the frame: a target, a clear,
-//!   a viewport, a draw, a screen draw, the table's places (`WalkPlaces`, `ViewPlaces`,
+//!   a viewport, a draw, a screen draw, the table's places (`ViewPlaces`,
 //!   `ViewSorted`). The sorted blends can copy the frame's depth (`merge_late_depth`), and any
 //!   other kind, a new one too, stays in order;
 //! - (ii) no held item reads or writes the texture that the run writes, and no held item writes a
@@ -345,7 +345,7 @@ impl Player {
             Item::Clear(..) => movable(Reads::default()),
             Item::Draw(draw) => movable(Reads::of(draw.texture_handles.iter().copied().filter(known))),
             Item::Screen(screen) => movable(Reads::of(Some(screen.texture).filter(known))),
-            Item::WalkPlaces(_) | Item::ViewPlaces(..) | Item::ViewSorted(_) => movable(table_reads()),
+            Item::ViewPlaces(..) | Item::ViewSorted(_) => movable(table_reads()),
             // The sorted blends can copy the frame's depth (`merge_late_depth`).
             Item::SortedBlends(_) => fixed(table_reads()),
             // The extension's items with the replay of the world's draws (extension.rs:614-692);
