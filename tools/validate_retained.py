@@ -184,7 +184,7 @@ WEATHER = {"pin": 0}
 # for the unpacked release archive of release.py's gate. main sets it.
 BUILD = {"option": "--mge-build"}
 # The stages that only replay. The others start the game, and a run of the game does not take an archive here.
-REPLAY_ONLY_STAGES = ("baseline", "order")
+REPLAY_ONLY_STAGES = ("baseline", "order", "accept-list")
 
 
 def build_option(mge_build):
@@ -2297,7 +2297,7 @@ def main():
     if "accept-list" in args.stages and (args.archive or args.accept or args.accept_new or not args.now):
         print("  FAIL the stage accept-list takes --now <the folder of the gate's pictures> and a set, and no --archive, --accept or --accept-new", flush=True)
         return 1
-    problem = build_problem([stage for stage in args.stages if stage != "accept-list"], args.mge_build, args.archive)
+    problem = build_problem(args.stages, args.mge_build, args.archive)
     if problem:
         print("  FAIL " + problem, flush=True)
         return 1
