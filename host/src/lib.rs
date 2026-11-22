@@ -384,8 +384,8 @@ pub(crate) const WORLD_SPACE_LIGHTS_BIT: u32 = 128;
 
 /// Bit 128 of `counts.w`, set by the extension in its shade: it lights the draw for each pixel.
 /// Without it the vertex stage lights the draw with the draw's own list (shader.wgsl, the
-/// vertex stage), and a draw of the world takes the world's point lights as that list
-/// ([`lights::world_lights_in_reach`]).
+/// vertex stage), and a draw of the world keeps its own lights in that list and adds the
+/// world's point lights that reach it ([`lights::world_lights_in_reach`]).
 pub(crate) const PER_PIXEL_BIT: u32 = 128;
 
 /// Bit 32768 of `counts.w`, set by this crate: a lit draw with no lights, none of its own, none

@@ -546,16 +546,17 @@ pub(crate) struct Counts {
     /// that took the world's lights ([`crate::WORLD_LIGHTS_BIT`]).
     pub(crate) caster_shaded: u32,
     pub(crate) caster_world_lights: u32,
-    /// The draws of the world lit for each vertex in the mode `world` that took the world's
-    /// point lights as their list, the lights in those lists, and those the cap of 64 left out
-    /// ([`crate::lights::world_lights_in_reach`]). Such draws with no bound, and those in no
-    /// space of the world's lights ([`crate::lights::DrawSpace`]), keep the engine's lights.
+    /// The draws of the world lit for each vertex in the mode `world` that took a list of their
+    /// own lights and the world's point lights, the world's lights added to those lists, and
+    /// those the cap of 64 left out ([`crate::lights::world_lights_in_reach`]). Such draws with
+    /// no bound, and those in no space of the world's lights ([`crate::lights::DrawSpace`]),
+    /// keep the engine's lights only.
     pub(crate) vertex_world_lists: u32,
     pub(crate) vertex_world_lights: u64,
     pub(crate) vertex_world_dropped: u32,
     pub(crate) vertex_world_no_bound: u32,
     pub(crate) vertex_world_no_space: u32,
-    /// The engine's own point lights of the draws with a world list, against those lists.
+    /// The engine's own point lights of the draws with a world list, against their bounds.
     pub(crate) vertex_world_own: crate::lights::OwnLights,
     /// The draws in the world's own space that took the world's lights for each pixel
     /// ([`crate::WORLD_SPACE_LIGHTS_BIT`]), and the scenes whose draws in that space kept their

@@ -145,8 +145,8 @@ impl Player {
         );
         let own = c.vertex_world_own;
         println!(
-            "vertex world own lights: {} of the draws' own point lights, {} in their lists, {} not among the world's lights, {} beyond the reach (the largest gap {:.2} of the reach), {} cut by the cap",
-            own.lights, own.listed, own.not_in_set, own.beyond, own.largest_gap, own.cut
+            "vertex world own lights: {} own point lights kept in the draws' lists, {} of them within the reach of the draw, {} beyond it (the largest gap {:.2} of the reach), {} not among the world's lights",
+            own.lights, own.in_reach, own.beyond, own.largest_gap, own.not_in_set
         );
         println!(
             "particle light: {} particle draws took their lights at their corners",

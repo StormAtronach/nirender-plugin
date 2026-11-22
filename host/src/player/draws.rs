@@ -565,9 +565,9 @@ impl Player {
             draw_data.light_range[3] |= 1;
         }
         // The lights of the world for a draw lit for each vertex (the extension left
-        // `PER_PIXEL_BIT` clear): its point lights become the world's that reach its bound, as
-        // its own list. Its directional lights stay. A draw with no bound, or in no space of the
-        // world's lights, keeps the engine's lights and is counted.
+        // `PER_PIXEL_BIT` clear): its own lights stay, and the world's point lights that reach
+        // its bound and are not its own follow them (W554 addendum 17). A draw with no bound, or
+        // in no space of the world's lights, keeps the engine's lights and is counted.
         let per_vertex = lit
             && renderer.clusters.world
             && derived.lighting
@@ -596,28 +596,38 @@ impl Player {
                     }
                     // The lights' places are absolute: the bound's centre too.
                     let centre = space.to_world(sphere.centre);
-                    renderer.counts.vertex_world_dropped +=
-                        crate::lights::world_lights_in_reach(&world.lights, centre, sphere.radius, &mut world.in_reach);
                     let (own_first, own_count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
-                    // The engine's own point lights against the list: the keys of the shape
-                    // record's lights, in the order of the draw's own lights.
+                    // The engine's own point lights: the keys of the shape record's lights, in
+                    // the order of the draw's own lights.
                     let own = &self.frame_lights[own_first..own_first + own_count];
-                    let own_keys = shape
-                        .lights
-                        .as_chunks::<STATE_LIGHT_SIZE>()
-                        .0
-                        .iter()
-                        .zip(own)
-                        .filter(|(_, light)| light.position[3] != 3.0)
-                        .map(|(record, _)| word(record, 0));
-                    world.tally_own(own_keys, centre, sphere.radius, &mut renderer.counts.vertex_world_own);
+                    world.own_keys.clear();
+                    world.own_keys.extend(
+                        shape
+                            .lights
+                            .as_chunks::<STATE_LIGHT_SIZE>()
+                            .0
+                            .iter()
+                            .zip(own)
+                            .filter(|(_, light)| light.position[3] != 3.0)
+                            .map(|(record, _)| word(record, 0)),
+                    );
+                    world.tally_own(
+                        world.own_keys.iter().copied(),
+                        centre,
+                        sphere.radius,
+                        &mut renderer.counts.vertex_world_own,
+                    );
+                    renderer.counts.vertex_world_dropped += crate::lights::world_lights_in_reach(
+                        &world.lights,
+                        |light| world.own_keys.contains(&light.key),
+                        crate::lights::world_room(world.own_keys.len()),
+                        centre,
+                        sphere.radius,
+                        &mut world.in_reach,
+                    );
+                    // The own lights first, as the engine gave them, then the world's.
                     let first = self.frame_lights.len();
-                    for i in own_first..own_first + own_count {
-                        let light = self.frame_lights[i];
-                        if light.position[3] == 3.0 {
-                            self.frame_lights.push(light);
-                        }
-                    }
+                    self.frame_lights.extend_from_within(own_first..own_first + own_count);
                     for &i in &world.in_reach {
                         if let Some(record) = renderer.lights_known.get(&world.lights[i].key) {
                             // In the draw's space, as the draw's own lights.

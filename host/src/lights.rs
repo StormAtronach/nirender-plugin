@@ -606,19 +606,20 @@ pub(crate) struct VertexWorld {
     /// The frame they were made in, plus 1 (0: never).
     pub(crate) made_in: u64,
     pub(crate) in_reach: Vec<usize>,
+    /// The keys of the own point lights of the draw in progress.
+    pub(crate) own_keys: Vec<u32>,
 }
 
-/// The engine's own point lights of the draws that took a world list, against those lists:
-/// in the list, not among the world's lights, beyond the reach of the light's sphere, or left
-/// out by the cap. `largest_gap` is the largest gap of a light beyond the reach, as a share of
+/// The engine's own point lights of the draws that took a world list. Each stays in the list;
+/// against the draw's bound it is within the reach of its sphere, beyond it, or not among the
+/// world's lights. `largest_gap` is the largest gap of a light beyond the reach, as a share of
 /// its reach.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct OwnLights {
     pub(crate) lights: u32,
-    pub(crate) listed: u32,
+    pub(crate) in_reach: u32,
     pub(crate) not_in_set: u32,
     pub(crate) beyond: u32,
-    pub(crate) cut: u32,
     pub(crate) largest_gap: f32,
 }
 
@@ -630,8 +631,8 @@ impl VertexWorld {
             .extend(self.lights.iter().enumerate().map(|(i, light)| (light.key, i)));
     }
 
-    /// Counts the draw's own point lights (`keys`) against its list `in_reach`, made for the
-    /// bound at `centre` (absolute) with `radius`.
+    /// Counts the draw's own point lights (`keys`) against its bound at `centre` (absolute) with
+    /// `radius`.
     pub(crate) fn tally_own(&self, keys: impl Iterator<Item = u32>, centre: [f64; 3], radius: f32, tally: &mut OwnLights) {
         for key in keys {
             tally.lights += 1;
@@ -639,14 +640,10 @@ impl VertexWorld {
                 tally.not_in_set += 1;
                 continue;
             };
-            if self.in_reach.contains(&entry) {
-                tally.listed += 1;
-                continue;
-            }
             let light = &self.lights[entry];
             let gap = light.gap(centre, radius);
             if gap <= 0.0 {
-                tally.cut += 1;
+                tally.in_reach += 1;
             } else {
                 tally.beyond += 1;
                 tally.largest_gap = tally.largest_gap.max((gap / light.reach.max(1.0) as f64) as f32);
@@ -655,24 +652,44 @@ impl VertexWorld {
     }
 }
 
-/// The world's point lights whose sphere meets the bound (`centre` in absolute world space,
-/// `radius`), into `out` as entries of `lights`: at most [`VERTEX_WORLD_CAP`], the nearest by
-/// the gap of the spheres. Returns the number left out by the cap.
-pub(crate) fn world_lights_in_reach(lights: &[PlacedLight], centre: [f64; 3], radius: f32, out: &mut Vec<usize>) -> u32 {
+/// The room for the world's lights in the list of a draw lit for each vertex that keeps
+/// `own_points` point lights of its own: the cap less those, so that the cap never drops a
+/// light that the engine chose.
+pub(crate) fn world_room(own_points: usize) -> usize {
+    VERTEX_WORLD_CAP.saturating_sub(own_points)
+}
+
+/// The world's point lights that a draw lit for each vertex adds to its own (W554 addendum 17):
+/// those whose sphere meets the bound (`centre` in absolute world space, `radius`) and that are
+/// not its own (`own`), into `out` as entries of `lights`: at most `room`
+/// ([`world_room`]), the nearest by the gap of the spheres. Returns the number left out by the
+/// room.
+///
+/// The draw keeps its own lights in front of these: the engine gives a light to every shape of a
+/// reference when the light reaches any shape of it, so a light of the draw can be beyond the
+/// draw's own bound.
+pub(crate) fn world_lights_in_reach(
+    lights: &[PlacedLight],
+    own: impl Fn(&PlacedLight) -> bool,
+    room: usize,
+    centre: [f64; 3],
+    radius: f32,
+    out: &mut Vec<usize>,
+) -> u32 {
     out.clear();
     out.extend(
         lights
             .iter()
             .enumerate()
-            .filter(|(_, light)| light.gap(centre, radius) <= 0.0)
+            .filter(|(_, light)| light.gap(centre, radius) <= 0.0 && !own(light))
             .map(|(i, _)| i),
     );
-    if out.len() <= VERTEX_WORLD_CAP {
+    if out.len() <= room {
         return 0;
     }
-    let dropped = (out.len() - VERTEX_WORLD_CAP) as u32;
+    let dropped = (out.len() - room) as u32;
     out.sort_by(|&a, &b| lights[a].gap(centre, radius).total_cmp(&lights[b].gap(centre, radius)));
-    out.truncate(VERTEX_WORLD_CAP);
+    out.truncate(room);
     dropped
 }
 
@@ -774,20 +791,25 @@ mod tests {
 
     const CENTRE: [f64; 3] = [150000.0, -90000.0, 2000.0];
 
+    /// The world's lights in reach of a draw with no lights of its own.
+    fn in_reach(lights: &[PlacedLight], centre: [f64; 3], radius: f32, out: &mut Vec<usize>) -> u32 {
+        world_lights_in_reach(lights, |_| false, world_room(0), centre, radius, out)
+    }
+
     #[test]
     fn a_world_light_in_reach_is_in_the_list() {
         let mut out = Vec::new();
         // 300 units away, reach 400, a bound of 50: in. 451 away: out.
         let lights = [placed(7, 300.0, 400.0), placed(8, 451.0, 400.0)];
-        assert_eq!(world_lights_in_reach(&lights, CENTRE, 50.0, &mut out), 0);
+        assert_eq!(in_reach(&lights, CENTRE, 50.0, &mut out), 0);
         assert_eq!(out, [0]);
         // Just in at 449.
         let lights = [placed(9, 449.0, 400.0)];
-        world_lights_in_reach(&lights, CENTRE, 50.0, &mut out);
+        in_reach(&lights, CENTRE, 50.0, &mut out);
         assert_eq!(out, [0]);
         // The null: a reach of 0 and a bound of 0 give no light.
         let lights = [placed(10, 300.0, 0.0)];
-        world_lights_in_reach(&lights, CENTRE, 0.0, &mut out);
+        in_reach(&lights, CENTRE, 0.0, &mut out);
         assert!(out.is_empty());
     }
 
@@ -795,10 +817,42 @@ mod tests {
     fn the_cap_keeps_the_nearest_lights() {
         let lights: Vec<PlacedLight> = (0..70).map(|i| placed(i, 100.0 + i as f64, 400.0)).collect();
         let mut out = Vec::new();
-        assert_eq!(world_lights_in_reach(&lights, CENTRE, 50.0, &mut out), 6);
+        assert_eq!(in_reach(&lights, CENTRE, 50.0, &mut out), 6);
         let mut kept = out.clone();
         kept.sort_unstable();
         assert_eq!(kept, (0..64).collect::<Vec<usize>>());
+    }
+
+    /// W554 addendum 17, the Architect's condition 1: with more than 64 candidates the room is
+    /// the cap less the draw's own lights, so the cap drops world lights only. An own light is
+    /// never added twice, also when it is in reach.
+    #[test]
+    fn the_cap_never_drops_an_own_light() {
+        // 70 world lights in reach; the draw owns 10 of them (keys 60 to 69, the farthest) and 2
+        // that are not in reach (keys 100, 101).
+        let mut lights: Vec<PlacedLight> = (0..70).map(|i| placed(i, 100.0 + i as f64, 400.0)).collect();
+        lights.push(placed(100, 5000.0, 400.0));
+        lights.push(placed(101, 6000.0, 400.0));
+        let own = |light: &PlacedLight| (60..70).contains(&light.key) || light.key >= 100;
+        let mut out = Vec::new();
+        let dropped = world_lights_in_reach(&lights, own, world_room(12), CENTRE, 50.0, &mut out);
+        // 60 world lights in reach are not own; the room is 52: the 8 farthest go.
+        assert_eq!((out.len(), dropped), (52, 8));
+        let mut added = out.clone();
+        added.sort_unstable();
+        assert_eq!(added, (0..52).collect::<Vec<usize>>());
+        // The 12 own lights and the 52 added fill the cap exactly.
+        assert_eq!(12 + out.len(), VERTEX_WORLD_CAP);
+        assert!(out.iter().all(|&i| !own(&lights[i])));
+        // The null: a room that does not count the own lights lets in all 60 world lights, and
+        // with the 12 own lights in front the list would hold 72, over the cap.
+        let mut full = Vec::new();
+        world_lights_in_reach(&lights, own, world_room(0), CENTRE, 50.0, &mut full);
+        assert_eq!(12 + full.len(), 72);
+        // More own lights than the cap: no room, and every own light stays with its caller.
+        assert_eq!(world_room(70), 0);
+        world_lights_in_reach(&lights, own, world_room(70), CENTRE, 50.0, &mut out);
+        assert!(out.is_empty());
     }
 
     /// A light record of 104 bytes: the type, the place and the radius (the first specular
@@ -828,7 +882,7 @@ mod tests {
         let record = record(1, [150300.0, -90000.0, 2000.0], 400.0);
         let light = PlacedLight::of_record(0, 0, &record).unwrap();
         let mut out = Vec::new();
-        world_lights_in_reach(&[light], CENTRE, 50.0, &mut out);
+        in_reach(&[light], CENTRE, 50.0, &mut out);
         assert_eq!(out, [0]);
         for origin in [[0.0; 3], CENTRE] {
             let relative = crate::retained::light_data(&record, Some(origin));
@@ -836,14 +890,14 @@ mod tests {
                 place: core::array::from_fn(|i| relative.position[i] as f64 + origin[i]),
                 ..light
             };
-            world_lights_in_reach(&[moved], CENTRE, 50.0, &mut out);
+            in_reach(&[moved], CENTRE, 50.0, &mut out);
             assert_eq!(out, [0], "origin {origin:?}");
             // The null: the relative place taken as absolute misses at the far origin.
             let wrong = PlacedLight {
                 place: core::array::from_fn(|i| relative.position[i] as f64),
                 ..light
             };
-            world_lights_in_reach(&[wrong], CENTRE, 50.0, &mut out);
+            in_reach(&[wrong], CENTRE, 50.0, &mut out);
             assert_eq!(out.is_empty(), origin == CENTRE, "origin {origin:?}");
         }
     }
@@ -859,33 +913,26 @@ mod tests {
     }
 
     #[test]
-    fn the_own_lights_of_a_draw_are_told_apart_from_its_list() {
-        // 300 away with a reach of 400: in the list. 600 away: beyond, by 150 of a reach of 400.
+    fn the_own_lights_of_a_draw_are_told_apart_by_the_reach() {
+        // 300 away with a reach of 400: in reach. 600 away: beyond, by 150 of a reach of 400.
         // Key 99: not among the world's lights.
         let mut world = VertexWorld {
             lights: vec![placed(1, 300.0, 400.0), placed(2, 600.0, 400.0)],
             ..VertexWorld::default()
         };
         world.index_lights();
-        world_lights_in_reach(&world.lights, CENTRE, 50.0, &mut world.in_reach);
         let mut tally = OwnLights::default();
         world.tally_own([1, 2, 99].into_iter(), CENTRE, 50.0, &mut tally);
         assert_eq!(
             tally,
             OwnLights {
                 lights: 3,
-                listed: 1,
+                in_reach: 1,
                 not_in_set: 1,
                 beyond: 1,
-                cut: 0,
                 largest_gap: 150.0 / 400.0,
             }
         );
-        // A light that meets the bound but is not in the list was cut by the cap.
-        world.in_reach.clear();
-        let mut cut = OwnLights::default();
-        world.tally_own([1].into_iter(), CENTRE, 50.0, &mut cut);
-        assert_eq!((cut.listed, cut.cut), (0, 1));
         // The null: without the index every key is "not among the world's lights".
         world.by_key.clear();
         let mut blind = OwnLights::default();

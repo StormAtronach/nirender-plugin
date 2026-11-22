@@ -1483,16 +1483,24 @@ impl RetainedSet {
             }
             let (engine, bound) = (s.engine_run, s.bound);
             let first = self.light_indexes.len() as u32;
-            // The directional lights of the engine's run stay, as in the loop for each pixel.
-            for i in engine[0]..engine[0] + engine[1] {
-                let light = self.light_indexes[i as usize];
-                if self.light_values.get(light as usize).is_some_and(|l| l.position[3] == 3.0) {
-                    self.light_indexes.push(light);
-                }
-            }
+            // The engine's run stays in front (W554 addendum 17): its point lights are the
+            // engine's choice for the instance, also those beyond this slot's bound.
+            let own = engine[0] as usize..(engine[0] + engine[1]) as usize;
+            let own_points = self.light_indexes[own.clone()]
+                .iter()
+                .filter(|&&light| self.light_values.get(light as usize).is_none_or(|l| l.position[3] != 3.0))
+                .count();
             let centre = [bound[0] as f64, bound[1] as f64, bound[2] as f64];
-            self.counts.vertex_world_dropped +=
-                crate::lights::world_lights_in_reach(&placed, centre, bound[3], &mut in_reach) as u64;
+            let dropped = crate::lights::world_lights_in_reach(
+                &placed,
+                |light| self.light_indexes[own.clone()].contains(&light.slot),
+                crate::lights::world_room(own_points),
+                centre,
+                bound[3],
+                &mut in_reach,
+            );
+            self.counts.vertex_world_dropped += dropped as u64;
+            self.light_indexes.extend_from_within(own);
             self.light_indexes.extend(in_reach.iter().map(|&i| placed[i].slot));
             let count = self.light_indexes.len() as u32 - first;
             self.world_indexes_live += count as usize;
@@ -4083,6 +4091,43 @@ mod list_tests {
         set.world_keys.clear();
         assert_eq!(rebuilds_after(&mut set, &known), 0);
         assert_eq!(world_run_lights(&set, 0), [set.light_slot_of[&LIGHT]]);
+    }
+
+    /// W554 addendum 17, the Architect's condition 2: the engine's own lights of an instance stay
+    /// in front of the world's in its slots' runs, also a light beyond the slot's bound. The
+    /// instance's lights record (`set_lights`) makes the runs stale; a move of such a light
+    /// does not, as it stays by its key.
+    #[test]
+    fn the_own_lights_of_an_instance_lead_its_world_runs() {
+        let (mut set, mut known) = world_set();
+        // Lights 8 and 9 are 1000 east of S with a radius of 400: beyond its bound of 50.
+        known.insert(8, world_light([151000.0, -90000.0, 2000.0], 400.0));
+        known.insert(9, world_light([151000.0, -89000.0, 2000.0], 400.0));
+        // They are world lights too, as in the game; they reach no slot.
+        set.set_world_lights(&[LIGHT, 8, 9], &known);
+        assert_eq!(rebuilds_after(&mut set, &known), 0);
+        set.set_lights(1, &[8], None, &known);
+        assert_eq!(rebuilds_after(&mut set, &known), 1);
+        let (seven, eight) = (set.light_slot_of[&LIGHT], set.light_slot_of[&8]);
+        assert_eq!(world_run_lights(&set, 0), [eight, seven]);
+        // A new lights record of the instance: 9 in place of 8.
+        set.set_lights(1, &[9], None, &known);
+        assert_eq!(rebuilds_after(&mut set, &known), 1);
+        assert_eq!(world_run_lights(&set, 0), [set.light_slot_of[&9], seven]);
+        // An own light that is also in reach is in the run once.
+        set.set_lights(1, &[LIGHT], None, &known);
+        assert_eq!(rebuilds_after(&mut set, &known), 1);
+        assert_eq!(world_run_lights(&set, 0), [seven]);
+        // The null: a move of the own light 9 beyond the bound is noted but makes nothing stale
+        // (the test of a move is by place), so the lights record is the path that carries it.
+        set.set_lights(1, &[9], None, &known);
+        rebuilds_after(&mut set, &known);
+        let changed = set.counts.vertex_world_changed_lights;
+        known.insert(9, world_light([151100.0, -89000.0, 2000.0], 400.0));
+        set.light_changed(9, &known[&9]);
+        assert_eq!(rebuilds_after(&mut set, &known), 0);
+        assert_eq!(set.counts.vertex_world_changed_lights, changed + 1);
+        assert_eq!(world_run_lights(&set, 0), [set.light_slot_of[&9], seven]);
     }
 
     #[test]
