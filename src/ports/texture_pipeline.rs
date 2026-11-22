@@ -1954,9 +1954,12 @@ mod tests {
     /// The helper takes the texture factor as white for each draw (`host/src/stream.rs`, the
     /// `texture_factor` line). That is correct only while no blend template of the game reads the
     /// factor. If a template has `D3DTA_TFACTOR` as an argument or `D3DTOP_BLENDFACTORALPHA`
-    /// as its operation, the material record must carry the factor.
+    /// as its operation, the material record must carry the factor. An argument reads the factor
+    /// also with a modifier bit (`D3DTA_COMPLEMENT`, `D3DTA_ALPHAREPLICATE`), so the test compares
+    /// the bits of `D3DTA_SELECTMASK` only.
     #[test]
     fn blend_templates_never_read_the_texture_factor() {
+        const D3DTA_SELECTMASK: u32 = 0xF;
         const D3DTA_TFACTOR: u32 = 3;
         const D3DTOP_BLENDFACTORALPHA: u32 = 14;
         let first = CTP::firstStageBlendOps;
@@ -1978,7 +1981,7 @@ mod tests {
                 if member == BO::colorOp || member == BO::alphaOp {
                     assert_ne!(value, D3DTOP_BLENDFACTORALPHA, "the operation at {offset:#x}");
                 } else {
-                    assert_ne!(value, D3DTA_TFACTOR, "the argument at {offset:#x}");
+                    assert_ne!(value & D3DTA_SELECTMASK, D3DTA_TFACTOR, "the argument at {offset:#x}");
                 }
             }
         }
