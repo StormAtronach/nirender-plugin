@@ -96,7 +96,10 @@ extern "system" {
 
 /// The time of a write to the disk that a thread of its own does (the log writer, the
 /// picture writer): the watchdog reads it at a stall, and a write that has waited
-/// long names the disk as the cause (`watchdog::stalled`).
+/// long names the disk as the cause (`watchdog::stalled`). The picture writer's clock also
+/// runs during the encode of the picture (PNG, JPEG), which writes to the file as it goes: an
+/// encode of 2 s or more with no disk wait would count too, but the fast PNG compression of a
+/// picture of the game takes far less \[I\].
 pub(crate) struct WriteClock {
     /// [`clock_ms`] at the start of the write that runs; 0 while no write runs.
     began_ms: AtomicU64,

@@ -235,7 +235,8 @@ pub(crate) struct PictureWriter {
     write: Box<WriteFn>,
     say: Box<SayFn>,
     limit: usize,
-    /// The time of the write that runs: for the watchdog's cause of a stall.
+    /// The time of the write that runs, with the encode of the picture: for the watchdog's
+    /// cause of a stall.
     pub(crate) clock: crate::log_pipe::WriteClock,
 }
 
