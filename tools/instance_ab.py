@@ -35,9 +35,13 @@ build under test replays the same capture. If it plays it, the two builds read t
 <stage>: FORMAT CHANGE (...)" and exits with code 6 (FORMAT_CHANGE_EXIT of common.py), which merge_step.py judges with an
 evidence file. If it does not, the stage FAILs.
 
-Exit code 0 is a PASS, 1 a FAIL, 5 NOT RUN, 6 a FORMAT CHANGE. The inputs of a stage are in `<baseline>/instance/<stage>/`: the capture and
-`mgeXE.toml`, a copy of the instance's file; the accepted baseline folder serves when the named one holds none. A planned
-change of the grass fails the A/B, and the Coordinator judges it from the numbers, as for any planned new look.
+Exit code 0 is a PASS, 1 a FAIL, 5 NOT RUN, 6 a FORMAT CHANGE, 7 a FAIL whose build under test differs from the base
+(its pictures or its hash lines) while the base equals itself (DIFFERS_EXIT of common.py). The inputs of a stage are in
+`<baseline>/instance/<stage>/`: the capture and `mgeXE.toml`, a copy of the instance's file; the accepted baseline folder
+serves when the named one holds none. A planned change of the grass fails the A/B with code 7, and the Coordinator judges
+it from the numbers, as for any planned new look; merge_step.py passes it as JUDGED only with that evidence file (W574).
+Noise, an empty hash line, a build under test with no hash line and a replay that does not play stay code 1: no evidence
+passes them.
 """
 import argparse
 import os
@@ -51,10 +55,10 @@ from dataclasses import dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import (BUILD_PARTS, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, REFUSED_FORMAT_EXITS, build_missing, capture_format_in,  # noqa: E402
-                    docs_place, docs_root, format_change, local, missing_docs_text)
+from common import (BUILD_PARTS, DIFFERS_EXIT, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, REFUSED_FORMAT_EXITS, build_missing,  # noqa: E402
+                    capture_format_in, docs_place, docs_root, format_change, local, missing_docs_text)
 
-PASS, FAIL, NOT_RUN = 0, 1, NOT_RUN_EXIT
+PASS, FAIL, NOT_RUN, DIFFERS = 0, 1, NOT_RUN_EXIT, DIFFERS_EXIT
 HASH_PREFIX = "grass hash frame "
 
 
@@ -272,13 +276,17 @@ def judge(null_pictures, null_hash, pictures, hashes, base_hash, now_hash):
     if not base_hash:
         lines.append("hash NOT RUN (base has no hash line)")
     elif not now_hash:
+        # No hash line of the build under test proves nothing of its grass: a FAIL that no evidence passes.
         failures.append("the build under test prints no hash line, and the base prints %d" % len(base_hash))
+        return FAIL, ["FAIL the build under test differs from the base"] + ["       " + line for line in failures] + lines
     else:
         failures += hashes
         if not hashes:
             lines.append("hash lines equal: %d calls, %d records" % (len(base_hash), hash_records(base_hash)))
     if failures:
-        return FAIL, ["FAIL the build under test differs from the base"] + ["       " + line for line in failures] + lines
+        # A difference of the pictures or of the hash lines, with the base equal to itself: DIFFERS, which merge_step.py
+        # passes only as a planned change with an evidence file (W574).
+        return DIFFERS, ["FAIL the build under test differs from the base"] + ["       " + line for line in failures] + lines
     if not base_hash:
         # The pictures do not show the order of the draws: without the base's hash the stage judged only a part.
         return NOT_RUN, ["NOT RUN: the order of the grass draws is not judged; the pictures equal the base, and the base equals itself"] + lines
@@ -523,11 +531,17 @@ def self_test():
         assert code == FAIL and "noise" in lines[0]
         code, lines = judge([], ["hash line 0: x"], [], [], [one], [one])
         assert code == FAIL and "noise" in lines[0]
+        # A difference of the build under test, with the base equal to itself: DIFFERS (W574), never a plain FAIL. The
+        # nulls stay FAIL (1): noise above, no hash line of the build under test and the empty hash lines below.
         code, lines = judge([], [], ["p-1.png: differs"], [], [], [])
-        assert code == FAIL and lines[-1] == "hash NOT RUN (base has no hash line)"
+        assert code == DIFFERS and lines[-1] == "hash NOT RUN (base has no hash line)"
         code, lines = judge([], [], [], ["hash line 0: a | b"], [one], [two])
-        assert code == FAIL and any("hash line 0" in line for line in lines)
+        assert code == DIFFERS and any("hash line 0" in line for line in lines)
+        code, lines = judge([], [], ["p-1.png: differs"], ["hash line 0: a | b"], [one], [two])
+        assert code == DIFFERS and lines[0] == "FAIL the build under test differs from the base"
         code, lines = judge([], [], [], [], [one], [])
+        assert code == FAIL and "prints no hash line" in " ".join(lines)
+        code, lines = judge([], [], ["p-1.png: differs"], [], [one], [])
         assert code == FAIL and "prints no hash line" in " ".join(lines)
         empty = "grass hash frame 3 main: 4 records, cut false, ordered cbf29ce484222325, unordered 0000000000000000"
         assert empty_hash_lines([one, two, empty]) == [empty]

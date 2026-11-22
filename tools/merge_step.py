@@ -61,6 +61,13 @@ The exit code decides, never a line's text. The stage passes only with --evidenc
 exists; the verdict and the round's close line name the file's md5. Without the file the round fails. Any other NOT RUN
 of the stage fails the round, with or without a file. The base is never the commit (base_problem).
 
+A JUDGED difference (W574): the instance A/B exits with code 7 (DIFFERS_EXIT) when the build under test differs from the
+base (its pictures or its hash lines) while the base equals itself. A planned change, such as a new layout of the grass
+record, ends there; the Coordinator judges it from the numbers (instance_ab.py). With --evidence "instance A/B grass=FILE"
+the stage passes as JUDGED, and the verdict and the close line name the file's md5. Without the file code 7 is a FAIL.
+The stage's other FAILs (noise, an empty hash line, no hash line of the build under test, a replay that does not play)
+exit with 1, and no file passes them.
+
 The stages of nirender-plugin: the plugin's tests, the host's tests, the host's GPU tests (its ignored tests that need a
 GPU, as below, with the tests that run only in a child process left out), clippy_baseline.py --check, checks.py plugin
 --strict (a check that cannot run is NOT RUN, and the round fails, W527). The
@@ -222,8 +229,8 @@ from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
 import build_set  # noqa: E402  (the maker's trees and the round's set, W521)
 import sets  # noqa: E402
 from common import checkout_of  # noqa: E402
-from common import (DEPLOY_WITHHELD, DEPLOYS_FILE, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, append_deploys, deploys_line,  # noqa: E402
-                    docs_place, git_env, local, main_checkout, open_deploys, open_deploys_text, tests_ran)
+from common import (DEPLOY_WITHHELD, DEPLOYS_FILE, DIFFERS_EXIT, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, append_deploys,  # noqa: E402
+                    deploys_line, docs_place, git_env, local, main_checkout, open_deploys, open_deploys_text, tests_ran)
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
 from mwse_tree import fallback_checks, installed_commit  # noqa: E402
 
@@ -283,10 +290,11 @@ DEPLOY_STAGE = "deploy rest"
 DEPLOY_REFUSED_CODE = REFUSED_EXIT
 # The "WITHHELD deploy rest" lines of the last run_stages: the deploys that did not happen.
 NOT_DEPLOYED = []
-# The evidence files of the round, by the stage's name, as (path, md5): the one way a stage with a FORMAT CHANGE passes
-# (W527). Only the instance A/B can have one; main fills it from --evidence before the round.
+# The evidence files of the round, by the stage's name, as (path, md5): the one way a stage with a FORMAT CHANGE (W527)
+# or a planned difference that the Coordinator judged (DIFFERS_EXIT, W574) passes. Only the instance A/B can have one;
+# main fills it from --evidence before the round.
 EVIDENCE = {}
-# The FORMAT CHANGE verdicts of the last run_stages that passed with an evidence file, for the round's close line.
+# The FORMAT CHANGE and JUDGED verdicts of the last run_stages that passed with an evidence file, for the close line.
 FORMAT_CHANGES = []
 EVIDENCE_STAGES = (INSTANCE_STAGE,)
 # The four words of a stage's verdict (W524). PASS and WITHHELD count as passed: a WITHHELD stage found the code right and
@@ -820,6 +828,19 @@ def format_change_verdict(name, seconds, log):
     return noted(name, PASS_WORD)
 
 
+def judged_verdict(name, seconds, log):
+    """The verdict of a stage that exited with DIFFERS_EXIT while the round has an evidence file for it (W574): the build
+    under test differs from the base, the base equals itself, and the Coordinator judged the difference a planned change
+    from the numbers in the file. The exit code decides; the stage's text is only shown. The stage passes as JUDGED, and
+    the verdict and the round's close line name the file's md5. Without the file, the code is a FAIL (run_stage)."""
+    path, md5 = EVIDENCE[name]
+    judged = ("JUDGED (the build under test differs from the base, the base equals itself: exit code %d of the stage; "
+              "a planned change that the Coordinator judged); evidence %s md5 %s" % (DIFFERS_EXIT, path, md5))
+    FORMAT_CHANGES.append("%s: %s" % (name, judged))
+    verdict(log, "PASS %s (%d s): %s" % (name, seconds, judged))
+    return noted(name, PASS_WORD)
+
+
 def noted(name, word, reason=""):
     """Keeps the word of a stage's verdict in STAGE_WORDS. True when the word counts as passed."""
     STAGE_WORDS.append((name, word, reason))
@@ -864,6 +885,8 @@ def run_stage(name, folder, command, log):
         return noted(name, NOT_RUN_WORD, reason)
     if code == FORMAT_CHANGE_EXIT and name in EVIDENCE_STAGES:
         return format_change_verdict(name, time.time() - began, log)
+    if code == DIFFERS_EXIT and name in EVIDENCE_STAGES and name in EVIDENCE:
+        return judged_verdict(name, time.time() - began, log)
     if code != 0:
         output = output_since(log, start)
         if name in (SET_STAGE, BASE_STAGE) and code == MISSING_FEATURE_EXIT:
@@ -2926,6 +2949,21 @@ def self_test():
             assert ab_round(FORMAT_CHANGE_EXIT, stage_name="a check")[0] == [True, False]
             # A full pass with a file names no FORMAT CHANGE in the close line.
             assert ab_round(0, "PASS grass: x", evidence=evidence_file)[2] == "PASS 2 of 2: a, instance A/B grass"
+            # A JUDGED difference (W574): the A/B's exit code 7, the build under test differs from the base, the base
+            # equals itself. With the file the stage passes, and the stage line and the close line say JUDGED with the md5.
+            differs = "FAIL grass the build under test differs from the base"
+            results, text, closed = ab_round(DIFFERS_EXIT, differs, evidence=evidence_file)
+            assert results == [True, True] and "== PASS instance A/B grass (" in text and "JUDGED (" in text and "md5 %s" % evidence_md5 in text, text
+            assert closed.startswith("PASS 2 of 2: a, instance A/B grass; instance A/B grass: JUDGED (") and closed.endswith("evidence %s md5 %s" % (os.path.abspath(evidence_file), evidence_md5)), closed
+            # The nulls: without the file code 7 is a FAIL; the A/B's other FAILs (code 1, as noise) fail with the file too;
+            # a stage of another name with code 7 and a file FAILs; code 6 is still a FORMAT CHANGE, not JUDGED.
+            results, text, closed = ab_round(DIFFERS_EXIT, differs)
+            assert results == [True, False] and closed is None and "== FAIL instance A/B grass (" in text and "JUDGED" not in text, text
+            results, text, closed = ab_round(1, "FAIL grass noise: the base differs from itself", evidence=evidence_file)
+            assert results == [True, False] and closed is None and "JUDGED" not in text, text
+            assert ab_round(DIFFERS_EXIT, differs, evidence=evidence_file, stage_name="a check")[0] == [True, False]
+            closed = ab_round(FORMAT_CHANGE_EXIT, evidence=evidence_file)[2]
+            assert "FORMAT CHANGE (" in closed and "JUDGED" not in closed, closed
         finally:
             EVIDENCE.clear()
         # The evidence argument: only the instance A/B takes a file, once, and the file must exist.
@@ -3612,7 +3650,9 @@ def main():
                         "plugin that needs an MWSE feature that the installs' MWSE lacks)")
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for the slot")
     parser.add_argument("--dry-run", action="store_true", help="print the stages: no slot, no build")
-    parser.add_argument("--evidence", action="append", metavar="STAGE=FILE", help="the evidence file of a FORMAT CHANGE of the stage '%s': with it the stage passes, and the round's close line names the file's md5" % INSTANCE_STAGE)
+    parser.add_argument("--evidence", action="append", metavar="STAGE=FILE", help="the evidence file of the stage '%s': with it a FORMAT CHANGE (exit 6) passes, "
+                        "and a difference of the build under test (exit 7) passes as JUDGED, a planned change that the Coordinator judged (W574); the round's "
+                        "close line names the file's md5" % INSTANCE_STAGE)
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     parser.add_argument("--open-deploys", action="store_true", help="list the WITHHELD deploys of %s that no deploy closed, and stop" % DEPLOYS_FILE)
     parser.add_argument("--gate-list", metavar="FILE", help="the Reviewer's passed list of the planned picture changes (W567 part D): the replay gate passes only when the "
