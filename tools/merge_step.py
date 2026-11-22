@@ -1,9 +1,16 @@
 """The checks of a merge, for the Coordinator, on the merged tree: one PASS or FAIL line for each stage.
 
-    python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--no-wait] [--dry-run]
+    python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--gate-list <file>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --quick [<tree>] [--sibling <tree>] [--base <commit>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --self-test    # the tests of the pure parts: no build, no game
     python -I tools/merge_step.py --open-deploys # the WITHHELD deploys that no deploy closed
+
+--gate-list FILE (W567 part D) is the Reviewer's passed list of the planned picture changes of a merge, one picture
+of the baseline folder for each line (validate_retained.py's --gate-list). The replay gate passes only when the
+pictures that changed equal the list exactly, and the round's last stage, "accept the gate list" (validate_retained.py
+accept-list), makes the listed pictures of the gate's run the accepted ones. As the last stage, it runs only when every
+stage before it passed, so the next round is equal with no list and no second round. The list goes with the accepted
+folder only (no --baseline), and its md5 is in the gate's verdict, the accept's line and the close line.
 
 --quick (W567 part A) is the worker's check of its own tree before the hand-off: the fast stages of the tree's repo
 (fast_stages) at its HEAD, with the stop at the first failure, and one line for the done report:
@@ -102,7 +109,12 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   calls. NOT RUN is not a PASS: it counts as a stage that did not pass (exit code 5 of the tool). The base set is made
   at <tip> for the tree's repo and at the sibling's commit that passed with <tip>: the pair as it passed, so the A/B
   shows the change of both repos since that pass. The sibling's HEAD is not the base, as it can hold code that <tip>
-  lacks (a render-link that needs a newer nirender fails the base set). A pass (against the accepted folder) keeps its
+  lacks (a render-link that needs a newer nirender fails the base set). When the base pair has no set (the round that
+  passed <tip> made none, as a tools change makes no set), the set of an equal-parts ancestor serves (W567 part C,
+  equal_parts_base): the same render-link and MWSE commits, and a nirender commit whose diff to <tip> touches no part input
+  (build_set.NIRENDER_PART_INPUTS, checked first against the maker's dep-info files), the nearest by commits. Its parts are
+  the base's but for their build ids, which the A/B does not read. The plan, the log and the close line name the set used,
+  its commits and the diff's count, or why the set is built. A pass (against the accepted folder) keeps its
   pair in the sibling's repo, in the ref refs/merge-step-pair/<plugin|mge>/<commit>, when the sibling's HEAD did not
   move during the round. A base with no kept pair (a pass from before these refs) stops the tool: --sibling-base
   <commit> names the sibling's commit. It also takes the place of a kept pair. The sibling's commit must be an ancestor
@@ -209,6 +221,7 @@ from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
 import build_set  # noqa: E402  (the maker's trees and the round's set, W521)
 import sets  # noqa: E402
+from common import checkout_of  # noqa: E402
 from common import (DEPLOY_WITHHELD, DEPLOYS_FILE, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, append_deploys, deploys_line,  # noqa: E402
                     docs_place, git_env, local, main_checkout, open_deploys, open_deploys_text, tests_ran)
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
@@ -456,6 +469,31 @@ def maker_tree(repo):
     return os.path.join(build_set.TREES, build_set.TREE_NAMES[repo])
 
 
+# W567 part D: the planned changes of the replay gate, [(path, md5)] of --gate-list, and the stage that accepts them
+# as the round's last stage.
+GATE_LIST = []
+ACCEPT_LIST_STAGE = "accept the gate list"
+
+
+def gate_list_of(value, baseline, exists=os.path.isfile):
+    """[(path, md5)] of --gate-list, [] without it, or the reason it cannot be used. The accept writes the accepted
+    folder, so the list goes only with it, not with a --baseline copy."""
+    if not value:
+        return []
+    if not exists(value):
+        return "the gate list %s is no file" % value
+    if os.path.normcase(os.path.abspath(baseline)) != os.path.normcase(os.path.abspath(BASELINE)):
+        return "--gate-list accepts the listed pictures into the accepted folder at the end of a pass, so it goes with no --baseline (here %s)" % baseline
+    return [(os.path.abspath(value), file_md5(value))]
+
+
+def gate_list_close(stages):
+    """The part of a close line for a round's gate list (W567 part D): its file and md5, when the round accepted it."""
+    if not GATE_LIST or not any(name == ACCEPT_LIST_STAGE for name, _, _ in stages):
+        return []
+    return ["gate list %s md5 %s accepted" % GATE_LIST[0]]
+
+
 # The label of a --quick take: a tool's label (slot.py's rule of D504), and not the prefix of the merge checks
 # ("merge_step:"), which goes ahead of the queue (D148). A worker's check waits its turn.
 QUICK_LABEL = "merge_step.py: quick %s %s"
@@ -463,20 +501,24 @@ QUICK_LABEL = "merge_step.py: quick %s %s"
 SHARED_BRANCHES = {"plugin": "master", "mge": "feature/wgpu-renderer"}
 
 
-def fast_stages(kind, plugin, mge, base=None):
+def fast_stages(kind, plugin, mge, base=None, main_mge=None):
     """The fixed stages of every round of a repo of `kind`, as (name, folder, command): the tests, the GPU tests, the
     clippy baseline, the checks and the docs. They build and test, with no set, no game and no replay, so a round runs
     them first (W567 part B), and --quick runs them alone (part A). `base`: the checks stage compares with it. `mge` None:
-    the docs stage of a plugin tree with no render-link tree skips the helper (docs.py, W510)."""
+    the docs stage of a plugin tree with no render-link tree skips the helper (docs.py, W510). `main_mge`: for a plugin
+    tree with no render-link tree beside it (main_render_link), the render-link tree that the checks read (--mge) and
+    whose place the clippy baseline builds against the plugin tree's host crate (--mge-host)."""
     tool = lambda name, *args: [sys.executable, "-I", os.path.join("tools", name), *args]  # noqa: E731
     on_base = ["--base", base] if base else []
     on_mge = ["--mge", mge] if mge else []
     if kind == "plugin":
+        on_clippy = ["--mge", main_mge, "--mge-host", os.path.join(plugin, "host")] if main_mge else []
+        on_checks = ["--mge", main_mge] if main_mge else []
         return [(TESTS_STAGE, plugin, ["cargo", "test", "--quiet"]),
                 ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
                 (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["_in_this_process"])),
-                ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
-                ("checks", plugin, tool("checks.py", "plugin", "--strict", *on_base)),
+                ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", *on_clippy)),
+                ("checks", plugin, tool("checks.py", "plugin", "--strict", *on_checks, *on_base)),
                 ("docs", plugin, tool("docs.py", *on_mge))]
     return [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config"]),
             (GPU_STAGE, mge, gpu_command(plugin, ["-p", "mgeHost64"])),
@@ -486,8 +528,9 @@ def fast_stages(kind, plugin, mge, base=None):
 
 
 def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None, mwse_dlls=None, commits=None, base=None, helper_paths=(),
-               label=None):
-    """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `base` is the base
+               label=None, base_commits=None):
+    """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `base_commits` (a
+    round_set) names the base set when it is not the base pair's own (W567 part C, equal_parts_base). `base` is the base
     commit of the round: the checks stage compares with it (checks.py --base), as the tree is at the merge. `commits` are
     the commits under test, {"plugin": sha, "mge": sha}, and `mwse_commit` the MWSE commit of the round: with both, the
     round's set has a name, and every stage that takes it names its folder (W521). `tips` are the commits of the base
@@ -523,7 +566,9 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
             stages.append((SITES_SET_STAGE, plugin, tool("check_mwse_sites.py", os.path.join(folder, "MWSE.dll"))))
         stages.append((DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--set", folder, *commit_args)))
     if gate:
-        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
+        gate_now = os.path.join(plugin, "target", "merge-step-now")
+        on_list = ["--gate-list", GATE_LIST[0][0]] if GATE_LIST else []
+        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", folder, "--baseline", baseline, "--now", gate_now, *on_list)))
         if touches(paths, ORDER_PATHS[kind]):
             stages.append((ORDER_STAGE, plugin, tool("validate_retained.py", "order", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-order"))))
         under_test = commits or {}
@@ -533,10 +578,16 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
                                                       under_test.get("plugin", "unknown"), under_test.get("mge", "unknown"),
                                                       os.path.join(folder, "numidium.exe")]))
         if tips:
-            base_set = round_set(tips, mwse_commit)
+            # The base pair's set, or the set of an ancestor with equal parts when the pair has none (equal_parts_base).
+            base_set = base_commits or round_set(tips, mwse_commit)
             stages.append(set_stage(BASE_STAGE, plugin, base_set, label))
             stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", set_folder_of(base_set),
                                                         "--now-build", folder, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
+        if GATE_LIST:
+            # W567 part D: the last stage, so it runs only when every stage before it passed (the stop at the first
+            # failure): the listed pictures of the gate's run become the accepted ones, and the next round is equal.
+            stages.append((ACCEPT_LIST_STAGE, plugin, tool("validate_retained.py", "accept-list", "--gate-list", GATE_LIST[0][0], "--mge-build", folder,
+                                                           "--baseline", baseline, "--now", gate_now)))
     elif not deploys and touches(paths, DIST_PATHS[kind]):
         stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
@@ -888,7 +939,7 @@ def run_stages(stages, log, note_stage=lambda: None):
         if stopped_by is not None:
             results[name] = not_run(name, "%s did not pass, and the round stops at its first failure" % stopped_by)
             continue
-        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE) and not made.get(SET_STAGE, True):
+        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE, ACCEPT_LIST_STAGE) and not made.get(SET_STAGE, True):
             results[name] = not_run(name, "the round's set was not made")
             stopped_by = name
             continue
@@ -1297,15 +1348,30 @@ def run_round(slots, stages, what, log_path, no_wait):
     return results, summary
 
 
-def quick_plan(kind, tree, sibling, base):
+def main_render_link(tree):
+    """The render-link tree beside the main checkout of the plugin tree `tree`, or None. A --quick round of a plugin tree
+    with no render-link tree beside it builds clippy's render-link place there, against the tree's own host crate, and its
+    checks read it: without it, clippy_baseline.py --check stops with "no folder for the place render-link" (the live
+    --quick round of 609c610), and checks.py --strict gives NOT RUN for "mge contract" (the round of 0db74de). The clippy
+    stage compiles that place, with the tree's host crate, into the main render-link checkout's target/ (verdict 611): no
+    file of the checkout changes, cargo's lock puts two rounds there one after the other, and the next merge round builds
+    that part again for its own host crate."""
+    main = checkout_of(tree)
+    beside = os.path.join(os.path.dirname(main), MGE_NAME) if main else None
+    return beside if beside and os.path.isdir(beside) and repo_kind(beside) == "mge" else None
+
+
+def quick_plan(kind, tree, sibling, base, main_mge=None):
     """The stages of a --quick round of `tree` (fast_stages), as (stages, None), or (None, why) when they cannot run. A
-    plugin tree takes `sibling` for its docs when that is a render-link tree; a render-link tree needs a plugin tree there,
-    as the plugin's tools run its stages."""
+    plugin tree takes `sibling` for its docs and its clippy when that is a render-link tree; else its clippy takes
+    `main_mge` (main_render_link). A render-link tree needs a plugin tree there, as the plugin's tools run its stages."""
     if kind is None:
         return None, "%s is no tree of %s or %s" % (tree, PLUGIN_NAME, MGE_NAME)
     sibling_kind = repo_kind(sibling) if sibling and os.path.isdir(sibling) else None
     if kind == "plugin":
-        return fast_stages(kind, tree, sibling if sibling_kind == "mge" else None, base), None
+        if sibling_kind == "mge":
+            return fast_stages(kind, tree, sibling, base), None
+        return fast_stages(kind, tree, None, base, main_mge=main_mge), None
     if sibling_kind != "plugin":
         return None, "the stages of render-link run the tools of a %s tree, and %s is none: give --sibling <a %s tree>" % (
             PLUGIN_NAME, sibling, PLUGIN_NAME)
@@ -1355,23 +1421,31 @@ def run_quick(args):
             return 1
         base = git(tree, "merge-base", "HEAD", shared)
     sibling = os.path.abspath(args.sibling) if args.sibling else sibling_of(kind, tree)
-    stages, why = quick_plan(kind, tree, sibling, base)
+    sibling_used = kind == "mge" or (os.path.isdir(sibling) and repo_kind(sibling) == "mge")
+    main_mge = main_render_link(tree) if kind == "plugin" and not sibling_used else None
+    stages, why = quick_plan(kind, tree, sibling, base, main_mge)
     if why:
         say("QUICK FAIL %s %s: %s" % (repo_name, commit[:10], why))
         return 1
     # The stages read the sibling's working tree (the docs build the helper there; a render-link round runs the plugin's
-    # tools): the line names its commit, and a sibling with tracked changes is refused, as the tree is.
-    sibling_used = kind == "mge" or (os.path.isdir(sibling) and repo_kind(sibling) == "mge")
+    # tools; clippy builds the render-link place there): the line names its commit, and a sibling with tracked changes is
+    # refused, as the tree is.
+    read = sibling if sibling_used else main_mge
     sibling_head = None
-    if sibling_used:
-        sibling_head = (os.path.basename(sibling), git(sibling, "rev-parse", "HEAD"))
-        if git(sibling, "status", "--porcelain", "--untracked-files=no"):
+    if read:
+        sibling_head = (os.path.basename(read) + ("" if sibling_used else " for clippy and checks"), git(read, "rev-parse", "HEAD"))
+        if git(read, "status", "--porcelain", "--untracked-files=no"):
             say("QUICK FAIL %s: the sibling %s has tracked changes, and its stages read its working tree: commit them first, or give --sibling "
-                "another tree" % (quick_head(repo_name, commit, sibling_head), sibling))
+                "another tree" % (quick_head(repo_name, commit, sibling_head), read))
             return 1
+    if sibling_used:
+        described = sibling
+    elif main_mge:
+        described = "none (the docs skip the helper; the checks read %s, and clippy builds its render-link place there against this tree's host)" % main_mge
+    else:
+        described = "none (the docs skip the helper)"
     head = quick_head(repo_name, commit, sibling_head)
-    say("quick: %s, base %s, sibling %s; stages: %s" % (head, base[:10], sibling if sibling_used else "none (the docs skip the helper)",
-                                                      ", ".join(name for name, _, _ in stages)))
+    say("quick: %s, base %s, sibling %s; stages: %s" % (head, base[:10], described, ", ".join(name for name, _, _ in stages)))
     if args.dry_run:
         return 0
     slots = load_slots()
@@ -1490,14 +1564,8 @@ def tips_for(kind, repo, base, sibling_base=None):
     return {kind: base, other: sibling_commit}, None
 
 
-def dep_info_paths(text):
-    """The files of the first rule of a dep-info file of cargo ("<target>: <file> <file> ..."). A space in a path is
-    written "\\ "."""
-    first = text.split("\n", 1)[0].rstrip("\r")
-    _, colon, files = first.partition(": ")
-    if not colon:
-        return []
-    return [part.replace("\\ ", " ") for part in re.split(r"(?<!\\) ", files) if part]
+# The files of a cargo dep-info file: its home is build_set.py, whose drift test of the part inputs reads them too.
+dep_info_paths = build_set.dep_info_paths
 
 
 def sources_by_repo(paths, roots):
@@ -1596,15 +1664,72 @@ def round_mwse(name, repo=None, installed=installed_commit):
     return installed()
 
 
-def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None, mwse_commit=None, label=None, mwse_why=None):
+# W567 part C: the line of the round's base set when the base pair has no set of its own (equal_parts_base): the set
+# that serves, or why the base set is built. The plan prints it, and the log and the close line carry it.
+BASE_SET_NOTE = []
+
+
+def equal_parts_base(plugin_repo, tips, mwse_commit, sets_root=None, drift=None):
+    """The base set of a round whose base pair has no set (W567 part C): a kept set with the same render-link and MWSE
+    commits whose nirender commit is an ancestor of the base's and whose diff to it touches no part input
+    (build_set.NIRENDER_PART_INPUTS), the nearest one by commits. Its parts are the base's but for their build ids,
+    which the A/B does not read (instance_ab.py compares pictures and hash lines). Before it, the list of inputs is
+    checked against the maker's dep-info files (`drift`, build_set.maker_input_drift): a path of a build outside the
+    list, or no file to check, builds the set. (set commits, line), (None, line) when the set is built, or (None, None)
+    when the base pair has its own set or is not known."""
+    sets_root = sets_root or sets.SETS
+    wanted = round_set(tips, mwse_commit)
+    if wanted is None or os.path.isdir(set_folder_of(wanted, sets_root)):
+        return None, None
+    building = "base set: the pair %s has no set, and the round builds it: %%s" % sets.set_name(wanted)
+    outside, why = (drift or build_set.maker_input_drift)()
+    if outside is None:
+        return None, building % ("the part inputs cannot be checked (%s)" % why)
+    if outside:
+        return None, building % ("the builds read %s, which build_set.NIRENDER_PART_INPUTS does not list" % ", ".join(outside[:5]))
+    best = None
+    for name in sets.sets_in(sets_root):
+        try:
+            manifest = sets.read_manifest(os.path.join(sets_root, name))
+        except sets.SetError:
+            continue
+        commits = {repo: (manifest.get("commits", {}).get(repo) or {}).get("commit") for repo in sets.REPOS}
+        if manifest.get("kind") != sets.KIND_USUAL or manifest.get("patches") or any(commits[repo] != wanted[repo] for repo in ("render-link", "mwse")):
+            continue
+        older = commits["nirender"]
+        # resolve first: a commit that the repo does not have would put git's "fatal" line on the round's console.
+        if not older or older == wanted["nirender"] or resolve(plugin_repo, older) is None or not is_ancestor(plugin_repo, older, wanted["nirender"]):
+            continue
+        paths = changed_paths(plugin_repo, older, wanted["nirender"])
+        if any(build_set.is_part_input(path) for path in paths):
+            continue
+        distance = int(git(plugin_repo, "rev-list", "--count", "%s..%s" % (older, wanted["nirender"])))
+        if best is None or distance < best[0]:
+            best = (distance, commits, name, len(paths))
+    if best is None:
+        return None, building % "no kept set has equal parts"
+    distance, commits, name, count = best
+    return commits, "base set: %s, with parts equal to the pair %s: nirender %s to %s is %d paths in %d commits, none a part input" % (
+        name, sets.set_name(wanted), commits["nirender"][:10], wanted["nirender"][:10], count, distance)
+
+
+def base_set_lines(stages):
+    """BASE_SET_NOTE when the round has the base set stage, for the log and the close line."""
+    return list(BASE_SET_NOTE) if any(name == BASE_STAGE for name, _, _ in stages) else []
+
+
+def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None, mwse_commit=None, label=None, mwse_why=None, reuse_base=False,
+                   note=None):
     """The stages of a check of `paths` from `base`, as main() runs them: with the replay gate, also the base set of
     tips_for and the A/B. (stages, tips, None); (stages, None, why) when the round makes a set whose commits are not known
     (`mwse_why` says why the MWSE commit is not), or when the gate needs a base pair that tips_for cannot give. The
-    helper's sources (helper_gate_paths) plan the gate too."""
+    helper's sources (helper_gate_paths) plan the gate too. `reuse_base`: the base set may be an equal-parts ancestor's
+    (equal_parts_base); its line goes into the list `note` when one is given."""
     helper_paths, _ = helper_gate_paths(kind, repo, base)
 
-    def plan(tips=None):
-        return stages_for(kind, repo, paths, baseline, tips, mwse_commit, commits=commits, base=base, helper_paths=helper_paths, label=label)
+    def plan(tips=None, base_commits=None):
+        return stages_for(kind, repo, paths, baseline, tips, mwse_commit, commits=commits, base=base, helper_paths=helper_paths, label=label,
+                          base_commits=base_commits)
 
     stages = plan()
     if any(name == SET_STAGE for name, _, _ in stages) and round_set(commits, mwse_commit) is None:
@@ -1615,7 +1740,17 @@ def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None
     tips, why = tips_for(kind, repo, base, sibling_base)
     if why:
         return stages, None, why
-    return plan(tips), tips, None
+    if not reuse_base:
+        return plan(tips), tips, None
+    # The base set may be the set of an equal-parts ancestor (W567 part C): in the round's own plan (main), and in the
+    # plan of the sibling's own check (move_sibling_ref), which would take the same set (W370: the stages must match).
+    plugin = repo if kind == "plugin" else sibling_of(kind, repo)
+    base_commits, line = equal_parts_base(plugin, tips, mwse_commit)
+    if note is not None:
+        del note[:]
+        if line:
+            note.append(line)
+    return plan(tips, base_commits), tips, None
 
 
 def stage_key(stage):
@@ -1675,8 +1810,9 @@ def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, com
         ref_say(log_path, "the sibling %s: %s stays at %s: it is not an ancestor of the HEAD %s" % (name, ref, last[:10], head[:10]))
         return False
     paths = changed_paths(sibling, last, head)
-    # The same MWSE commit as this round: the sibling's own check would make the same set.
-    needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, mwse_commit=mwse_commit)
+    # The same MWSE commit as this round: the sibling's own check would make the same set, and take the same base set
+    # (reuse_base, as main). Its line is not this round's: no note.
+    needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, mwse_commit=mwse_commit, reuse_base=True)
     if why:
         ref_say(log_path, "the sibling %s: %s stays at %s: the stages of its diff to %s are not known (%s)" % (name, ref, last[:10], head[:10], why))
         return False
@@ -1714,6 +1850,149 @@ def scratch_slots(state):
     return module
 
 
+def self_test_equal_parts(root):
+    """The tests of equal_parts_base (W567 part C) on a scratch repo and scratch sets: no E:, no build."""
+    import json
+
+    repo = os.path.join(root, "parts", PLUGIN_NAME)
+    os.makedirs(repo)
+    author = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(["git", "-C", repo, "init", "-q", "-b", "master"], check=True, env=git_env())
+    commits = []
+    for path in ("src/a.rs", "src/b.rs", "tools/x.py", "README.md", "host/src/c.rs"):
+        os.makedirs(os.path.dirname(os.path.join(repo, path)) or repo, exist_ok=True)
+        with open(os.path.join(repo, path), "w", encoding="ascii") as file:
+            file.write(path + "\n")
+        subprocess.run(["git", "-C", repo, "add", path], check=True, env=git_env())
+        subprocess.run(["git", "-C", repo, *author, "commit", "-q", "-m", path], check=True, env=git_env())
+        commits.append(resolve(repo, "HEAD"))
+    first, second, tools_change, readme_change, host_change = commits
+    link, mwse = "a" * 40, "b" * 40
+    sets_root = os.path.join(root, "parts", "sets")
+
+    def kept(nirender, render_link=link, patches=None, kind=sets.KIND_USUAL):
+        found = {"nirender": nirender, "render-link": render_link, "mwse": mwse}
+        folder = os.path.join(sets_root, sets.set_name(found) if kind == sets.KIND_USUAL else sets.set_name(found, kind=kind))
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, sets.MANIFEST), "w", encoding="utf-8") as file:
+            json.dump({"form": sets.FORM, "kind": kind, "patches": patches or {}, "commits": {repo_name: {"commit": commit} for repo_name, commit in found.items()}}, file)
+        return folder
+
+    clean = lambda: ([], None)  # noqa: E731
+    tips = lambda nirender: {"plugin": nirender, "mge": link}  # noqa: E731
+    kept(first)
+    kept(second)
+    # A tools and README change after `second`: its set serves, the nearest one, with the count of paths and commits.
+    found, line = equal_parts_base(repo, tips(readme_change), mwse, sets_root, clean)
+    assert found == {"nirender": second, "render-link": link, "mwse": mwse}, (found, line)
+    assert line.startswith("base set: %s, with parts equal to the pair " % sets.set_name(found)) and "is 2 paths in 2 commits, none a part input" in line, line
+    # The null: a part input (host/src) in the diff, so no kept set serves, and the round builds.
+    found, line = equal_parts_base(repo, tips(host_change), mwse, sets_root, clean)
+    assert found is None and "has no set, and the round builds it: no kept set has equal parts" in line, line
+    # Of two sets with equal parts, the nearer one by commits serves.
+    far_root, sets_root = sets_root, os.path.join(root, "parts", "sets-near")
+    kept(second)
+    kept(tools_change)
+    found, line = equal_parts_base(repo, tips(readme_change), mwse, sets_root, clean)
+    assert found["nirender"] == tools_change and "is 1 paths in 1 commits" in line, line
+    sets_root = far_root
+    # The pair's own set: nothing to say.
+    kept(readme_change)
+    assert equal_parts_base(repo, tips(readme_change), mwse, sets_root, clean) == (None, None)
+    # Another render-link commit, a patched set and another kind never serve; each in a folder of its own.
+    for number, other in enumerate((dict(render_link="c" * 40), dict(patches={"nirender": "d" * 32}), dict(kind="probe"))):
+        shutil_root = sets_root
+        sets_root = os.path.join(root, "parts", "sets-other-%d" % number)
+        kept(second, **other)
+        assert len(sets.sets_in(sets_root)) == 1, (other, sets.sets_in(sets_root))
+        assert equal_parts_base(repo, tips(tools_change), mwse, sets_root, clean)[0] is None, other
+        sets_root = shutil_root
+    # A kept set whose nirender commit the repo does not have: passed over, with no git line.
+    stray_root, sets_root = sets_root, os.path.join(root, "parts", "sets-stray")
+    kept("e" * 40)
+    kept(second)
+    assert equal_parts_base(repo, tips(tools_change), mwse, sets_root, clean)[0]["nirender"] == second
+    sets_root = stray_root
+    # The list of inputs against the truth: a build path outside it, or no dep-info file, builds the set.
+    found, line = equal_parts_base(repo, tips(tools_change), mwse, sets_root, lambda: (["tools/gen.rs"], None))
+    assert found is None and "the builds read tools/gen.rs, which build_set.NIRENDER_PART_INPUTS does not list" in line, line
+    found, line = equal_parts_base(repo, tips(tools_change), mwse, sets_root, lambda: (None, "no dep-info file x"))
+    assert found is None and "the part inputs cannot be checked (no dep-info file x)" in line, line
+    assert equal_parts_base(repo, tips(tools_change), mwse, sets_root, clean)[0]["nirender"] == second
+    # The plan takes it as the base set of the stage and of the A/B, and the line goes to the log and the close.
+    plugin = os.path.join(root, "parts", "plugin")
+    planned = stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, {"plugin": "1" * 40, "mge": "2" * 40}, mwse,
+                         base_commits={"nirender": second, "render-link": link, "mwse": mwse})
+    commands = {name: command for name, _, command in planned}
+    assert commands[BASE_STAGE][commands[BASE_STAGE].index("--nirender") + 1] == second, commands[BASE_STAGE]
+    ab = commands[INSTANCE_STAGE]
+    assert ab[ab.index("--base-build") + 1] == set_folder_of({"nirender": second, "render-link": link, "mwse": mwse}), ab
+    try:
+        BASE_SET_NOTE[:] = ["base set: x"]
+        assert base_set_lines(planned) == ["base set: x"] and base_set_lines(stages_for("plugin", plugin, ["tools/x.py"])) == []
+    finally:
+        del BASE_SET_NOTE[:]
+    # Verdict 608: the plan with reuse writes its line into the list `note` it is given, and only there: the plan of the
+    # sibling's stages (move_sibling_ref, no note) leaves the round's note as it is.
+    real = {name: globals()[name] for name in ("tips_for", "equal_parts_base")}
+    reused = {"nirender": second, "render-link": link, "mwse": mwse}
+    globals()["tips_for"] = lambda *args: ({"plugin": host_change, "mge": link}, None)
+    globals()["equal_parts_base"] = lambda *args: (reused, "base set: the stub's")
+    try:
+        BASE_SET_NOTE[:] = ["base set: the round's own"]
+        stages, _, why = planned_stages("plugin", repo, ["host/src/c.rs"], BASELINE, {"plugin": "1" * 40, "mge": "2" * 40}, first, mwse_commit=mwse,
+                                        reuse_base=True)
+        assert why is None and BASE_SET_NOTE == ["base set: the round's own"], (why, BASE_SET_NOTE)
+        commands = {name: command for name, _, command in stages}
+        assert commands[BASE_STAGE][commands[BASE_STAGE].index("--nirender") + 1] == second, "the sibling's plan takes the reused set too"
+        note = ["old"]
+        planned_stages("plugin", repo, ["host/src/c.rs"], BASELINE, {"plugin": "1" * 40, "mge": "2" * 40}, first, mwse_commit=mwse, reuse_base=True,
+                       note=note)
+        assert note == ["base set: the stub's"] and BASE_SET_NOTE == ["base set: the round's own"], (note, BASE_SET_NOTE)
+    finally:
+        globals().update(real)
+        del BASE_SET_NOTE[:]
+
+
+def self_test_gate_list(root, plugin):
+    """The tests of --gate-list (W567 part D): the option, the gate's argument, the accept as the round's last stage, the
+    close line, and the stop that keeps the accept from a round that failed."""
+    listed = os.path.join(root, "gate-list.txt")
+    with open(listed, "w", encoding="utf-8") as file:
+        file.write("tour/3-03-_nif_052.png\n")
+    assert gate_list_of(None, BASELINE) == []
+    assert "is no file" in gate_list_of(os.path.join(root, "none.txt"), BASELINE)
+    assert "goes with no --baseline" in gate_list_of(listed, os.path.join(root, "copy"))
+    assert gate_list_of(listed, BASELINE) == [(os.path.abspath(listed), file_md5(listed))]
+    tips = {"plugin": "1" * 40, "mge": "2" * 40}
+    try:
+        GATE_LIST[:] = gate_list_of(listed, BASELINE)
+        planned = stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, tips)
+        commands = {name: command for name, _, command in planned}
+        gate = commands["replay gate"]
+        assert gate[-2:] == ["--gate-list", os.path.abspath(listed)], gate
+        assert planned[-1][0] == ACCEPT_LIST_STAGE, [name for name, _, _ in planned]
+        accept = commands[ACCEPT_LIST_STAGE]
+        assert accept[3:6] == ["accept-list", "--gate-list", os.path.abspath(listed)], accept
+        assert accept[accept.index("--now") + 1] == gate[gate.index("--now") + 1] and accept[accept.index("--mge-build") + 1] == gate[gate.index("--mge-build") + 1], (accept, gate)
+        assert "gate list %s md5 %s accepted" % (os.path.abspath(listed), file_md5(listed)) in gate_list_close(planned)
+        # No gate: no accept, and the close names no list.
+        plain = stages_for("plugin", plugin, ["tools/x.py"])
+        assert ACCEPT_LIST_STAGE not in [name for name, _, _ in plain] and gate_list_close(plain) == []
+        # The accept runs only after every stage passed: a red gate stops the round before it.
+        good, bad = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(1)"]
+        never = [sys.executable, "-c", "raise SystemExit(9)"]
+        now = os.path.join(root, "gate-list-now")
+        os.makedirs(os.path.join(now, "tour"), exist_ok=True)
+        with open(os.path.join(root, "log-gate-list.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([("replay gate", root, bad + ["--now", now]), (ACCEPT_LIST_STAGE, root, never)], log) == [False, False]
+            assert STAGE_WORDS[-1] == (ACCEPT_LIST_STAGE, NOT_RUN_WORD, "replay gate did not pass, and the round stops at its first failure"), STAGE_WORDS
+            assert run_stages([("replay gate", root, good + ["--now", now]), (ACCEPT_LIST_STAGE, root, good)], log) == [True, True]
+    finally:
+        del GATE_LIST[:]
+    assert ACCEPT_LIST_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, tips)], "a round with no list accepts"
+
+
 def self_test_quick(root, plugin, mge, base):
     """The tests of --quick (W567 part A): its stages, its refusals and its line. `plugin` and `mge` are the self-test's
     trees, and `base` the names of the plugin's fast stages."""
@@ -1725,6 +2004,18 @@ def self_test_quick(root, plugin, mge, base):
     # A plugin tree with no render-link tree beside it checks its docs without the helper (docs.py, W510).
     alone, why = quick_plan("plugin", plugin, os.path.join(root, "no-render-link"), None)
     assert why is None and "--mge" not in dict((name, command) for name, _, command in alone)["docs"] and "--base" not in dict((name, command) for name, _, command in alone)["checks"]
+    assert "--mge" not in dict((name, command) for name, _, command in alone)["clippy baseline"], alone
+    # Its clippy builds the render-link place of the main checkout's render-link against the tree's host crate, and its
+    # checks read that tree. The null: without it, clippy_baseline.py stops with "no folder for the place render-link"
+    # (609c610's live round) and checks.py --strict gives NOT RUN for "mge contract" (0db74de's).
+    main_mge = os.path.join(root, "main-render-link")
+    alone, why = quick_plan("plugin", plugin, os.path.join(root, "no-render-link"), "abc", main_mge)
+    commands = dict((name, command) for name, _, command in alone)
+    assert why is None and commands["clippy baseline"][-4:] == ["--mge", main_mge, "--mge-host", os.path.join(plugin, "host")], commands
+    assert commands["checks"][-4:] == ["--mge", main_mge, "--base", "abc"], commands["checks"]
+    assert "--mge" not in commands["docs"], "the docs still skip the helper"
+    beside_commands = dict((name, command) for name, _, command in quick_plan("plugin", plugin, mge, None, main_mge)[0])
+    assert "--mge" not in beside_commands["clippy baseline"] and "--mge" not in beside_commands["checks"], "a render-link tree beside the plugin tree serves"
     # A render-link tree runs its stages with the tools of a plugin tree, and needs one.
     stages, why = quick_plan("mge", mge, plugin, "abc")
     assert why is None and stages == fast_stages("mge", plugin, mge, "abc") and dict((name, folder) for name, folder, _ in stages)["clippy baseline"] == plugin, stages
@@ -1780,11 +2071,32 @@ def self_test_quick(root, plugin, mge, base):
     with contextlib.redirect_stdout(said):
         assert run_quick(args) == 1
     assert "QUICK FAIL %s %s (sibling %s " % (PLUGIN_NAME, head[:10], MGE_NAME) in said.getvalue() and "has tracked changes" in said.getvalue(), said.getvalue()
-    # The null: --sibling to a folder with no render-link tree passes the same plugin tree again.
+    # --sibling to a folder with no render-link tree: the docs skip the helper, and clippy and the checks take the
+    # render-link tree beside the main checkout (here the tree is its own main checkout). Its tracked changes are refused
+    # too; clean, the line names it "for clippy and checks".
+    elsewhere = types.SimpleNamespace(repo=tree, base=None, sibling=os.path.join(root, "none"), dry_run=True, no_wait=True)
+    assert main_render_link(tree) == beside
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
-        assert run_quick(types.SimpleNamespace(repo=tree, base=None, sibling=os.path.join(root, "none"), dry_run=True, no_wait=True)) == 0
-    assert "(no sibling)" in said.getvalue(), said.getvalue()
+        assert run_quick(elsewhere) == 1
+    assert "(sibling %s for clippy and checks " % MGE_NAME in said.getvalue() and "has tracked changes" in said.getvalue(), said.getvalue()
+    subprocess.run(["git", "-C", beside, "checkout", "-q", "--", "mgeHost64/lib.rs"], check=True, env=git_env())
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        assert run_quick(elsewhere) == 0
+    assert said.getvalue().startswith("quick: %s %s (sibling %s for clippy and checks %s), base %s, sibling none (the docs skip the helper; the checks read "
+                                      "%s, and clippy builds its render-link place there against this tree's host)" % (
+                                          PLUGIN_NAME, head[:10], MGE_NAME, resolve(beside, "HEAD")[:10], head[:10], beside)), said.getvalue()
+    # The null: no render-link tree beside the main checkout, so no sibling at all.
+    os.rename(beside, beside + "-away")
+    try:
+        assert main_render_link(tree) is None
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            assert run_quick(elsewhere) == 0
+        assert "(no sibling)" in said.getvalue(), said.getvalue()
+    finally:
+        os.rename(beside + "-away", beside)
     with open(os.path.join(tree, "host", "src", "shader.wgsl"), "w", encoding="ascii") as file:
         file.write("b\n")
     said = io.StringIO()
@@ -1842,6 +2154,8 @@ def self_test():
         assert names("plugin", plugin, "srcx/lib.rs") == base, "a name that only starts the same deployed"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"] + deploy_tail
         self_test_quick(root, plugin, mge, base)
+        self_test_gate_list(root, plugin)
+        self_test_equal_parts(root)
         # The set of the commits under test and the round's MWSE commit: the maker in the round's take (--in-hold, C2), in
         # the plugin's tree; the deploy and the gate name its folder (C3).
         full = under_test("plugin", "a" * 40, "b" * 40)
@@ -2330,6 +2644,25 @@ def self_test():
         assert not moved and "git update-ref refused the move from %s to %s" % (c1[:10], c2[:10]) in said, said
         assert resolve(cover_mge, cover_ref) == c2 and "stays at %s" % c2[:10] in said, said
         subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c1], check=True, env=git_env())
+        # Verdict 608: the sibling's stages are planned with the base set of an equal-parts ancestor, as the round's own
+        # (main), so that a round that takes that set matches them; the sibling's line does not go into the round's note.
+        asked = []
+
+        def planned_and_asked(*args, **kwargs):
+            asked.append(kwargs)
+            return real_planned(*args, **kwargs)
+
+        globals()["planned_stages"] = planned_and_asked
+        BASE_SET_NOTE[:] = ["base set: the round's own"]
+        try:
+            sibling_move(both_round, [False] * len(both_round))
+        finally:
+            globals()["planned_stages"] = real_planned
+            note_after = list(BASE_SET_NOTE)
+            del BASE_SET_NOTE[:]
+        assert [(kwargs.get("reuse_base"), kwargs.get("note")) for kwargs in asked] == [(True, None)], asked
+        assert note_after == ["base set: the round's own"], note_after
+        assert resolve(cover_mge, cover_ref) == c1
         # The stages of the sibling's diff all ran and passed: the ref moves to the HEAD of the round.
         moved, said = sibling_move(both_round, all_passed)
         assert moved and resolve(cover_mge, cover_ref) == c2 and "moves from %s to %s" % (c1[:10], c2[:10]) in said, said
@@ -3282,6 +3615,8 @@ def main():
     parser.add_argument("--evidence", action="append", metavar="STAGE=FILE", help="the evidence file of a FORMAT CHANGE of the stage '%s': with it the stage passes, and the round's close line names the file's md5" % INSTANCE_STAGE)
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     parser.add_argument("--open-deploys", action="store_true", help="list the WITHHELD deploys of %s that no deploy closed, and stop" % DEPLOYS_FILE)
+    parser.add_argument("--gate-list", metavar="FILE", help="the Reviewer's passed list of the planned picture changes (W567 part D): the replay gate passes only when the "
+                        "changed pictures equal it, and the round's last stage accepts them; its md5 goes into the close line")
     parser.add_argument("--quick", action="store_true", help="the fast stages of a worker's own tree (<repo>, else the current folder) at its HEAD, and one line for the done report (W567)")
     parser.add_argument("--sibling", help="with --quick: the tree of the other repo; without it, the tree beside <repo>")
     args = parser.parse_args()
@@ -3294,7 +3629,7 @@ def main():
             say(line)
         return 0
     if args.quick:
-        if args.commit or args.baseline != BASELINE or args.sibling_base or args.mwse or args.evidence:
+        if args.commit or args.baseline != BASELINE or args.sibling_base or args.mwse or args.evidence or args.gate_list:
             parser.error("--quick takes [<tree>], --sibling, --base, --no-wait and --dry-run: it checks the tree's HEAD, with no set and no gate")
         return run_quick(args)
     if args.sibling:
@@ -3307,6 +3642,11 @@ def main():
         return 1
     EVIDENCE.clear()
     EVIDENCE.update(evidence)
+    gate_list = gate_list_of(args.gate_list, args.baseline)
+    if isinstance(gate_list, str):
+        say("FAIL the gate list: %s" % gate_list)
+        return 1
+    GATE_LIST[:] = gate_list
 
     repo = os.path.abspath(args.repo)
     kind = repo_kind(repo)
@@ -3328,7 +3668,8 @@ def main():
         say(helper_gate_paths(kind, repo, base)[1])
     what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
     mwse_commit, mwse_why = round_mwse(args.mwse)
-    stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, args.sibling_base, mwse_commit, what, mwse_why) if kind else ([], None, None)
+    stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, args.sibling_base, mwse_commit, what, mwse_why, reuse_base=True,
+                                       note=BASE_SET_NOTE) if kind else ([], None, None)
     if why:
         say("FAIL the tree: %s" % why)
         return 1
@@ -3350,6 +3691,11 @@ def main():
     for name in EVIDENCE:
         if name not in [stage for stage, _, _ in stages]:
             say("the evidence file of %s is not used: the round has no such stage" % name)
+    if GATE_LIST:
+        if any(name == ACCEPT_LIST_STAGE for name, _, _ in stages):
+            say("the gate list %s (md5 %s): the replay gate passes these planned changes only, and the last stage accepts them" % GATE_LIST[0])
+        else:
+            say("the gate list %s is not used: the round has no replay gate" % GATE_LIST[0][0])
     sibling_hash = git(sibling, "rev-parse", "--short=10", "HEAD") if has_sibling else "none"
     sibling_head = resolve(sibling, "HEAD") if has_sibling else None
     sibling_base_note = ""
@@ -3360,6 +3706,9 @@ def main():
     say("%s %s, sibling %s%s, baseline %s: %d changed paths from %s; stages: %s" % (os.path.basename(repo), commit[:10], sibling_hash, sibling_base_note, baseline, len(paths), base[:10], ", ".join(name for name, _, _ in stages)))
     if any(name == SET_STAGE for name, _, _ in stages):
         say("the round's set: %s (MWSE %s, %s)" % (set_folder_of(round_set(commits, mwse_commit)), mwse_commit[:10], "--mwse" if args.mwse else "the installs' records"))
+    if any(name == BASE_STAGE for name, _, _ in stages):
+        for line in BASE_SET_NOTE:
+            say(line)
     # The merges that a pass closes (D183), read before the round so that the warning of a fast-forward comes first.
     plugin_repo, mge_repo = (repo, sibling) if kind == "plugin" else (sibling, repo)
     for line in open_deploy_lines(deploys_open(plugin_repo, mge_repo)):
@@ -3389,7 +3738,7 @@ def main():
             say(line)
             log.write(line + "\n")
         # Said before the round; in the log too, beside the close that it explains.
-        for line in unread:
+        for line in unread + base_set_lines(stages):
             log.write(line + "\n")
     # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
     # of merges with one check closes the item of each merge on the first-parent path (D183).
@@ -3400,7 +3749,7 @@ def main():
     still = open_deploy_lines(deploys_open(plugin_repo, mge_repo))
     written = close_after(results, baseline, merges,
                           lambda merges, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), merges, stages, log_path),
-                          extra=[frame_map_of(cites)] + still[:1])
+                          extra=[frame_map_of(cites)] + still[:1] + gate_list_close(stages) + base_set_lines(stages))
     if written:
         say("closes: %s in %s" % (", ".join(line.split("\t")[1] for line in written), CLOSES_FILE))
     elif written == []:
