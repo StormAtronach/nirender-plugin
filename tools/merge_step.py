@@ -1352,7 +1352,10 @@ def main_render_link(tree):
     """The render-link tree beside the main checkout of the plugin tree `tree`, or None. A --quick round of a plugin tree
     with no render-link tree beside it builds clippy's render-link place there, against the tree's own host crate, and its
     checks read it: without it, clippy_baseline.py --check stops with "no folder for the place render-link" (the live
-    --quick round of 609c610), and checks.py --strict gives NOT RUN for "mge contract" (the round of 0db74de)."""
+    --quick round of 609c610), and checks.py --strict gives NOT RUN for "mge contract" (the round of 0db74de). The clippy
+    stage compiles that place, with the tree's host crate, into the main render-link checkout's target/ (verdict 611): no
+    file of the checkout changes, cargo's lock puts two rounds there one after the other, and the next merge round builds
+    that part again for its own host crate."""
     main = checkout_of(tree)
     beside = os.path.join(os.path.dirname(main), MGE_NAME) if main else None
     return beside if beside and os.path.isdir(beside) and repo_kind(beside) == "mge" else None
