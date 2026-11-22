@@ -341,7 +341,9 @@ impl Player {
                 if self.views.open().is_some() {
                     self.view_place(word(data, 0));
                 } else {
-                    self.walk_place(word(data, 0));
+                    // A blend of the main view: the table draws it at its place in the shown
+                    // list, so the place is not used.
+                    self.renderer.counts.walk_places_unused += 1;
                 }
             }
             tag::INSTANCE_DELETE if data.len() >= 4 => {
@@ -1021,32 +1023,6 @@ impl Player {
             self.renderer.counts.queued_late_places += 1;
         }
         self.frame_sorted.push((crate::Waiting::Table(id), generation));
-    }
-
-    /// The place of a blend of the table in the engine's walk ([`tag::INSTANCE_WALK`]): its
-    /// slots draw here, among the draws of the engine's path, in the walk's order. Places
-    /// with no other item between them draw as one run. A place counts in a scene of the world
-    /// camera in the back buffer after the world began: the table's main view draws at the
-    /// start of the world.
-    /// Engine-rules R2, R3, R22 (the skill wgpu-renderer-dev).
-    pub(crate) fn walk_place(&mut self, id: u32) {
-        let world_view = self.plan.world_begun
-            && scene::world_camera(self.plan.scene_kind)
-            && self.stream.back_buffer
-            && self.target.is_none();
-        if !world_view {
-            self.renderer.counts.walk_outside += 1;
-            return;
-        }
-        let adjacent = matches!(self.items.last(), Some(Item::WalkPlaces(_)));
-        match self.retained.walk.place(id, self.retained.centre_of(id).is_some(), adjacent) {
-            engine::walk::Place::Unknown => self.renderer.counts.walk_unknown += 1,
-            engine::walk::Place::Joined => self.renderer.counts.walk_places += 1,
-            engine::walk::Place::New(run) => {
-                self.renderer.counts.walk_places += 1;
-                self.items.push(Item::WalkPlaces(run));
-            }
-        }
     }
 
     /// The view of the open scene of a view of its own, from the camera of its render

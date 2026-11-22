@@ -707,10 +707,6 @@ fn try_backend(
         DEPTH_FORMAT
     };
     depth::set_reversed(float_depth);
-    depth::set_one_buffer(switches().one_depth);
-    if switches().one_depth && !depth::one_buffer() {
-        println!("depth: MGE_XE_ONE_DEPTH needs the reversed float depth; the land keeps its own depth");
-    }
     // The samples. The adapter's flags for a format hold only on a device that has
     // TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES (the request asks for it below when the adapter
     // has it); any other device takes the counts that the WebGPU spec guarantees.

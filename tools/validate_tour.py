@@ -82,10 +82,10 @@ COUNT_LIMIT = 8
 # is printed with its count in every run. It fails over its own bound, so a new fault there still shows. The work
 # item that removes the cause removes the entry: a known stop at or under COUNT_LIMIT fails the tour with a line
 # that says so, so that no wide bound stays behind.
-KNOWN_STOPS = {
-    "1-29-_nif_057.png": (1500, "W535: the order of two blended draws differs between the table and the engine's path (1369 on 2026-11-17)"),
-    "2-13-_nif_073.png": (80, "W535: the order of two blended draws differs between the table and the engine's path (65 on 2026-11-17)"),
-}
+# No stop is known today. The two of W538's merge (1-29-_nif_057.png to 1500 and 2-13-_nif_073.png to 80: the order of
+# two blended draws differed between the table and the engine's path) went with W535, which draws the table in the
+# engine's order.
+KNOWN_STOPS = {}
 
 
 def count_limit(name):
@@ -535,22 +535,36 @@ def self_test():
                 assert code == 1 and mean_fail in said and "more pixels over 8 levels" not in said, text
                 assert "pixels over 8 levels of a pair: 2 pairs have none; the others, the largest first: none" in text, text
                 # A known stop passes to its own bound and is printed; over its bound it fails. The stop beside it has
-                # the plain limit.
+                # the plain limit. The test plants its own known stop, so that it does not depend on the stops of today.
                 with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
                     file.write("tour: dual\ntour: cell 1 stop 1 a\ntour: cell 2 stop 13 @nif_073\n")
-                assert count_limit("2-13-_nif_073.png") == 80 and count_limit("2-13-_nif_074.png") == COUNT_LIMIT == 8
-                code, text, said = tour("fault 40")
-                assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (1, 40, "1-01-a.png"), text
-                assert "  a known stop: 2-13-_nif_073.png has 40 pixels over 8 levels; it passes to 80; W535: " in text, text
-                assert "the others, the largest first: 1-01-a.png 40" in text and "2-13-_nif_073.png 40" not in text.split("the others, the largest first: ")[1].splitlines()[0], text
-                code, text, said = tour("fault 100")
-                assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (2, 100, "2-13-_nif_073.png"), text
-                # A known stop at or under the plain limit: its cause is gone, and the entry must go with it. The
-                # tour fails with that line, at 0 pixels and at 5; the stop beside it passes.
-                gone = "tour verdict: FAIL: the cause of 2-13-_nif_073.png is gone: remove its KNOWN_STOPS entry"
-                for off in ("grey", "fault 5"):
-                    code, text, said = tour(off)
-                    assert code == 1 and said == gone, (off, text)
+                stops_of_today = dict(KNOWN_STOPS)
+                KNOWN_STOPS.clear()
+                try:
+                    # With no known stop the stop has the plain limit: 40 pixels fail there, and 5 pass.
+                    assert count_limit("2-13-_nif_073.png") == COUNT_LIMIT
+                    code, text, said = tour("fault 40")
+                    assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (2, 40, "2-13-_nif_073.png"), text
+                    assert "it passes to" not in text, text
+                    code, text, said = tour("fault 5")
+                    assert code == 0 and said == "tour verdict: PASS", text
+                    KNOWN_STOPS["2-13-_nif_073.png"] = (80, "a planted cause")
+                    assert count_limit("2-13-_nif_073.png") == 80 and count_limit("2-13-_nif_074.png") == COUNT_LIMIT == 8
+                    code, text, said = tour("fault 40")
+                    assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (1, 40, "1-01-a.png"), text
+                    assert "  a known stop: 2-13-_nif_073.png has 40 pixels over 8 levels; it passes to 80; a planted cause" in text, text
+                    assert "the others, the largest first: 1-01-a.png 40" in text and "2-13-_nif_073.png 40" not in text.split("the others, the largest first: ")[1].splitlines()[0], text
+                    code, text, said = tour("fault 100")
+                    assert code == 1 and said == "tour verdict: FAIL: " + count_fail % (2, 100, "2-13-_nif_073.png"), text
+                    # A known stop at or under the plain limit: its cause is gone, and the entry must go with it. The
+                    # tour fails with that line, at 0 pixels and at 5; the stop beside it passes.
+                    gone = "tour verdict: FAIL: the cause of 2-13-_nif_073.png is gone: remove its KNOWN_STOPS entry"
+                    for off in ("grey", "fault 5"):
+                        code, text, said = tour(off)
+                        assert code == 1 and said == gone, (off, text)
+                finally:
+                    KNOWN_STOPS.clear()
+                    KNOWN_STOPS.update(stops_of_today)
                 # A dual run with no stop has no pair to compare: not judged.
                 with open(os.path.join(run, "progress.log"), "w", encoding="utf-8") as file:
                     file.write("tour: dual\n")
