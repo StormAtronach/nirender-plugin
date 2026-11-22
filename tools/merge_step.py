@@ -8,10 +8,11 @@
 --quick (W567 part A) is the worker's check of its own tree before the hand-off: the fast stages of the tree's repo
 (fast_stages) at its HEAD, with the stop at the first failure, and one line for the done report:
 
-    QUICK PASS <repo> <commit10>: N of N (<stages>); log <path>
-    QUICK FAIL <repo> <commit10>: <stage> (<reason>); log <path>
+    QUICK PASS <repo> <commit10> (sibling <name> <commit10> | no sibling): N of N (<stages>); log <path>
+    QUICK FAIL <repo> <commit10> (...): <stage> (<word>: <reason>); log <path>
 
-The tree is the current folder without <tree>, and it must have no tracked change. --base is the base of the checks
+The tree is the current folder without <tree>, and it must have no tracked change. A sibling that the stages read must
+have none either, and the line names its commit (verdict 605). --base is the base of the checks
 stage; without it, the merge base of HEAD and the shared branch (master, or feature/wgpu-renderer for render-link).
 The sibling is the tree beside it without --sibling: a plugin tree with no render-link tree there checks its docs
 without the helper (docs.py, W510), and a render-link tree needs a plugin tree, whose tools run its stages. It takes one
@@ -499,7 +500,7 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
     mge = repo if kind == "mge" else sibling_of(kind, repo)
     tool = lambda name, *args: [python, "-I", os.path.join("tools", name), *args]  # noqa: E731
     stages = fast_stages(kind, plugin, mge, base)
-    gate =touches(paths, GATE_PATHS[kind]) or helper_paths is None or touches(paths, helper_paths)
+    gate = touches(paths, GATE_PATHS[kind]) or helper_paths is None or touches(paths, helper_paths)
     # A round that deploys makes a set; the gate's round always deploys.
     deploys = gate or touches(paths, DEPLOY_PATHS[kind])
     sites = kind == "plugin" and touches(paths, MWSE_SITES_PATHS)
@@ -1311,16 +1312,22 @@ def quick_plan(kind, tree, sibling, base):
     return fast_stages(kind, sibling, tree, base), None
 
 
-def quick_line(repo_name, commit, words, log_path):
-    """The one line of a --quick round for the done report, from `words` (STAGE_WORDS: stage, word, reason). It passes
-    only when every stage passed; else it names the first stage that did not."""
+def quick_head(repo_name, commit, sibling=None):
+    """The start of a --quick line: the repo and its commit, and the sibling tree that the stages read with its commit
+    (`sibling`: (name, commit)), or "no sibling"."""
+    return "%s %s (%s)" % (repo_name, commit[:10], "sibling %s %s" % (sibling[0], sibling[1][:10]) if sibling else "no sibling")
+
+
+def quick_line(head, words, log_path):
+    """The one line of a --quick round for the done report, from `words` (STAGE_WORDS: stage, word, reason); `head` is
+    quick_head's. It passes only when every stage passed; else it names the first stage that did not."""
     failed = next(((name, word, reason) for name, word, reason in words if word != PASS_WORD), None)
     if words and failed is None:
-        return "QUICK PASS %s %s: %d of %d (%s); log %s" % (repo_name, commit[:10], len(words), len(words), ", ".join(name for name, _, _ in words), log_path)
+        return "QUICK PASS %s: %d of %d (%s); log %s" % (head, len(words), len(words), ", ".join(name for name, _, _ in words), log_path)
     if failed is None:
-        return "QUICK FAIL %s %s: no stage ran; log %s" % (repo_name, commit[:10], log_path)
+        return "QUICK FAIL %s: no stage ran; log %s" % (head, log_path)
     name, word, reason = failed
-    return "QUICK FAIL %s %s: %s (%s%s); log %s" % (repo_name, commit[:10], name, word, ": " + reason if reason else "", log_path)
+    return "QUICK FAIL %s: %s (%s%s); log %s" % (head, name, word, ": " + reason if reason else "", log_path)
 
 
 def run_quick(args):
@@ -1352,9 +1359,19 @@ def run_quick(args):
     if why:
         say("QUICK FAIL %s %s: %s" % (repo_name, commit[:10], why))
         return 1
+    # The stages read the sibling's working tree (the docs build the helper there; a render-link round runs the plugin's
+    # tools): the line names its commit, and a sibling with tracked changes is refused, as the tree is.
     sibling_used = kind == "mge" or (os.path.isdir(sibling) and repo_kind(sibling) == "mge")
-    say("quick: %s %s, base %s, sibling %s; stages: %s" % (repo_name, commit[:10], base[:10], sibling if sibling_used else "none (the docs skip the helper)",
-                                                          ", ".join(name for name, _, _ in stages)))
+    sibling_head = None
+    if sibling_used:
+        sibling_head = (os.path.basename(sibling), git(sibling, "rev-parse", "HEAD"))
+        if git(sibling, "status", "--porcelain", "--untracked-files=no"):
+            say("QUICK FAIL %s: the sibling %s has tracked changes, and its stages read its working tree: commit them first, or give --sibling "
+                "another tree" % (quick_head(repo_name, commit, sibling_head), sibling))
+            return 1
+    head = quick_head(repo_name, commit, sibling_head)
+    say("quick: %s, base %s, sibling %s; stages: %s" % (head, base[:10], sibling if sibling_used else "none (the docs skip the helper)",
+                                                      ", ".join(name for name, _, _ in stages)))
     if args.dry_run:
         return 0
     slots = load_slots()
@@ -1364,7 +1381,7 @@ def run_quick(args):
         return 3
     results, summary = done
     say(summary)
-    line = quick_line(repo_name, commit, STAGE_WORDS, log_path)
+    line = quick_line(head, STAGE_WORDS, log_path)
     with open(log_path, "a", encoding="utf-8") as log:
         log.write(line + "\n")
     say(line)
@@ -1715,11 +1732,13 @@ def self_test_quick(root, plugin, mge, base):
     assert stages is None and "--sibling <a %s tree>" % PLUGIN_NAME in why, why
     assert quick_plan(None, root, "", None)[0] is None
     # The line: a pass names every stage; a failure names the first stage that did not pass, with its word and reason.
+    head = quick_head("r", "c" * 40)
+    assert head == "r cccccccccc (no sibling)" and quick_head("r", "c" * 40, ("s", "e" * 40)) == "r cccccccccc (sibling s eeeeeeeeee)"
     words = [("a", PASS_WORD, ""), ("b", PASS_WORD, "")]
-    assert quick_line("r", "c" * 40, words, "L") == "QUICK PASS r cccccccccc: 2 of 2 (a, b); log L", quick_line("r", "c" * 40, words, "L")
+    assert quick_line(head, words, "L") == "QUICK PASS r cccccccccc (no sibling): 2 of 2 (a, b); log L", quick_line(head, words, "L")
     words = [("a", PASS_WORD, ""), ("b", FAIL_WORD, "exit code 101"), ("c", NOT_RUN_WORD, "b did not pass")]
-    assert quick_line("r", "c" * 40, words, "L") == "QUICK FAIL r cccccccccc: b (FAIL: exit code 101); log L"
-    assert quick_line("r", "c" * 40, [], "L") == "QUICK FAIL r cccccccccc: no stage ran; log L"
+    assert quick_line(head, words, "L") == "QUICK FAIL r cccccccccc (no sibling): b (FAIL: exit code 101); log L"
+    assert quick_line(head, [], "L") == "QUICK FAIL r cccccccccc (no sibling): no stage ran; log L"
     # The label names the tool (slot.py's rule of D504) and does not go ahead of the merge checks (D148).
     label = QUICK_LABEL % (PLUGIN_NAME, "c" * 10)
     assert not label.startswith("merge_step:") and label.split(":", 1)[0].strip().endswith(".py"), label
@@ -1741,7 +1760,31 @@ def self_test_quick(root, plugin, mge, base):
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
         assert run_quick(args) == 0
-    assert said.getvalue().startswith("quick: %s %s, base %s, sibling none (the docs skip the helper); stages: %s" % (PLUGIN_NAME, head[:10], head[:10], ", ".join(base))), said.getvalue()
+    assert said.getvalue().startswith("quick: %s %s (no sibling), base %s, sibling none (the docs skip the helper); stages: %s" % (PLUGIN_NAME, head[:10], head[:10], ", ".join(base))), said.getvalue()
+    # A render-link tree beside it: the docs build the helper there, so the line names its commit, and a sibling with
+    # tracked changes is refused (verdict 605).
+    beside = os.path.join(root, "quick", MGE_NAME)
+    os.makedirs(os.path.join(beside, "mgeHost64"))
+    with open(os.path.join(beside, "mgeHost64", "lib.rs"), "w", encoding="ascii") as file:
+        file.write("a\n")
+    for command in (["init", "-q"], ["add", "mgeHost64/lib.rs"], author + ["commit", "-q", "-m", "one"]):
+        subprocess.run(["git", "-C", beside, *command], check=True, env=git_env())
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        assert run_quick(args) == 0
+    assert said.getvalue().startswith("quick: %s %s (sibling %s %s), base %s, sibling %s; stages: " % (
+        PLUGIN_NAME, head[:10], MGE_NAME, resolve(beside, "HEAD")[:10], head[:10], beside)), said.getvalue()
+    with open(os.path.join(beside, "mgeHost64", "lib.rs"), "w", encoding="ascii") as file:
+        file.write("b\n")
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        assert run_quick(args) == 1
+    assert "QUICK FAIL %s %s (sibling %s " % (PLUGIN_NAME, head[:10], MGE_NAME) in said.getvalue() and "has tracked changes" in said.getvalue(), said.getvalue()
+    # The null: --sibling to a folder with no render-link tree passes the same plugin tree again.
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        assert run_quick(types.SimpleNamespace(repo=tree, base=None, sibling=os.path.join(root, "none"), dry_run=True, no_wait=True)) == 0
+    assert "(no sibling)" in said.getvalue(), said.getvalue()
     with open(os.path.join(tree, "host", "src", "shader.wgsl"), "w", encoding="ascii") as file:
         file.write("b\n")
     said = io.StringIO()
