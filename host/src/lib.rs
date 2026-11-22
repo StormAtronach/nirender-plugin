@@ -1106,9 +1106,9 @@ struct Player {
     /// that the game draws into ([`None`] for the back buffer), and whether the game named a
     /// rendered texture as its target.
     parameters: Option<FrameParameters>,
-    /// [`FrameParameters::particles`] of the last frame that had answers: what a particle takes
-    /// before the answers of this frame come (a save's picture at the head of a frame).
-    particles_last: bool,
+    /// The particle answers of the last frame that had answers: what a particle takes before the
+    /// answers of this frame come (a save's picture at the head of a frame).
+    particle_answers_last: player::ParticleAnswers,
     plan: plan::Plan,
     /// The blended world draws of the frame that the engine sorts, and the places of the
     /// table's blends in the engine's queue: they wait for the item `SortedBlends` and keep
