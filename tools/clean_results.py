@@ -292,24 +292,25 @@ def other_dumps():
 
 
 def read_sizes_csv(path, sets):
-    """The folders right below `sets` in a WizTree CSV of folders (line 1 its banner, line 2 the header): {name in lower
-    case: (bytes, the time of its Modified as seconds)}. The sizes of the sets come from it, as the tool walks no set
-    (D587, W565)."""
+    """The folders right below `sets` in a WizTree CSV of folders (the header on line 1, or on line 2 after WizTree's
+    banner): {name in lower case: (bytes, the time of its Modified as seconds)}. The sizes of the sets come from it, as
+    the tool walks no set (D587, W565). Read on the export of 2026-11-22 (WizTree 4.33): 434 folders, 51 sealed sets."""
     import csv
 
     prefix = os.path.normcase(os.path.abspath(sets)).rstrip("\\/") + os.sep
     found = {}
     with open(path, encoding="utf-8-sig", newline="") as file:
-        next(file, None)
-        for row in csv.DictReader(file):
-            folder = os.path.normcase(row.get("File Name") or "")
-            if not folder.startswith(prefix) or not folder.endswith(os.sep):
-                continue
-            name = folder[len(prefix):-1]
-            if not name or os.sep in name:
-                continue
-            modified = time.mktime(time.strptime(row["Modified"], "%Y/%m/%d %H:%M:%S")) if row.get("Modified") else None
-            found[name] = (int(row["Size"]), modified)
+        lines = file.read().splitlines()
+    header = 0 if lines and lines[0].lstrip('"').startswith("File Name") else 1
+    for row in csv.DictReader(lines[header:]):
+        folder = os.path.normcase(row.get("File Name") or "")
+        if not folder.startswith(prefix) or not folder.endswith(os.sep):
+            continue
+        name = folder[len(prefix):-1]
+        if not name or os.sep in name:
+            continue
+        modified = time.mktime(time.strptime(row["Modified"], "%Y/%m/%d %H:%M:%S")) if row.get("Modified") else None
+        found[name] = (int(row["Size"]), modified)
     return found
 
 
@@ -510,7 +511,11 @@ def clean(args):
     current = current_set()
     plugin_main = shared.checkout_of(os.path.dirname(os.path.abspath(__file__)))
     pairs = merge_step_pairs(plugin_main, os.path.join(os.path.dirname(plugin_main), "MGE-XE-G7-render-link") if plugin_main else None)
-    sets = plan_sets(SETS, evidence, current, running, now, read_sizes_csv(args.sizes_csv, SETS) if args.sizes_csv else None, pairs)
+    sizes = read_sizes_csv(args.sizes_csv, SETS) if args.sizes_csv else None
+    sets = plan_sets(SETS, evidence, current, running, now, sizes, pairs)
+    if sizes is not None:
+        # Verdict 613: a CSV of another form gives no size, and this line says so.
+        print("the CSV %s gave the sizes of %d of the %d sets" % (args.sizes_csv, sum(row["size"] is not None for row in sets), len(sets)))
     print_runs(plans, links, args.list)
     print_labels(plans, evidence)
     print_dumps(dumps, other_dumps())
@@ -581,6 +586,11 @@ def self_test_sealed_sets(temp, now):
         file.write('"%s\\",7,0,%s,0,1,0\n' % (os.path.join(sets, "f300", "deeper"), stamp))
     sizes = read_sizes_csv(csv_path, sets)
     assert set(sizes) == {os.path.normcase(old[0]), "f300"} and sizes[os.path.normcase(old[0])][0] == 123000000, sizes
+    # Verdict 613: an export with no banner line reads the same.
+    bare_csv = os.path.join(temp, "sealed", "wiztree-bare.csv")
+    with open(csv_path, encoding="utf-8-sig") as source, open(bare_csv, "w", encoding="utf-8-sig", newline="") as bare:
+        bare.writelines(source.readlines()[1:])
+    assert read_sizes_csv(bare_csv, sets) == sizes, read_sizes_csv(bare_csv, sets)
     with_sizes = {row["name"]: row for row in plan_sets(sets, Evidence(""), current, [], now, sizes, pairs)}
     assert with_sizes[old[0]]["size"] == 123000000 and with_sizes[current]["size"] is None and "younger" in with_sizes["f300"]["treatment"], with_sizes["f300"]
     assert set_size(with_sizes[current]) == "size ?" and set_size(with_sizes[old[0]]) == gigabytes(123000000)
