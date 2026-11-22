@@ -54,6 +54,10 @@ NOT_RUN_EXIT = 5
 # (REFUSED_FORMAT_EXITS) while the build under test played the same capture: the two builds read two formats
 # (format_change). merge_step.py judges it by this code, never by a line's text (W527).
 FORMAT_CHANGE_EXIT = 6
+# The exit code of an A/B stage whose build under test differs from the base while the base equals itself: a FAIL. Its
+# other FAILs (noise, an empty hash line, a replay that does not play) exit with 1. merge_step.py passes this code only
+# with an evidence file, as a planned change that the Coordinator judged from the numbers (W574).
+DIFFERS_EXIT = 7
 
 # The summary line of one test binary in the output of cargo test, quiet or not. The one reader of it in the tools:
 # merge_step.py --require-tests and check_mwse_sites.py (W527).
