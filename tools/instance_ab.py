@@ -41,7 +41,7 @@ Exit code 0 is a PASS, 1 a FAIL, 5 NOT RUN, 6 a FORMAT CHANGE, 7 a FAIL whose bu
 serves when the named one holds none. A planned change of the grass fails the A/B with code 7, and the Coordinator judges
 it from the numbers, as for any planned new look; merge_step.py passes it as JUDGED only with that evidence file (W574).
 Noise, an empty hash line, a build under test with no hash line and a replay that does not play stay code 1: no evidence
-passes them.
+passes them. A picture in one arm only counts as a replay that does not play (verdict 615).
 """
 import argparse
 import os
@@ -239,20 +239,23 @@ def line_differences(a, b, what="hash line", limit=3):
     return found
 
 
+NO_PICTURE = "no picture in "  # the start of the text of a picture that is in one folder only
+
+
 def picture_differences(folder_a, folder_b, compare):
     """The pictures of the two folders that differ or are in one folder only, as texts. `compare(a_path, b_path)`
     returns None for equal pictures, else a text of the numbers."""
     found = []
     names_a, names_b = [sorted(name for name in os.listdir(folder) if name.endswith(".png")) if os.path.isdir(folder) else [] for folder in (folder_a, folder_b)]
     if not names_a:
-        return ["no picture in %s" % folder_a]
+        return [NO_PICTURE + folder_a]
     for name in sorted(set(names_a) | set(names_b)):
         if name not in names_a:
-            found.append("%s: no picture in %s" % (name, folder_a))
+            found.append("%s: %s%s" % (name, NO_PICTURE, folder_a))
             continue
         other = os.path.join(folder_b, name)
         if not os.path.isfile(other):
-            found.append("%s: no picture in %s" % (name, folder_b))
+            found.append("%s: %s%s" % (name, NO_PICTURE, folder_b))
             continue
         text = compare(os.path.join(folder_a, name), other)
         if text:
@@ -269,6 +272,10 @@ def judge(null_pictures, null_hash, pictures, hashes, base_hash, now_hash):
     for who, found in (("base", empty_hash_lines(base_hash)), ("build under test", empty_hash_lines(now_hash))):
         if found:
             return FAIL, ["FAIL a hash line of the %s counts records and hashes none: %s" % (who, found[0])]
+    missing = [line for line in pictures if line.startswith(NO_PICTURE) or (": " + NO_PICTURE) in line]
+    if missing:
+        # A picture in one arm only: a replay that did not play all of its frames, not a difference that evidence passes.
+        return FAIL, ["FAIL a picture is in one arm only, so a replay did not play"] + ["       " + line for line in missing]
     if base_hash and hash_records(base_hash) == 0:
         return NOT_RUN, ["NOT RUN: the base prints hash lines and none holds a grass record: the capture does not reach the grass code"]
     lines = []
@@ -543,6 +550,14 @@ def self_test():
         assert code == FAIL and "prints no hash line" in " ".join(lines)
         code, lines = judge([], [], ["p-1.png: differs"], [], [one], [])
         assert code == FAIL and "prints no hash line" in " ".join(lines)
+        # A picture in one arm only (a replay of the build under test that exits 0 with fewer pictures, or none) is a
+        # FAIL, with and without a hash difference (verdict 615). The null: "p-1.png: differs" above is DIFFERS.
+        now = os.path.join(root, "now")
+        for pictures_found in (["p-2.png: " + NO_PICTURE + now], [NO_PICTURE + now], ["p-1.png: differs", "p-2.png: " + NO_PICTURE + now]):
+            for hashes_found, now_hash in (([], [one]), (["hash line 0: a | b"], [two])):
+                code, lines = judge([], [], pictures_found, hashes_found, [one], now_hash)
+                assert code == FAIL and lines[0] == "FAIL a picture is in one arm only, so a replay did not play", (pictures_found, lines)
+        assert picture_differences(a, os.path.join(root, "none"), same)[0] == "p-1.png: " + NO_PICTURE + os.path.join(root, "none")
         empty = "grass hash frame 3 main: 4 records, cut false, ordered cbf29ce484222325, unordered 0000000000000000"
         assert empty_hash_lines([one, two, empty]) == [empty]
         code, lines = judge([], [], [], [], [one], [empty])
