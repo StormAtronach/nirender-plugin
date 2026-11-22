@@ -99,6 +99,7 @@ impl Player {
             frame_bones: Vec::new(),
             frame_instances: Vec::new(),
             parameters: None,
+            particles_last: false,
             plan: plan::Plan::default(),
             frame_sorted: Vec::new(),
             replaced: 0,

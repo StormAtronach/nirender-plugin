@@ -545,8 +545,10 @@ impl Player {
             renderer.counts.corner_light_draws += 1;
         }
         // A particle takes the extension's colour function when the frame has one: in every
-        // scene and into every target, shaded or not.
-        if particles && self.parameters.as_ref().is_some_and(|p| p.particles) {
+        // scene and into every target, shaded or not. A draw before the answers of this frame
+        // (a save's picture at the head of a frame) takes the answer of the last frame.
+        let hook = self.parameters.as_ref().map_or(self.particles_last, |p| p.particles);
+        if particles && hook {
             draw_data.counts[3] |= crate::PARTICLE_HOOK_BIT;
             renderer.counts.particle_hook_draws += 1;
         }

@@ -192,7 +192,9 @@ pub struct FrameParameters {
     /// True when the draw text of the extension ([`Extension::draw_shader`]) has
     /// `extension_particle_color` for the particles of this frame: each draw of the quads of a
     /// particle system gets [`crate::PARTICLE_HOOK_BIT`], in every scene and into every target.
-    /// False: the particles go through the texture stages as any draw, with no call.
+    /// A draw before this frame's answers (a save's picture at the head of a frame) takes the
+    /// value of the last frame. False: the particles go through the texture stages as any draw,
+    /// with no call.
     pub particles: bool,
     /// True when the extension wants the call [`Extension::blend`] in this frame.
     pub blend: bool,
