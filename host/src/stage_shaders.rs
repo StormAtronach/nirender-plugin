@@ -171,12 +171,22 @@ const UBER_SET: [PipelineKey; 48] = [
 /// The bits of `counts.w` in a stage key: each one chooses a branch of `fs` or of the
 /// extension's shade (1 the extension shades, 2, the sky's [`SKY_BITS`], 16, 32 the sun's
 /// shadow, 128 the light for each pixel, 512, and this crate's [`crate::CLOUDS_HOOK_BIT`], 1024:
-/// the clouds with the extension's colour, [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit
-/// at its corners, and [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained
-/// table also takes the bits of its kind from the scene (`draw_counts_w`): those stay values of
-/// the frame, but for the sky's bits. The key keeps the bits in a `u16`.
-const SHADE_BITS: u32 =
-    1 | 2 | SKY_BITS | 16 | 32 | 128 | 512 | crate::CLOUDS_HOOK_BIT | crate::CORNER_LIGHT_BIT | crate::NO_LIGHTS_BIT;
+/// the clouds with the extension's colour, [`crate::PARTICLE_HOOK_BIT`], 2048: a particle with
+/// the extension's colour, [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit at its corners,
+/// and [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained table also takes
+/// the bits of its kind from the scene (`draw_counts_w`): those stay values of the frame, but
+/// for the sky's bits. The key keeps the bits in a `u16`.
+const SHADE_BITS: u32 = 1
+    | 2
+    | SKY_BITS
+    | 16
+    | 32
+    | 128
+    | 512
+    | crate::CLOUDS_HOOK_BIT
+    | crate::PARTICLE_HOOK_BIT
+    | crate::CORNER_LIGHT_BIT
+    | crate::NO_LIGHTS_BIT;
 /// The sky's bits of `counts.w`: 4 the dome, 8 the shadow of a moon. Only the stream sets them
 /// (`stream::sky_bits`). The scene's bits of a table's kind never have them (`retained::apply_shade`
 /// takes them out), so a stage pipeline's `draw_counts_w` takes them out of the scene's part too,
@@ -629,6 +639,7 @@ fn kinds() -> Vec<(&'static str, StageKey)> {
         ("a key that adds to the picture", StageKey { adds: true, ..plain }),
         ("a key of the sky", shade(SKY_BITS)),
         ("a key with the clouds hook's bit", shade(crate::CLOUDS_HOOK_BIT)),
+        ("a key with the particle hook's bit", shade(crate::PARTICLE_HOOK_BIT)),
         ("a key with no lights", shade(crate::NO_LIGHTS_BIT)),
         ("a key with the light at the corners", shade(crate::CORNER_LIGHT_BIT)),
         ("a key with every shade bit", shade(SHADE_BITS)),
@@ -1710,7 +1721,7 @@ mod tests {
     #[test]
     fn the_key_takes_the_facts_of_the_record() {
         let mut data = DrawData::zeroed();
-        data.counts[3] = 1 | 4 | 32 | 2048;
+        data.counts[3] = 1 | 4 | 32 | 4096;
         data.flags = [1, 1, 0, 0];
         data.light_range[3] = 4 | 1 | crate::ADDS_BIT;
         let key = StageKey::of(&data).unwrap();
@@ -1718,7 +1729,7 @@ mod tests {
             (key.shade, key.lit, key.normal, key.scene, key.adds, key.flat, key.plane),
             (1 | 4 | 32, 1, 1, true, true, false, false)
         );
-        // A bit outside SHADE_BITS (2048) does not split a key.
+        // A bit outside SHADE_BITS (4096) does not split a key.
         let mut other = data;
         other.counts[3] = 1 | 4 | 32;
         assert_eq!(StageKey::of(&other), Some(key));
@@ -2123,7 +2134,7 @@ mod tests {
         assert_eq!(StageKey::from_words(&own.words()), Some(own));
         // A bit outside SHADE_BITS is not a key of this build.
         let mut words = stage.words();
-        words[2] |= 2048;
+        words[2] |= 4096;
         assert_eq!(StageKey::from_words(&words), None);
         // The add bit is a flag: another value is not a key of this build.
         let mut words = stage.words();

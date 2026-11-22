@@ -189,6 +189,13 @@ pub struct FrameParameters {
     /// values too, a draw of the clouds gets [`crate::CLOUDS_HOOK_BIT`] and its colour from
     /// that function. False: the clouds go through the texture stages and the shade as any draw.
     pub clouds: bool,
+    /// True when the draw text of the extension ([`Extension::draw_shader`]) has
+    /// `extension_particle_color` for the particles of this frame: each draw of the quads of a
+    /// particle system gets [`crate::PARTICLE_HOOK_BIT`], in every scene and into every target.
+    /// A draw before this frame's answers (a save's picture at the head of a frame) takes the
+    /// value of the last frame. False: the particles go through the texture stages as any draw,
+    /// with no call.
+    pub particles: bool,
     /// True when the extension wants the call [`Extension::blend`] in this frame.
     pub blend: bool,
     /// The classes of the game (MGE_LINK_CLASS_*, one bit for each) whose draws into the
@@ -685,6 +692,19 @@ pub trait Extension {
     ///   in the vertex stage, the colour of a draw with [`crate::NO_LIGHTS_BIT`] that is not
     ///   flat-shaded, which `extension_shade` then takes. Without it the vertex stage's colour
     ///   stays.
+    /// - Optional: `fn extension_particle_color(p: ParticlePixel) -> vec4f`: for any draw with
+    ///   [`crate::PARTICLE_HOOK_BIT`] (a frame with [`FrameParameters::particles`]), shaded or not,
+    ///   the colour and the alpha of a pixel of a particle after the texture stages. The result
+    ///   takes the limit of the stages (between 0 and 1 for a draw with a stage and without the
+    ///   light for each pixel); then come, as for any draw, the alpha test, the fog and
+    ///   `extension_finish`. `ParticlePixel` (in the shader) has `color` (the result of the
+    ///   stages), `vertex_color` (the particle's colour and alpha from the game), `texcoords`
+    ///   (the coordinate of the first texture stage), `pixel` (the screen pixel) and `distance`
+    ///   (the depth along the view, in units of the world). The shader's
+    ///   `fn particle_texture(uv: vec2f) -> vec4f` reads the draw's first texture with its
+    ///   sampler at the level of the stages' own read, also in a branch; `fn particle_adds() ->
+    ///   bool` is true for a draw that adds to the picture. Without the function the colour of
+    ///   the stages stays.
     ///
     /// The functions read the uniform of the draw as `draw` (see [`DrawData`]); the colour of
     /// such a draw is not kept between 0 and 1 after the stages.
@@ -740,10 +760,11 @@ pub trait Extension {
     /// world of the game into the back buffer with a perspective projection, when
     /// [`FrameParameters::shade`] is true. The extension sets bit 1 of `counts[3]` for a draw
     /// that its shader functions shade; bit 2 and the bits from 16 are its own, but
-    /// [`crate::NO_LIGHTS_BIT`], [`crate::CORNER_LIGHT_BIT`] and [`crate::CLOUDS_HOOK_BIT`], which
-    /// the renderer sets: a draw lit for each pixel with no lights (its shader may leave its
-    /// light loop out), a particle that takes its lights at its corners, and a draw of the clouds
-    /// with the extension's colour.
+    /// [`crate::NO_LIGHTS_BIT`], [`crate::CORNER_LIGHT_BIT`], [`crate::CLOUDS_HOOK_BIT`] and
+    /// [`crate::PARTICLE_HOOK_BIT`], which the renderer sets: a draw lit for each pixel with no
+    /// lights (its shader may leave its light loop out), a particle that takes its lights at its
+    /// corners, a draw of the clouds with the extension's colour, and a particle with the
+    /// extension's colour.
     fn shade(&mut self, _draw: &mut DrawData, _lights: &mut [LightData], _facts: &DrawFacts) {}
 
     /// The shade of the retained table for a frame, one time at the start of its world, when
