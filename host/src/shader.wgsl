@@ -73,11 +73,13 @@ struct Draw {
     // bit 4, the draw is the sky dome and the extension gives its shape and its colour; bit
     // 8, the extension gives the colour and the draw keeps its alpha (the shadow of a moon);
     // bit 128, the extension makes the light for each pixel: the vertex stage makes no light
-    // and the colour is not kept between 0 and 1 between the stages; bit 16384, this crate's
-    // CORNER_LIGHT_BIT: a particle takes its lights at its corners (`extension_corner_shade`
-    // in the vertex stage); bit 32768, this crate's NO_LIGHTS_BIT: a draw lit for each pixel
-    // with no lights; bit 2 and the bits from 16 (but 128, 16384 and 32768) are for the
-    // extension.
+    // and the colour is not kept between 0 and 1 between the stages; bit 1024, this crate's
+    // CLOUDS_HOOK_BIT: the clouds with the extension's colour; bit 2048, this crate's
+    // PARTICLE_HOOK_BIT: a particle whose colour after the stages goes through
+    // `extension_particle_color`; bit 16384, this crate's CORNER_LIGHT_BIT: a particle takes its
+    // lights at its corners (`extension_corner_shade` in the vertex stage); bit 32768, this
+    // crate's NO_LIGHTS_BIT: a draw lit for each pixel with no lights; bit 2 and the bits from
+    // 16 (but 128, 1024, 2048, 16384 and 32768) are for the extension.
     counts: vec4u,
     // The lights of the draw in `lights`: the first and the number.
     light_range: vec4u,
@@ -192,7 +194,7 @@ const FIXED_ALPHA_TEST: u32 = 0u;
 // STAGE FACTS END
 // The bits of `counts.w` that a stage key holds (`stage_shaders::SHADE_BITS`), and the sky's bits
 // among them, which the scene's part never has (`stage_shaders::SKY_BITS`).
-const SHADE_BITS: u32 = 50879u;
+const SHADE_BITS: u32 = 52927u;
 const SKY_BITS: u32 = 12u;
 // The bits of `light_range.w` that a stage key holds: 4, 16 and 64.
 const LIGHT_FACT_BITS: u32 = 84u;
@@ -363,6 +365,10 @@ fn world_light(at: u32) -> Light {
 // variable made the GPU three times slower (2026-10-16).
 @group(0) @binding(8) var<storage, read> draws: array<Draw>;
 var<private> record: u32;
+// The two gradients of the first stage's coordinate on the screen, made in `fs` before any
+// branch: `particle_texture` reads at the level of the stage's own read with them.
+var<private> first_stage_dx: vec2f;
+var<private> first_stage_dy: vec2f;
 // The textures and the samplers of the frame in binding arrays: a stage names its slots
 // in its record (x the texture, y the sampler; the slot 0 is white and plain).
 @group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;
@@ -434,6 +440,18 @@ struct CloudPixel {
     color: vec4f,
     direction: vec3f,
     pixel: vec2f,
+}
+
+// A pixel of a particle for `extension_particle_color` (PARTICLE_HOOK_BIT, 2048): the colour
+// after the texture stages, the particle's own colour and alpha from the game, the coordinate
+// of the first texture stage, the screen pixel, and the depth along the view in units of the
+// world.
+struct ParticlePixel {
+    color: vec4f,
+    vertex_color: vec4f,
+    texcoords: vec2f,
+    pixel: vec2f,
+    distance: f32,
 }
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
@@ -757,6 +775,17 @@ fn cloud_texture(uv: vec2f) -> vec4f {
     return textureSampleLevel(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], uv, 0.0);
 }
 
+// The first texture of the draw with its sampler, at the level of the first stage's own read:
+// for `extension_particle_color`, which may read it in a branch and at moved coordinates.
+fn particle_texture(uv: vec2f) -> vec4f {
+    return textureSampleGrad(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], uv, first_stage_dx, first_stage_dy);
+}
+
+// The particle's draw adds to the picture: its fade goes to black, not to alpha 0.
+fn particle_adds() -> bool {
+    return draw_adds();
+}
+
 // D3DTOP_BUMPENVMAP is 22 and D3DTOP_BUMPENVMAPLUMINANCE is 23. The move that the bump stage
 // `index` gives to the coordinate of the next stage, from its texel.
 fn bump_move(index: u32, texel: vec4f) -> vec2f {
@@ -789,7 +818,10 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         inp.color = inp.color_flat;
         inp.world_normal = inp.world_normal_flat;
     }
-    // A texture read must not be in a branch, so each stage reads its texture first.
+    // A texture read must not be in a branch, so each stage reads its texture first. The
+    // gradients of the first stage's coordinate are made here for the same reason.
+    first_stage_dx = dpdx(final_coordinate(0u, inp.coordinate0));
+    first_stage_dy = dpdy(final_coordinate(0u, inp.coordinate0));
     var texels: array<vec4f, 6>;
     // A bump stage moves the coordinate of the stage after it.
     texels[0] = textureSample(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], final_coordinate(0u, inp.coordinate0));
@@ -849,6 +881,15 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     }
     // STAGE LOOP END
 
+    if (draw_counts_w() & 2048u) != 0u {
+        // A particle with the extension's colour (PARTICLE_HOOK_BIT): the function takes the
+        // result of the stages, and its result takes the stages' limit under their condition.
+        let distance = abs((draw_view() * vec4f(inp.world_position, 1.0)).z);
+        current = extension_particle_color(ParticlePixel(current, inp.vertex_color, final_coordinate(0u, inp.coordinate0), inp.clip.xy, distance));
+        if draws[record].counts.y != 0u && (draw_counts_w() & 128u) == 0u {
+            current = clamp(current, vec4f(0.0), vec4f(1.0));
+        }
+    }
     if draw_alpha_test() != 0u && !compare(draw_alpha_test(), floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {
         discard;
     }

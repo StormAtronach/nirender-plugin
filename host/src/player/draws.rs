@@ -544,6 +544,12 @@ impl Player {
             draw_data.counts[3] |= crate::CORNER_LIGHT_BIT;
             renderer.counts.corner_light_draws += 1;
         }
+        // A particle takes the extension's colour function when the frame has one: in every
+        // scene and into every target, shaded or not.
+        if particles && self.parameters.as_ref().is_some_and(|p| p.particles) {
+            draw_data.counts[3] |= crate::PARTICLE_HOOK_BIT;
+            renderer.counts.particle_hook_draws += 1;
+        }
         renderer.counts.times[TIME_DRAW_DATA] += clock.elapsed();
         let clock = ticks::Clock::now();
         let mut handles = [0u32; STAGES];
