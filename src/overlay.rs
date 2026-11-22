@@ -120,6 +120,9 @@ struct MemoryNow {
     total: u64,
     /// The private bytes of the process.
     private: u64,
+    /// The time of the walk for `largest_free`, in microseconds: it runs in the frame's end,
+    /// under the device lock.
+    walk_us: u64,
 }
 
 /// The numbers of the process now.
@@ -136,24 +139,28 @@ fn memory_now() -> MemoryNow {
     unsafe {
         K32GetProcessMemoryInfo(crate::win::GetCurrentProcess(), &mut memory, memory.size);
         GlobalMemoryStatusEx(&mut status);
+        let walk = std::time::Instant::now();
+        let largest_free = largest_free(status.total_virtual);
         MemoryNow {
-            largest_free: largest_free(status.total_virtual),
+            largest_free,
             used: status.total_virtual - status.available_virtual,
             total: status.total_virtual,
             private: memory.private as u64,
+            walk_us: walk.elapsed().as_micros() as u64,
         }
     }
 }
 
-/// The memory line: `seconds` since the first one.
+/// The memory line: `seconds` since the first one. MB are 10^6 bytes, as in the mark line.
 fn memory_line(seconds: i64, memory: &MemoryNow) -> String {
     let mb = |bytes: u64| bytes as f64 / 1e6;
     format!(
-        "memory at {seconds} s: largest free block {:.1} MB; address space {:.1} MB of {:.1} MB in use; private {:.1} MB",
+        "memory at {seconds} s: largest free block {:.1} MB; address space {:.1} MB of {:.1} MB in use; private {:.1} MB; walk {:.1} ms",
         mb(memory.largest_free),
         mb(memory.used),
         mb(memory.total),
-        mb(memory.private)
+        mb(memory.private),
+        memory.walk_us as f64 / 1000.0
     )
 }
 
@@ -229,14 +236,16 @@ mod tests {
             used: 1_830_400_000,
             total: 4_294_836_224,
             private: 1_500_300_000,
+            walk_us: 1_240,
         };
         assert_eq!(
             memory_line(120, &memory),
-            "memory at 120 s: largest free block 2131.2 MB; address space 1830.4 MB of 4294.8 MB in use; private 1500.3 MB"
+            "memory at 120 s: largest free block 2131.2 MB; address space 1830.4 MB of 4294.8 MB in use; private 1500.3 MB; walk 1.2 ms"
         );
         // The walk of this process: a free block, and no more than the address space.
         let now = memory_now();
         assert!(now.largest_free > 0 && now.largest_free <= now.total, "{now:?}");
         assert!(now.used > 0 && now.used <= now.total, "{now:?}");
+        assert!(now.walk_us < 5_000_000, "{now:?}");
     }
 }
