@@ -90,8 +90,10 @@ static MEMORY_LAST: AtomicI64 = AtomicI64::new(0);
 /// At the end of a recorded frame (`capture`): a memory line in the log at the first frame,
 /// then each [`MEMORY_LINE_SECONDS`]. Risk 41: the address space of the game fragments over
 /// long play, and the marks of the stream come only from a script. `now` and `per_second`:
-/// the ticks of the performance counter. A walk of the address space each time: once a
-/// minute, not at each frame.
+/// the ticks of the performance counter. The walk of the address space and the line run on a
+/// short thread of their own: the walk took 6.4 to 6.9 ms after 2 minutes of play (verdict 632,
+/// the run 20261123-034741-hob-w64-live), a dropped frame each minute on the game thread under
+/// the device lock. Without a thread, no line.
 pub fn memory_tick(now: i64, per_second: i64) {
     let last = MEMORY_LAST.load(Ordering::Relaxed);
     if !memory_line_due(now, last, per_second) {
@@ -102,7 +104,9 @@ pub fn memory_tick(now: i64, per_second: i64) {
     }
     MEMORY_LAST.store(now, Ordering::Relaxed);
     let seconds = (now - MEMORY_FIRST.load(Ordering::Relaxed)) / per_second.max(1);
-    crate::log!("{}", memory_line(seconds, &memory_now()));
+    let _ = std::thread::Builder::new()
+        .name("nirender memory line".into())
+        .spawn(move || crate::log!("{}", memory_line(seconds, &memory_now())));
 }
 
 /// True when a memory line is due: at the first frame (`last` 0), then when
@@ -120,8 +124,8 @@ struct MemoryNow {
     total: u64,
     /// The private bytes of the process.
     private: u64,
-    /// The time of the walk for `largest_free`, in microseconds: it runs in the frame's end,
-    /// under the device lock.
+    /// The time of the walk for `largest_free`, in microseconds, on the thread of the line
+    /// ([`memory_tick`]).
     walk_us: u64,
 }
 
@@ -247,5 +251,26 @@ mod tests {
         assert!(now.largest_free > 0 && now.largest_free <= now.total, "{now:?}");
         assert!(now.used > 0 && now.used <= now.total, "{now:?}");
         assert!(now.walk_us < 5_000_000, "{now:?}");
+    }
+
+    /// The frame's call only starts the thread; the thread writes the line into the log. The
+    /// only test of `memory_tick`: its state is the program's.
+    #[test]
+    fn the_memory_line_comes_from_its_own_thread() {
+        let per_second = 10_000_000;
+        // The first line, at 0 s; a call before the minute writes none.
+        memory_tick(1, per_second);
+        memory_tick(2, per_second);
+        let log = std::env::temp_dir().join("nirender-test-log").join("nirender.log");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let lines = loop {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            let lines = text.lines().filter(|line| line.starts_with("memory at ")).count();
+            if lines > 0 || std::time::Instant::now() >= deadline {
+                break lines;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(lines, 1, "the memory lines in {}", log.display());
     }
 }
