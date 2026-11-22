@@ -1507,6 +1507,21 @@ def self_test():
         assert not [name for name in os.listdir(root) if name.startswith(sets.set_name(refused))], os.listdir(root)
         with run_lock(lock) as free:
             assert free, "a refused take left the run lock held"
+        # Another run makes the set while this one waits for the slot (verdict 618): the check under the lock finds it,
+        # and this run builds nothing. The null: the check under the lock removed (the Reviewer's plant) builds it again.
+        late_made = dict(commits, mwse="cccc7777" + "0" * 32)
+        after_other = []
+
+        @contextlib.contextmanager
+        def other_run_makes_it():
+            code_other, lines_other = make(late_made, {}, sets.KIND_USUAL, builder, root, yes, None, keep, session, reuse=False, lock=lock)
+            assert code_other == 0, lines_other
+            after_other.append((builder.cargo_builds, builder.mwse_builds))
+            yield SlotHold()
+
+        code, lines = make(late_made, {}, sets.KIND_USUAL, builder, root, yes, other_run_makes_it, keep, session, reuse=False, lock=lock)
+        assert code == 0 and "nothing is built" in lines[0] and os.path.basename(lines[-1]) == sets.set_name(late_made), lines
+        assert after_other == [(builder.cargo_builds, builder.mwse_builds)], (after_other, lines)
         # A set that is there takes no slot and no lock; the null is the queued run above, which entered its hold.
         def no_take():
             raise AssertionError("a set that is there asked for the build hold")
