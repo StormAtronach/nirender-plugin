@@ -1,9 +1,16 @@
 """The checks of a merge, for the Coordinator, on the merged tree: one PASS or FAIL line for each stage.
 
-    python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--no-wait] [--dry-run]
+    python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--gate-list <file>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --quick [<tree>] [--sibling <tree>] [--base <commit>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --self-test    # the tests of the pure parts: no build, no game
     python -I tools/merge_step.py --open-deploys # the WITHHELD deploys that no deploy closed
+
+--gate-list FILE (W567 part D) is the Reviewer's passed list of the planned picture changes of a merge, one picture
+of the baseline folder for each line (validate_retained.py's --gate-list). The replay gate passes only when the
+pictures that changed equal the list exactly, and the round's last stage, "accept the gate list" (validate_retained.py
+accept-list), makes the listed pictures of the gate's run the accepted ones. As the last stage, it runs only when every
+stage before it passed, so the next round is equal with no list and no second round. The list goes with the accepted
+folder only (no --baseline), and its md5 is in the gate's verdict, the accept's line and the close line.
 
 --quick (W567 part A) is the worker's check of its own tree before the hand-off: the fast stages of the tree's repo
 (fast_stages) at its HEAD, with the stop at the first failure, and one line for the done report:
@@ -456,6 +463,31 @@ def maker_tree(repo):
     return os.path.join(build_set.TREES, build_set.TREE_NAMES[repo])
 
 
+# W567 part D: the planned changes of the replay gate, [(path, md5)] of --gate-list, and the stage that accepts them
+# as the round's last stage.
+GATE_LIST = []
+ACCEPT_LIST_STAGE = "accept the gate list"
+
+
+def gate_list_of(value, baseline, exists=os.path.isfile):
+    """[(path, md5)] of --gate-list, [] without it, or the reason it cannot be used. The accept writes the accepted
+    folder, so the list goes only with it, not with a --baseline copy."""
+    if not value:
+        return []
+    if not exists(value):
+        return "the gate list %s is no file" % value
+    if os.path.normcase(os.path.abspath(baseline)) != os.path.normcase(os.path.abspath(BASELINE)):
+        return "--gate-list accepts the listed pictures into the accepted folder at the end of a pass, so it goes with no --baseline (here %s)" % baseline
+    return [(os.path.abspath(value), file_md5(value))]
+
+
+def gate_list_close(stages):
+    """The part of a close line for a round's gate list (W567 part D): its file and md5, when the round accepted it."""
+    if not GATE_LIST or not any(name == ACCEPT_LIST_STAGE for name, _, _ in stages):
+        return []
+    return ["gate list %s md5 %s accepted" % GATE_LIST[0]]
+
+
 # The label of a --quick take: a tool's label (slot.py's rule of D504), and not the prefix of the merge checks
 # ("merge_step:"), which goes ahead of the queue (D148). A worker's check waits its turn.
 QUICK_LABEL = "merge_step.py: quick %s %s"
@@ -523,7 +555,9 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
             stages.append((SITES_SET_STAGE, plugin, tool("check_mwse_sites.py", os.path.join(folder, "MWSE.dll"))))
         stages.append((DEPLOY_STAGE, plugin, tool("deploy_rest.py", "--set", folder, *commit_args)))
     if gate:
-        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-now"))))
+        gate_now = os.path.join(plugin, "target", "merge-step-now")
+        on_list = ["--gate-list", GATE_LIST[0][0]] if GATE_LIST else []
+        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", folder, "--baseline", baseline, "--now", gate_now, *on_list)))
         if touches(paths, ORDER_PATHS[kind]):
             stages.append((ORDER_STAGE, plugin, tool("validate_retained.py", "order", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-order"))))
         under_test = commits or {}
@@ -537,6 +571,11 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
             stages.append(set_stage(BASE_STAGE, plugin, base_set, label))
             stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", set_folder_of(base_set),
                                                         "--now-build", folder, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
+        if GATE_LIST:
+            # W567 part D: the last stage, so it runs only when every stage before it passed (the stop at the first
+            # failure): the listed pictures of the gate's run become the accepted ones, and the next round is equal.
+            stages.append((ACCEPT_LIST_STAGE, plugin, tool("validate_retained.py", "accept-list", "--gate-list", GATE_LIST[0][0], "--mge-build", folder,
+                                                           "--baseline", baseline, "--now", gate_now)))
     elif not deploys and touches(paths, DIST_PATHS[kind]):
         stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
@@ -888,7 +927,7 @@ def run_stages(stages, log, note_stage=lambda: None):
         if stopped_by is not None:
             results[name] = not_run(name, "%s did not pass, and the round stops at its first failure" % stopped_by)
             continue
-        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE) and not made.get(SET_STAGE, True):
+        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE, ACCEPT_LIST_STAGE) and not made.get(SET_STAGE, True):
             results[name] = not_run(name, "the round's set was not made")
             stopped_by = name
             continue
@@ -1714,6 +1753,45 @@ def scratch_slots(state):
     return module
 
 
+def self_test_gate_list(root, plugin):
+    """The tests of --gate-list (W567 part D): the option, the gate's argument, the accept as the round's last stage, the
+    close line, and the stop that keeps the accept from a round that failed."""
+    listed = os.path.join(root, "gate-list.txt")
+    with open(listed, "w", encoding="utf-8") as file:
+        file.write("tour/3-03-_nif_052.png\n")
+    assert gate_list_of(None, BASELINE) == []
+    assert "is no file" in gate_list_of(os.path.join(root, "none.txt"), BASELINE)
+    assert "goes with no --baseline" in gate_list_of(listed, os.path.join(root, "copy"))
+    assert gate_list_of(listed, BASELINE) == [(os.path.abspath(listed), file_md5(listed))]
+    tips = {"plugin": "1" * 40, "mge": "2" * 40}
+    try:
+        GATE_LIST[:] = gate_list_of(listed, BASELINE)
+        planned = stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, tips)
+        commands = {name: command for name, _, command in planned}
+        gate = commands["replay gate"]
+        assert gate[-2:] == ["--gate-list", os.path.abspath(listed)], gate
+        assert planned[-1][0] == ACCEPT_LIST_STAGE, [name for name, _, _ in planned]
+        accept = commands[ACCEPT_LIST_STAGE]
+        assert accept[3:6] == ["accept-list", "--gate-list", os.path.abspath(listed)], accept
+        assert accept[accept.index("--now") + 1] == gate[gate.index("--now") + 1] and accept[accept.index("--mge-build") + 1] == gate[gate.index("--mge-build") + 1], (accept, gate)
+        assert "gate list %s md5 %s accepted" % (os.path.abspath(listed), file_md5(listed)) in gate_list_close(planned)
+        # No gate: no accept, and the close names no list.
+        plain = stages_for("plugin", plugin, ["tools/x.py"])
+        assert ACCEPT_LIST_STAGE not in [name for name, _, _ in plain] and gate_list_close(plain) == []
+        # The accept runs only after every stage passed: a red gate stops the round before it.
+        good, bad = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(1)"]
+        never = [sys.executable, "-c", "raise SystemExit(9)"]
+        now = os.path.join(root, "gate-list-now")
+        os.makedirs(os.path.join(now, "tour"), exist_ok=True)
+        with open(os.path.join(root, "log-gate-list.txt"), "w", encoding="utf-8") as log:
+            assert run_stages([("replay gate", root, bad + ["--now", now]), (ACCEPT_LIST_STAGE, root, never)], log) == [False, False]
+            assert STAGE_WORDS[-1] == (ACCEPT_LIST_STAGE, NOT_RUN_WORD, "replay gate did not pass, and the round stops at its first failure"), STAGE_WORDS
+            assert run_stages([("replay gate", root, good + ["--now", now]), (ACCEPT_LIST_STAGE, root, good)], log) == [True, True]
+    finally:
+        del GATE_LIST[:]
+    assert ACCEPT_LIST_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, tips)], "a round with no list accepts"
+
+
 def self_test_quick(root, plugin, mge, base):
     """The tests of --quick (W567 part A): its stages, its refusals and its line. `plugin` and `mge` are the self-test's
     trees, and `base` the names of the plugin's fast stages."""
@@ -1842,6 +1920,7 @@ def self_test():
         assert names("plugin", plugin, "srcx/lib.rs") == base, "a name that only starts the same deployed"
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"] + deploy_tail
         self_test_quick(root, plugin, mge, base)
+        self_test_gate_list(root, plugin)
         # The set of the commits under test and the round's MWSE commit: the maker in the round's take (--in-hold, C2), in
         # the plugin's tree; the deploy and the gate name its folder (C3).
         full = under_test("plugin", "a" * 40, "b" * 40)
@@ -3282,6 +3361,8 @@ def main():
     parser.add_argument("--evidence", action="append", metavar="STAGE=FILE", help="the evidence file of a FORMAT CHANGE of the stage '%s': with it the stage passes, and the round's close line names the file's md5" % INSTANCE_STAGE)
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     parser.add_argument("--open-deploys", action="store_true", help="list the WITHHELD deploys of %s that no deploy closed, and stop" % DEPLOYS_FILE)
+    parser.add_argument("--gate-list", metavar="FILE", help="the Reviewer's passed list of the planned picture changes (W567 part D): the replay gate passes only when the "
+                        "changed pictures equal it, and the round's last stage accepts them; its md5 goes into the close line")
     parser.add_argument("--quick", action="store_true", help="the fast stages of a worker's own tree (<repo>, else the current folder) at its HEAD, and one line for the done report (W567)")
     parser.add_argument("--sibling", help="with --quick: the tree of the other repo; without it, the tree beside <repo>")
     args = parser.parse_args()
@@ -3294,7 +3375,7 @@ def main():
             say(line)
         return 0
     if args.quick:
-        if args.commit or args.baseline != BASELINE or args.sibling_base or args.mwse or args.evidence:
+        if args.commit or args.baseline != BASELINE or args.sibling_base or args.mwse or args.evidence or args.gate_list:
             parser.error("--quick takes [<tree>], --sibling, --base, --no-wait and --dry-run: it checks the tree's HEAD, with no set and no gate")
         return run_quick(args)
     if args.sibling:
@@ -3307,6 +3388,11 @@ def main():
         return 1
     EVIDENCE.clear()
     EVIDENCE.update(evidence)
+    gate_list = gate_list_of(args.gate_list, args.baseline)
+    if isinstance(gate_list, str):
+        say("FAIL the gate list: %s" % gate_list)
+        return 1
+    GATE_LIST[:] = gate_list
 
     repo = os.path.abspath(args.repo)
     kind = repo_kind(repo)
@@ -3350,6 +3436,11 @@ def main():
     for name in EVIDENCE:
         if name not in [stage for stage, _, _ in stages]:
             say("the evidence file of %s is not used: the round has no such stage" % name)
+    if GATE_LIST:
+        if any(name == ACCEPT_LIST_STAGE for name, _, _ in stages):
+            say("the gate list %s (md5 %s): the replay gate passes these planned changes only, and the last stage accepts them" % GATE_LIST[0])
+        else:
+            say("the gate list %s is not used: the round has no replay gate" % GATE_LIST[0][0])
     sibling_hash = git(sibling, "rev-parse", "--short=10", "HEAD") if has_sibling else "none"
     sibling_head = resolve(sibling, "HEAD") if has_sibling else None
     sibling_base_note = ""
@@ -3400,7 +3491,7 @@ def main():
     still = open_deploy_lines(deploys_open(plugin_repo, mge_repo))
     written = close_after(results, baseline, merges,
                           lambda merges, stages: write_closes(CLOSES_FILE, when, os.path.basename(repo), merges, stages, log_path),
-                          extra=[frame_map_of(cites)] + still[:1])
+                          extra=[frame_map_of(cites)] + still[:1] + gate_list_close(stages))
     if written:
         say("closes: %s in %s" % (", ".join(line.split("\t")[1] for line in written), CLOSES_FILE))
     elif written == []:

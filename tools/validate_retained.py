@@ -68,6 +68,19 @@ Stages (capture, baseline and only by default, in this order):
            whose digests differ, else the two values drew in one order and the pixels cannot show
            it: NOT SHOWN, which fails the stage. The merge step runs it after the replay gate when a
            file of the order changes (ORDER_PATHS of merge_step.py). It accepts nothing.
+  accept-list  (W567 part D) with --gate-list FILE and --now <the gate's pictures>: the listed pictures of
+           that run become the accepted ones, and nothing else. The merge step runs it as its last stage,
+           so only after every stage passed. Each listed picture must differ from its accepted one; the
+           pictures of a capture need a second replay that gives them again (as --accept-new); then the
+           replay logs of those folders are rewritten too, not counted as changes (D557).
+
+--gate-list FILE (W567 part D) names the planned changes of the baseline stage: one picture for each line,
+relative to the baseline folder ("narsis.png", "narsis-last.png", "tour/3-03-_nif_052.png",
+"hooks/narsis.png"; "#" starts a comment). The pictures that differ from the accepted ones must equal the
+list exactly: a change that the list does not name fails, a listed picture that came out equal fails, and a
+name with no accepted picture fails before the replays. Every other check of the stage stays (the counts, a
+stray accepted picture, the objects, the tour's own pairs and their KNOWN_STOPS). The verdict names the file
+and its md5. With --accept or --accept-new it is refused.
 
 --disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod). Both arms have the
 instance's distant land: the runner keeps MGE XE from a rebuild of it in a run that changes what the game loads
@@ -82,6 +95,7 @@ leaves the game's weather, not pinned, and the line names it.
 """
 import argparse
 import contextlib
+import hashlib
 import io
 import os
 import re
@@ -95,7 +109,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from common import (BUILD_PARTS, EARLY_WORLD_DRAWS, EXIT_REPLAY_CHECKS, EXIT_REPLAY_STAGE_SHADERS, NOT_RUN_EXIT, OWN_VIEWS, build_missing,  # noqa: E402
-                    capture_format_in, check_problems, helper_checks, keep_replay_output, plugin_lines, replay_fault_in)
+                    REPLAY_OUTPUT, capture_format_in, check_problems, helper_checks, keep_replay_output, plugin_lines, replay_fault_in)
 from validate_tour import NOT_RUN, NOT_RUN_CODE as TOUR_NOT_RUN, refusal_of, verdict_in as tour_verdict_in  # noqa: E402
 import stream_rule  # noqa: E402
 PY = sys.executable
@@ -108,6 +122,14 @@ GATE_ENV = {"MGE_XE_CORE_MODS": "0"}
 # folder HOOKS_ACCEPTED of the baseline folder.
 HOOK_FIXTURES = os.path.join(HERE, "hook-fixtures")
 HOOKS_ACCEPTED = "accepted-hooks"
+# W567 part D: the planned changes of a gate (--gate-list FILE), the names of the pictures that must differ from their
+# accepted ones, relative to the baseline folder: "<capture>.png" and "<capture>-last.png" of accepted/,
+# "tour/<stop>.png" of tour/accepted/, "hooks/<capture>.png" of HOOKS_ACCEPTED. GATE_LIST holds the names and
+# GATE_LIST_NOTE the file and its md5; CHANGED collects the names of the pictures that differed in this run.
+TOUR_PREFIX, HOOKS_PREFIX = "tour/", "hooks/"
+GATE_LIST = set()
+GATE_LIST_NOTE = []
+CHANGED = []
 # A fixture is a file "XE Mod <name>.wgsl" of the folder; the README of the folder is not one.
 HOOK_FIXTURE_NAME = re.compile(r"XE Mod .+\.wgsl")
 # A hook of a fixture: a function at the start of a line whose name does not start with `mod_` (a helper of the file).
@@ -162,7 +184,7 @@ WEATHER = {"pin": 0}
 # for the unpacked release archive of release.py's gate. main sets it.
 BUILD = {"option": "--mge-build"}
 # The stages that only replay. The others start the game, and a run of the game does not take an archive here.
-REPLAY_ONLY_STAGES = ("baseline", "order")
+REPLAY_ONLY_STAGES = ("baseline", "order", "accept-list")
 
 
 def build_option(mge_build):
@@ -1201,10 +1223,134 @@ def self_test_baseline():
             os.makedirs(empty)
             passed, said, code = stage(folder, with_route(plant()), hooks=empty)
             assert not passed and "FAIL hook fixtures: %s has no XE Mod *.wgsl file" % empty in said, said
+            # W567 part D: a gate list that names the hook pass's picture passes that change, and only it.
+            list_file = os.path.join(folder, "gate-list.txt")
+            with open(list_file, "w", encoding="utf-8") as file:
+                file.write("hooks/a.png  # the hook path's new look\n")
+            GATE_LIST.update(read_gate_list(list_file)[0])
+            GATE_LIST_NOTE.append((list_file, read_gate_list(list_file)[1]))
+            turns = iter([{1: grey, 29: grey}, {1: other, 29: grey}])
+            passed, said, code = stage(folder, with_route(plant({"a": lambda: next(turns)})), hooks=fixtures)
+            assert passed and "listed: a planned change" in said and "ok   the gate list %s (md5 " % list_file in said and "1 of 1 listed pictures changed" in said, said
+            GATE_LIST.clear()
+            del GATE_LIST_NOTE[:]
+        self_test_gate_list(stage, plant, grey, other, prefixes)
     finally:
         run_code, build_missing, check_stream_rule, stage_objects = real
         FAILS[0] = 0
         del NOT_RUN_LINES[:]
+        GATE_LIST.clear()
+        del GATE_LIST_NOTE[:], CHANGED[:]
+
+
+def self_test_gate_list(stage, plant, grey, other, prefixes):
+    """W567 part D on a planted baseline folder (the plants of self_test_baseline): the gate list's rule, its refusals,
+    and the accept after a pass, after which the next gate with no list is equal."""
+    global run_code
+    import picture_diff
+
+    def with_list(folder, *names):
+        path = os.path.join(folder, "gate-list.txt")
+        with open(path, "w", encoding="utf-8") as file:
+            file.write("".join(name + "\n" for name in names))
+        GATE_LIST.clear()
+        del GATE_LIST_NOTE[:]
+        found, md5 = read_gate_list(path)
+        GATE_LIST.update(found)
+        GATE_LIST_NOTE.append((path, md5))
+        return path, md5
+
+    def accept_list(folder, tool):
+        global run_code
+        run_code = tool
+        FAILS[0] = 0
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            done = stage_accept_list(folder, "no build", os.path.join(folder, "now"), None)
+        return done, printed.getvalue()
+
+    def colour(path):
+        return picture_diff.Image.open(path).getpixel((0, 0))
+
+    with tempfile.TemporaryDirectory() as folder:
+        kept = os.path.join(folder, "accepted")
+        for name in ("a", "b"):
+            open(os.path.join(folder, name + ".nircap"), "wb").close()
+        assert stage(folder, plant(), accept=True)[0]
+        change = plant({"a": {1: grey, 29: other}})
+        # The null: the change with no list fails.
+        passed, said, _code = stage(folder, change)
+        assert not passed and "FAIL 3 of 4 pictures equal" in said, said
+        # The list that names it: the stage passes, and names the file and its md5.
+        path, md5 = with_list(folder, "a-last.png")
+        passed, said, _code = stage(folder, change)
+        assert passed and "a-last.png" in said and "listed: a planned change" in said, said
+        assert "ok   4 of 4 pictures equal to the accepted ones in %s, 1 of them not equal but changes that the gate list plans" % os.path.join(folder, "now") in said, said
+        assert "ok   the gate list %s (md5 %s): 1 of 1 listed pictures changed" % (path, md5) in said, said
+        # A change that the list does not name fails; the listed one still passes.
+        passed, said, _code = stage(folder, plant({"a": {1: other, 29: other}}))
+        assert not passed and "FAIL 3 of 4 pictures equal" in said, said
+        # A listed picture that came out equal fails (the Coordinator's answer to part D's question).
+        passed, said, _code = stage(folder, plant())
+        assert not passed and "FAIL the gate list names a-last.png, and it is equal to its accepted picture" in said, said
+        # A name with no accepted picture fails before any replay.
+        with_list(folder, "c.png", "a-last.png")
+        del prefixes[:]
+        passed, said, _code = stage(folder, change)
+        assert not passed and "FAIL the gate list names c.png, which has no accepted picture" in said and prefixes == [], said
+        # The accept: a gate with the list, then accept-list. A picture that a second replay does not give again copies
+        # nothing.
+        with_list(folder, "a-last.png")
+        assert stage(folder, change)[0]
+        turns = iter([{1: grey, 29: grey}])
+        done, said = accept_list(folder, plant({"a": lambda: next(turns)}))
+        assert not done and "a.nircap: the last frame is not steady" in said and colour(os.path.join(kept, "a-last.png")) == grey, said
+        done, said = accept_list(folder, change)
+        assert done and "accepted 1 listed pictures (gate list %s md5 %s): a-last.png" % (path, md5) in said, said
+        assert colour(os.path.join(kept, "a-last.png")) == other and colour(os.path.join(kept, "a.png")) == grey, "accept-list took another picture"
+        # D557: the replay logs of the folder are rewritten with the pictures, and are not counted.
+        assert "the replay logs rewritten, not counted: 2" in said, said
+        with open(os.path.join(folder, "now", "a" + REPLAY_OUTPUT), encoding="utf-8") as now_log, open(os.path.join(kept, "a" + REPLAY_OUTPUT), encoding="utf-8") as kept_log:
+            assert now_log.read() == kept_log.read()
+        # Then the next gate with no list is equal: no second round of the same pictures.
+        GATE_LIST.clear()
+        del GATE_LIST_NOTE[:]
+        passed, said, _code = stage(folder, change)
+        assert passed and "ok   4 of 4 pictures equal to the accepted ones in" in said and "gate list" not in said, said
+        # accept-list on a run whose listed picture is equal: nothing to accept, and nothing is copied.
+        with_list(folder, "a-last.png")
+        stage(folder, change)
+        done, said = accept_list(folder, change)
+        assert not done and "a-last.png is equal to its accepted picture: nothing to accept, and the list is wrong" in said, said
+        # accept-list needs the list.
+        GATE_LIST.clear()
+        del GATE_LIST_NOTE[:]
+        done, said = accept_list(folder, change)
+        assert not done and "the stage accept-list needs --gate-list" in said, said
+        # --gate-list with --accept is refused.
+        with_list(folder, "a-last.png")
+        passed, said, _code = stage(folder, change, accept=True)
+        assert not passed and "--gate-list with --accept or --accept-new" in said, said
+        GATE_LIST.clear()
+        del GATE_LIST_NOTE[:]
+        # The file: comments, the three kinds of name, and its refusals.
+        listed = os.path.join(folder, "list.txt")
+        for text, wanted in (("# planned\nnarsis.png\n\ntour/3-03-x.png # the fog\nhooks/narsis-last.png\n", {"narsis.png", "tour/3-03-x.png", "hooks/narsis-last.png"}),
+                             ("narsis.png\nnarsis.png\n", "named twice"), ("tour/a/b.png\n", "is no picture"), ("narsis.txt\n", "is no picture"),
+                             ("../accepted/x.png\n", "is no picture"), ("# nothing\n", "names no picture")):
+            with open(listed, "w", encoding="utf-8") as file:
+                file.write(text)
+            try:
+                found = read_gate_list(listed)[0]
+            except ValueError as error:
+                found = str(error)
+            assert found == wanted if isinstance(wanted, set) else wanted in found, (text, found)
+        try:
+            read_gate_list(os.path.join(folder, "none.txt"))
+            raise AssertionError("a missing list was read")
+        except ValueError as error:
+            assert "is no file" in str(error)
+        assert accepted_of("B", "tour/x.png") == os.path.join("B", "tour", "accepted", "x.png") and now_of("N", "hooks/x.png") == os.path.join("N", "hooks", "x.png")
+        assert accepted_of("B", "x-last.png") == os.path.join("B", "accepted", "x-last.png") and now_of("N", "tour/x.png") == os.path.join("N", "tour", "x.png")
 
 
 def picture_folders(baseline, accept, now):
@@ -1456,6 +1602,133 @@ def steady_problems(capture, name, pictures, mge_build, env):
         return problems
 
 
+def read_gate_list(path):
+    """The names of a gate list (W567 part D) and the file's md5, or raises ValueError with the reason. One name for
+    each line; "#" starts a comment, and an empty line is no name. A name is a picture of the baseline folder:
+    "<file>.png", "tour/<file>.png" or "hooks/<file>.png", with no other folder in it."""
+    if not os.path.isfile(path):
+        raise ValueError("the gate list %s is no file" % path)
+    with open(path, "rb") as file:
+        data = file.read()
+    names = set()
+    for number, line in enumerate(data.decode("utf-8").splitlines(), 1):
+        name = line.split("#", 1)[0].strip()
+        if not name:
+            continue
+        rest = name[len(TOUR_PREFIX):] if name.startswith(TOUR_PREFIX) else name[len(HOOKS_PREFIX):] if name.startswith(HOOKS_PREFIX) else name
+        if not rest.endswith(".png") or "/" in rest or "\\" in rest or rest.startswith("."):
+            raise ValueError("the gate list %s, line %d: %r is no picture of the baseline folder (<file>.png, tour/<file>.png or hooks/<file>.png)" % (path, number, name))
+        if name in names:
+            raise ValueError("the gate list %s, line %d: %s is named twice" % (path, number, name))
+        names.add(name)
+    if not names:
+        raise ValueError("the gate list %s names no picture" % path)
+    return names, hashlib.md5(data).hexdigest()
+
+
+def accepted_of(baseline, name):
+    """The accepted picture of a name of a gate list."""
+    if name.startswith(TOUR_PREFIX):
+        return os.path.join(baseline, "tour", "accepted", name[len(TOUR_PREFIX):])
+    if name.startswith(HOOKS_PREFIX):
+        return os.path.join(baseline, HOOKS_ACCEPTED, name[len(HOOKS_PREFIX):])
+    return os.path.join(baseline, "accepted", name)
+
+
+def now_of(now, name):
+    """The picture of this gate's run for a name of a gate list, in the folders of `picture_folders` and `stage_baseline`."""
+    if name.startswith(TOUR_PREFIX):
+        return os.path.join(now, "tour", name[len(TOUR_PREFIX):])
+    if name.startswith(HOOKS_PREFIX):
+        return os.path.join(now, "hooks", name[len(HOOKS_PREFIX):])
+    return os.path.join(now, name)
+
+
+def gate_list_start(baseline):
+    """Before the replays: each name of the gate list has an accepted picture, so that a wrong name fails at once."""
+    ok = True
+    for name in sorted(GATE_LIST):
+        if not os.path.isfile(accepted_of(baseline, name)):
+            ok &= check(False, "the gate list names %s, which has no accepted picture (%s): no such capture, frame or stop" % (name, accepted_of(baseline, name)))
+    return ok
+
+
+def gate_list_verdict():
+    """After the compare: each name of the gate list differed. A listed picture that came out equal fails (the
+    Coordinator, W567 part D): the planned change did not come, or the list is wrong."""
+    if not GATE_LIST_NOTE:
+        return True
+    path, md5 = GATE_LIST_NOTE[0]
+    changed = set(CHANGED)
+    ok = True
+    for name in sorted(GATE_LIST - changed):
+        ok &= check(False, "the gate list names %s, and it is equal to its accepted picture or was not compared: the planned change did not come, or the list is wrong" % name)
+    return check(ok, "the gate list %s (md5 %s): %d of %d listed pictures changed" % (path, md5, len(GATE_LIST & changed), len(GATE_LIST)))
+
+
+def stage_accept_list(baseline, mge_build, now, hooks=HOOK_FIXTURES):
+    """W567 part D: after a merge round that passed with a gate list, the listed pictures of the gate's run (`now`)
+    become the accepted ones, and nothing else. Each must differ from its accepted picture now; the pictures of a
+    capture are accepted only when a second replay gives them again (`steady_problems`, as --accept-new); a tour stop's
+    picture is taken as the tour's accept takes it. Nothing is copied unless every listed picture can be. Then the
+    tool's own files of each folder whose pictures were accepted (the replay logs `*.replay.txt` of the gate's run) are
+    rewritten too, and are not counted as changes (D557). That is every replay log of the folder, also the logs of the
+    captures that the list does not name (verdict 607): a log is no picture, and the gate's run made all of them from
+    the same commits."""
+    print("accept the gate list into %s" % baseline, flush=True)
+    if not GATE_LIST_NOTE:
+        return check(False, "the stage accept-list needs --gate-list: it accepts only the listed pictures")
+    if not now or not os.path.isdir(now):
+        return check(False, "the stage accept-list needs --now <the folder of the gate's pictures>, and %s is none" % now)
+    path, md5 = GATE_LIST_NOTE[0]
+    ok, pairs = True, []
+    for name in sorted(GATE_LIST):
+        source, target = now_of(now, name), accepted_of(baseline, name)
+        if not os.path.isfile(source):
+            ok &= check(False, "%s: the gate made no picture %s" % (name, source))
+        elif not os.path.isfile(target):
+            ok &= check(False, "%s: no accepted picture %s" % (name, target))
+        elif equal_pictures(target, source)[0]:
+            ok &= check(False, "%s is equal to its accepted picture: nothing to accept, and the list is wrong" % name)
+        else:
+            pairs.append((name, source, target))
+    if not ok:
+        return False
+    by_capture = {}
+    for name, source, _target in pairs:
+        if name.startswith(TOUR_PREFIX):
+            continue
+        prefix = HOOKS_PREFIX if name.startswith(HOOKS_PREFIX) else ""
+        stem = name[len(prefix):-len(".png")]
+        last = stem.endswith(LAST)
+        by_capture.setdefault((prefix, stem[:-len(LAST)] if last else stem), {})[LAST if last else ""] = source
+    for (prefix, capture), pictures in sorted(by_capture.items()):
+        nircap = os.path.join(baseline, capture + ".nircap")
+        if not os.path.isfile(nircap):
+            ok &= check(False, "%s%s: no capture %s" % (prefix, capture, nircap))
+            continue
+        if prefix:
+            with scratch_folder("gate-hook-markers-") as (markers, _keep):
+                problems = steady_problems(nircap, capture, pictures, mge_build, hooks_env(hooks, markers))
+        else:
+            problems = steady_problems(nircap, capture, pictures, mge_build, dict(GATE_ENV))
+        for problem in problems:
+            ok &= check(False, "%s%s.nircap: %s: not accepted" % (prefix, capture, problem))
+    if not ok:
+        return False
+    for _name, source, target in pairs:
+        shutil.copyfile(source, target)
+    logs = []
+    for folder in sorted({os.path.dirname(source) for _name, source, _target in pairs}):
+        target_folder = os.path.dirname(next(target for _name, source, target in pairs if os.path.dirname(source) == folder))
+        for entry in sorted(os.listdir(folder)):
+            if entry.endswith(REPLAY_OUTPUT) and os.path.isfile(os.path.join(folder, entry)):
+                shutil.copyfile(os.path.join(folder, entry), os.path.join(target_folder, entry))
+                logs.append(entry)
+    return check(True, "accepted %d listed pictures (gate list %s md5 %s): %s; the replay logs rewritten, not counted: %d" % (
+        len(pairs), path, md5, ", ".join(name for name, _, _ in pairs), len(logs)))
+
+
 def stage_baseline(baseline, accept, mge_build, now=None, add=False, hooks=HOOK_FIXTURES):
     """The captures of the baseline folder against their accepted state, in the order of the draws of the game, as
     a player has them. Each capture is judged, and what cannot be judged is said (W526): its checks (a missing line
@@ -1474,12 +1747,17 @@ def stage_baseline(baseline, accept, mge_build, now=None, add=False, hooks=HOOK_
         return check(False, "no capture in the baseline folder")
     if not check_stream_rule(baseline):
         return False
+    del CHANGED[:]
+    if GATE_LIST_NOTE and (accept or add):
+        return check(False, "--gate-list with --accept or --accept-new: a gate list compares, and the stage accept-list accepts it after a pass")
+    if not gate_list_start(baseline):
+        return False
     out, tour_out = picture_folders(baseline, accept, now)
     ok = baseline_pass(baseline, captures, accept, mge_build, out, add, tour_out=tour_out)
-    if hooks is None:
-        return ok
-    hooks_out = os.path.join(baseline, HOOKS_ACCEPTED) if accept else os.path.join(now, "hooks")
-    return hooks_pass(baseline, captures, accept, mge_build, hooks_out, add, hooks) and ok
+    if hooks is not None:
+        hooks_out = os.path.join(baseline, HOOKS_ACCEPTED) if accept else os.path.join(now, "hooks")
+        ok = hooks_pass(baseline, captures, accept, mge_build, hooks_out, add, hooks) and ok
+    return gate_list_verdict() and ok
 
 
 def hooks_pass(baseline, captures, accept, mge_build, out, add, hooks):
@@ -1554,7 +1832,9 @@ def baseline_pass(baseline, captures, accept, mge_build, out, add, env=None, acc
         print("       " + adapter_note(recorded, adapter), flush=True)
     sys.path.insert(0, HERE)
 
-    equal, wanted, added = 0, 0, []
+    # The names of this pass in a gate list (W567 part D): a listed picture that differs passes, as a planned change.
+    prefix = "" if plain else HOOKS_PREFIX
+    equal, wanted, added, as_listed = 0, 0, [], 0
     for name, (checks, pictures) in sorted(now_state.items()):
         capture = name + ".nircap"
         what = title + capture
@@ -1567,10 +1847,14 @@ def baseline_pass(baseline, captures, accept, mge_build, out, add, env=None, acc
                 lacks.append(suffix)
                 continue
             same, said = equal_pictures(kept, picture)
-            equal += same
-            fine &= same
+            listed = not same and prefix + name + suffix + ".png" in GATE_LIST
             if not same:
-                print("       %-40s %s" % (os.path.basename(kept), said), flush=True)
+                CHANGED.append(prefix + name + suffix + ".png")
+            equal += same or listed
+            as_listed += listed
+            fine &= same or listed
+            if not same:
+                print("       %-40s %s%s" % (os.path.basename(kept), said, "; listed: a planned change" if listed else ""), flush=True)
         judged = read_judged(os.path.join(accepted, name + JUDGED))
         for problem in stopped_judging(judged or {}, checks):
             fine &= check(False, "%s: %s" % (what, problem))
@@ -1601,21 +1885,26 @@ def baseline_pass(baseline, captures, accept, mge_build, out, add, env=None, acc
         ok &= check(False, "%sthe accepted picture %s has no capture and no frame of this run: the gate judged nothing with it" % (title, stray))
     if add:
         print("       %saccepted new: %s" % (title, ", ".join(added) or "nothing: each capture has its accepted state"), flush=True)
-    ok &= check(wanted != 0 and equal == wanted and not strays, "%s%d of %d pictures equal to the accepted ones in %s" % (title, equal, wanted, out))
+    listed_note = lambda count: ", %d of them not equal but changes that the gate list plans" % count if GATE_LIST_NOTE else ""  # noqa: E731
+    ok &= check(wanted != 0 and equal == wanted and not strays, "%s%d of %d pictures equal to the accepted ones in %s%s" % (title, equal, wanted, out, listed_note(as_listed)))
     print("       %d captures: frame 1 of each, and the last frame of %d" % (len(now_state), sum(LAST in pictures for _checks, pictures in now_state.values())), flush=True)
     if tour and os.path.isdir(tour):
         kept_tour = os.path.join(tour, "accepted")
         names = sorted(f for f in os.listdir(kept_tour) if f.endswith(".png")) if os.path.isdir(kept_tour) else []
-        equal = 0
+        equal, as_listed = 0, 0
         for name in names:
             if not os.path.isfile(os.path.join(tour_out, name)):
                 print("       %-40s no picture now" % name, flush=True)
                 continue
             same, said = equal_pictures(os.path.join(kept_tour, name), os.path.join(tour_out, name))
-            equal += same
+            listed = not same and TOUR_PREFIX + name in GATE_LIST
             if not same:
-                print("       %-40s %s" % (name, said), flush=True)
-        ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s" % (equal, len(names), tour_out))
+                CHANGED.append(TOUR_PREFIX + name)
+            equal += same or listed
+            as_listed += listed
+            if not same:
+                print("       %-40s %s%s" % (name, said, "; listed: a planned change" if listed else ""), flush=True)
+        ok &= check(names != [] and equal == len(names), "%d of %d pictures equal to the accepted ones in %s%s" % (equal, len(names), tour_out, listed_note(as_listed)))
     return stage_objects(baseline, mge_build, out, env=env, route=route) and ok
 
 
@@ -1979,6 +2268,8 @@ def main():
     ap.add_argument("--accept-new", action="store_true", help="the baseline stage compares, and then accepts only what a capture lacks (a picture of frame 1 or of its last frame, "
                     "the counts of its checks); it replaces nothing")
     ap.add_argument("--now", default=None, help="the folder of the baseline stage's pictures, outside the baseline folder; without it, a run folder of its own in results")
+    ap.add_argument("--gate-list", default=None, help="the planned changes (W567 part D): a file of the pictures that must differ from the accepted ones; the baseline "
+                    "stage passes them and fails on any other change and on a listed picture that stayed equal; the stage accept-list accepts them")
     ap.add_argument("--hook-fixtures", default=HOOK_FIXTURES, help="the folder of the hook fixtures of the baseline stage's second pass (tools/hook-fixtures by default)")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
@@ -1990,6 +2281,23 @@ def main():
         return 0
     if args.accept and args.accept_new:
         print("  FAIL --accept writes every accepted picture again, and --accept-new replaces none: give one of them", flush=True)
+        return 1
+    del GATE_LIST_NOTE[:]
+    GATE_LIST.clear()
+    if args.gate_list:
+        try:
+            names, md5 = read_gate_list(args.gate_list)
+        except ValueError as error:
+            print("  FAIL %s" % error, flush=True)
+            return 1
+        GATE_LIST.update(names)
+        GATE_LIST_NOTE.append((os.path.abspath(args.gate_list), md5))
+        print("the gate list %s (md5 %s): %s" % (os.path.abspath(args.gate_list), md5, ", ".join(sorted(names))), flush=True)
+    elif "accept-list" in args.stages:
+        print("  FAIL the stage accept-list needs --gate-list: it accepts only the listed pictures", flush=True)
+        return 1
+    if "accept-list" in args.stages and (args.archive or args.accept or args.accept_new or not args.now):
+        print("  FAIL the stage accept-list takes --now <the folder of the gate's pictures> and a set, and no --archive, --accept or --accept-new", flush=True)
         return 1
     problem = build_problem(args.stages, args.mge_build, args.archive)
     if problem:
@@ -2050,6 +2358,9 @@ def main():
             for place in places:
                 if not stage_weathers(place, mge_build):
                     return 1
+        elif stage == "accept-list":
+            if not stage_accept_list(args.baseline, mge_build, args.now, os.path.abspath(args.hook_fixtures)):
+                return 1
         else:
             print("unknown stage " + stage)
             return 2
