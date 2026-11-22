@@ -629,7 +629,7 @@ def checks_test(rust_codes):
     fault = CHECKS_FAULT_START + "early world draws: 5 faults of 12 judged; gpu errors: 2 faults of 30 judged"
     line = checks_fault_line("seyda.nircap", EXIT_REPLAY_CHECKS, faulty + fault + "\n")
     assert line == "CHECKS: the replay of seyda.nircap failed with exit code 41: early world draws: 5 faults of 12 judged; gpu errors: 2 faults of 30 judged", line
-    both = STAGE_FAULT_START + ("1 rewrites failed (stage key 1: the end mark of the stage loop: 0 in the text, 1 wanted); 0 pipelines failed; the uber-shader drew 9 draws that have a stage key "
+    both = STAGE_FAULT_START + ("1 rewrites failed (stage key 1: the end mark of the stage facts: 0 in the text, 1 wanted); 0 pipelines failed; the uber-shader drew 9 draws that have a stage key "
                                "(9 after a failed rewrite, 0 after a failed pipeline, 0 with a pipeline not made); 0 draws past the cap of 256 keys\n") + fault + "\n"
     line = replay_fault_line("seyda.nircap", EXIT_REPLAY_CHECKS, both)
     assert line.startswith("CHECKS: the replay of seyda.nircap failed with exit code 41: early world draws: 5 faults") and "; and the stage shaders: 1 rewrites failed (the first: stage key 1: " in line, line
@@ -654,7 +654,7 @@ def stage_test():
     codes = open(os.path.join(REPO, "src", "stream_format.rs"), encoding="utf-8").read()
     assert "pub const EXIT_REPLAY_STAGE_SHADERS: u32 = %d;" % EXIT_REPLAY_STAGE_SHADERS in codes, "EXIT_REPLAY_STAGE_SHADERS of src/stream_format.rs is not %d" % EXIT_REPLAY_STAGE_SHADERS
 
-    refusal = "the end mark of the stage loop: 0 in the text, 1 wanted"
+    refusal = "the end mark of the stage facts: 0 in the text, 1 wanted"
     fault = (STAGE_FAULT_START + "2 rewrites failed (stage key 1: %s; stage key 2: %s); 0 pipelines failed; the uber-shader drew 5120 draws that have a stage key "
              "(5120 after a failed rewrite, 0 after a failed pipeline, 0 with a pipeline not made); 0 draws past the cap of 256 keys" % (refusal, refusal))
     output = "frames 60\n" + fault + "\n"
