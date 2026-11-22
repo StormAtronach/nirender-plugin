@@ -210,6 +210,72 @@ def read_patches(texts):
     return patches
 
 
+# W567 part C: the paths of the nirender repo that any part's build reads (the one home of this list). Two nirender
+# commits whose diff touches none of them build the same parts but for their build ids, so a set of one serves as the
+# base set of a merge round at the other (merge_step.equal_parts_base). The cargo builds read src/, build.rs,
+# build_support/ and host/ (their dep-info files, `input_drift`); the dist reads mod/ (plugin-lua, plugin-test) and
+# render-link's d3d8 reads contract/; the Cargo files and the toolchain decide every cargo build; d3d8/ is listed so that
+# no folder of a build is left out.
+NIRENDER_PART_INPUTS = ("src/", "build.rs", "build_support/", "host/", "contract/", "mod/", "d3d8/", "Cargo.toml", "Cargo.lock",
+                        ".cargo/", "rust-toolchain.toml", ".gitattributes", ".gitmodules")
+# .gitattributes and .gitmodules: a change to them changes the bytes that git checks out (for example of src/gen/code.bin),
+# and no dep-info file names them, so maker_input_drift cannot show them (verdict 608).
+
+
+def is_part_input(path):
+    """Whether a path of the nirender repo (with "/") is read by the build of a part (NIRENDER_PART_INPUTS)."""
+    return any(path == name or path.startswith(name) if name.endswith("/") else path == name for name in NIRENDER_PART_INPUTS)
+
+
+def dep_info_paths(text):
+    """The files of the first rule of a dep-info file of cargo ("<target>: <file> <file> ..."). A space in a path is
+    written "\\ "."""
+    first = text.split("\n", 1)[0].rstrip("\r")
+    _, colon, files = first.partition(": ")
+    if not colon:
+        return []
+    return [part.replace("\\ ", " ") for part in re.split(r"(?<!\\) ", files) if part]
+
+
+# The dep-info files of the maker's cargo builds that read nirender (the plugin DLL; numidium with the host crate),
+# relative to the maker's trees (TREES, TREE_NAMES).
+MAKER_DEP_INFO = (("nirender", os.path.join("target", "i686-pc-windows-msvc", "release", "akulakhan.d")),
+                  ("render-link", os.path.join("target", "x86_64-pc-windows-msvc", "release", "numidium.d")))
+
+
+def maker_input_drift(trees=None):
+    """`input_drift` of the maker's own dep-info files (MAKER_DEP_INFO) against its nirender tree: (paths, None), or
+    (None, why) when a file is not there, as then the list cannot be checked against the truth."""
+    trees = trees or TREES
+    texts = []
+    for repo, relative in MAKER_DEP_INFO:
+        path = os.path.join(trees, TREE_NAMES[repo], relative)
+        if not os.path.isfile(path):
+            return None, "no dep-info file %s: the maker built no set here yet" % path
+        with open(path, encoding="utf-8", errors="replace") as file:
+            texts.append(file.read())
+    return input_drift(texts, os.path.join(trees, TREE_NAMES["nirender"])), None
+
+
+def input_drift(dep_texts, tree):
+    """The paths of the nirender tree `tree` that the cargo dep-info texts `dep_texts` name and NIRENDER_PART_INPUTS does
+    not hold, as sorted paths relative to the tree: a non-empty answer means the list misses an input. Paths outside the
+    tree (the registry, the toolchain, the other repo) and under its .git (the build id's commit) are not the list's."""
+    root = os.path.normcase(os.path.abspath(tree))
+    outside = set()
+    for text in dep_texts:
+        for path in dep_info_paths(text):
+            full = os.path.normcase(os.path.abspath(path))
+            if not full.startswith(root + os.sep):
+                continue
+            relative = os.path.relpath(full, root).replace("\\", "/")
+            if relative.startswith(".git/") or relative == ".git":
+                continue
+            if not is_part_input(relative):
+                outside.add(relative)
+    return sorted(outside)
+
+
 def part_keys(commits, tree, patch_md5s):
     """The key of each part (the Architect's rule, W521): its own repo's commit and, for each thing of another repo that
     its build reads, the smallest name that holds it: the git tree of a folder, or the commit for a whole crate. Each
@@ -1152,6 +1218,33 @@ def in_hold_test(state):
         sys.path[:] = path
 
 
+def part_inputs_test(scratch):
+    """W567 part C: the list of the part inputs, and its check against the dep-info files of the builds."""
+    assert is_part_input("src/lib.rs") and is_part_input("host/src/retained.rs") and is_part_input("Cargo.toml") and is_part_input("mod/MWSE/mods/x.lua")
+    assert not is_part_input("tools/merge_step.py") and not is_part_input("README.md") and not is_part_input("Cargo.toml.bak") and not is_part_input("srcx/a.rs")
+    # Verdict 608: git's own files change the checked-out bytes, and no dep-info file names them.
+    assert is_part_input(".gitattributes") and is_part_input(".gitmodules") and not is_part_input("tools/.gitattributes")
+    tree = os.path.join(scratch, "nirender-plugin")
+    text = "%s: %s %s %s %s %s\n%s:\n" % (os.path.join(tree, "target", "x.dll"), os.path.join(tree, "src", "lib.rs"), os.path.join(tree, "host", "src", "a\\ b.rs"),
+                                       os.path.join(tree, ".git", "HEAD"), os.path.join(scratch, "registry", "x.rs"), os.path.join(tree, "build.rs"),
+                                       os.path.join(tree, "src", "lib.rs"))
+    assert input_drift([text], tree) == [], input_drift([text], tree)
+    # The null: a build that reads a file of the tree outside the list is a drift, by its path.
+    planted = text.replace(os.path.join(tree, "build.rs"), os.path.join(tree, "tools", "gen.rs"))
+    assert input_drift([planted], tree) == ["tools/gen.rs"], input_drift([planted], tree)
+    # The maker's files: both are read; a missing one cannot be checked.
+    trees = os.path.join(scratch, "maker")
+    for repo, relative in MAKER_DEP_INFO:
+        path = os.path.join(trees, TREE_NAMES[repo], relative)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as file:
+            file.write("%s: %s\n" % (path, os.path.join(trees, TREE_NAMES["nirender"], "tools" if repo == "render-link" else "src", "a.rs")))
+    assert maker_input_drift(trees) == (["tools/a.rs"], None), maker_input_drift(trees)
+    os.remove(os.path.join(trees, TREE_NAMES["render-link"], MAKER_DEP_INFO[1][1]))
+    outside, why = maker_input_drift(trees)
+    assert outside is None and "no dep-info file" in why, why
+
+
 def self_test():
     commits = {"nirender": "6d1b214" + "a" * 33, "render-link": "d9741db" + "b" * 33, "mwse": "89198b53" + "c" * 32}
     yes = lambda: (True, "e-ok: yes")  # noqa: E731
@@ -1545,6 +1638,7 @@ def self_test():
         except SetFault as fault:
             assert fault.code == EXIT_REFUSED and "no build on E: now" in str(fault) and asked == [1], fault
         in_hold_test(os.path.join(scratch, "slot-state"))
+        part_inputs_test(scratch)
     sets.self_test()
     print("build_set self-test: ok")
     return 0
