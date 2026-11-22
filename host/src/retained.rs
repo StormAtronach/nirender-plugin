@@ -1254,6 +1254,11 @@ impl RetainedSet {
         }
     }
 
+    /// Whether the light of `key` is a point light among the world's lights.
+    pub(crate) fn is_world_point_light(&self, key: u32) -> bool {
+        self.world_kept.contains_key(&key)
+    }
+
     /// The slots of the point lights of the world in `light_values` (a directional light
     /// stays with the draws that have it).
     pub fn world_light_slots(&self) -> Vec<u32> {

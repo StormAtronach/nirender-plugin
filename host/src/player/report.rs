@@ -132,12 +132,12 @@ impl Player {
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
         println!("light keys: {} draws whose colour cannot take light dropped their lights; {} draws with no lights had no light loop", c.blind_light_draws, c.zero_light_draws);
         println!(
-            "shadow casters: {} draws shaded by the extension, {} of them with the world's lights",
-            c.caster_shaded, c.caster_world_lights
+            "shadow casters: {} draws shaded by the extension, {} of them with the world's lights; {} of their own point lights not among the world's",
+            c.caster_shaded, c.caster_world_lights, c.caster_own_not_world
         );
         println!(
-            "world space: {} draws in the world's own space took the world's lights; scenes whose draws in that space kept their own: {} not lit as the world, {} with no world view, {} for the view, {} for the projection",
-            c.world_space_lights, c.world_space_refused[0], c.world_space_refused[1], c.world_space_refused[2], c.world_space_refused[3]
+            "world space: {} draws in the world's own space took the world's lights; scenes whose draws in that space kept their own: {} not lit as the world, {} with no world view, {} for the view, {} for the projection, {} with a camera origin",
+            c.world_space_lights, c.world_space_refused[0], c.world_space_refused[1], c.world_space_refused[2], c.world_space_refused[3], c.world_space_refused[4]
         );
         println!(
             "vertex world: {} draws lit for each vertex took the world's lights ({} lights, {} left out by the cap); {} kept their own for want of a bound, {} for want of a space of the world's lights",

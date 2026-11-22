@@ -654,6 +654,21 @@ impl Player {
                 renderer.counts.world_space_lights += 1;
             }
             renderer.counts.caster_world_lights += u32::from(caster);
+            if caster {
+                // The own point lights that the world's lights do not hold: lost to this draw.
+                let (own_first, own_count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
+                let own = &self.frame_lights[own_first..own_first + own_count];
+                renderer.counts.caster_own_not_world += shape
+                    .lights
+                    .as_chunks::<STATE_LIGHT_SIZE>()
+                    .0
+                    .iter()
+                    .zip(own)
+                    .filter(|(record, light)| {
+                        light.position[3] != 3.0 && !self.retained.is_world_point_light(word(record.as_slice(), 0))
+                    })
+                    .count() as u32;
+            }
         }
         // A draw lit for each pixel with no lights of any source: its shader has no light loop.
         if crate::switches::switches().zero_light_key && crate::light_keys::has_no_lights(&draw_data) {

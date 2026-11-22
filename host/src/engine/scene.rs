@@ -60,13 +60,19 @@ pub(crate) enum WorldSpaceRefusal {
     View,
     /// The shadow casters' scene has a projection other than the world scene's.
     Projection,
+    /// A scene of the world camera or of the arm camera: it has a camera origin, and its draws
+    /// that are not relative to it keep their own lights (W554, the Architect's ruling on the
+    /// lost particles).
+    CameraScene,
 }
 
 /// Whether a lit draw in the world's own space of a scene of `kind`, with the scene's `view`
 /// and `projection`, can take the world's lights: its pixel and its depth must find the
-/// clusters of the main view. A scene of the world camera or of the arm camera can. The shadow
-/// casters' scene can when its camera has the view and the projection of the frame's world
-/// scene (`world`); both draw into the back buffer (`lit` of the draw).
+/// clusters of the main view. Only the shadow casters' scene, the scene with no camera origin,
+/// can, and only when its camera has the view and the projection of the frame's world scene
+/// (`world`); both draw into the back buffer (`lit` of the draw). A draw of another scene that
+/// is not relative to the camera keeps its own lights: its lights need not be among the
+/// world's.
 pub(crate) fn world_space_lights(
     kind: u32,
     view: &[f32; 16],
@@ -74,7 +80,7 @@ pub(crate) fn world_space_lights(
     world: Option<&([f32; 16], [f32; 16])>,
 ) -> Result<(), WorldSpaceRefusal> {
     if world_camera(kind) || kind == SCENE_FIRST_PERSON {
-        return Ok(());
+        return Err(WorldSpaceRefusal::CameraScene);
     }
     if kind != SCENE_SHADOW_CASTERS {
         return Err(WorldSpaceRefusal::NotLit);
@@ -165,9 +171,14 @@ mod tests {
             world_space_lights(SCENE_SHADOW_CASTERS, &view, &projection, None),
             Err(WorldSpaceRefusal::NoWorldView)
         );
-        // The scenes of the world camera and of the arm camera need no world view.
+        // The scenes of the world camera and of the arm camera have a camera origin: their draws
+        // that are not relative keep their own lights, with the world's view too.
         for kind in [SCENE_WORLD, SCENE_SORTED_ALPHA, SCENE_WATER, SCENE_FIRST_PERSON] {
-            assert_eq!(world_space_lights(kind, &moved, &wider, None), Ok(()), "kind {kind}");
+            assert_eq!(
+                world_space_lights(kind, &view, &projection, Some(&world)),
+                Err(WorldSpaceRefusal::CameraScene),
+                "kind {kind}"
+            );
         }
     }
 

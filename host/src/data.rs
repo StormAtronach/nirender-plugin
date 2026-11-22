@@ -561,9 +561,13 @@ pub(crate) struct Counts {
     /// The draws in the world's own space that took the world's lights for each pixel
     /// ([`crate::WORLD_SPACE_LIGHTS_BIT`]), and the scenes whose draws in that space kept their
     /// own, by [`crate::engine::scene::WorldSpaceRefusal`]: not lit, no world view, the view,
-    /// the projection.
+    /// the projection, a scene with a camera origin.
     pub(crate) world_space_lights: u32,
-    pub(crate) world_space_refused: [u32; 4],
+    pub(crate) world_space_refused: [u32; 5],
+    /// The own point lights of the shadow casters' draws that took the world's lights and
+    /// that are not among the world's lights: each a light the draw lost (W554, the
+    /// Architect's counter).
+    pub(crate) caster_own_not_world: u32,
     /// The particle draws that took their lights at their corners ([`crate::CORNER_LIGHT_BIT`]).
     pub(crate) corner_light_draws: u32,
     /// The shapes with a rule of the engine that this program does not follow: a material
