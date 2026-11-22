@@ -90,8 +90,7 @@ pub(crate) const KINDS: [&str; 6] = [
 pub(crate) const KIND_BLEND: usize = 1;
 
 /// The lines of the unit's rule that an instance with more than one pass can fail, in the
-/// order of the test. A new line goes at the end: the readers of the report know the lines by
-/// their index.
+/// order of the test. A new line goes at the end, so an older report's lines keep their index.
 pub(crate) const UNIT_FAILS: [&str; 7] = [
     "first pass not free",
     "first pass's alpha test",
