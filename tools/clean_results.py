@@ -43,8 +43,12 @@ A dump in C:\\tmp\\mwdumps or E:\\nirender-keep\\full-dumps-*:
 A set of E:\\nirender-keep\\mgebuilds stays when it is the current set or the one before, when a process
 uses it, when the text or the name of a baseline-* or gate-* folder names it, or when the keep list names it.
 The current set is the one that mgebuilds\\current.bat names (deploy_rest.py writes it, W500), else the one that local.bat
-names (clean_common.current_set). Others go 30 days after their newest write. When neither names a set that is here, no
-set goes.
+names (clean_common.current_set). A sealed set s-<nir8>-<rl8>-<mwse8> also stays when it is the set of a pair that
+merge_step.py keeps for a refs/merge-step/<branch> (the base set of the next round), or when it is one of the newest 20
+sealed sets that no other reason keeps; another goes 7 days after it was made (W567 part C). Every other set goes 30
+days after the later of its folder's time and its Modified in the CSV. When neither names a set that is here, no set
+goes. No set is walked (D587, W565): the sizes come from a WizTree CSV of folders, `--sizes-csv FILE`, and are not
+known without it.
 
 The tool refuses while a game or a helper runs. A removal never goes through a link. Each act goes to
 E:\\nirender-keep\\clean-worktrees.log.
@@ -69,6 +73,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # `python -I` leaves the folder of the script off the path.
 sys.path.insert(0, HERE)
 import clean_common as common  # noqa: E402
+import common as shared  # noqa: E402  (tools/common.py: git_env, checkout_of)
 from clean_common import DUMP_DAYS, KEEP_ROOT, SETS, Evidence, GameNotFree, current_set, files_in, game_kept_free, games_in, gigabytes, is_heavy, is_link, is_link_entry, kept_set_names, log_line, long_path, processes, project_trees, remove_file, remove_tree, run_age_days, run_treatment, set_made, set_number, set_treatment, users_of, walk  # noqa: E402
 
 RUN_PLACES = ["E:\\nirender-results"]
@@ -286,7 +291,51 @@ def other_dumps():
 # ---- the sets
 
 
-def plan_sets(sets, evidence, current, running, now):
+def read_sizes_csv(path, sets):
+    """The folders right below `sets` in a WizTree CSV of folders (line 1 its banner, line 2 the header): {name in lower
+    case: (bytes, the time of its Modified as seconds)}. The sizes of the sets come from it, as the tool walks no set
+    (D587, W565)."""
+    import csv
+
+    prefix = os.path.normcase(os.path.abspath(sets)).rstrip("\\/") + os.sep
+    found = {}
+    with open(path, encoding="utf-8-sig", newline="") as file:
+        next(file, None)
+        for row in csv.DictReader(file):
+            folder = os.path.normcase(row.get("File Name") or "")
+            if not folder.startswith(prefix) or not folder.endswith(os.sep):
+                continue
+            name = folder[len(prefix):-1]
+            if not name or os.sep in name:
+                continue
+            modified = time.mktime(time.strptime(row["Modified"], "%Y/%m/%d %H:%M:%S")) if row.get("Modified") else None
+            found[name] = (int(row["Size"]), modified)
+    return found
+
+
+def merge_step_pairs(plugin, mge):
+    """The commit pairs of the refs that merge_step.py moves after a pass, as {(nirender 8 hex, render-link 8 hex)}: for
+    each refs/merge-step/<branch> of either repo, its kept pair refs/merge-step-pair/<plugin|mge>/<commit> in the other
+    one. Their sets are the base sets of the next rounds (W567 part C)."""
+    def refs(repo, prefix):
+        run = subprocess.run(["git", "-C", repo, "for-each-ref", "--format=%(objectname) %(refname)", prefix], capture_output=True, text=True,
+                             env=shared.git_env()) if repo and os.path.isdir(repo) else None
+        return [line.split(" ", 1) for line in run.stdout.splitlines()] if run and run.returncode == 0 else []
+
+    pairs = set()
+    for repo, sibling, kind in ((plugin, mge, "plugin"), (mge, plugin, "mge")):
+        kept = {name.rsplit("/", 1)[-1]: commit for commit, name in refs(sibling, "refs/merge-step-pair/%s/" % kind)}
+        for commit, _ in refs(repo, "refs/merge-step/"):
+            other = kept.get(commit)
+            if other:
+                pairs.add((commit[:8], other[:8]) if kind == "plugin" else (other[:8], commit[:8]))
+    return pairs
+
+
+def plan_sets(sets, evidence, current, running, now, sizes=None, pairs=frozenset()):
+    """The treatment of each set of `sets` (set_treatment), with no walk of a set (D587, W565): the size comes from
+    `sizes` (read_sizes_csv) and is None without it. The age of a sealed set counts from its making (set_made); of any
+    other set, from the later of its folder's own time and its Modified in `sizes`. `pairs`: merge_step_pairs."""
     if not os.path.isdir(sets):
         return []
     with os.scandir(sets) as entries:
@@ -294,15 +343,33 @@ def plan_sets(sets, evidence, current, running, now):
     names = [entry.name for entry in found]
     current_known = current in names
     kept = kept_set_names(current, names, lambda name: set_made(sets, name)) if current_known else set()
-    rows = []
+    facts = []
     for entry in found:
-        size, _, newest, links, unread = walk(entry.path)
-        treatment = set_treatment((now - newest) / 86400 if newest else 0, evidence.cites_word(entry.name), entry.name in kept, users_of(entry.path, running), current_known)
-        if treatment == "go" and evidence.keeps(entry.path):
-            treatment = "stay: on the keep list"
-        if unread and treatment == "go":
-            treatment = "stay: %d folders could not be read" % unread
-        rows.append({"name": entry.name, "path": entry.path, "size": size, "links": links, "treatment": treatment})
+        size, modified = (sizes or {}).get(os.path.normcase(entry.name), (None, None))
+        named = common.NAME_RE.fullmatch(entry.name)
+        sealed = bool(named)
+        made = set_made(sets, entry.name) if sealed else None
+        if sealed:
+            when = made
+        else:
+            when = max(stamp for stamp in (entry.stat(follow_symlinks=False).st_mtime, modified) if stamp is not None)
+        # A pair's set is of plain commits: a set with a patch mark is not one.
+        pair = sealed and not (named.group(2) or named.group(4)) and (named.group(1), named.group(3)) in pairs
+        first = set_treatment((now - when) / 86400 if when else None, evidence.cites_word(entry.name), entry.name in kept, users_of(entry.path, running),
+                              current_known, sealed, pair)
+        if first == "go" and evidence.keeps(entry.path):
+            first = "stay: on the keep list"
+        facts.append((entry, size, sealed, made, pair, first))
+    # The newest SEALED_NEWEST of the sealed sets that no other reason keeps: those that would go, or stay by their age.
+    rest = sorted(((made or 0, entry.name) for entry, _, sealed, made, _, first in facts
+                   if sealed and (first == "go" or first.startswith("stay: younger") or first.startswith("stay: its age"))), reverse=True)
+    newest = {name for _, name in rest[:common.SEALED_NEWEST]}
+    rows = []
+    for entry, size, sealed, made, pair, first in facts:
+        treatment = first
+        if entry.name in newest:
+            treatment = set_treatment(None, False, False, False, current_known, sealed, pair, newest=True)
+        rows.append({"name": entry.name, "path": entry.path, "size": size, "treatment": treatment})
     return rows
 
 
@@ -318,7 +385,7 @@ def act_on_sets(rows):
             failed += 1
             continue
         links, failures = remove_tree(row["path"])
-        log_line("set removed: %s, %s" % (row["path"], gigabytes(row["size"])), True)
+        log_line("set removed: %s, %s" % (row["path"], set_size(row)), True)
         for link, target in links:
             log_line("  link removed: %s (its target %s stays)" % (link, target), True)
         for path, error in failures:
@@ -380,12 +447,24 @@ def print_dumps(rows, others):
         print("  %9s  %s" % (gigabytes(size), path))
 
 
+def set_size(row):
+    """The size of a set's row, or "size ?" without a WizTree CSV (plan_sets walks no set)."""
+    return "size ?" if row["size"] is None else gigabytes(row["size"])
+
+
+def known_sizes(rows):
+    """The sum of the known sizes of `rows`, with the count of the rows of no known size."""
+    unknown = sum(row["size"] is None for row in rows)
+    text = gigabytes(sum(row["size"] or 0 for row in rows))
+    return text + (" (%d of no known size: give --sizes-csv)" % unknown if unknown else "")
+
+
 def print_sets(rows, names):
     going = [row for row in rows if row["treatment"] == "go"]
-    print("\nSETS in %s (%d, %s); %d go, %s freed:" % (SETS, len(rows), gigabytes(sum(row["size"] for row in rows)), len(going), gigabytes(sum(row["size"] for row in going))))
+    print("\nSETS in %s (%d, %s); %d go, %s freed:" % (SETS, len(rows), known_sizes(rows), len(going), known_sizes(going)))
     for row in rows:
         if names or row["treatment"] == "go":
-            print("  %9s  %-10s %s" % (gigabytes(row["size"]), row["name"], row["treatment"]))
+            print("  %9s  %-10s %s" % (set_size(row), row["name"], row["treatment"]))
 
 
 def main():
@@ -393,6 +472,7 @@ def main():
     parser.add_argument("--apply", action="store_true", help="trim, compress and remove; without it the tool only lists")
     parser.add_argument("--list", action="store_true", help="name each run and each set")
     parser.add_argument("--during-game", action="store_true", help="the list while a game runs; --apply still refuses")
+    parser.add_argument("--sizes-csv", metavar="FILE", help="a WizTree CSV of folders: the sizes of the sets (no set is walked, D587)")
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts and of a real junction")
     args = parser.parse_args()
     if args.self_test:
@@ -428,13 +508,15 @@ def clean(args):
     plans = [(root, plan_root(root, evidence, now)) for root in roots]
     dumps = plan_dumps(DUMP_PLACES + sorted(glob.glob(os.path.join(KEEP_ROOT, "full-dumps-*"))), evidence, now, dump_owners(plans))
     current = current_set()
-    sets = plan_sets(SETS, evidence, current, running, now)
+    plugin_main = shared.checkout_of(os.path.dirname(os.path.abspath(__file__)))
+    pairs = merge_step_pairs(plugin_main, os.path.join(os.path.dirname(plugin_main), "MGE-XE-G7-render-link") if plugin_main else None)
+    sets = plan_sets(SETS, evidence, current, running, now, read_sizes_csv(args.sizes_csv, SETS) if args.sizes_csv else None, pairs)
     print_runs(plans, links, args.list)
     print_labels(plans, evidence)
     print_dumps(dumps, other_dumps())
     print("\nlocal.bat names the set %s" % current)
     print_sets(sets, args.list)
-    freed = sum(freed_by(row) for _, rows in plans for row in rows) + sum(row["size"] for row in dumps if row["treatment"] == "remove") + sum(row["size"] for row in sets if row["treatment"] == "go")
+    freed = sum(freed_by(row) for _, rows in plans for row in rows) + sum(row["size"] for row in dumps if row["treatment"] == "remove") + sum(row["size"] or 0 for row in sets if row["treatment"] == "go")
     print("\nThe removals free %s, and the compression more." % gigabytes(freed))
     if not args.apply:
         print("A dry run: nothing changed. --apply acts.")
@@ -443,6 +525,90 @@ def clean(args):
     failed += act_on_dumps(dumps)
     failed += act_on_sets(sets)
     return 1 if failed else 0
+
+
+def self_test_sealed_sets(temp, now):
+    """W567 part C: the bound on the sealed sets, the pairs of merge_step's refs and the sizes of a WizTree CSV."""
+    import datetime
+    import json
+
+    sets = os.path.join(temp, "sealed", "mgebuilds")
+    made = {}
+
+    def sealed(nir, days, link="a" * 8):
+        name = "s-%08x-%s-%s" % (nir, link, "b" * 8)
+        os.makedirs(os.path.join(sets, name))
+        with open(os.path.join(sets, name, common.MANIFEST), "w", encoding="utf-8") as file:
+            json.dump({"made": datetime.datetime.fromtimestamp(now - days * 86400).isoformat()}, file)
+        made[name] = days
+        return name
+
+    # The current play set and the one before, 26 uncited sets of 10 to 35 days, a young one, and the pair's old set.
+    current, before = sealed(1, 1), sealed(2, 2)
+    old = [sealed(100 + number, 10 + number) for number in range(26)]
+    young = sealed(3, 3)
+    paired = sealed(0xabcdef01, 60, link="c" * 8)
+    patched = "s-%08x+p%s-%s-%s" % (0xabcdef01, "d" * 8, "c" * 8, "b" * 8)
+    os.makedirs(os.path.join(sets, patched))
+    other = os.path.join(sets, "f300")
+    os.makedirs(other)
+    os.utime(other, (now - 40 * 86400, now - 40 * 86400))
+    pairs = {("abcdef01", "c" * 8)}
+    rows = {row["name"]: row for row in plan_sets(sets, Evidence(""), current, [], now, pairs=pairs)}
+    treatments = {name: row["treatment"] for name, row in rows.items()}
+    assert "the current" in treatments[current] and "the current" in treatments[before], treatments
+    assert "merge-step pair" in treatments[paired], treatments[paired]
+    # The newest 20 of the rest stay: the young one and the 19 newest old ones; the 7 oldest go.
+    newest = [name for name in [young] + old if "newest %d" % common.SEALED_NEWEST in treatments[name]]
+    assert newest == [young] + old[:19], newest
+    assert [name for name in old if treatments[name] == "go"] == old[19:], treatments
+    assert "not known" in treatments[patched] or "newest" in treatments[patched], treatments[patched]
+    # The null: with no pairs, the pair's set is the oldest, and goes.
+    assert {row["name"]: row["treatment"] for row in plan_sets(sets, Evidence(""), current, [], now)}[paired] == "go"
+    # A cited set stays as cited, and leaves its place among the newest to the next one.
+    cited = {row["name"]: row["treatment"] for row in plan_sets(sets, Evidence("see %s" % old[0]), current, [], now, pairs=pairs)}
+    assert cited[old[0]] == "stay: cited" and "newest" in cited[old[19]], cited
+    # Another kind keeps 30 days by its folder's time; the CSV's later Modified keeps it too.
+    assert treatments["f300"] == "go", treatments["f300"]
+    csv_path = os.path.join(temp, "sealed", "wiztree.csv")
+    stamp = time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(now - 86400))
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as file:
+        file.write("Generated by WizTree\n")
+        file.write("File Name,Size,Allocated,Modified,Attributes,Files,Folders\n")
+        file.write('"%s\\",999,0,%s,0,1,1\n' % (sets, stamp))
+        file.write('"%s\\",123000000,0,%s,0,1,0\n' % (os.path.join(sets, old[0]), stamp))
+        file.write('"%s\\",5,0,%s,0,1,0\n' % (os.path.join(sets, "f300"), stamp))
+        file.write('"%s\\",7,0,%s,0,1,0\n' % (os.path.join(sets, "f300", "deeper"), stamp))
+    sizes = read_sizes_csv(csv_path, sets)
+    assert set(sizes) == {os.path.normcase(old[0]), "f300"} and sizes[os.path.normcase(old[0])][0] == 123000000, sizes
+    with_sizes = {row["name"]: row for row in plan_sets(sets, Evidence(""), current, [], now, sizes, pairs)}
+    assert with_sizes[old[0]]["size"] == 123000000 and with_sizes[current]["size"] is None and "younger" in with_sizes["f300"]["treatment"], with_sizes["f300"]
+    assert set_size(with_sizes[current]) == "size ?" and set_size(with_sizes[old[0]]) == gigabytes(123000000)
+    # merge_step's pairs: refs/merge-step/<branch> of each repo with its kept pair in the other.
+    repos = os.path.join(temp, "sealed", "repos")
+    plugin, mge = os.path.join(repos, "nirender-plugin"), os.path.join(repos, "MGE-XE-G7-render-link")
+    commits = {}
+    for repo in (plugin, mge):
+        os.makedirs(repo)
+        subprocess.run(["git", "-C", repo, "init", "-q"], check=True, env=shared.git_env())
+        for message in ("one", "two"):
+            subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", message],
+                           check=True, env=shared.git_env())
+            # git_env: in a pre-commit hook GIT_DIR names the hook's repository, and git would answer for it.
+            commits[(repo, message)] = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+                                                      env=shared.git_env()).stdout.strip()
+    run = lambda repo, *args: subprocess.run(["git", "-C", repo, *args], check=True, env=shared.git_env())  # noqa: E731
+    run(plugin, "update-ref", "refs/merge-step/master", commits[(plugin, "two")])
+    run(mge, "update-ref", "refs/merge-step-pair/plugin/" + commits[(plugin, "two")], commits[(mge, "one")])
+    run(mge, "update-ref", "refs/merge-step-pair/plugin/" + commits[(plugin, "one")], commits[(mge, "two")])
+    run(mge, "update-ref", "refs/merge-step/feature/x", commits[(mge, "two")])
+    run(plugin, "update-ref", "refs/merge-step-pair/mge/" + commits[(mge, "two")], commits[(plugin, "one")])
+    found = merge_step_pairs(plugin, mge)
+    assert found == {(commits[(plugin, "two")][:8], commits[(mge, "one")][:8]), (commits[(plugin, "one")][:8], commits[(mge, "two")][:8])}, found
+    # The null: a pair ref of a commit that no refs/merge-step names is not a pair of the next rounds.
+    run(plugin, "update-ref", "-d", "refs/merge-step/master")
+    assert merge_step_pairs(plugin, mge) == {(commits[(plugin, "one")][:8], commits[(mge, "two")][:8])}
+    assert merge_step_pairs(None, mge) == set()
 
 
 def self_test():
@@ -626,6 +792,10 @@ def self_test():
             os.utime(os.path.join(sets, name, "d3d8.dll"), (now - 40 * 86400, now - 40 * 86400))
         os.utime(os.path.join(sets, "f102", "d3d8.dll"), (now, now))
         subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(sets, "f101", "link"), outside], capture_output=True, check=True)
+        # No set is walked (D587): the age of a set of another kind is its folder's time.
+        for name in ("f100", "f101", "f193", "f194", "f195", "vd-a"):
+            os.utime(os.path.join(sets, name), (now - 40 * 86400, now - 40 * 86400))
+        os.utime(os.path.join(sets, "f102"), (now, now))
         running = [{"pid": 7, "name": "x.exe", "exe": os.path.join(sets, "f193", "x.exe"), "command": "", "cwd": ""}]
         rows = plan_sets(sets, Evidence("a record names f100"), "f195", running, now)
         treatments = {row["name"]: row["treatment"] for row in rows}
@@ -639,9 +809,11 @@ def self_test():
         # A set on the keep list stays, and the others go as before.
         listed = {row["name"]: row["treatment"] for row in plan_sets(sets, Evidence("a record names f100", kept={os.path.join(sets, "vd-a")}), "f195", running, now)}
         assert listed["vd-a"] == "stay: on the keep list" and listed["f101"] == "go", listed
+        assert all(row["size"] is None for row in rows) and "of no known size" in known_sizes(rows), rows
         assert act_on_sets(rows) == 0, open(common.LOG).read()
         assert not os.path.exists(os.path.join(sets, "f101")) and not os.path.exists(os.path.join(sets, "vd-a")) and os.path.exists(os.path.join(sets, "f100"))
         assert os.path.getsize(os.path.join(outside, "precious.txt")) == 1000
+        self_test_sealed_sets(temp, now)
 
         # A file that cannot go is said, and what could go is gone.
         tree = os.path.join(temp, "held")
