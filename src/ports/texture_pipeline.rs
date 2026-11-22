@@ -1951,6 +1951,39 @@ mod tests {
         assert_eq!(unique.len(), 96);
     }
 
+    /// The helper takes the texture factor as white for each draw (`host/src/stream.rs`, the
+    /// `texture_factor` line). That is correct only while no blend template of the game reads the
+    /// factor. If a template has `D3DTA_TFACTOR` as an argument or `D3DTOP_BLENDFACTORALPHA`
+    /// as its operation, the material record must carry the factor.
+    #[test]
+    fn blend_templates_never_read_the_texture_factor() {
+        const D3DTA_TFACTOR: u32 = 3;
+        const D3DTOP_BLENDFACTORALPHA: u32 = 14;
+        let first = CTP::firstStageBlendOps;
+        let end = CTP::laterStageBlendOps + 10 * BO::SIZE;
+        assert_eq!(CTP::laterStageBlendOps, first + 10 * BO::SIZE);
+        // The value of `field_104` is 0, 0x16 or 0x17, from the caps of the device.
+        for signed_op in [0u32, 0x16, 0x17] {
+            let mut pipeline = vec![0u8; CTP::SIZE];
+            let p = pipeline.as_mut_ptr() as usize;
+            unsafe {
+                wr::<u32>(p, CTP_SIGNED_OP, signed_op);
+                write_blend_templates(p);
+            }
+            for (offset, _) in BLEND_TEMPLATES {
+                let offset = offset as usize;
+                assert!((first..end).contains(&offset), "{offset:#x} is not in the tables");
+                let value: u32 = unsafe { rd(p, offset) };
+                let member = (offset - first) % BO::SIZE;
+                if member == BO::colorOp || member == BO::alphaOp {
+                    assert_ne!(value, D3DTOP_BLENDFACTORALPHA, "the operation at {offset:#x}");
+                } else {
+                    assert_ne!(value, D3DTA_TFACTOR, "the argument at {offset:#x}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn select_and_link_pass_falls_back_to_the_combiners() {
         let vtable = pass_vtable();

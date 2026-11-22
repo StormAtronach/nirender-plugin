@@ -144,8 +144,14 @@ impl Stream {
                 data.fog[3] = 1.0;
             }
         }
-        // D3DRS_TEXTUREFACTOR: white, the value of a new texture stage of the game. No stage
-        // of a derived state has the factor as an argument or as its blend.
+        // D3DRS_TEXTUREFACTOR: white, the value of a new texture stage of the game. The field
+        // is NiDX8TextureStage::extraBlendColorArgument (+0x8C). Its writes: the stage ctor
+        // 0x6C1930 (white, at 0x6C19E6) and NiDX8TexturePass::resetForNewFrame (0, at
+        // 0x6B31B6); updateRenderer 0x6C1B00 sends it at 0x6C1D84. No stage of the game reads
+        // it: the blend tables of initAlphaStateTemplates 0x6B90E0 have no argument 3
+        // (D3DTA_TFACTOR) and no operation 14 (D3DTOP_BLENDFACTORALPHA); the plugin's test
+        // `blend_templates_never_read_the_texture_factor` keeps this. No NIF field sets it.
+        // So no stage of a derived state has the factor as an argument or as its blend.
         data.texture_factor = [1.0; 4];
         if let Some(sky) = self.sky {
             data.extension = sky;
