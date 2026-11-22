@@ -50,7 +50,9 @@ sets.e_gate) again before each phase of writes to E: (each build step of a tree 
 manifest and the rename). A gate that says no, or a renew that the slot tool refuses, stops it with exit code 3 before
 that phase writes. One run of the tool at a time on this machine:
 make() itself takes the run lock C:/tmp/buildset/build_set.lock, also when another tool calls it, and stops with exit
-code 3 while another run holds it.
+code 3 while another run holds it. It takes the build slot first and the lock after it (W573): a run that waits in the
+build queue holds no lock, so a merge round that holds the whole build side finds the lock free for its own maker
+(--in-hold, which takes the lock and no slot). A set that is there already needs neither.
 
 --in-hold LABEL is for a stage of a merge round (merge_step.py), which runs under one take of the game and the whole
 build side: a take of its own would wait for that round to end. With it the tool takes no slot. It checks that this
@@ -906,33 +908,56 @@ def make(commits, patches, kind, builder, root=sets.SETS, gate=e_gate, hold=None
     (Trees, or a fake in the tests); `hold` is a context manager for the build slot (None: no slot, the tests). Returns
     (exit code, lines); the last line is the set's folder. `reuse` False builds every part (only the null of a test).
     make() takes the tool's run lock `lock` itself, so that no caller can skip it, and stops with exit code 3 when
-    another run holds it (verdict 507, addition 2). `lives` replaces the process list in the tests."""
-    with run_lock(lock) as held:
-        if not held:
-            return EXIT_REFUSED, ["another run of build_set.py holds its run lock %s: nothing is built" % lock.replace("\\", "/")]
-        return make_locked(commits, patches, kind, builder, root, gate, hold, keep, session, now, reuse, lives)
+    another run holds it (verdict 507, addition 2). The order is the slot, then the lock (W573): `hold` is entered first,
+    so a run that waits in the build queue holds no lock, and a merge round's maker inside the round's hold (--in-hold)
+    takes the lock with no take of its own. A set that is there already needs neither: it is checked first, with no
+    slot and no lock, and again under the lock. `lives` replaces the process list in the tests."""
+    patch_md5s = {repo: md5 for repo, (_, md5) in patches.items()}
+    there = there_set(os.path.join(root, sets.set_name(commits, patch_md5s, kind)), commits, patches, patch_md5s, kind)
+    if there is not None:
+        return there
+    try:
+        with hold() if hold else contextlib.nullcontext() as slot_hold:
+            with run_lock(lock) as held:
+                if not held:
+                    return EXIT_REFUSED, ["another run of build_set.py holds its run lock %s: nothing is built" % lock.replace("\\", "/")]
+                return make_locked(commits, patches, kind, builder, root, gate, slot_hold, keep, session, now, reuse, lives)
+    except SetFault as fault:
+        # The take of the slot was refused (build_hold): nothing is built, and no lock was taken.
+        return fault.code, [str(fault)]
 
 
-def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session, now, reuse, lives):
-    """make() under the run lock."""
+def there_set(folder, commits, patches, patch_md5s, kind):
+    """(exit code, lines) when the set's folder is there: 0 when it is the sealed set of the request, else a fault. None
+    when it is not there. A set appears only by the rename at its end, so this read needs no lock."""
+    name = os.path.basename(folder)
+    if not os.path.exists(folder):
+        return None
+    try:
+        there_manifest = sets.check(folder)
+    except sets.SetError as error:
+        return EXIT_FAULT, ["%s is there and is not a sealed set, and nothing is built: %s" % (name, error)]
+    # The name holds 8 hex of each commit only: the set there must be of the full commits, the patches and the kind of
+    # the request (the design's 11.4).
+    differences = request_differences(there_manifest, commits, patch_md5s, kind)
+    if differences:
+        return EXIT_FAULT, ["%s is there and is the set of other commits, and nothing is built: %s" % (name, "; ".join(differences))]
+    there = ["%s is there and its check passes: nothing is built" % name]
+    return 0, there + ([PATCH_UNVERIFIED] if patches else []) + [folder.replace("\\", "/")]
+
+
+def make_locked(commits, patches, kind, builder, root, gate, slot_hold, keep, session, now, reuse, lives):
+    """make() under the slot's hold `slot_hold` (a SlotHold, or None for no slot) and the run lock."""
     now = now or datetime.datetime.now().astimezone()
     patch_md5s = {repo: md5 for repo, (_, md5) in patches.items()}
     name = sets.set_name(commits, patch_md5s, kind)
     folder = os.path.join(root, name)
     making = folder + ".making"
     lines = []
-    if os.path.exists(folder):
-        try:
-            there_manifest = sets.check(folder)
-        except sets.SetError as error:
-            return EXIT_FAULT, ["%s is there and is not a sealed set, and nothing is built: %s" % (name, error)]
-        # The name holds 8 hex of each commit only: the set there must be of the full commits, the patches and the kind
-        # of the request (the design's 11.4).
-        differences = request_differences(there_manifest, commits, patch_md5s, kind)
-        if differences:
-            return EXIT_FAULT, ["%s is there and is the set of other commits, and nothing is built: %s" % (name, "; ".join(differences))]
-        there = ["%s is there and its check passes: nothing is built" % name]
-        return 0, there + ([PATCH_UNVERIFIED] if patches else []) + [folder.replace("\\", "/")]
+    # Again under the lock: another run may have made the set while this one waited for the slot.
+    there = there_set(folder, commits, patches, patch_md5s, kind)
+    if there is not None:
+        return there
     # An unfinished folder (the design's 11.5). Under the run lock no other maker runs, so a folder with the tool's
     # marker is stale; the marker's process must also be gone (a second check). It is renamed aside, as the first
     # phase of writes below; nothing is deleted.
@@ -959,10 +984,10 @@ def make_locked(commits, patches, kind, builder, root, gate, hold, keep, session
         say("part %s: %s" % (part, "copied from %s" % found[part][0] if found[part] else "built"))
     parts_from = {part: found[part][0] if found[part] else "built" for part in sets.PARTS}
     try:
-        # The build slot is held from before the first write to E: (a tree on E:) to the rename of the set (the
-        # design's 11.6). A hold can lapse (15 idle minutes, verdict 507 addition 1), so each phase of writes to E:
-        # checks the hold and asks the E: gate again, and stops before it writes.
-        with hold() if hold else contextlib.nullcontext() as slot_hold:
+        # The build slot is held from before the run lock (make) to the rename of the set (the design's 11.6). A hold
+        # can lapse (15 idle minutes, verdict 507 addition 1), so each phase of writes to E: checks the hold and asks
+        # the E: gate again, and stops before it writes.
+        with contextlib.nullcontext(slot_hold) as slot_hold:
             builder.slot_hold = slot_hold
 
             def phase(what):
@@ -1449,6 +1474,47 @@ def self_test():
             assert (noted.lost is not None) == expect_lost and renews[0] == "build_set: test", (noted.lost, renews)
             if expect_lost:
                 assert noted.lost == "build: nobody holds it: take it" and len(renews) == 3, renews
+        # W573: the slot first, then the lock. A run that waits in the build queue holds no lock: inside the take (the
+        # hold's enter) the lock is free, and under the hold the lock is taken before the first write (the gate's ask).
+        # The null: with the old order (the lock, then the slot) the lock is taken inside the take, and this fails.
+        seen = []
+
+        @contextlib.contextmanager
+        def queued_hold():
+            with run_lock(lock) as free:
+                seen.append(("in the queue, the lock is free", free))
+            yield SlotHold()
+
+        def gate_under_the_lock():
+            with run_lock(lock) as free:
+                seen.append(("under the hold, the lock is free", free))
+            return True, "e-ok: yes"
+
+        queued = dict(commits, mwse="cccc5555" + "0" * 32)
+        code, lines = make(queued, {}, sets.KIND_USUAL, builder, root, gate_under_the_lock, queued_hold, keep, session, reuse=False,
+                           lock=lock)
+        assert code == 0 and seen[0] == ("in the queue, the lock is free", True), (seen, lines)
+        assert seen[1:] and all(entry == ("under the hold, the lock is free", False) for entry in seen[1:]), (seen, lines)
+        # A take that is refused: its code and line, nothing built, no lock left held; the null is the queued run above.
+        builds = builder.cargo_builds, builder.mwse_builds
+
+        def refused_hold():
+            raise SetFault("no build slot", EXIT_REFUSED)
+
+        refused = dict(commits, mwse="cccc6666" + "0" * 32)
+        code, lines = make(refused, {}, sets.KIND_USUAL, builder, root, yes, refused_hold, keep, session, lock=lock)
+        assert code == EXIT_REFUSED and lines == ["no build slot"] and (builder.cargo_builds, builder.mwse_builds) == builds, lines
+        assert not [name for name in os.listdir(root) if name.startswith(sets.set_name(refused))], os.listdir(root)
+        with run_lock(lock) as free:
+            assert free, "a refused take left the run lock held"
+        # A set that is there takes no slot and no lock; the null is the queued run above, which entered its hold.
+        def no_take():
+            raise AssertionError("a set that is there asked for the build hold")
+
+        with run_lock(lock) as held:
+            assert held
+            code, lines = make(queued, {}, sets.KIND_USUAL, builder, root, yes, no_take, keep, session, lock=lock)
+        assert code == 0 and "nothing is built" in lines[0] and os.path.basename(lines[-1]) == sets.set_name(queued), lines
         # Test 9: a commit and one patch: the mark, the patch in the set, a "-dirty" render-link taken; no part shared
         # with the plain set.
         patch_file = os.path.join(scratch, "change.patch")
