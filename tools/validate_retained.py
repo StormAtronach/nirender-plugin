@@ -1672,7 +1672,9 @@ def stage_accept_list(baseline, mge_build, now, hooks=HOOK_FIXTURES):
     capture are accepted only when a second replay gives them again (`steady_problems`, as --accept-new); a tour stop's
     picture is taken as the tour's accept takes it. Nothing is copied unless every listed picture can be. Then the
     tool's own files of each folder whose pictures were accepted (the replay logs `*.replay.txt` of the gate's run) are
-    rewritten too, and are not counted as changes (D557)."""
+    rewritten too, and are not counted as changes (D557). That is every replay log of the folder, also the logs of the
+    captures that the list does not name (verdict 607): a log is no picture, and the gate's run made all of them from
+    the same commits."""
     print("accept the gate list into %s" % baseline, flush=True)
     if not GATE_LIST_NOTE:
         return check(False, "the stage accept-list needs --gate-list: it accepts only the listed pictures")
