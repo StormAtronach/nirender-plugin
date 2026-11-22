@@ -587,7 +587,7 @@ impl Player {
         clusters.world = switches().world_lights || parameters.world_lights;
         self.renderer
             .set_debug_variant(crate::debug_lines::world_variant(parameters.debug_view));
-        self.particles_last = parameters.particles;
+        self.particle_answers_last = super::draws::ParticleAnswers::of(&parameters);
         self.parameters = Some(parameters);
         self.takes = self
             .parameters

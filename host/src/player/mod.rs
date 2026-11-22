@@ -11,5 +11,6 @@ mod split;
 mod tiles;
 mod world_starts;
 
+pub(crate) use draws::ParticleAnswers;
 pub(crate) use tiles::{TileLoss, TileRead};
 pub(crate) use world_starts::FirstWorldFrames;
