@@ -221,6 +221,7 @@ from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
 import build_set  # noqa: E402  (the maker's trees and the round's set, W521)
 import sets  # noqa: E402
+from common import checkout_of  # noqa: E402
 from common import (DEPLOY_WITHHELD, DEPLOYS_FILE, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, append_deploys, deploys_line,  # noqa: E402
                     docs_place, git_env, local, main_checkout, open_deploys, open_deploys_text, tests_ran)
 from make_play_set import BASELINE, HARNESS, WAIT_SECONDS, has_captures, load_slots, say, slot_asker  # noqa: E402
@@ -500,19 +501,22 @@ QUICK_LABEL = "merge_step.py: quick %s %s"
 SHARED_BRANCHES = {"plugin": "master", "mge": "feature/wgpu-renderer"}
 
 
-def fast_stages(kind, plugin, mge, base=None):
+def fast_stages(kind, plugin, mge, base=None, clippy_mge=None):
     """The fixed stages of every round of a repo of `kind`, as (name, folder, command): the tests, the GPU tests, the
     clippy baseline, the checks and the docs. They build and test, with no set, no game and no replay, so a round runs
     them first (W567 part B), and --quick runs them alone (part A). `base`: the checks stage compares with it. `mge` None:
-    the docs stage of a plugin tree with no render-link tree skips the helper (docs.py, W510)."""
+    the docs stage of a plugin tree with no render-link tree skips the helper (docs.py, W510). `clippy_mge`: the
+    render-link tree of the clippy baseline's render-link place, built against the plugin tree's host crate (--mge-host),
+    for a plugin tree with no render-link tree beside it (clippy_render_link)."""
     tool = lambda name, *args: [sys.executable, "-I", os.path.join("tools", name), *args]  # noqa: E731
     on_base = ["--base", base] if base else []
     on_mge = ["--mge", mge] if mge else []
     if kind == "plugin":
+        on_clippy = ["--mge", clippy_mge, "--mge-host", os.path.join(plugin, "host")] if clippy_mge else []
         return [(TESTS_STAGE, plugin, ["cargo", "test", "--quiet"]),
                 ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
                 (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["_in_this_process"])),
-                ("clippy baseline", plugin, tool("clippy_baseline.py", "--check")),
+                ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", *on_clippy)),
                 ("checks", plugin, tool("checks.py", "plugin", "--strict", *on_base)),
                 ("docs", plugin, tool("docs.py", *on_mge))]
     return [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config"]),
@@ -1343,15 +1347,27 @@ def run_round(slots, stages, what, log_path, no_wait):
     return results, summary
 
 
-def quick_plan(kind, tree, sibling, base):
+def clippy_render_link(tree):
+    """The render-link tree beside the main checkout of the plugin tree `tree`, or None. A --quick round of a plugin tree
+    with no render-link tree beside it builds clippy's render-link place there, against the tree's own host crate: without
+    it, clippy_baseline.py --check stops with "no folder for the place render-link" (the first live --quick round,
+    609c610)."""
+    main = checkout_of(tree)
+    beside = os.path.join(os.path.dirname(main), MGE_NAME) if main else None
+    return beside if beside and os.path.isdir(beside) and repo_kind(beside) == "mge" else None
+
+
+def quick_plan(kind, tree, sibling, base, clippy_mge=None):
     """The stages of a --quick round of `tree` (fast_stages), as (stages, None), or (None, why) when they cannot run. A
-    plugin tree takes `sibling` for its docs when that is a render-link tree; a render-link tree needs a plugin tree there,
-    as the plugin's tools run its stages."""
+    plugin tree takes `sibling` for its docs and its clippy when that is a render-link tree; else its clippy takes
+    `clippy_mge` (clippy_render_link). A render-link tree needs a plugin tree there, as the plugin's tools run its stages."""
     if kind is None:
         return None, "%s is no tree of %s or %s" % (tree, PLUGIN_NAME, MGE_NAME)
     sibling_kind = repo_kind(sibling) if sibling and os.path.isdir(sibling) else None
     if kind == "plugin":
-        return fast_stages(kind, tree, sibling if sibling_kind == "mge" else None, base), None
+        if sibling_kind == "mge":
+            return fast_stages(kind, tree, sibling, base), None
+        return fast_stages(kind, tree, None, base, clippy_mge=clippy_mge), None
     if sibling_kind != "plugin":
         return None, "the stages of render-link run the tools of a %s tree, and %s is none: give --sibling <a %s tree>" % (
             PLUGIN_NAME, sibling, PLUGIN_NAME)
@@ -1401,23 +1417,31 @@ def run_quick(args):
             return 1
         base = git(tree, "merge-base", "HEAD", shared)
     sibling = os.path.abspath(args.sibling) if args.sibling else sibling_of(kind, tree)
-    stages, why = quick_plan(kind, tree, sibling, base)
+    sibling_used = kind == "mge" or (os.path.isdir(sibling) and repo_kind(sibling) == "mge")
+    clippy_mge = clippy_render_link(tree) if kind == "plugin" and not sibling_used else None
+    stages, why = quick_plan(kind, tree, sibling, base, clippy_mge)
     if why:
         say("QUICK FAIL %s %s: %s" % (repo_name, commit[:10], why))
         return 1
     # The stages read the sibling's working tree (the docs build the helper there; a render-link round runs the plugin's
-    # tools): the line names its commit, and a sibling with tracked changes is refused, as the tree is.
-    sibling_used = kind == "mge" or (os.path.isdir(sibling) and repo_kind(sibling) == "mge")
+    # tools; clippy builds the render-link place there): the line names its commit, and a sibling with tracked changes is
+    # refused, as the tree is.
+    read = sibling if sibling_used else clippy_mge
     sibling_head = None
-    if sibling_used:
-        sibling_head = (os.path.basename(sibling), git(sibling, "rev-parse", "HEAD"))
-        if git(sibling, "status", "--porcelain", "--untracked-files=no"):
+    if read:
+        sibling_head = (os.path.basename(read) + ("" if sibling_used else " for clippy"), git(read, "rev-parse", "HEAD"))
+        if git(read, "status", "--porcelain", "--untracked-files=no"):
             say("QUICK FAIL %s: the sibling %s has tracked changes, and its stages read its working tree: commit them first, or give --sibling "
-                "another tree" % (quick_head(repo_name, commit, sibling_head), sibling))
+                "another tree" % (quick_head(repo_name, commit, sibling_head), read))
             return 1
+    if sibling_used:
+        described = sibling
+    elif clippy_mge:
+        described = "none (the docs skip the helper; clippy builds its render-link place in %s against this tree's host)" % clippy_mge
+    else:
+        described = "none (the docs skip the helper)"
     head = quick_head(repo_name, commit, sibling_head)
-    say("quick: %s, base %s, sibling %s; stages: %s" % (head, base[:10], sibling if sibling_used else "none (the docs skip the helper)",
-                                                      ", ".join(name for name, _, _ in stages)))
+    say("quick: %s, base %s, sibling %s; stages: %s" % (head, base[:10], described, ", ".join(name for name, _, _ in stages)))
     if args.dry_run:
         return 0
     slots = load_slots()
@@ -1669,7 +1693,8 @@ def equal_parts_base(plugin_repo, tips, mwse_commit, sets_root=None, drift=None)
         if manifest.get("kind") != sets.KIND_USUAL or manifest.get("patches") or any(commits[repo] != wanted[repo] for repo in ("render-link", "mwse")):
             continue
         older = commits["nirender"]
-        if not older or older == wanted["nirender"] or not is_ancestor(plugin_repo, older, wanted["nirender"]):
+        # resolve first: a commit that the repo does not have would put git's "fatal" line on the round's console.
+        if not older or older == wanted["nirender"] or resolve(plugin_repo, older) is None or not is_ancestor(plugin_repo, older, wanted["nirender"]):
             continue
         paths = changed_paths(plugin_repo, older, wanted["nirender"])
         if any(build_set.is_part_input(path) for path in paths):
@@ -1689,11 +1714,13 @@ def base_set_lines(stages):
     return list(BASE_SET_NOTE) if any(name == BASE_STAGE for name, _, _ in stages) else []
 
 
-def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None, mwse_commit=None, label=None, mwse_why=None, reuse_base=False):
+def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None, mwse_commit=None, label=None, mwse_why=None, reuse_base=False,
+                   note=None):
     """The stages of a check of `paths` from `base`, as main() runs them: with the replay gate, also the base set of
     tips_for and the A/B. (stages, tips, None); (stages, None, why) when the round makes a set whose commits are not known
     (`mwse_why` says why the MWSE commit is not), or when the gate needs a base pair that tips_for cannot give. The
-    helper's sources (helper_gate_paths) plan the gate too."""
+    helper's sources (helper_gate_paths) plan the gate too. `reuse_base`: the base set may be an equal-parts ancestor's
+    (equal_parts_base); its line goes into the list `note` when one is given."""
     helper_paths, _ = helper_gate_paths(kind, repo, base)
 
     def plan(tips=None, base_commits=None):
@@ -1711,13 +1738,14 @@ def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None
         return stages, None, why
     if not reuse_base:
         return plan(tips), tips, None
-    # The round's own plan (main) may take the set of an equal-parts ancestor as its base set (W567 part C); the plan of
-    # the sibling's stages (move_sibling_ref) keeps the pair's own set.
+    # The base set may be the set of an equal-parts ancestor (W567 part C): in the round's own plan (main), and in the
+    # plan of the sibling's own check (move_sibling_ref), which would take the same set (W370: the stages must match).
     plugin = repo if kind == "plugin" else sibling_of(kind, repo)
-    base_commits, note = equal_parts_base(plugin, tips, mwse_commit)
-    del BASE_SET_NOTE[:]
-    if note:
-        BASE_SET_NOTE.append(note)
+    base_commits, line = equal_parts_base(plugin, tips, mwse_commit)
+    if note is not None:
+        del note[:]
+        if line:
+            note.append(line)
     return plan(tips, base_commits), tips, None
 
 
@@ -1778,8 +1806,9 @@ def move_sibling_ref(kind, sibling, sibling_head, stages, results, baseline, com
         ref_say(log_path, "the sibling %s: %s stays at %s: it is not an ancestor of the HEAD %s" % (name, ref, last[:10], head[:10]))
         return False
     paths = changed_paths(sibling, last, head)
-    # The same MWSE commit as this round: the sibling's own check would make the same set.
-    needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, mwse_commit=mwse_commit)
+    # The same MWSE commit as this round: the sibling's own check would make the same set, and take the same base set
+    # (reuse_base, as main). Its line is not this round's: no note.
+    needed, _, why = planned_stages(other, sibling, paths, baseline, commits, last, mwse_commit=mwse_commit, reuse_base=True)
     if why:
         ref_say(log_path, "the sibling %s: %s stays at %s: the stages of its diff to %s are not known (%s)" % (name, ref, last[:10], head[:10], why))
         return False
@@ -1866,13 +1895,20 @@ def self_test_equal_parts(root):
     # The pair's own set: nothing to say.
     kept(readme_change)
     assert equal_parts_base(repo, tips(readme_change), mwse, sets_root, clean) == (None, None)
-    # Another render-link commit, a patched set and another kind never serve.
-    for other in (dict(render_link="c" * 40), dict(patches={"nirender": "d" * 32})):
+    # Another render-link commit, a patched set and another kind never serve; each in a folder of its own.
+    for number, other in enumerate((dict(render_link="c" * 40), dict(patches={"nirender": "d" * 32}), dict(kind="probe"))):
         shutil_root = sets_root
-        sets_root = os.path.join(root, "parts", "sets-%d" % len(other))
+        sets_root = os.path.join(root, "parts", "sets-other-%d" % number)
         kept(second, **other)
+        assert len(sets.sets_in(sets_root)) == 1, (other, sets.sets_in(sets_root))
         assert equal_parts_base(repo, tips(tools_change), mwse, sets_root, clean)[0] is None, other
         sets_root = shutil_root
+    # A kept set whose nirender commit the repo does not have: passed over, with no git line.
+    stray_root, sets_root = sets_root, os.path.join(root, "parts", "sets-stray")
+    kept("e" * 40)
+    kept(second)
+    assert equal_parts_base(repo, tips(tools_change), mwse, sets_root, clean)[0]["nirender"] == second
+    sets_root = stray_root
     # The list of inputs against the truth: a build path outside it, or no dep-info file, builds the set.
     found, line = equal_parts_base(repo, tips(tools_change), mwse, sets_root, lambda: (["tools/gen.rs"], None))
     assert found is None and "the builds read tools/gen.rs, which build_set.NIRENDER_PART_INPUTS does not list" in line, line
@@ -1891,6 +1927,26 @@ def self_test_equal_parts(root):
         BASE_SET_NOTE[:] = ["base set: x"]
         assert base_set_lines(planned) == ["base set: x"] and base_set_lines(stages_for("plugin", plugin, ["tools/x.py"])) == []
     finally:
+        del BASE_SET_NOTE[:]
+    # Verdict 608: the plan with reuse writes its line into the list `note` it is given, and only there: the plan of the
+    # sibling's stages (move_sibling_ref, no note) leaves the round's note as it is.
+    real = {name: globals()[name] for name in ("tips_for", "equal_parts_base")}
+    reused = {"nirender": second, "render-link": link, "mwse": mwse}
+    globals()["tips_for"] = lambda *args: ({"plugin": host_change, "mge": link}, None)
+    globals()["equal_parts_base"] = lambda *args: (reused, "base set: the stub's")
+    try:
+        BASE_SET_NOTE[:] = ["base set: the round's own"]
+        stages, _, why = planned_stages("plugin", repo, ["host/src/c.rs"], BASELINE, {"plugin": "1" * 40, "mge": "2" * 40}, first, mwse_commit=mwse,
+                                        reuse_base=True)
+        assert why is None and BASE_SET_NOTE == ["base set: the round's own"], (why, BASE_SET_NOTE)
+        commands = {name: command for name, _, command in stages}
+        assert commands[BASE_STAGE][commands[BASE_STAGE].index("--nirender") + 1] == second, "the sibling's plan takes the reused set too"
+        note = ["old"]
+        planned_stages("plugin", repo, ["host/src/c.rs"], BASELINE, {"plugin": "1" * 40, "mge": "2" * 40}, first, mwse_commit=mwse, reuse_base=True,
+                       note=note)
+        assert note == ["base set: the stub's"] and BASE_SET_NOTE == ["base set: the round's own"], (note, BASE_SET_NOTE)
+    finally:
+        globals().update(real)
         del BASE_SET_NOTE[:]
 
 
@@ -1944,6 +2000,16 @@ def self_test_quick(root, plugin, mge, base):
     # A plugin tree with no render-link tree beside it checks its docs without the helper (docs.py, W510).
     alone, why = quick_plan("plugin", plugin, os.path.join(root, "no-render-link"), None)
     assert why is None and "--mge" not in dict((name, command) for name, _, command in alone)["docs"] and "--base" not in dict((name, command) for name, _, command in alone)["checks"]
+    assert "--mge" not in dict((name, command) for name, _, command in alone)["clippy baseline"], alone
+    # Its clippy builds the render-link place of the main checkout's render-link against the tree's host crate; the
+    # null: without it, clippy_baseline.py stops with "no folder for the place render-link" (609c610's live round).
+    main_mge = os.path.join(root, "main-render-link")
+    alone, why = quick_plan("plugin", plugin, os.path.join(root, "no-render-link"), None, main_mge)
+    clippy = dict((name, command) for name, _, command in alone)["clippy baseline"]
+    assert why is None and clippy[-4:] == ["--mge", main_mge, "--mge-host", os.path.join(plugin, "host")], clippy
+    assert "--mge" not in dict((name, command) for name, _, command in alone)["docs"], "the docs still skip the helper"
+    assert "--mge-host" not in dict((name, command) for name, _, command in quick_plan("plugin", plugin, mge, None, main_mge)[0])["clippy baseline"], \
+        "a render-link tree beside the plugin tree serves its clippy"
     # A render-link tree runs its stages with the tools of a plugin tree, and needs one.
     stages, why = quick_plan("mge", mge, plugin, "abc")
     assert why is None and stages == fast_stages("mge", plugin, mge, "abc") and dict((name, folder) for name, folder, _ in stages)["clippy baseline"] == plugin, stages
@@ -1999,11 +2065,32 @@ def self_test_quick(root, plugin, mge, base):
     with contextlib.redirect_stdout(said):
         assert run_quick(args) == 1
     assert "QUICK FAIL %s %s (sibling %s " % (PLUGIN_NAME, head[:10], MGE_NAME) in said.getvalue() and "has tracked changes" in said.getvalue(), said.getvalue()
-    # The null: --sibling to a folder with no render-link tree passes the same plugin tree again.
+    # --sibling to a folder with no render-link tree: the docs skip the helper, and clippy takes the render-link tree
+    # beside the main checkout (here the tree is its own main checkout). Its tracked changes are refused too; clean, the
+    # line names it "for clippy" and the clippy stage builds it against the tree's host crate.
+    elsewhere = types.SimpleNamespace(repo=tree, base=None, sibling=os.path.join(root, "none"), dry_run=True, no_wait=True)
+    assert clippy_render_link(tree) == beside
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
-        assert run_quick(types.SimpleNamespace(repo=tree, base=None, sibling=os.path.join(root, "none"), dry_run=True, no_wait=True)) == 0
-    assert "(no sibling)" in said.getvalue(), said.getvalue()
+        assert run_quick(elsewhere) == 1
+    assert "(sibling %s for clippy " % MGE_NAME in said.getvalue() and "has tracked changes" in said.getvalue(), said.getvalue()
+    subprocess.run(["git", "-C", beside, "checkout", "-q", "--", "mgeHost64/lib.rs"], check=True, env=git_env())
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        assert run_quick(elsewhere) == 0
+    assert said.getvalue().startswith("quick: %s %s (sibling %s for clippy %s), base %s, sibling none (the docs skip the helper; clippy builds its "
+                                      "render-link place in %s against this tree's host)" % (PLUGIN_NAME, head[:10], MGE_NAME, resolve(beside, "HEAD")[:10],
+                                                                                              head[:10], beside)), said.getvalue()
+    # The null: no render-link tree beside the main checkout, so no sibling at all.
+    os.rename(beside, beside + "-away")
+    try:
+        assert clippy_render_link(tree) is None
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            assert run_quick(elsewhere) == 0
+        assert "(no sibling)" in said.getvalue(), said.getvalue()
+    finally:
+        os.rename(beside + "-away", beside)
     with open(os.path.join(tree, "host", "src", "shader.wgsl"), "w", encoding="ascii") as file:
         file.write("b\n")
     said = io.StringIO()
@@ -2551,6 +2638,25 @@ def self_test():
         assert not moved and "git update-ref refused the move from %s to %s" % (c1[:10], c2[:10]) in said, said
         assert resolve(cover_mge, cover_ref) == c2 and "stays at %s" % c2[:10] in said, said
         subprocess.run(["git", "-C", cover_mge, "update-ref", cover_ref, c1], check=True, env=git_env())
+        # Verdict 608: the sibling's stages are planned with the base set of an equal-parts ancestor, as the round's own
+        # (main), so that a round that takes that set matches them; the sibling's line does not go into the round's note.
+        asked = []
+
+        def planned_and_asked(*args, **kwargs):
+            asked.append(kwargs)
+            return real_planned(*args, **kwargs)
+
+        globals()["planned_stages"] = planned_and_asked
+        BASE_SET_NOTE[:] = ["base set: the round's own"]
+        try:
+            sibling_move(both_round, [False] * len(both_round))
+        finally:
+            globals()["planned_stages"] = real_planned
+            note_after = list(BASE_SET_NOTE)
+            del BASE_SET_NOTE[:]
+        assert [(kwargs.get("reuse_base"), kwargs.get("note")) for kwargs in asked] == [(True, None)], asked
+        assert note_after == ["base set: the round's own"], note_after
+        assert resolve(cover_mge, cover_ref) == c1
         # The stages of the sibling's diff all ran and passed: the ref moves to the HEAD of the round.
         moved, said = sibling_move(both_round, all_passed)
         assert moved and resolve(cover_mge, cover_ref) == c2 and "moves from %s to %s" % (c1[:10], c2[:10]) in said, said
@@ -3556,7 +3662,8 @@ def main():
         say(helper_gate_paths(kind, repo, base)[1])
     what = "merge_step: %s %s" % (os.path.basename(repo), commit[:10])
     mwse_commit, mwse_why = round_mwse(args.mwse)
-    stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, args.sibling_base, mwse_commit, what, mwse_why, reuse_base=True) if kind else ([], None, None)
+    stages, tips, why = planned_stages(kind, repo, paths, baseline, commits, base, args.sibling_base, mwse_commit, what, mwse_why, reuse_base=True,
+                                       note=BASE_SET_NOTE) if kind else ([], None, None)
     if why:
         say("FAIL the tree: %s" % why)
         return 1

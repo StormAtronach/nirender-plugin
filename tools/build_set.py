@@ -217,7 +217,9 @@ def read_patches(texts):
 # render-link's d3d8 reads contract/; the Cargo files and the toolchain decide every cargo build; d3d8/ is listed so that
 # no folder of a build is left out.
 NIRENDER_PART_INPUTS = ("src/", "build.rs", "build_support/", "host/", "contract/", "mod/", "d3d8/", "Cargo.toml", "Cargo.lock",
-                        ".cargo/", "rust-toolchain.toml")
+                        ".cargo/", "rust-toolchain.toml", ".gitattributes", ".gitmodules")
+# .gitattributes and .gitmodules: a change to them changes the bytes that git checks out (for example of src/gen/code.bin),
+# and no dep-info file names them, so maker_input_drift cannot show them (verdict 608).
 
 
 def is_part_input(path):
@@ -1220,6 +1222,8 @@ def part_inputs_test(scratch):
     """W567 part C: the list of the part inputs, and its check against the dep-info files of the builds."""
     assert is_part_input("src/lib.rs") and is_part_input("host/src/retained.rs") and is_part_input("Cargo.toml") and is_part_input("mod/MWSE/mods/x.lua")
     assert not is_part_input("tools/merge_step.py") and not is_part_input("README.md") and not is_part_input("Cargo.toml.bak") and not is_part_input("srcx/a.rs")
+    # Verdict 608: git's own files change the checked-out bytes, and no dep-info file names them.
+    assert is_part_input(".gitattributes") and is_part_input(".gitmodules") and not is_part_input("tools/.gitattributes")
     tree = os.path.join(scratch, "nirender-plugin")
     text = "%s: %s %s %s %s %s\n%s:\n" % (os.path.join(tree, "target", "x.dll"), os.path.join(tree, "src", "lib.rs"), os.path.join(tree, "host", "src", "a\\ b.rs"),
                                        os.path.join(tree, ".git", "HEAD"), os.path.join(scratch, "registry", "x.rs"), os.path.join(tree, "build.rs"),
