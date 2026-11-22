@@ -690,16 +690,25 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
         }
         pass.push(stage(GLOW, 0, pass.is_empty()));
     }
-    // The stage of the fog map has blend slot 1 (the pass constructor writes it into the
-    // stage, `applyStageBlendOps` 0x6B56B0 reads it): after another stage it blends the
-    // texture by its alpha; as the first stage it takes the texture alone (0x6B55F7 clears
-    // the stage's apply flag).
+    // The stage of the fog map has blend slot 1 (`resetForNewFrame` 0x6B31E5 writes it). When
+    // the pass holds a stage, the fog map starts a pass of its own (0x6B55D7, then
+    // `acquireSubpassForPixelShader` 0x6B3F9B: a sub-pass holds a stage when its count is set,
+    // `appendStage` 0x6B7A25). There it is the first stage: the texture alone for the colour
+    // and the alpha (0x6B55F7 clears the apply flag; 0x6B5714), and the pass blends by
+    // template 1, SRCALPHA and INVSRCALPHA (0x6B92D0). So an opaque fog texture covers the
+    // pass before it, the material's blend too. The engine's first draw after
+    // `resetForNewFrame` keeps the fog map in the pass; that case is not followed.
     if m.fog_map.present {
-        if pass.len() >= 8 {
+        if !pass.is_empty() {
             passes.push((core::mem::take(&mut pass), pass_slot));
             pass_slot = 1;
         }
-        let (color, alpha) = ops(1, pass.is_empty(), false, true);
+        let (mut color, alpha) = ops(1, true, false, true);
+        // The Code Patch's hook on the coordinate index (0x736F80) scales the texture by the
+        // lit colour for the reflection vector of set 0, as for the environment map above.
+        if envmap_lit && matches!(m.fog_map_coordinates, 2 | 3) {
+            color = [4, 2, 0];
+        }
         pass.push(Stage {
             texture: m.fog_map.texture,
             color,
@@ -793,8 +802,9 @@ pub fn draw_keeps_picture(shape_flags: u32, m: &Material, material_alpha: f32, p
 mod fog_map_tests {
     use super::*;
 
-    /// A material record with a fog map, and a base map when `base` is set.
-    fn material(base: bool) -> Material {
+    /// A material record with a fog map of the coordinate mode `coordinates`, and a base map
+    /// when `base` is set.
+    fn material(base: bool, coordinates: u32) -> Material {
         let mut words = [0u32; WORDS];
         words[1] = FOG_MAP;
         words[6] = 2;
@@ -803,25 +813,50 @@ mod fog_map_tests {
             words[12] = 1;
         }
         words[85] = 0x200;
+        words[88] = coordinates;
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         Material::parse(&bytes).unwrap()
     }
 
+    /// SELECTARG1 of the texture.
+    const TEXTURE_ALONE: [u32; 3] = [2, 2, 0];
+
     #[test]
-    fn the_fog_map_after_a_stage_blends_by_its_alpha() {
-        let d = derive(&material(true), 1, false);
-        let fog = d.passes[0].iter().find(|s| s.source == 9).unwrap();
-        // Slot 1 of the later-stage table: BLENDTEXTUREALPHA (0xD) of the texture and the
-        // current colour.
-        assert_eq!(fog.color, [0xD, 2, 1]);
+    fn the_fog_map_after_a_stage_takes_a_pass_of_its_own() {
+        let d = derive(&material(true, 0), 1, false);
+        assert_eq!(d.passes.len(), 2);
+        assert!(d.passes[0].iter().all(|s| s.source != 9));
+        let fog = &d.passes[1][0];
+        assert_eq!(fog.source, 9);
+        assert_eq!(fog.color, TEXTURE_ALONE);
+        assert_eq!(fog.alpha, TEXTURE_ALONE);
+        // Template 1: SRCALPHA and INVSRCALPHA.
+        assert_eq!(d.blends[1], [1, 5, 6]);
     }
 
     #[test]
     fn without_a_base_map_the_fog_map_follows_the_stage_with_no_texture() {
-        let d = derive(&material(false), 1, false);
+        let d = derive(&material(false, 0), 1, false);
         assert_eq!(d.passes[0][0].source, 10);
-        let fog = d.passes[0].iter().find(|s| s.source == 9).unwrap();
-        assert_eq!(fog.color, [0xD, 2, 1]);
+        assert_eq!(d.passes.len(), 2);
+        assert_eq!(d.passes[1][0].source, 9);
+        assert_eq!(d.passes[1][0].color, TEXTURE_ALONE);
+    }
+
+    #[test]
+    fn the_code_patch_scales_a_fog_map_of_the_reflection_by_the_lit_colour() {
+        for coordinates in [2, 3] {
+            let d = derive(&material(true, coordinates), 1, true);
+            // MODULATE of the texture and the diffuse colour; the alpha stays the texture's.
+            assert_eq!(d.passes[1][0].color, [4, 2, 0]);
+            assert_eq!(d.passes[1][0].alpha, TEXTURE_ALONE);
+        }
+        for coordinates in [0, 1, 4] {
+            let d = derive(&material(true, coordinates), 1, true);
+            assert_eq!(d.passes[1][0].color, TEXTURE_ALONE);
+        }
+        let d = derive(&material(true, 2), 1, false);
+        assert_eq!(d.passes[1][0].color, TEXTURE_ALONE);
     }
 }
 
