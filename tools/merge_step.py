@@ -501,23 +501,24 @@ QUICK_LABEL = "merge_step.py: quick %s %s"
 SHARED_BRANCHES = {"plugin": "master", "mge": "feature/wgpu-renderer"}
 
 
-def fast_stages(kind, plugin, mge, base=None, clippy_mge=None):
+def fast_stages(kind, plugin, mge, base=None, main_mge=None):
     """The fixed stages of every round of a repo of `kind`, as (name, folder, command): the tests, the GPU tests, the
     clippy baseline, the checks and the docs. They build and test, with no set, no game and no replay, so a round runs
     them first (W567 part B), and --quick runs them alone (part A). `base`: the checks stage compares with it. `mge` None:
-    the docs stage of a plugin tree with no render-link tree skips the helper (docs.py, W510). `clippy_mge`: the
-    render-link tree of the clippy baseline's render-link place, built against the plugin tree's host crate (--mge-host),
-    for a plugin tree with no render-link tree beside it (clippy_render_link)."""
+    the docs stage of a plugin tree with no render-link tree skips the helper (docs.py, W510). `main_mge`: for a plugin
+    tree with no render-link tree beside it (main_render_link), the render-link tree that the checks read (--mge) and
+    whose place the clippy baseline builds against the plugin tree's host crate (--mge-host)."""
     tool = lambda name, *args: [sys.executable, "-I", os.path.join("tools", name), *args]  # noqa: E731
     on_base = ["--base", base] if base else []
     on_mge = ["--mge", mge] if mge else []
     if kind == "plugin":
-        on_clippy = ["--mge", clippy_mge, "--mge-host", os.path.join(plugin, "host")] if clippy_mge else []
+        on_clippy = ["--mge", main_mge, "--mge-host", os.path.join(plugin, "host")] if main_mge else []
+        on_checks = ["--mge", main_mge] if main_mge else []
         return [(TESTS_STAGE, plugin, ["cargo", "test", "--quiet"]),
                 ("host tests", os.path.join(plugin, "host"), ["cargo", "test", "--quiet"]),
                 (HOST_GPU_STAGE, os.path.join(plugin, "host"), gpu_command(plugin, [], ["_in_this_process"])),
                 ("clippy baseline", plugin, tool("clippy_baseline.py", "--check", *on_clippy)),
-                ("checks", plugin, tool("checks.py", "plugin", "--strict", *on_base)),
+                ("checks", plugin, tool("checks.py", "plugin", "--strict", *on_checks, *on_base)),
                 ("docs", plugin, tool("docs.py", *on_mge))]
     return [("helper tests", mge, ["cargo", "test", "--quiet", "-p", "mgeHost64", "-p", "mge-config"]),
             (GPU_STAGE, mge, gpu_command(plugin, ["-p", "mgeHost64"])),
@@ -1347,27 +1348,27 @@ def run_round(slots, stages, what, log_path, no_wait):
     return results, summary
 
 
-def clippy_render_link(tree):
+def main_render_link(tree):
     """The render-link tree beside the main checkout of the plugin tree `tree`, or None. A --quick round of a plugin tree
-    with no render-link tree beside it builds clippy's render-link place there, against the tree's own host crate: without
-    it, clippy_baseline.py --check stops with "no folder for the place render-link" (the first live --quick round,
-    609c610)."""
+    with no render-link tree beside it builds clippy's render-link place there, against the tree's own host crate, and its
+    checks read it: without it, clippy_baseline.py --check stops with "no folder for the place render-link" (the live
+    --quick round of 609c610), and checks.py --strict gives NOT RUN for "mge contract" (the round of 0db74de)."""
     main = checkout_of(tree)
     beside = os.path.join(os.path.dirname(main), MGE_NAME) if main else None
     return beside if beside and os.path.isdir(beside) and repo_kind(beside) == "mge" else None
 
 
-def quick_plan(kind, tree, sibling, base, clippy_mge=None):
+def quick_plan(kind, tree, sibling, base, main_mge=None):
     """The stages of a --quick round of `tree` (fast_stages), as (stages, None), or (None, why) when they cannot run. A
     plugin tree takes `sibling` for its docs and its clippy when that is a render-link tree; else its clippy takes
-    `clippy_mge` (clippy_render_link). A render-link tree needs a plugin tree there, as the plugin's tools run its stages."""
+    `main_mge` (main_render_link). A render-link tree needs a plugin tree there, as the plugin's tools run its stages."""
     if kind is None:
         return None, "%s is no tree of %s or %s" % (tree, PLUGIN_NAME, MGE_NAME)
     sibling_kind = repo_kind(sibling) if sibling and os.path.isdir(sibling) else None
     if kind == "plugin":
         if sibling_kind == "mge":
             return fast_stages(kind, tree, sibling, base), None
-        return fast_stages(kind, tree, None, base, clippy_mge=clippy_mge), None
+        return fast_stages(kind, tree, None, base, main_mge=main_mge), None
     if sibling_kind != "plugin":
         return None, "the stages of render-link run the tools of a %s tree, and %s is none: give --sibling <a %s tree>" % (
             PLUGIN_NAME, sibling, PLUGIN_NAME)
@@ -1418,26 +1419,26 @@ def run_quick(args):
         base = git(tree, "merge-base", "HEAD", shared)
     sibling = os.path.abspath(args.sibling) if args.sibling else sibling_of(kind, tree)
     sibling_used = kind == "mge" or (os.path.isdir(sibling) and repo_kind(sibling) == "mge")
-    clippy_mge = clippy_render_link(tree) if kind == "plugin" and not sibling_used else None
-    stages, why = quick_plan(kind, tree, sibling, base, clippy_mge)
+    main_mge = main_render_link(tree) if kind == "plugin" and not sibling_used else None
+    stages, why = quick_plan(kind, tree, sibling, base, main_mge)
     if why:
         say("QUICK FAIL %s %s: %s" % (repo_name, commit[:10], why))
         return 1
     # The stages read the sibling's working tree (the docs build the helper there; a render-link round runs the plugin's
     # tools; clippy builds the render-link place there): the line names its commit, and a sibling with tracked changes is
     # refused, as the tree is.
-    read = sibling if sibling_used else clippy_mge
+    read = sibling if sibling_used else main_mge
     sibling_head = None
     if read:
-        sibling_head = (os.path.basename(read) + ("" if sibling_used else " for clippy"), git(read, "rev-parse", "HEAD"))
+        sibling_head = (os.path.basename(read) + ("" if sibling_used else " for clippy and checks"), git(read, "rev-parse", "HEAD"))
         if git(read, "status", "--porcelain", "--untracked-files=no"):
             say("QUICK FAIL %s: the sibling %s has tracked changes, and its stages read its working tree: commit them first, or give --sibling "
                 "another tree" % (quick_head(repo_name, commit, sibling_head), read))
             return 1
     if sibling_used:
         described = sibling
-    elif clippy_mge:
-        described = "none (the docs skip the helper; clippy builds its render-link place in %s against this tree's host)" % clippy_mge
+    elif main_mge:
+        described = "none (the docs skip the helper; the checks read %s, and clippy builds its render-link place there against this tree's host)" % main_mge
     else:
         described = "none (the docs skip the helper)"
     head = quick_head(repo_name, commit, sibling_head)
@@ -2001,15 +2002,17 @@ def self_test_quick(root, plugin, mge, base):
     alone, why = quick_plan("plugin", plugin, os.path.join(root, "no-render-link"), None)
     assert why is None and "--mge" not in dict((name, command) for name, _, command in alone)["docs"] and "--base" not in dict((name, command) for name, _, command in alone)["checks"]
     assert "--mge" not in dict((name, command) for name, _, command in alone)["clippy baseline"], alone
-    # Its clippy builds the render-link place of the main checkout's render-link against the tree's host crate; the
-    # null: without it, clippy_baseline.py stops with "no folder for the place render-link" (609c610's live round).
+    # Its clippy builds the render-link place of the main checkout's render-link against the tree's host crate, and its
+    # checks read that tree. The null: without it, clippy_baseline.py stops with "no folder for the place render-link"
+    # (609c610's live round) and checks.py --strict gives NOT RUN for "mge contract" (0db74de's).
     main_mge = os.path.join(root, "main-render-link")
-    alone, why = quick_plan("plugin", plugin, os.path.join(root, "no-render-link"), None, main_mge)
-    clippy = dict((name, command) for name, _, command in alone)["clippy baseline"]
-    assert why is None and clippy[-4:] == ["--mge", main_mge, "--mge-host", os.path.join(plugin, "host")], clippy
-    assert "--mge" not in dict((name, command) for name, _, command in alone)["docs"], "the docs still skip the helper"
-    assert "--mge-host" not in dict((name, command) for name, _, command in quick_plan("plugin", plugin, mge, None, main_mge)[0])["clippy baseline"], \
-        "a render-link tree beside the plugin tree serves its clippy"
+    alone, why = quick_plan("plugin", plugin, os.path.join(root, "no-render-link"), "abc", main_mge)
+    commands = dict((name, command) for name, _, command in alone)
+    assert why is None and commands["clippy baseline"][-4:] == ["--mge", main_mge, "--mge-host", os.path.join(plugin, "host")], commands
+    assert commands["checks"][-4:] == ["--mge", main_mge, "--base", "abc"], commands["checks"]
+    assert "--mge" not in commands["docs"], "the docs still skip the helper"
+    beside_commands = dict((name, command) for name, _, command in quick_plan("plugin", plugin, mge, None, main_mge)[0])
+    assert "--mge" not in beside_commands["clippy baseline"] and "--mge" not in beside_commands["checks"], "a render-link tree beside the plugin tree serves"
     # A render-link tree runs its stages with the tools of a plugin tree, and needs one.
     stages, why = quick_plan("mge", mge, plugin, "abc")
     assert why is None and stages == fast_stages("mge", plugin, mge, "abc") and dict((name, folder) for name, folder, _ in stages)["clippy baseline"] == plugin, stages
@@ -2065,26 +2068,26 @@ def self_test_quick(root, plugin, mge, base):
     with contextlib.redirect_stdout(said):
         assert run_quick(args) == 1
     assert "QUICK FAIL %s %s (sibling %s " % (PLUGIN_NAME, head[:10], MGE_NAME) in said.getvalue() and "has tracked changes" in said.getvalue(), said.getvalue()
-    # --sibling to a folder with no render-link tree: the docs skip the helper, and clippy takes the render-link tree
-    # beside the main checkout (here the tree is its own main checkout). Its tracked changes are refused too; clean, the
-    # line names it "for clippy" and the clippy stage builds it against the tree's host crate.
+    # --sibling to a folder with no render-link tree: the docs skip the helper, and clippy and the checks take the
+    # render-link tree beside the main checkout (here the tree is its own main checkout). Its tracked changes are refused
+    # too; clean, the line names it "for clippy and checks".
     elsewhere = types.SimpleNamespace(repo=tree, base=None, sibling=os.path.join(root, "none"), dry_run=True, no_wait=True)
-    assert clippy_render_link(tree) == beside
+    assert main_render_link(tree) == beside
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
         assert run_quick(elsewhere) == 1
-    assert "(sibling %s for clippy " % MGE_NAME in said.getvalue() and "has tracked changes" in said.getvalue(), said.getvalue()
+    assert "(sibling %s for clippy and checks " % MGE_NAME in said.getvalue() and "has tracked changes" in said.getvalue(), said.getvalue()
     subprocess.run(["git", "-C", beside, "checkout", "-q", "--", "mgeHost64/lib.rs"], check=True, env=git_env())
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
         assert run_quick(elsewhere) == 0
-    assert said.getvalue().startswith("quick: %s %s (sibling %s for clippy %s), base %s, sibling none (the docs skip the helper; clippy builds its "
-                                      "render-link place in %s against this tree's host)" % (PLUGIN_NAME, head[:10], MGE_NAME, resolve(beside, "HEAD")[:10],
-                                                                                              head[:10], beside)), said.getvalue()
+    assert said.getvalue().startswith("quick: %s %s (sibling %s for clippy and checks %s), base %s, sibling none (the docs skip the helper; the checks read "
+                                      "%s, and clippy builds its render-link place there against this tree's host)" % (
+                                          PLUGIN_NAME, head[:10], MGE_NAME, resolve(beside, "HEAD")[:10], head[:10], beside)), said.getvalue()
     # The null: no render-link tree beside the main checkout, so no sibling at all.
     os.rename(beside, beside + "-away")
     try:
-        assert clippy_render_link(tree) is None
+        assert main_render_link(tree) is None
         said = io.StringIO()
         with contextlib.redirect_stdout(said):
             assert run_quick(elsewhere) == 0
