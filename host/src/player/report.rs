@@ -136,6 +136,10 @@ impl Player {
             c.caster_shaded, c.caster_world_lights, c.caster_own_not_world
         );
         println!(
+            "world lights: {} frames of the mode world had no set of the world's lights (no light events of MWSE) and kept the draws' own lights",
+            c.world_without_set
+        );
+        println!(
             "world space: {} draws in the world's own space took the world's lights; scenes whose draws in that space kept their own: {} not lit as the world, {} with no world view, {} for the view, {} for the projection, {} with a camera origin",
             c.world_space_lights, c.world_space_refused[0], c.world_space_refused[1], c.world_space_refused[2], c.world_space_refused[3], c.world_space_refused[4]
         );

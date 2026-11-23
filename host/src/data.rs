@@ -568,6 +568,9 @@ pub(crate) struct Counts {
     /// that are not among the world's lights: each a light the draw lost (W554, the
     /// Architect's counter).
     pub(crate) caster_own_not_world: u32,
+    /// The frames of the mode `world` with no set of the world's lights (no light events of
+    /// MWSE): their draws kept their own lights.
+    pub(crate) world_without_set: u32,
     /// The particle draws that took their lights at their corners ([`crate::CORNER_LIGHT_BIT`]).
     pub(crate) corner_light_draws: u32,
     /// The particle draws with the extension's colour function ([`crate::PARTICLE_HOOK_BIT`]).

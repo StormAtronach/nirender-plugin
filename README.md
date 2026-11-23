@@ -334,8 +334,12 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 
 - `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting. The
   baseline gate replays with both.
-- `MGE_XE_LIGHTS=world`: a lit draw of the world takes the point lights of the world that
-  reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose for it.
+- `MGE_XE_LIGHTS=world` (the default): a lit draw of the world takes the point lights of the
+  world that reach it. A draw lit for each pixel takes them for each pixel, through the
+  clusters. A draw lit for each vertex (`per_pixel_lighting = false`) takes them as its own
+  list, by its bound. A frame with no set of the world's lights (no light events of MWSE)
+  keeps the draws' own lights. `engine`: the lights the engine chose for the draw's node, for
+  the A/B.
 - `NIRENDER_BLIND_LIGHT_KEY=0`: a draw lit for each pixel whose colour cannot take light (the
   diffuse and the ambient colours from the material and black) keeps its lights. On by
   default, the draw drops them (`host/src/light_keys.rs`); the picture is the same.

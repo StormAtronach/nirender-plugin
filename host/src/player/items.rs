@@ -155,18 +155,26 @@ impl Player {
             }
         });
         self.table_shaded = None;
+        // A frame with no set of the world's lights (no light events of MWSE) keeps the draws'
+        // own lights: the clusters are not built for the world, so no draw takes them.
         let world = match world_start.filter(|_| self.renderer.clusters.world) {
             Some(facts) => {
-                let shaded = self.shade_table_main(&facts.view);
-                self.renderer.upload_retained_lights(&shaded.0);
-                self.shade_frame = Some(shaded.1);
-                self.table_shaded = Some(shaded);
-                Some((
-                    self.retained.world_light_slots(),
-                    self.retained.set_to_scene(facts.origin),
-                    self.retained.set_to_scene(None),
-                    facts.origin,
-                ))
+                let slots = self.retained.world_light_slots();
+                if slots.is_empty() {
+                    self.renderer.counts.world_without_set += 1;
+                    None
+                } else {
+                    let shaded = self.shade_table_main(&facts.view);
+                    self.renderer.upload_retained_lights(&shaded.0);
+                    self.shade_frame = Some(shaded.1);
+                    self.table_shaded = Some(shaded);
+                    Some((
+                        slots,
+                        self.retained.set_to_scene(facts.origin),
+                        self.retained.set_to_scene(None),
+                        facts.origin,
+                    ))
+                }
             }
             None => None,
         };
