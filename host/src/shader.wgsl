@@ -16,6 +16,9 @@ const DEBUG_VIEW: u32 = 0u;
 // The ids of the views with code in the world shader (`debug_lines::view_id`).
 const VIEW_LIGHTS: u32 = 1u;
 const VIEW_SHADOW_LAYERS: u32 = 2u;
+const VIEW_FOG: u32 = 6u;
+// The colour of the sky and the clouds in the fog view: they take no fog of the draws.
+const FOG_VIEW_SKY = vec3f(0.1, 0.2, 0.6);
 
 struct Light {
     diffuse: vec4f,
@@ -340,6 +343,18 @@ fn draw_fog() -> vec4f {
 fn fogged(color: vec3f, clear: f32) -> vec3f {
     if draw_adds() { return color * clear; }
     return mix(draw_fog_color().rgb, color, clear);
+}
+// The fog view (VIEW_FOG): the part of the fog that the draw applied, 1 - `clear`, as grey, with
+// the draw's own alpha. A draw that adds to the picture writes black, so it adds nothing.
+fn fog_view(clear: f32, alpha: f32) -> vec4f {
+    if draw_adds() { return vec4f(0.0, 0.0, 0.0, alpha); }
+    return vec4f(vec3f(1.0 - clear), alpha);
+}
+// A draw of the sky in the fog view (SKY_DRAW_BIT, 256 of `light_range.w`): the sky's colour
+// with the draw's own alpha. A sky draw that adds (the sun glare) writes black, so it adds nothing.
+fn fog_view_sky(alpha: f32) -> vec4f {
+    if draw_adds() { return vec4f(0.0, 0.0, 0.0, alpha); }
+    return vec4f(FOG_VIEW_SKY, alpha);
 }
 fn draw_clip_plane() -> vec4f {
     if from_scene() { return scene.clip_plane; }
@@ -931,6 +946,9 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     texels[5] = stage_texel(5u, bump_light(4u, texels[4], textureSample(textures[draws[record].stages[5].slots.x], samplers[draws[record].stages[5].slots.y], final_coordinate(5u, inp.coordinate5) + bump_move(4u, texels[4]))));
 
     if (draw_counts_w() & 4u) != 0u {
+        if DEBUG_VIEW == VIEW_FOG {
+            return vec4f(FOG_VIEW_SKY, 1.0);
+        }
         return vec4f(extension_sky_color(normalize(inp.world_position), inp.clip.xy), 1.0);
     }
     if (draw_counts_w() & 1024u) != 0u {
@@ -940,6 +958,9 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         let cloud = extension_clouds_color(CloudPixel(final_coordinate(0u, inp.coordinate0), inp.vertex_color, normalize(inp.world_position), inp.clip.xy));
         if draw_alpha_test() != 0u && !compare(draw_alpha_test(), floor(cloud.a * 255.0 + 0.5), f32(draws[record].more.w)) {
             discard;
+        }
+        if DEBUG_VIEW == VIEW_FOG {
+            return fog_view_sky(cloud.a);
         }
         return cloud;
     }
@@ -985,6 +1006,18 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     let fog = draw_fog();
     if fog.z != 0.0 {
         clear = clamp((fog.y - inp.fog) / max(fog.y - fog.x, 0.0001), 0.0, 1.0);
+    }
+    if DEBUG_VIEW == VIEW_FOG {
+        // A draw of the sky (SKY_DRAW_BIT) has the sky's colour. A draw with a stencil test
+        // that can fail (STENCIL_TEST_BIT, 512: the dark overlay of the stencil shadows) only
+        // darkens what is under it: it writes nothing, so the fog of that pixel stays.
+        if (draw_light_range_w() & 256u) != 0u {
+            return fog_view_sky(current.a);
+        }
+        if (draw_light_range_w() & 512u) != 0u {
+            discard;
+        }
+        return fog_view(clear, current.a);
     }
     if shaded {
         return extension_finish(current.rgb, current.a, clear);

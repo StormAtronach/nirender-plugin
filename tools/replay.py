@@ -28,7 +28,7 @@ time for each frame by part) after every N frames: the bench of a long capture.
 fixtures of the gate are in tools/hook-fixtures (W528 item 5).
 
 --debug-view and --debug-lines set the debug view of the replay (the helper's names: lights,
-shadow-layers, shadow-map, water TERM, post TERM; the line sources lights, shadow-boxes,
+shadow-layers, shadow-map, water TERM, post TERM, fog; the line sources lights, shadow-boxes,
 bounds, lua). A replay takes its view only from these arguments: a view or a line source that
 a record of the capture sets is not drawn. The helper draws no lines yet: --debug-lines sets
 the sources, and the lines come with piece 3 of the debug views.

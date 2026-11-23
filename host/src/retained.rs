@@ -2784,7 +2784,11 @@ impl Player {
                 0,
                 0,
                 kind,
-                RETAINED_RECORD_BITS | crate::flat_shading_bit(&derived) | crate::adds_bit(p.blend) | world_lights,
+                RETAINED_RECORD_BITS
+                    | crate::flat_shading_bit(&derived)
+                    | crate::adds_bit(p.blend)
+                    | crate::stencil_test_bit(derived.stencil)
+                    | world_lights,
             ];
             data.counts[0] = 0;
             // The slot's fog: on or off (z), and by the distance (w) for a RANGE_SQ material.
