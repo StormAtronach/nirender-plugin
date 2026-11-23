@@ -235,6 +235,7 @@ from check_mwse_sites import MISSING, MISSING_FEATURE_EXIT  # noqa: E402
 from deploy_rest import MWSE_DEPLOYS, REFUSED_EXIT  # noqa: E402
 from instance_ab import NOT_RUN as NOT_RUN_CODE  # noqa: E402
 import build_set  # noqa: E402  (the maker's trees and the round's set, W521)
+import gate_game  # noqa: E402  (the round's gate game folder, W609 step 5 part 0)
 import sets  # noqa: E402
 from common import checkout_of  # noqa: E402
 from common import (DEPLOY_WITHHELD, DEPLOYS_FILE, DIFFERS_EXIT, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, append_deploys,  # noqa: E402
@@ -280,6 +281,13 @@ CLOSE_WAIT_SECONDS = 0.5
 # and the A/B take that set. The maker's MISSING FEATURE (its exit code 4) makes it WITHHELD, and the stages that take
 # the set are NOT RUN: the round fails, and its line names --mwse (Q10).
 SET_STAGE = "build the set"
+# W609 step 5 part 0 (D640 piece 2 addendum 2): the stage before the replay gate that makes the round's gate game
+# folder (tools/gate_game.py make), the GOG game folder by links with the pinned packs of tools/gate-packs.txt, read from
+# the set's render-link commit. Every validate_retained.py stage of the round takes it as --game-dir, the base build's
+# pass of the stage LIGHT_STAGE too (rule 4.3). run_round removes it at the round's end, also when the round fails; the
+# next make removes a folder of a crashed round by this name.
+GAME_FOLDER_STAGE = "gate game folder"
+GATE_GAME_NAME = "gate-game-merge-step"
 # The stage that makes the set of the base pair for the A/B; the A/B replays the base set and the round's set.
 INSTANCE_STAGE = "instance A/B grass"
 BASE_STAGE = "base set"
@@ -671,9 +679,13 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
     if gate:
         gate_now = os.path.join(plugin, "target", "merge-step-now")
         on_list = ["--gate-list", GATE_LIST[0][0]] if GATE_LIST else []
-        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", folder, "--baseline", baseline, "--now", gate_now, *on_list)))
+        game = gate_game_folder(plugin)
+        on_game = ["--game-dir", game]
+        stages.append((GAME_FOLDER_STAGE, plugin, tool("gate_game.py", "make", game, "--set", folder, "--render-link", mge)))
+        stages.append(("replay gate", plugin, tool("validate_retained.py", "baseline", "--mge-build", folder, "--baseline", baseline, "--now", gate_now, *on_list, *on_game)))
         if touches(paths, ORDER_PATHS[kind]):
-            stages.append((ORDER_STAGE, plugin, tool("validate_retained.py", "order", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-order"))))
+            stages.append((ORDER_STAGE, plugin, tool("validate_retained.py", "order", "--mge-build", folder, "--baseline", baseline, "--now", os.path.join(plugin, "target", "merge-step-order"),
+                                                     *on_game)))
         under_test = commits or {}
         stages.append((HELPER_SOURCES_STAGE, plugin, [python, "-I", os.path.join(plugin, "tools", "merge_step.py"), HELPER_SOURCES,
                                                       os.path.join(maker_tree("render-link"), HELPER_DEP_INFO), HELPER_SOURCES_PATH,
@@ -691,12 +703,12 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
             # W611: after the base set and the A/B, before the accept. With no base set the stage is NOT RUN (run_stages).
             base_folder = set_folder_of(base_set) if tips else NO_BASE_SET
             stages.append((LIGHT_STAGE, plugin, tool("validate_retained.py", "fade", "--mge-build", folder, "--base-build", base_folder, "--baseline", baseline,
-                                                     "--now", os.path.join(plugin, "target", "merge-step-light"), *on_list)))
+                                                     "--now", os.path.join(plugin, "target", "merge-step-light"), *on_list, *on_game)))
         if GATE_LIST:
             # W567 part D: the last stage, so it runs only when every stage before it passed (the stop at the first
             # failure): the listed pictures of the gate's run become the accepted ones, and the next round is equal.
             stages.append((ACCEPT_LIST_STAGE, plugin, tool("validate_retained.py", "accept-list", "--gate-list", GATE_LIST[0][0], "--mge-build", folder,
-                                                           "--baseline", baseline, "--now", gate_now)))
+                                                           "--baseline", baseline, "--now", gate_now, *on_game)))
     elif not deploys and touches(paths, DIST_PATHS[kind]):
         stages.append(("build of the dist", mge, ["cargo", "xtask", "dist"]))
     return stages
@@ -1063,7 +1075,8 @@ def run_stages(stages, log, note_stage=lambda: None):
         if stopped_by is not None:
             results[name] = not_run(name, "%s did not pass, and the round stops at its first failure" % stopped_by)
             continue
-        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE, LIGHT_STAGE, ACCEPT_LIST_STAGE) and not made.get(SET_STAGE, True):
+        if name in (SITES_SET_STAGE, DEPLOY_STAGE, GAME_FOLDER_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE, LIGHT_STAGE,
+                    ACCEPT_LIST_STAGE) and not made.get(SET_STAGE, True):
             results[name] = not_run(name, "the round's set was not made")
             stopped_by = name
             continue
@@ -1545,8 +1558,28 @@ def run_round(slots, stages, what, log_path, no_wait):
             summary = summary_line(results, log_path)
             log.write("\n== %s\n" % summary)
     finally:
-        release_slot(slots, slot, what)
+        try:
+            remove_gate_game(stages)
+        finally:
+            release_slot(slots, slot, what)
     return results, summary
+
+
+def gate_game_folder(plugin):
+    """The gate game folder of a round: in the plugin tree's target folder, on C:, one name for every round (the next
+    make removes a folder that a crashed round left)."""
+    return os.path.join(plugin, "target", GATE_GAME_NAME)
+
+
+def remove_gate_game(stages):
+    """Removes the round's gate game folder (the folder of the stage GAME_FOLDER_STAGE), also after a failed round. A
+    round with no such stage removes nothing."""
+    for name, _, command in stages:
+        if name == GAME_FOLDER_STAGE:
+            folder = command[command.index("make") + 1]
+            if os.path.lexists(folder):
+                gate_game.remove(folder)
+                say("the gate game folder is removed: %s" % folder)
 
 
 def main_render_link(tree):
@@ -2250,7 +2283,7 @@ def self_test_gate_list(root, plugin):
         planned = stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, tips)
         commands = {name: command for name, _, command in planned}
         gate = commands["replay gate"]
-        assert gate[-2:] == ["--gate-list", os.path.abspath(listed)], gate
+        assert gate[-4:] == ["--gate-list", os.path.abspath(listed), "--game-dir", gate_game_folder(plugin)], gate
         assert planned[-1][0] == ACCEPT_LIST_STAGE, [name for name, _, _ in planned]
         accept = commands[ACCEPT_LIST_STAGE]
         assert accept[3:6] == ["accept-list", "--gate-list", os.path.abspath(listed)], accept
@@ -2294,6 +2327,8 @@ def self_test_light(root, plugin, mge):
     assert light[3:5] == ["fade", "--mge-build"] and light[light.index("--mge-build") + 1] == set_folder_of(round_set(full, mwse)), light
     assert light[light.index("--base-build") + 1] == instance[instance.index("--base-build") + 1] == set_folder_of(round_set(tips, mwse)), light
     assert light[light.index("--now") + 1] == os.path.join(plugin, "target", "merge-step-light") and "--gate-list" not in light, light
+    # Rule 4.3 of addendum 2: the base build's pass of the fade takes the round's gate game folder too.
+    assert light[light.index("--game-dir") + 1] == gate_game_folder(plugin), light
     # No tips: the stage is planned, and run_stages makes it NOT RUN.
     assert stages_for("plugin", plugin, ["host/src/lights.rs"])[-1][2][7] == NO_BASE_SET
     listed = os.path.join(root, "light-list.txt")
@@ -2303,7 +2338,7 @@ def self_test_light(root, plugin, mge):
         GATE_LIST[:] = gate_list_of(listed, BASELINE)
         planned = stages_for("plugin", plugin, ["host/src/lights.rs"], BASELINE, tips, mwse, commits=full)
         assert [name for name, _, _ in planned][-2:] == [LIGHT_STAGE, ACCEPT_LIST_STAGE], planned
-        assert planned[-2][2][-2:] == ["--gate-list", os.path.abspath(listed)], planned[-2][2]
+        assert planned[-2][2][-4:] == ["--gate-list", os.path.abspath(listed), "--game-dir", gate_game_folder(plugin)], planned[-2][2]
     finally:
         del GATE_LIST[:]
     good, never = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(9)"]
@@ -2502,7 +2537,7 @@ def self_test():
         base = ["plugin tests", "host tests", HOST_GPU_STAGE, "clippy baseline", "checks", "docs"]
         # W521: every round that deploys makes its set first (the maker probes the set's MWSE.dll before the seal, G1), then
         # deploys it. A round of the plugin DLL or the mod's Lua deploys without the gate.
-        gate_tail = [SET_STAGE, DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE]
+        gate_tail = [SET_STAGE, DEPLOY_STAGE, GAME_FOLDER_STAGE, "replay gate", HELPER_SOURCES_STAGE]
         deploy_tail = [SET_STAGE, DEPLOY_STAGE]
         assert names("plugin", plugin, "tools/x.py") == base and names("plugin", plugin, "README.md") == base, "a change of no deployed part deployed"
         assert names("plugin", plugin, "src/lib.rs") == base + deploy_tail
@@ -2513,14 +2548,14 @@ def self_test():
         assert names("plugin", plugin, "host/src/shader.wgsl") == host_base + gate_tail
         assert names("plugin", plugin, "host/src/material.rs") == host_base + gate_tail
         # W535: a change of a file of the table's order adds the order stage right after the gate; no other change does.
-        order_tail = [SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE]
+        order_tail = [SET_STAGE, DEPLOY_STAGE, GAME_FOLDER_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE]
         for path in ORDER_PATHS["plugin"]:
             assert names("plugin", plugin, path) == host_base + order_tail, path
         assert names("plugin", plugin, "host/src/retained.rs", "src/lib.rs") == host_base + order_tail, "the gate round deploys once"
         assert names("plugin", plugin, "host/src/retained_old.rs") == host_base + gate_tail, "a name that only starts the same ran the order stage"
         assert ORDER_STAGE not in names("mge", mge, "mgeHost64/src/renderer.rs") and ORDER_STAGE in GAME_STAGES
         order_command = {name: command for name, _, command in stages_for("plugin", plugin, ["host/src/switches.rs"])}[ORDER_STAGE]
-        assert order_command[3:5] == ["order", "--mge-build"] and order_command[-1] == os.path.join(plugin, "target", "merge-step-order"), order_command
+        assert order_command[3:5] == ["order", "--mge-build"] and order_command[-3:] == [os.path.join(plugin, "target", "merge-step-order"), "--game-dir", gate_game_folder(plugin)], order_command
         self_test_order_drift()
         assert names("plugin", plugin, "host/src_old/x.rs") == base, "a name that only starts the same ran the gate"
         assert names("plugin", plugin, "srcx/lib.rs") == base, "a name that only starts the same deployed"
@@ -2544,6 +2579,14 @@ def self_test():
         assert deploy_command[deploy_command.index("--set") + 1] == the_set and "--build" not in deploy_command, deploy_command
         gate_command = planned["replay gate"][1]
         assert gate_command[gate_command.index("--mge-build") + 1] == the_set, gate_command
+        # W609 step 5 part 0: the round's gate game folder, made from the round's set and the render-link tree beside it;
+        # the gate replays in it.
+        game = gate_game_folder(plugin)
+        assert game == os.path.join(plugin, "target", "gate-game-merge-step") and os.path.basename(game).startswith(gate_game.NAME_START)
+        game_folder, game_command = planned[GAME_FOLDER_STAGE]
+        assert game_folder == plugin and game_command[2:] == [os.path.join("tools", "gate_game.py"), "make", game, "--set", the_set,
+                                                               "--render-link", sibling_of("plugin", plugin)], game_command
+        assert gate_command[gate_command.index("--game-dir") + 1] == game, gate_command
         assert not any("dist-staging" in part or "base-" in os.path.basename(part) for _, command in planned.values() for part in command), planned
         # C5: the helper sources read the maker's render-link tree and compare the set's numidium.exe.
         sources = planned[HELPER_SOURCES_STAGE][1]
@@ -2828,7 +2871,7 @@ def self_test():
         assert "== WITHHELD deploy rest (" in text and "PASS replay gate" in text, text
 
         gate_names = [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"])]
-        assert gate_names.index(SET_STAGE) + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index("replay gate") - 1
+        assert gate_names.index(SET_STAGE) + 1 == gate_names.index(DEPLOY_STAGE) == gate_names.index(GAME_FOLDER_STAGE) - 1 == gate_names.index("replay gate") - 2
         assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("mge", mge, ["xtask/src/main.rs"])], "a build of the dist alone is not deployed"
         assert DEPLOY_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["tools/x.py"])]
 
@@ -2876,7 +2919,7 @@ def self_test():
         # base set of the pair and the round's MWSE commit, made in the round's take.
         tips = {"plugin": "1" * 40, "mge": "2" * 40}
         with_tips = stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, tips, mwse, commits=full, label="merge_step: x")
-        assert [name for name, _, _ in with_tips][-6:] == [SET_STAGE, DEPLOY_STAGE, "replay gate", HELPER_SOURCES_STAGE, BASE_STAGE, INSTANCE_STAGE]
+        assert [name for name, _, _ in with_tips][-7:] == [SET_STAGE, DEPLOY_STAGE, GAME_FOLDER_STAGE, "replay gate", HELPER_SOURCES_STAGE, BASE_STAGE, INSTANCE_STAGE]
         by_name = {name: (folder, command) for name, folder, command in with_tips}
         build = by_name[BASE_STAGE][1]
         assert build[build.index("--nirender") + 1] == "1" * 40 and build[build.index("--render-link") + 1] == "2" * 40 and build[build.index("--mwse") + 1] == mwse, build
@@ -3548,6 +3591,13 @@ def self_test():
             # A failing stage.
             assert run_round(slots, [("all held", root, all_held), ("bad", root, bad)], "merge_step: x bbbbbbbbbb", round_log, True)[0] == [True, False]
             assert holders() == [], "a failing stage releases both"
+            # W609 step 5 part 0: a failing round removes its gate game folder, and releases both; the null: the folder
+            # was there when the round failed.
+            game = os.path.join(root, gate_game.NAME_START + "round")
+            make_game = [sys.executable, "-c", "import os, sys; os.makedirs(sys.argv[2]); open(os.path.join(sys.argv[2], 'f'), 'w').close()", "make", game]
+            seen = [sys.executable, "-c", "import os, sys; sys.exit(0 if os.path.isfile(sys.argv[1]) else 7)", os.path.join(game, "f")]
+            assert run_round(slots, [(GAME_FOLDER_STAGE, root, make_game), ("seen", root, seen), ("bad", root, bad)], "merge_step: x abcabcabca", round_log, True)[0] == [True, True, False]
+            assert not os.path.lexists(game) and holders() == [], "a failing round kept its gate game folder"
             # An exception in a stage (no such folder), and a Ctrl-C.
             try:
                 run_round(slots, [("lost", os.path.join(root, "no-such-folder"), good)], "merge_step: x cccccccccc", round_log, True)

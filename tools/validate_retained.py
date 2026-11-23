@@ -202,15 +202,26 @@ CRASH_AFTER_DONE_LINE = "ERROR: the game crashed after DONE"
 # The weather that the runs pin and hold (the runner's --weather), or None for --weather any.
 WEATHER = {"pin": 0}
 # The option that names the build to replay.py and validate_tour.py (W545): "--mge-build" for a sealed set, "--archive"
-# for the unpacked release archive of release.py's gate. main sets it.
-BUILD = {"option": "--mge-build"}
+# for the unpacked release archive of release.py's gate. main sets it. "game_dir" is the gate game folder of --game-dir
+# (tools/gate_game.py, W609 step 5 part 0), which every replay of every stage takes, or None for replay.py's default.
+BUILD = {"option": "--mge-build", "game_dir": None}
 # The stages that only replay. The others start the game, and a run of the game does not take an archive here.
 REPLAY_ONLY_STAGES = ("baseline", "order", "accept-list", "fade")
 
 
 def build_option(mge_build):
-    """The arguments of replay.py and validate_tour.py that name the build of the replays."""
-    return [BUILD["option"], mge_build]
+    """The arguments of replay.py and validate_tour.py that name the build of the replays, and the gate game folder."""
+    return [BUILD["option"], mge_build] + (["--game-dir", BUILD["game_dir"]] if BUILD["game_dir"] else [])
+
+
+def game_dir_problems(folder, sets, game=None, entries=None):
+    """The faults of the gate game folder `folder` for the sets of the stages (gate_game.check: its real folders, its
+    pinned files and rule 4.2 against each set); `game` and `entries` are the self-test's stand-ins."""
+    import gate_game
+    try:
+        return gate_game.check(folder, game or gate_game.default_game(), entries if entries is not None else gate_game.read_list(), sets)
+    except (gate_game.GateGameError, ValueError, OSError) as error:
+        return [str(error)]
 
 
 def build_problem(stages, mge_build, archive):
@@ -695,9 +706,24 @@ def self_test():
             with contextlib.redirect_stdout(io.StringIO()):
                 assert not stage_baseline(folder, False, "the archive", os.path.join(folder, "now"), hooks=None)
         assert calls[0][0][-2:] == ["--archive", "the archive"] and "--mge-build" not in calls[0][0], calls[0][0]
+        # W609 step 5 part 0: with a gate game folder every replay of the stage takes it; without one, no --game-dir.
+        BUILD["option"], BUILD["game_dir"] = "--mge-build", "C:/x/gate-game-merge-step"
+        with tempfile.TemporaryDirectory() as folder:
+            with open(os.path.join(folder, "a.nircap"), "wb") as file:
+                file.write(stream_rule.plant(right))
+            calls.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                stage_baseline(folder, False, "no build", os.path.join(folder, "now"), hooks=None)
+        assert calls and all(call[0][-4:] == ["--mge-build", "no build", "--game-dir", "C:/x/gate-game-merge-step"]
+                             for call in calls if "replay.py" in call[0][1]), calls
     finally:
         build_missing, run_code = real_build_missing, real_run_code
-        BUILD["option"] = "--mge-build"
+        BUILD["option"], BUILD["game_dir"] = "--mge-build", None
+    assert "--game-dir" not in build_option("a set")
+    # The check of a gate game folder: a folder that is not there is a fault, with its line.
+    with tempfile.TemporaryDirectory() as folder:
+        problems = game_dir_problems(os.path.join(folder, "gate-game-none"), [], game=folder, entries=[])
+        assert problems and "not a real folder" in problems[0], problems
     # W545: the build of the stages. --archive only with the baseline stage and without --mge-build; the nulls: the
     # baseline stage with --archive, and any stage with a set.
     assert build_problem(["baseline"], None, "a") is None and build_problem(["capture", "baseline"], "s", None) is None
@@ -2765,6 +2791,8 @@ def main():
     ap.add_argument("--base-build", default=None, help="the stage fade (W611): the sealed set of the base, which the stage compares with --mge-build")
     ap.add_argument("--config-root", default=None, help="the stage fade (W611): the folder of the replay gate's mgeXE.toml; without it, replay.py's default "
                     "(the test install's)")
+    ap.add_argument("--game-dir", default=None, help="the gate game folder with the pinned packs (tools/gate_game.py make): every replay of the stages "
+                    "takes it as --game-dir, after a check of it against --mge-build and --base-build (W609, D640 piece 2 addendum 2)")
     ap.add_argument("--hook-fixtures", default=HOOK_FIXTURES, help="the folder of the hook fixtures of the baseline stage's second pass (tools/hook-fixtures by default)")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
@@ -2813,6 +2841,15 @@ def main():
     if problem:
         print("  FAIL " + problem, flush=True)
         return 1
+    BUILD["game_dir"] = None
+    if args.game_dir:
+        problems = game_dir_problems(args.game_dir, [mge_build] + ([args.base_build] if args.base_build else []))
+        for line in problems:
+            print("  FAIL the gate game folder: " + line, flush=True)
+        if problems:
+            return 1
+        BUILD["game_dir"] = args.game_dir
+        print("the gate game folder: %s (its pinned files are right for the sets of the stages)" % args.game_dir, flush=True)
     if "fade" in args.stages and (args.archive or args.accept or args.accept_new or not args.base_build):
         print("  FAIL the stage fade takes --base-build <the base set> beside --mge-build, and no --archive, --accept or --accept-new", flush=True)
         return 1
