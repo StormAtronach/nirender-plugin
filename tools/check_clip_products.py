@@ -10,7 +10,8 @@ The cure is the eye-relative form of `renderer/view.rs`: `clip_with(matrix, worl
 (`view::relative`, `view::relative_of_product`).
 
 This check finds every product of a name or a parenthesised expression with a `vec4f(..., 1.0)` (also `vec4<f32>` and `vec4`, with the w written 1, 1., 1.0 or 1f), in either order, in
-`mgeHost64/src` (the `.rs` files that hold the WGSL, and the `.wgsl` files). A product with a direction, `vec4f(..., 0.0)`, is no
+`mgeHost64/src` (the `.rs` files that hold the WGSL, and the `.wgsl` files) and in `assets/Data Files/shaders` (the `.wgsl` files of the
+package: the core files of D652 and the post files; their keys start with `shaders/`). A product with a direction, `vec4f(..., 0.0)`, is no
 position and not found. The product must be on the ALLOWED list below: a place of a known meaning that is not a clip product of an
 absolute position. A new product fails the check; the fix is to use `clip_with`, or, when the product is not a clip product, to
 add it to ALLOWED with the reason. The key of an entry is the file and the text of the product, not a line number, so that an edit
@@ -42,7 +43,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 MGE = os.path.join(os.path.dirname(os.path.dirname(HERE)), "MGE-XE-G7-render-link")
 
-# (file below mgeHost64/src, product with its spaces collapsed): how many times, and why it is no absolute clip product.
+# (file below mgeHost64/src, or shaders/... below assets/Data Files, product with its spaces collapsed): how many times, and why it is no absolute clip product.
 ALLOWED = {
     ("renderer/view.rs", "relative * vec4f(world - u.eye.xyz, 1.0)"): (1, "clip_with itself: the position less the eye, with a matrix relative to the eye"),
     ("renderer/water/volume.rs", "s.world * vec4f(local, 1.0)"): (1, "model to world, with the matrix of the mesh (vs)"),
@@ -50,11 +51,11 @@ ALLOWED = {
     ("renderer.rs", "draw.view * vec4f(in.world_position, 1.0)"): (3, "world to view for the depth of a draw, with the view of that draw (view_z, view_position)"),
 }
 
-# (file below mgeHost64/src, value of `out.position = ...;` with the spaces collapsed): how many times, and why it is no world position.
+# (file below mgeHost64/src, or shaders/... below assets/Data Files, value of `out.position = ...;` with the spaces collapsed): how many times, and why it is no world position.
 ALLOWED_POSITIONS = {
     ("renderer/post.rs", "vec4f(x, y, 0.0, 1.0)"): (3, "a screen triangle in clip space (the post steps)"),
     ("renderer/post.rs", "vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0)"): (1, "the full screen triangle in clip space"),
-    ("renderer/shadow.rs", "vec4f(x, y, 0.0, 1.0)"): (1, "a screen triangle in clip space (the shadow atlas picture)"),
+    ("shaders/core/XE Shadowmap.wgsl", "vec4f(x, y, 0.0, 1.0)"): (1, "a screen triangle in clip space (the blur of the shadow atlas)"),
     ("renderer/shadow.rs", "vec4f(-1.0 + corner.x * 0.5, -1.0 + corner.y * 0.25, 0.0, 1.0)"): (1, "the corner of the atlas picture in clip space"),
     ("renderer/statics.rs", "vec4f(0.0, 0.0, -10000.0, 0.0)"): (1, "a vertex of a place before the band: a point outside the clip volume"),
 }
@@ -112,33 +113,35 @@ def check_tree(mge):
     seen = {}
     seen_positions = {}
     problems = []
-    for folder, _, names in os.walk(root):
-        for name in sorted(names):
-            if not name.endswith((".rs", ".wgsl")):
+    # The Rust code with its WGSL, and the shader files of the package (keys shaders/<folder>/<name>.wgsl).
+    files = []
+    for top, base, kinds in ((root, root, (".rs", ".wgsl")),
+                             (os.path.join(mge, "assets", "Data Files", "shaders"), os.path.join(mge, "assets", "Data Files"), (".wgsl",))):
+        for folder, _, names in os.walk(top):
+            files += [(os.path.join(folder, name), base) for name in sorted(names) if name.endswith(kinds)]
+    for path, base in files:
+        relative = os.path.relpath(path, base).replace(os.sep, "/")
+        with open(path, encoding="utf-8", errors="replace") as file:
+            text = file.read()
+        for line, product in products_in(text):
+            key = (relative, product)
+            seen[key] = seen.get(key, 0) + 1
+            if key not in ALLOWED:
+                problems.append("%s:%d: %s: a matrix times a position of the world; far from the origin the f32 product rounds apart. "
+                                "Use clip_with(matrix, world) with a matrix relative to the eye, or add the product to ALLOWED in "
+                                "tools/check_clip_products.py with its reason" % (relative, line, product))
+        for line, value, from_clip in positions_in(text):
+            if from_clip:
                 continue
-            path = os.path.join(folder, name)
-            relative = os.path.relpath(path, root).replace(os.sep, "/")
-            with open(path, encoding="utf-8", errors="replace") as file:
-                text = file.read()
-            for line, product in products_in(text):
-                key = (relative, product)
-                seen[key] = seen.get(key, 0) + 1
-                if key not in ALLOWED:
-                    problems.append("%s:%d: %s: a matrix times a position of the world; far from the origin the f32 product rounds apart. "
-                                    "Use clip_with(matrix, world) with a matrix relative to the eye, or add the product to ALLOWED in "
-                                    "tools/check_clip_products.py with its reason" % (relative, line, product))
-            for line, value, from_clip in positions_in(text):
-                if from_clip:
-                    continue
-                key = (relative, value)
-                seen_positions[key] = seen_positions.get(key, 0) + 1
-                if key not in ALLOWED_POSITIONS:
-                    problems.append("%s:%d: out.position = %s: a vertex stage must end in clip_of(world) or clip_with(matrix, world), or a local `clip` "
-                                    "made with one. Use them, or add the value to ALLOWED_POSITIONS in tools/check_clip_products.py with its reason"
-                                    % (relative, line, value))
-            for line in view_projection_reads(text):
-                problems.append("%s:%d: u.view_projection is the absolute matrix of the view group; far from the origin the f32 product rounds apart. "
-                                "Use clip_of(world)" % (relative, line))
+            key = (relative, value)
+            seen_positions[key] = seen_positions.get(key, 0) + 1
+            if key not in ALLOWED_POSITIONS:
+                problems.append("%s:%d: out.position = %s: a vertex stage must end in clip_of(world) or clip_with(matrix, world), or a local `clip` "
+                                "made with one. Use them, or add the value to ALLOWED_POSITIONS in tools/check_clip_products.py with its reason"
+                                % (relative, line, value))
+        for line in view_projection_reads(text):
+            problems.append("%s:%d: u.view_projection is the absolute matrix of the view group; far from the origin the f32 product rounds apart. "
+                            "Use clip_of(world)" % (relative, line))
     for key, (count, _) in ALLOWED.items():
         if seen.get(key, 0) != count:
             problems.append("%s: the product `%s` is on the ALLOWED list %d time(s) and found %d time(s): update the list" % (key[0], key[1], count, seen.get(key, 0)))
@@ -194,7 +197,8 @@ def self_test():
 
     def tree(root, files):
         for relative, text in files.items():
-            path = os.path.join(root, "mgeHost64", "src", *relative.split("/"))
+            folder = ("assets", "Data Files") if relative.startswith("shaders/") else ("mgeHost64", "src")
+            path = os.path.join(root, *folder, *relative.split("/"))
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as file:
                 file.write(text)
@@ -245,7 +249,7 @@ def self_test():
 
         # A position on ALLOWED_POSITIONS loses its entry when it goes, and one that comes twice is found.
         screen = dict(clean)
-        screen["renderer/shadow.rs"] = clean["renderer/shadow.rs"].replace("    out.position = vec4f(x, y, 0.0, 1.0);\n", "", 1)
+        screen["shaders/core/XE Shadowmap.wgsl"] = clean["shaders/core/XE Shadowmap.wgsl"].replace("    out.position = vec4f(x, y, 0.0, 1.0);\n", "", 1)
         missing = os.path.join(temp, "screen")
         tree(missing, screen)
         assert any("ALLOWED_POSITIONS list 1 time(s) and found 0 time(s)" in problem for problem in check_tree(missing)), check_tree(missing)
