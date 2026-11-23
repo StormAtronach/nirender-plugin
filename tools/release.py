@@ -23,10 +23,24 @@ The steps:
    and for the helper (`-p mgeHost64` in the MGE XE repository), each with the toolchain its
    tree pins (the version is printed); a failed test stops the release. `cargo xtask dist`
    in the MGE XE repository builds MGE XE and this plugin and packs the archive (`--max-perf`
-   for the slow build of a final release). `--no-build` skips all of step 2 and takes the
-   archive that is in dist.
-3. The tool prints the commit of each repository: the build id that the binaries of the
-   archive log on their first line, for the notes. The archive goes up as
+   for the slow build of a final release). `--no-build` skips only the build and takes the
+   archive that is in dist; the checks and the tests still run.
+   Each check of this step and of step 3 is a release check: its numbers come from its
+   summary line and are judged by a fixed pass rule (`checks_numbers`, `docs_numbers`,
+   `clippy_numbers`, `test_numbers`, `core_files_numbers`, `gate_numbers`; W604). A check
+   whose output has no summary line fails, so a check that printed nothing cannot pass;
+   `checks.py` must also have run and passed the MGE XE handshake and the self-tests of
+   release.py, build_set.py and sets.py by name. Each check, its command, its numbers, its
+   rule and its verdict (PASS, FAIL, NOT RUN, RECORD) go to `dist/checks-<tag>.txt`, written
+   again after each check, so that a stop leaves the checks up to it; a FAIL stops the release.
+   The file goes up with the release as an asset, beside the archive and not in it (the
+   archive's SHA-256 must not depend on it), and its count of each verdict goes into the
+   notes in place of the token `{checks}`.
+3. The build ids of the binaries of the archive (akulakhan.dll, numidium.exe, d3d8.dll) must
+   name the HEADs of the two trees, with no "-dirty" (the check "the build ids of the
+   archive", `common.parts_problems`): the tag, MANIFEST.txt and the notes name the HEADs,
+   and with `--no-build` the archive in dist can be of older commits. The tool prints those
+   build ids for the notes. The archive goes up as
    `MGE-XE-G7-v<MGE XE>-nirender-v<plugin>.7z`, as a pre-release with the text of `--notes`.
    The MGE XE repository then gets the tag `nirender-v<plugin>` on the commit the archive
    was built from, pushed with the release (step 1 stops when that tag is there already).
@@ -58,15 +72,18 @@ The steps:
    or driver than this machine's), UNKNOWN (the helper printed no adapter, or the pictures
    name none) or no word. The pictures are the evidence of one GPU and one driver, so the
    baseline is accepted again on the release machine first (`validate_retained.py baseline --accept`).
-   Its result lines go
+   The adapter of its pictures (the GPU, the backend and the driver) and its result lines go
    into the notes in place of the token `{gate}` of their Tested block; the filled notes are
    written to `dist/notes-<tag>.md` and published. The notes follow
    `tools/notes-template.md`: their Tested block must hold the token (or, with `--no-gate`,
    the gate's result line marked "run by hand") and the run folder of the live checks through the mwse-mcp
    bridge (`YYYYmmdd-HHMMSS-label` under `results`), written by hand; a release stops at
    the start without them. `--no-gate` skips the gate.
-   Before the gate, the archive gets `MANIFEST.txt`: the commits of the two repositories, the
-   compiler, and the SHA-256, the size and the path of each of its files. Then the SHA-256 of
+   Before the gate, the archive gets `MANIFEST.txt`: the commits of the two repositories (as
+   the binaries name them), the compiler, and the SHA-256, the size and the path of each of its
+   files. The archive is then unpacked again, and its files must be those of MANIFEST.txt with
+   their sizes and SHA-256, none missing and none extra (the check "MANIFEST.txt against the
+   archive"). Then the SHA-256 of
    the archive itself goes beside it as `<archive>.sha256` (the format of `sha256sum`), up
    with the release as a second asset, and into the notes in place of the token `{sha256}`,
    so that a player can check a download.
@@ -91,6 +108,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
 MGE = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
 sys.path.insert(0, HERE)
+from common import TEST_RESULT, part_ids, parts_problems  # noqa: E402
 from validate_retained import ADAPTER_LINE, ADAPTER_OTHER, ADAPTER_SAME, ADAPTER_UNKNOWN, adapter_note  # noqa: E402
 
 
@@ -174,16 +192,245 @@ def clean_and_pushed(repo, sources, dry_run):
         stop("%s has %s commits that are not pushed" % (repo, counted.stdout.strip()), dry_run)
 
 
-def unit_tests(mge):
+def unit_tests(mge, record):
     """Runs `cargo test` in the plugin, in the host crate and for the helper in the MGE XE
-    repository. Each tree builds with the toolchain its rust-toolchain.toml pins (rustup
-    reads it from the working folder; the plugin and MGE XE pin the same dated nightly, the
-    host crate has none and takes the plugin's), and the version is printed first. A failed
-    test stops the release."""
+    repository, one check of `record` each. Each tree builds with the toolchain its
+    rust-toolchain.toml pins (rustup reads it from the working folder; the plugin and MGE XE
+    pin the same dated nightly, the host crate has none and takes the plugin's), and the
+    version is printed first. A failed test stops the release."""
     trees = [("the plugin", PLUGIN, []), ("the host crate", os.path.join(PLUGIN, "host"), []), ("the helper", mge, ["-p", "mgeHost64"])]
     for name, folder, extra in trees:
-        print("the tests of %s, with %s" % (name, compiler_version(folder)), flush=True)
-        run(["cargo", "test"] + extra, cwd=folder)
+        compiler = compiler_version(folder)
+        print("the tests of %s, with %s" % (name, compiler), flush=True)
+        record.run("cargo test, %s (%s)" % (name, compiler), ["cargo", "test"] + extra, folder, test_numbers)
+
+
+# The verdicts of a release check (`CheckRecord`): RECORD is a number kept with no rule.
+PASS, FAIL, NOT_RUN, RECORD = "PASS", "FAIL", "NOT RUN", "RECORD"
+CHECKS_TOKEN = "{checks}"
+
+
+class CheckRecord:
+    """The release checks of one release, each with its command, its numbers, its pass rule and
+    its verdict, in `dist/checks-<tag>.txt`. The file is written again after each check, so it
+    holds the checks up to a stop. A check whose output has no numbers fails: a check that
+    printed nothing cannot pass."""
+
+    def __init__(self, path, tag, dry_run, roots):
+        self.path, self.tag, self.dry_run, self.rows = path, tag, dry_run, []
+        # The repositories by their names, for the public text of a command (`command_text`).
+        self.roots = roots
+
+    def add(self, name, command, numbers, rule, verdict):
+        """Keeps one check and writes the file; a FAIL stops the release (a dry run prints it)."""
+        self.rows.append((name, command, numbers, rule, verdict))
+        write_text(self.path, checks_text(self.tag, self.rows))
+        print("release check %s: %s (%s)" % (name, verdict, numbers), flush=True)
+        if verdict == FAIL:
+            stop("the release check %s failed: %s; the rule: %s (%s)" % (name, numbers, rule, self.path), self.dry_run)
+
+    def run(self, name, command, cwd, judge):
+        """Runs `command`, prints its output as it comes, and judges the output with `judge`
+        (output, exit code) -> (numbers, rule, passed). Returns the output."""
+        code, output = run_teed(command, cwd)
+        numbers, rule, passed = judge(output, code)
+        self.add(name, command_text(command, self.roots), numbers, rule, PASS if passed else FAIL)
+        return output
+
+    def summary(self):
+        """The line of the notes (`{checks}`)."""
+        return checks_summary(self.rows, os.path.basename(self.path))
+
+
+def command_text(command, roots):
+    """The text of `command` for the public checks file (D316: no user name, no local path): a
+    program by its name ("python", "cargo"), a path inside a repository of `roots` ({name:
+    folder}) relative to it, the folder of a repository by its name in angle brackets, any
+    other absolute path by its file name."""
+    def shown(argument, first):
+        if not os.path.isabs(argument):
+            return argument
+        if first:
+            return re.sub(r"\.exe$", "", os.path.basename(argument), flags=re.IGNORECASE).lower()
+        full = os.path.normcase(os.path.realpath(argument))
+        for name, root in roots.items():
+            root = os.path.normcase(os.path.realpath(root))
+            if full == root:
+                return "<%s>" % name
+            if full.startswith(root + os.sep):
+                return os.path.relpath(full, root).replace("\\", "/")
+        return os.path.basename(argument)
+    return " ".join(shown(argument, index == 0) for index, argument in enumerate(command))
+
+
+def run_teed(command, cwd=None):
+    """Runs `command`, prints its output (stderr joined) as it comes, and returns its exit code
+    and the output."""
+    process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               encoding="utf-8", errors="replace", env=ENVIRONMENT)
+    lines = []
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        lines.append(line)
+    return process.wait(), "".join(lines)
+
+
+def checks_text(tag, rows):
+    """The text of the checks file."""
+    lines = ["THE RELEASE CHECKS OF %s" % tag, "",
+             "Each check: its verdict (PASS, FAIL, NOT RUN, or RECORD for numbers with no rule), its command, its numbers",
+             "and its pass rule. A check whose output has no numbers fails.", ""]
+    for name, command, numbers, rule, verdict in rows:
+        lines += ["== %s: %s" % (name, verdict), "command: %s" % command, "numbers: %s" % numbers, "rule: %s" % rule, ""]
+    return "\n".join(lines)
+
+
+def checks_summary(rows, name):
+    """One line for the notes: the count of each verdict, the checks that did not run, the file."""
+    counts = [(verdict, sum(1 for row in rows if row[4] == verdict)) for verdict in (PASS, FAIL, NOT_RUN)]
+    text = ", ".join("%d %s" % (count, {PASS: "passed", FAIL: "FAILED", NOT_RUN: "not run"}[verdict]) for verdict, count in counts if count)
+    not_run = [row[0] for row in rows if row[4] == NOT_RUN]
+    if not_run:
+        text += " (%s)" % "; ".join("%s: %s" % (row[0], row[2]) for row in rows if row[4] == NOT_RUN)
+    return "the release checks: %s; their numbers and rules: %s" % (text or "none", name)
+
+
+NO_NUMBERS = "no numbers: the output has no summary line"
+
+# The names of `checks.py all` that a release needs by name: the version handshake against
+# render-link and the self-tests of the release tools (the Architect's answer A5 to W604).
+REQUIRED_CHECKS = ("mge handshake", "release", "build sets", "sets")
+CHECKS_SUMMARY = re.compile(r"^checks \(\w+\): (\d+) passed.*$", re.MULTILINE)
+
+
+def checks_numbers(output, code, listed):
+    """Judges the output of `checks.py all --strict` by its summary line: (numbers, rule,
+    passed). `listed` are the names of its list `all`."""
+    rule = "failed = 0, not run = 0, skipped = 0, passed > 0, and these ran and passed: %s; exit 0" % ", ".join(REQUIRED_CHECKS)
+    match = CHECKS_SUMMARY.search(output)
+    if not match:
+        return NO_NUMBERS, rule, False
+    line = match.group(0)
+
+    def named(pattern):
+        found = re.search(pattern, line)
+        return [name.strip() for name in found.group(1).split(",")] if found else []
+    skipped = named(r"\d+ skipped \(not on this machine: ([^)]*)\)")
+    not_run = named(r"\d+ NOT RUN \(--strict; not on this machine: ([^)]*)\)")
+    failed = named(r"\d+ FAILED: ([^.]*)\.")
+    passed = int(match.group(1))
+    missing = [name for name in REQUIRED_CHECKS if name not in listed or name in skipped + not_run + failed]
+    numbers = "passed %d, skipped %d, not run %d, failed %d" % (passed, len(skipped), len(not_run), len(failed))
+    for label, names in (("skipped", skipped), ("not run", not_run), ("failed", failed), ("required and not passed", missing)):
+        if names:
+            numbers += "; %s: %s" % (label, ", ".join(names))
+    return numbers, rule, code == 0 and passed > 0 and not (skipped or not_run or failed or missing)
+
+
+DOCS_LINE = re.compile(r"^(.+?): exit (\d+), (\d+) warnings in our code, (\d+) other$", re.MULTILINE)
+
+
+def docs_numbers(output, code):
+    """Judges the output of `docs.py`: one line for each crate."""
+    rule = "three crates (the plugin, the host crate, the helper), each exit 0 and 0 warnings in our code; exit 0"
+    crates = DOCS_LINE.findall(output)
+    if not crates:
+        return NO_NUMBERS, rule, False
+    numbers = "; ".join("%s: exit %s, %s warnings in our code, %s other" % crate for crate in crates)
+    return numbers, rule, code == 0 and len(crates) == 3 and all(exit == "0" and ours == "0" for _, exit, ours, _ in crates)
+
+
+CLIPPY_LINE = re.compile(r"^clippy: (\d+) warnings; (?:(\d+) lints above the baseline|none above the baseline)", re.MULTILINE)
+
+
+def clippy_numbers(output, code, baseline_commit):
+    """Judges the output of `clippy_baseline.py --check`; the last commit of the baseline file is
+    a record, so that a stale baseline shows."""
+    rule = "0 lints above tools/clippy.baseline; exit 0"
+    match = CLIPPY_LINE.search(output)
+    if not match:
+        return NO_NUMBERS, rule, False
+    above = int(match.group(2) or 0)
+    numbers = "%s warnings, %d lints above the baseline; tools/clippy.baseline last changed in %s" % (match.group(1), above, baseline_commit)
+    return numbers, rule, code == 0 and above == 0
+
+
+TEST_IGNORED = re.compile(r"^test result: \w+\. \d+ passed; \d+ failed; (\d+) ignored", re.MULTILINE)
+
+
+def test_numbers(output, code):
+    """Judges the output of `cargo test`: the sums of its "test result" lines."""
+    rule = "failed = 0, passed > 0; exit 0"
+    results = TEST_RESULT.findall(output)
+    if not results:
+        return NO_NUMBERS, rule, False
+    passed, failed = sum(int(p) for p, _ in results), sum(int(f) for _, f in results)
+    ignored = sum(int(i) for i in TEST_IGNORED.findall(output))
+    numbers = "passed %d, failed %d, ignored %d, in %d test binaries" % (passed, failed, ignored, len(results))
+    return numbers, rule, code == 0 and failed == 0 and passed > 0
+
+
+# The line of `cargo xtask dist` after its release check of the core files (render-link W609 9b).
+CORE_FILES_LINE = re.compile(r"^The core files of the release: (\d+) with the build line of (.+?), equal to the repo's; numidium\.exe has the id$", re.MULTILINE)
+
+
+def core_files_numbers(output, code, in_repo):
+    """Judges the output of `cargo xtask dist` by its line of the core files: `in_repo` is the
+    count of `assets/Data Files/shaders/core/*.wgsl` of the MGE XE tree."""
+    rule = "the core files checked = the repo's core files (%d), > 0; exit 0" % in_repo
+    match = CORE_FILES_LINE.search(output)
+    if not match:
+        return NO_NUMBERS, rule, False
+    count = int(match.group(1))
+    return "%d core files with the build line of %s" % (count, match.group(2)), rule, code == 0 and count == in_repo and count > 0
+
+
+def gate_numbers(output, code):
+    """Judges the output of the gate: each result line N of M with N = M > 0, and each adapter
+    word SAME. Returns (numbers, rule, passed, the result lines, the adapters)."""
+    rule = "each stage N of M pictures equal with N = M > 0; each adapter word %s; exit 0" % ADAPTER_SAME
+    lines = GATE_RESULT.findall(output)
+    adapters = adapters_of(output)
+    if not lines:
+        return NO_NUMBERS, rule, False, lines, adapters
+    counts = [re.match(r"(\d+) of (\d+)", line).groups() for line in lines]
+    words = sorted({word for word, _ in ADAPTER_LINE.findall(output)})
+    numbers = "%s; adapter words: %s; %s" % ("; ".join("%s of %s" % count for count in counts), ", ".join(words) or "none",
+                                            " and ".join(adapters) or "no adapter")
+    passed = code == 0 and all(n == m and int(m) > 0 for n, m in counts) and adapter_problem(output) is None
+    return numbers, rule, passed, lines, adapters
+
+
+def adapters_of(output):
+    """The adapters of the gate's SAME lines, without the words after them ("as the accepted
+    pictures"): the GPU, the backend and the driver of the evidence."""
+    return sorted({re.sub(r", as the accepted pictures$", "", text) for word, text in ADAPTER_LINE.findall(output) if word == ADAPTER_SAME})
+
+
+def build_id_numbers(folder, plugin_head, mge_head):
+    """Judges the build ids of the binaries of the unpacked archive against the HEADs of the two
+    trees: the tag, MANIFEST.txt and the notes name the HEADs."""
+    rule = "each binary names the HEAD of its tree, one commit for each repository, no -dirty"
+    ids, _ = part_ids(folder)
+    _, problems = parts_problems(folder, plugin_head, mge_head)
+    numbers = "%s; HEAD: nirender-plugin %s, render-link %s" % (
+        ", ".join("%s %s" % item for item in sorted(ids.items())) or "no build id", plugin_head, mge_head)
+    if problems:
+        numbers += "; " + "; ".join(problems)
+    return numbers, rule, not problems
+
+
+MANIFEST_LINE = re.compile(r"^([0-9a-f]{64})  (\d+)  (.+)$", re.MULTILINE)
+
+
+def manifest_differences(manifest, entries):
+    """The differences between the text of MANIFEST.txt and the files of an unpacked archive
+    (`file_digests`), MANIFEST.txt itself out: each (path, what)."""
+    listed = {path: (int(size), digest) for digest, size, path in MANIFEST_LINE.findall(manifest)}
+    found = {path: (size, digest) for path, size, digest in entries if path != "MANIFEST.txt"}
+    return ([(path, "not in the archive") for path in sorted(listed) if path not in found]
+            + [(path, "not in MANIFEST.txt") for path in sorted(found) if path not in listed]
+            + [(path, "another size or SHA-256") for path in sorted(listed) if path in found and listed[path] != found[path]])
 
 
 def compiler_version(folder):
@@ -215,23 +462,22 @@ def gate_command(folder):
     return [sys.executable, "-I", os.path.join(HERE, "validate_retained.py"), "baseline", "--archive", folder]
 
 
-def gate(folder, dry_run):
+def gate(folder, record):
     """Replays the captures of the baseline on the helper in the unpacked archive
     (`validate_retained.py baseline --archive <folder>`: the helper that ships, not the one
-    in bin). Returns the result lines ("N of M pictures equal to the accepted ones in ...");
-    a failed gate stops the release."""
+    in bin), one check of `record`. Returns the result lines ("N of M pictures equal to the
+    accepted ones in ...") and the adapters of the pictures; a failed gate stops the release."""
     print("the gate on the helper of %s" % folder, flush=True)
-    result = subprocess.run(gate_command(folder), capture_output=True, text=True, cwd=PLUGIN, env=ENVIRONMENT)
-    print(result.stdout + result.stderr, flush=True)
-    lines = GATE_RESULT.findall(result.stdout)
-    if result.returncode != 0 or not lines:
-        stop("the gate failed on the packed helper (%s)" % ("; ".join(lines) or "no result line"), dry_run)
+    command = gate_command(folder)
+    code, output = run_teed(command, PLUGIN)
+    numbers, rule, passed, lines, adapters = gate_numbers(output, code)
+    record.add("the capture gate", command_text(command, record.roots), numbers, rule, PASS if passed else FAIL)
     # The pictures are the evidence of one GPU and one driver: on another adapter a pass says
     # nothing about this machine's build, and a fail is not a finding.
-    problem = adapter_problem(result.stdout)
+    problem = adapter_problem(output)
     if problem:
-        stop(problem, dry_run)
-    return lines
+        stop(problem, record.dry_run)
+    return lines, adapters
 
 
 def adapter_problem(output):
@@ -250,28 +496,31 @@ def adapter_problem(output):
     return None
 
 
-def gate_text(lines):
-    """The gate's result for the notes: its result lines without the local folders they end
-    with ("in <path>")."""
-    return "the capture gate: " + "; ".join(re.sub(r" in \S+$", "", line) for line in lines)
+def gate_text(lines, adapters):
+    """The gate's result for the notes: the adapter of its pictures (the GPU, the backend and
+    the driver), then its result lines without the local folders they end with ("in <path>")."""
+    return "the capture gate on %s: %s" % (" and ".join(adapters) or "an adapter it did not name",
+                                          "; ".join(re.sub(r" in \S+$", "", line) for line in lines))
 
 
 SHA_TOKEN = "{sha256}"
 
 
 def fill_tokens(notes, values):
-    """The notes with each token (`{gate}`, `{sha256}`) replaced by its value."""
+    """The notes with each token (`{gate}`, `{sha256}`, `{checks}`) replaced by its value."""
     for token, value in values.items():
         notes = notes.replace(token, value)
     return notes
 
 
 def notes_problems(notes, gated):
-    """What is missing from the notes: the Tested block's parts, and the token `{sha256}`
-    for the archive's checksum."""
+    """What is missing from the notes: the Tested block's parts, the token `{sha256}` for the
+    archive's checksum, and the token `{checks}` for the line of the release checks."""
     problems = tested_block_problems(notes, gated)
     if SHA_TOKEN not in notes:
         problems.append("no %s token for the archive's SHA-256" % SHA_TOKEN)
+    if CHECKS_TOKEN not in notes:
+        problems.append("no %s token for the line of the release checks" % CHECKS_TOKEN)
     if not gated and GATE_TOKEN in notes:
         problems.append("the token %s with --no-gate: write the gate's result by hand" % GATE_TOKEN)
     return problems
@@ -310,11 +559,18 @@ def manifest_text(archive, provenance, entries):
     return "\n".join(lines) + "\n"
 
 
-def provenance(mge, plugin_tag):
-    """The commits of the two repositories and the compiler of the MGE XE tree, in one line."""
-    mge_commit = run(["git", "-C", mge, "rev-parse", "--short", "HEAD"], capture=True).strip()
-    plugin_commit = run(["git", "-C", PLUGIN, "rev-parse", "--short", "HEAD"], capture=True).strip()
-    return "MGE XE G7 at %s; nirender at %s (the tag %s); built with %s." % (mge_commit, plugin_commit, plugin_tag, compiler_version(mge))
+def head_of(repo):
+    """The short hash of the HEAD of `repo`."""
+    return run(["git", "-C", repo, "rev-parse", "--short", "HEAD"], capture=True).strip()
+
+
+def provenance(folder, mge, plugin_tag):
+    """The commits that the binaries of the unpacked archive `folder` name (their build ids) and
+    the compiler of the MGE XE tree, in one line. The release check of the build ids proved them
+    the HEADs of the two trees."""
+    ids, _ = part_ids(folder)
+    return "MGE XE G7 at %s; nirender at %s (the tag %s); built with %s." % (
+        ids.get("numidium", "unknown"), ids.get("nirender", "unknown"), plugin_tag, compiler_version(mge))
 
 
 def write_text(path, text):
@@ -425,6 +681,100 @@ def license_additions(mge, plugin_url, plugin_tag, sources, stage):
     return [(gpl, "COPYING-GPL-2.0.txt"), (plugin_license, "LICENSE-nirender.txt"), (notices_path, "THIRD-PARTY-NOTICES.txt"), (sources_path, "SOURCES.txt")]
 
 
+def release_checks_self_test(gate_output, nvidia, amd):
+    """The readers and the rules of the release checks (W604): for each, a passing output, a
+    failing one, and one with no summary line, which fails."""
+    listed = ["readme", "mge handshake", "release", "build sets", "sets"]
+    good = "== a line\nchecks (all): 61 passed\n"
+    assert checks_numbers(good, 0, listed)[0::2] == ("passed 61, skipped 0, not run 0, failed 0", True)
+    assert not checks_numbers(good, 1, listed)[2], "a summary of passes with exit code 1"
+    failed = "checks (all): 59 passed, 2 FAILED: readme, sets. Fix the drift, or commit with --no-verify.\n"
+    numbers, _, passed = checks_numbers(failed, 1, listed)
+    assert not passed and numbers == "passed 59, skipped 0, not run 0, failed 2; failed: readme, sets; required and not passed: sets", numbers
+    not_run = "checks (all): 60 passed, 1 NOT RUN (--strict; not on this machine: mge handshake)\n"
+    assert checks_numbers(not_run, 5, listed)[0].endswith("not run: mge handshake; required and not passed: mge handshake")
+    assert not checks_numbers(not_run, 5, listed)[2]
+    # A required check that the list no longer has fails, although every check passed.
+    assert not checks_numbers(good, 0, ["readme", "release", "build sets", "sets"])[2]
+    assert checks_numbers("== the check 'x' failed\n", 1, listed)[0::2] == (NO_NUMBERS, False)
+
+    docs = "the plugin (akulakhan): exit 0, 0 warnings in our code, 0 other\nthe host crate (nirender_wgpu): exit 0, 0 warnings in our code, 0 other\nthe helper (numidium): exit 0, 0 warnings in our code, 2 other\n"
+    assert docs_numbers(docs, 0)[2]
+    assert not docs_numbers(docs.replace("exit 0, 0 warnings in our code, 2", "exit 0, 1 warnings in our code, 2"), 0)[2]
+    assert not docs_numbers(docs.split("\n", 1)[1], 0)[2], "two crates"
+    assert not docs_numbers(docs, 1)[2]
+    assert docs_numbers("wrote docs.html\n", 0)[0::2] == (NO_NUMBERS, False)
+
+    assert clippy_numbers("clippy: 317 warnings; none above the baseline\n", 0, "abc1234 2026-11-20") == (
+        "317 warnings, 0 lints above the baseline; tools/clippy.baseline last changed in abc1234 2026-11-20", "0 lints above tools/clippy.baseline; exit 0", True)
+    assert not clippy_numbers("clippy: 320 warnings; 2 lints above the baseline\n", 1, "x")[2]
+    assert clippy_numbers("clippy: render-link does not compile\n", 1, "x")[0::2] == (NO_NUMBERS, False)
+
+    tests = "test result: ok. 520 passed; 0 failed; 18 ignored; 0 measured; 0 filtered out\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured\n"
+    assert test_numbers(tests, 0)[0::2] == ("passed 521, failed 0, ignored 18, in 2 test binaries", True)
+    assert not test_numbers(tests.replace("1 passed; 0 failed", "0 passed; 1 failed"), 101)[2]
+    assert not test_numbers("test result: ok. 0 passed; 0 failed; 0 ignored\n", 0)[2], "no test ran"
+    assert test_numbers("error: could not compile\n", 101)[0::2] == (NO_NUMBERS, False)
+
+    core = "The core files of the release: 12 with the build line of numidium v0.21.0 abc1234, equal to the repo's; numidium.exe has the id\n"
+    assert core_files_numbers(core, 0, 12)[0::2] == ("12 core files with the build line of numidium v0.21.0 abc1234", True)
+    assert not core_files_numbers(core, 0, 13)[2]
+    assert core_files_numbers("Packed dist\\x.7z\n", 0, 12)[0::2] == (NO_NUMBERS, False)
+
+    gate_lines = gate_output(nvidia, nvidia) + "  ok   206 of 206 pictures equal to the accepted ones in b\n"
+    numbers, _, passed, lines, adapters = gate_numbers(gate_lines, 0)
+    assert passed and numbers == "2 of 2; 206 of 206; adapter words: SAME; %s" % nvidia and len(lines) == 2 and adapters == [nvidia], numbers
+    assert not gate_numbers(gate_lines.replace("206 of 206", "205 of 206"), 1)[2]
+    assert not gate_numbers(gate_output(nvidia, amd), 0)[2], "an adapter that is not SAME"
+    assert not gate_numbers(gate_output(nvidia, nvidia).replace("2 of 2", "0 of 0"), 0)[2], "no picture"
+    assert gate_numbers("the gate ended\n", 1)[:3:2] == (NO_NUMBERS, False)
+
+    # The commands of the public checks file name no user and no local path (D316; verdict 738, 4.1): the commands of
+    # a release as main makes them, with this machine's real folders.
+    mge = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
+    roots = {"nirender-plugin": PLUGIN, "render-link": mge}
+    cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.EXE")
+    commands = [[sys.executable, "-I", os.path.join(HERE, "checks.py"), "all", "--strict"],
+                [sys.executable, "-I", os.path.join(HERE, "docs.py"), "--mge", mge],
+                [sys.executable, "-I", os.path.join(HERE, "clippy_baseline.py"), "--check", "--mge", mge],
+                ["cargo", "test", "-p", "mgeHost64"], [cargo, "xtask", "dist", "--max-perf"],
+                gate_command(os.path.join(mge, "target", "release-gate"))]
+    texts = [command_text(command, roots) for command in commands]
+    assert texts == ["python -I tools/checks.py all --strict", "python -I tools/docs.py --mge <render-link>",
+                     "python -I tools/clippy_baseline.py --check --mge <render-link>", "cargo test -p mgeHost64",
+                     "cargo xtask dist --max-perf", "python -I tools/validate_retained.py baseline --archive target/release-gate"], texts
+    assert command_text(["git", os.path.join(os.path.expanduser("~"), "elsewhere", "x.txt")], roots) == "git x.txt"
+    public = checks_text("v1", [("check %d" % index, text, "n", "r", PASS) for index, text in enumerate(texts)])
+    assert os.path.expanduser("~") not in public and not re.search(r"\b[A-Za-z]:[\\/]", public), public
+    rows = [("a", "x", "n", "r", PASS), ("b", "y", "--no-build: the archive in dist", "the build", NOT_RUN), ("c", "z", "m", "-", RECORD)]
+    assert checks_summary(rows, "checks-v1.txt") == "the release checks: 1 passed, 1 not run (b: --no-build: the archive in dist); their numbers and rules: checks-v1.txt"
+    assert checks_text("v1", rows[:1]).endswith("== a: PASS\ncommand: x\nnumbers: n\nrule: r\n")
+
+    manifest = manifest_text("x.7z", "p", [("a.dll", 3, "ab" * 32), ("Data Files/b.dds", 5, "cd" * 32)])
+    assert manifest_differences(manifest, [("a.dll", 3, "ab" * 32), ("Data Files/b.dds", 5, "cd" * 32), ("MANIFEST.txt", 9, "ef" * 32)]) == []
+    assert manifest_differences(manifest, [("a.dll", 3, "00" * 32), ("c.txt", 1, "11" * 32)]) == [
+        ("Data Files/b.dds", "not in the archive"), ("c.txt", "not in MANIFEST.txt"), ("a.dll", "another size or SHA-256")]
+
+    # The build ids against the HEADs, on planted dist folders (common.parts_problems is the rule).
+    import tempfile
+    with tempfile.TemporaryDirectory() as root:
+        def plant(plugin, host, mge, d3d8):
+            for path, text in ((os.path.join(root, "Data Files", "mwse", "lib", "akulakhan.dll"), b"x nirender v0.3.0 %s y" % plugin),
+                               (os.path.join(root, "numidium.exe"), b"nirender-host v0.3.0 %s z numidium v0.21.0 %s" % (host, mge)),
+                               (os.path.join(root, "d3d8.dll"), b"MGE-XE G7 Fork v0.21.0 %s" % d3d8)):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "wb").write(text)
+        plant(b"79c752d", b"79c752d", b"c610f3b", b"c610f3b")
+        numbers, _, passed = build_id_numbers(root, "79c752d", "c610f3b")
+        assert passed and numbers == "MGE-XE G7 Fork c610f3b, nirender 79c752d, nirender-host 79c752d, numidium c610f3b; HEAD: nirender-plugin 79c752d, render-link c610f3b", numbers
+        numbers, _, passed = build_id_numbers(root, "79c752d", "99c8b62")
+        assert not passed and numbers.endswith("numidium is c610f3b, but the commit of render-link under test is 99c8b62"), numbers
+        plant(b"79c752d", b"79c752d", b"c610f3b-dirty", b"c610f3b-dirty")
+        assert not build_id_numbers(root, "79c752d", "c610f3b")[2]
+        os.remove(os.path.join(root, "d3d8.dll"))
+        assert "d3d8.dll is not in the build" in build_id_numbers(root, "79c752d", "c610f3b")[0]
+
+
 def self_test():
     """The tests of the pure parts: no git, no cargo, no GitHub."""
     # W545: the gate names the unpacked archive with --archive, never with --mge-build, which replay.py refuses for a
@@ -441,23 +791,27 @@ def self_test():
     assert renamed == [("??", "src/new file.rs"), ("R ", "src/b.rs"), ("??", "mod/x y.lua")], renamed
     assert untracked_in_sources(renamed, PLUGIN_SOURCES) == ["src/new file.rs", "mod/x y.lua"]
     lines = ["2 of 2 pictures equal to the accepted ones in a", "206 of 206 pictures equal to the accepted ones in b"]
-    assert gate_text(lines) == "the capture gate: 2 of 2 pictures equal to the accepted ones; 206 of 206 pictures equal to the accepted ones"
+    nvidia = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)"
+    assert gate_text(lines, [nvidia]) == "the capture gate on %s: 2 of 2 pictures equal to the accepted ones; 206 of 206 pictures equal to the accepted ones" % nvidia
+    assert gate_text(lines[:1], ["a", "b"]).startswith("the capture gate on a and b: 2 of 2")
+    assert gate_text(lines[:1], []).startswith("the capture gate on an adapter it did not name: ")
     assert fill_tokens("- {gate}\n- SHA-256 `{sha256}`\n", {GATE_TOKEN: "g", SHA_TOKEN: "abc"}) == "- g\n- SHA-256 `abc`\n"
     assert fill_tokens("- the gate by hand\n", {GATE_TOKEN: "g"}) == "- the gate by hand\n"
     assert checksum_line("ab" * 32, "x.7z") == "ab" * 32 + "  x.7z\n"
     manifest = manifest_text("x.7z", "MGE XE G7 at 1; nirender at 2.", [("Data Files/a.dds", 12, "cd" * 32), ("d3d8.dll", 3, "ef" * 32)])
     assert manifest.startswith("THE FILES OF x.7z\n\nMGE XE G7 at 1; nirender at 2.\n\n")
     assert manifest.endswith("\n%s  12  Data Files/a.dds\n%s  3  d3d8.dll\n" % ("cd" * 32, "ef" * 32)), manifest
-    assert notes_problems("## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == ["no {sha256} token for the archive's SHA-256"]
-    assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == []
+    assert notes_problems("## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=True) == ["no {sha256} token for the archive's SHA-256"]
+    assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=True) == []
+    assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == ["no {checks} token for the line of the release checks"]
     # With --no-gate a leftover token is found at the start, not after the build.
-    leftover = notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=False)
+    leftover = notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=False)
     assert leftover[-1] == "the token {gate} with --no-gate: write the gate's result by hand", leftover
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
     # The adapter word, from the lines the gate prints (validate_retained.adapter_note): only
     # SAME passes. The plant: the helper printed no adapter (UNKNOWN). The null: SAME.
-    nvidia, amd = "NVIDIA GeForce RTX 5070 (Vulkan, driver NVIDIA 617.14)", "AMD Radeon RX 7800 XT (Vulkan, driver 24.9.1)"
+    amd = "AMD Radeon RX 7800 XT (Vulkan, driver 24.9.1)"
     def gate_output(recorded, now):
         return "       %s\n  ok   2 of 2 pictures equal to the accepted ones in a\n" % adapter_note(recorded, now)
     assert adapter_problem(gate_output(nvidia, nvidia)) is None
@@ -468,6 +822,9 @@ def self_test():
     assert adapter_problem("       adapter: %s, as the accepted pictures\n" % nvidia).startswith("the gate printed no adapter word")
     assert adapter_problem("  ok   2 of 2 pictures equal to the accepted ones in a\n").startswith("the gate printed no adapter word")
     assert adapter_problem(gate_output(nvidia, nvidia) + gate_output(nvidia, amd)).startswith("the gate's adapter is OTHER")
+    assert adapters_of(gate_output(nvidia, nvidia) + gate_output(nvidia, nvidia)) == [nvidia]
+    assert adapters_of(gate_output(nvidia, amd)) == []
+    release_checks_self_test(gate_output, nvidia, amd)
     assert plugin_of_the_build(os.path.join("C:\\", "repos", "MGE-XE-G7-render-link")) == os.path.realpath(os.path.join("C:\\", "repos", "nirender-plugin"))
     good = "## Changes\n\n- a\n\n## Tested\n\n- {gate}\n- The live checks, run folder `20261027-120302-mge-findings-live2`: the loads wait.\n"
     assert tested_block_problems(good, gated=True) == []
@@ -562,14 +919,33 @@ def main():
     additions += license_additions(args.mge, "https://github.com/" + args.repo, tag, sources, os.path.join(args.mge, "target", "release-licenses"))
 
     cargo = shutil.which("cargo") or os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
-    if not args.no_build:
-        # The content checks of both repositories, then the doc comments of the three crates
-        # (no broken link), then no Clippy lint above its baseline.
-        run([sys.executable, "-I", os.path.join(HERE, "checks.py"), "all", "--strict"])
-        run([sys.executable, "-I", os.path.join(HERE, "docs.py"), "--mge", args.mge])
-        run([sys.executable, "-I", os.path.join(HERE, "clippy_baseline.py"), "--check", "--mge", args.mge])
-        unit_tests(args.mge)
-        run([cargo, "xtask", "dist"] + (["--max-perf"] if args.max_perf else []), cwd=args.mge)
+    # Each release check keeps its numbers and its pass rule in dist/checks-<tag>.txt, an asset
+    # of the release beside the archive, not in it: the archive's SHA-256 must not depend on it.
+    record = CheckRecord(os.path.join(args.mge, "dist", "checks-%s.txt" % tag), tag, args.dry_run,
+                         {"nirender-plugin": PLUGIN, "render-link": args.mge})
+    # The content checks of both repositories, then the doc comments of the three crates (no
+    # broken link), then no Clippy lint above its baseline, then the unit tests. They run with
+    # --no-build too: the build ids below prove the archive a build of the HEADs, so the checks
+    # of the HEADs are the archive's.
+    import checks
+    record.run("checks.py all --strict", [sys.executable, "-I", os.path.join(HERE, "checks.py"), "all", "--strict"], None,
+               lambda output, code: checks_numbers(output, code, checks.LISTS["all"]))
+    record.run("docs.py", [sys.executable, "-I", os.path.join(HERE, "docs.py"), "--mge", args.mge], None, docs_numbers)
+    baseline_commit = run(["git", "-C", PLUGIN, "log", "-1", "--format=%h %cs", "--", "tools/clippy.baseline"], capture=True).strip()
+    record.run("clippy_baseline.py --check", [sys.executable, "-I", os.path.join(HERE, "clippy_baseline.py"), "--check", "--mge", args.mge], None,
+               lambda output, code: clippy_numbers(output, code, baseline_commit or "no commit"))
+    unit_tests(args.mge, record)
+    dist_command = [cargo, "xtask", "dist"] + (["--max-perf"] if args.max_perf else [])
+    if args.no_build:
+        record.add("cargo xtask dist", command_text(dist_command, record.roots), "--no-build: the archive in dist", "the build", NOT_RUN)
+    else:
+        in_repo = len([name for name in os.listdir(os.path.join(args.mge, "assets", "Data Files", "shaders", "core")) if name.endswith(".wgsl")])
+        code, output = run_teed(dist_command, args.mge)
+        numbers, rule, passed = core_files_numbers(output, code, in_repo)
+        record.add("cargo xtask dist", command_text(dist_command, record.roots), numbers, rule, PASS if passed else FAIL)
+        if code != 0:
+            # No archive: nothing after this step can run, a dry run neither.
+            raise SystemExit("failed (%d): %s" % (code, " ".join(dist_command)))
     # The version of MGE XE is in the name of the archive that xtask packs.
     kind = "" if args.max_perf else "-test"
     packed = [name for name in os.listdir(os.path.join(args.mge, "dist")) if re.fullmatch(r"MGE-XE-G7-v[0-9.]+%s\.7z" % re.escape(kind), name)]
@@ -580,37 +956,58 @@ def main():
     if additions:
         add_to_archive(asset, additions, os.path.join(args.mge, "target", "release-additions"))
 
-    # The manifest of the archive's files goes into it; then the archive's own SHA-256 goes
-    # beside it and into the notes.
+    # The commits of the archive are those its binaries name: they must be the HEADs, which the
+    # tag, MANIFEST.txt and the notes name (with --no-build the archive in dist can be older).
     unpacked = unpack(args.mge, asset)
+    plugin_head, mge_head = head_of(PLUGIN), head_of(args.mge)
+    numbers, rule, passed = build_id_numbers(unpacked, plugin_head, mge_head)
+    record.add("the build ids of the archive", "the build ids of akulakhan.dll, numidium.exe and d3d8.dll", numbers, rule, PASS if passed else FAIL)
+
+    # The manifest of the archive's files goes into it; the archive is unpacked again and must
+    # hold the files of the manifest and no other. Then the archive's own SHA-256 goes beside it
+    # and into the notes.
     manifest = os.path.join(args.mge, "target", "MANIFEST.txt")
-    write_text(manifest, manifest_text(os.path.basename(asset), provenance(args.mge, tag), file_digests(unpacked)))
+    write_text(manifest, manifest_text(os.path.basename(asset), provenance(unpacked, args.mge, tag), file_digests(unpacked)))
     add_to_archive(asset, [(manifest, "MANIFEST.txt")], os.path.join(args.mge, "target", "release-manifest"))
-    shutil.copy2(manifest, os.path.join(unpacked, "MANIFEST.txt"))
+    unpacked = unpack(args.mge, asset)
+    shipped = file_digests(unpacked)
+    shipped_manifest = os.path.join(unpacked, "MANIFEST.txt")
+    listed = open(shipped_manifest, encoding="utf-8").read() if os.path.isfile(shipped_manifest) else ""
+    differences = manifest_differences(listed, shipped)
+    record.add("MANIFEST.txt against the archive", "the files of the archive unpacked again, against its MANIFEST.txt",
+               "%d files in MANIFEST.txt, %d files unpacked besides it, %d differences%s" % (
+                   len(MANIFEST_LINE.findall(listed)), len([entry for entry in shipped if entry[0] != "MANIFEST.txt"]), len(differences),
+                   "".join("; %s: %s" % difference for difference in differences[:20])),
+               "0 differences, and MANIFEST.txt lists > 0 files", PASS if listed and not differences and MANIFEST_LINE.search(listed) else FAIL)
     digest = sha256_of(asset)
     checksum = asset + ".sha256"
     write_text(checksum, checksum_line(digest, os.path.basename(asset)))
     print("SHA-256 of %s: %s (in %s)" % (os.path.basename(asset), digest, checksum))
+    record.add("the archive", os.path.basename(asset), "SHA-256 %s, %d bytes, %d files" % (digest, os.path.getsize(asset), len(shipped)),
+               "a record of what goes up", RECORD)
 
     # The gate on the helper that ships, and its result into the notes.
     values = {SHA_TOKEN: digest}
-    if not args.no_gate:
-        values[GATE_TOKEN] = gate_text(gate(unpacked, args.dry_run))
+    if args.no_gate:
+        record.add("the capture gate", command_text(gate_command(unpacked), record.roots), "--no-gate: the notes hold its line by hand", "the gate", NOT_RUN)
+    else:
+        values[GATE_TOKEN] = gate_text(*gate(unpacked, record))
+    values[CHECKS_TOKEN] = record.summary()
     notes_path = os.path.join(args.mge, "dist", "notes-%s.md" % tag)
     write_text(notes_path, fill_tokens(notes, values))
-    print("the notes with the checksum and the gate's result: %s" % notes_path)
+    print("the notes with the checksum, the gate's result and the release checks: %s" % notes_path)
+    print("the release checks: %s" % record.path)
 
-    # The commit of each repository: the build id that its binaries log, for the "Builds"
-    # block of the notes (the trees are clean and pushed, so no id is "-dirty").
-    for name, repo in (("nirender", PLUGIN), ("MGE XE G7", args.mge)):
-        describe = run(["git", "-C", repo, "describe", "--always", "--dirty", "--exclude", "*"], capture=True).strip()
-        print("build id: %s %s" % (name, describe))
+    # The commit of each repository as its binaries log it, for the "Builds" block of the notes.
+    ids, _ = part_ids(unpacked)
+    for program in ("nirender", "nirender-host", "numidium", "MGE-XE G7 Fork"):
+        print("build id: %s %s" % (program, ids.get(program, "none")))
 
     title = "Test build: MGE XE G7 %s with nirender %s" % (mge_version, plugin_version)
     if args.dry_run:
         print("dry run: the archive %s; not published (%s); no release deleted; the MGE XE tag %s not made" % (asset, title, mge_tag))
         return 0
-    print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", notes_path, asset, checksum], capture=True).strip())
+    print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", notes_path, asset, checksum, record.path], capture=True).strip())
     # The commit of MGE XE that the archive was built from gets the release's tag too; it
     # goes up with the release, never before it.
     run(["git", "-C", args.mge, "tag", mge_tag])
