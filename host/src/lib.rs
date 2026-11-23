@@ -40,6 +40,7 @@ pub mod depth;
 mod depth_merge;
 mod gamma;
 mod late_depth;
+mod line_pass;
 mod live;
 mod multisample;
 mod picture;
@@ -785,6 +786,10 @@ struct Renderer {
     /// The pipeline that merges the depth of the first person into the depth of the world,
     /// made at its first use.
     depth_merge: Option<depth_merge::DepthMerge>,
+    /// The line pass of the debug views, made at the first frame with a segment.
+    line_pass: Option<line_pass::LinePass>,
+    /// The segments of the frame's line pass, kept between frames for its room.
+    line_list: debug_lines::LineList,
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
     /// Where the world shader's text stands: the text of a core mod that fails in the driver

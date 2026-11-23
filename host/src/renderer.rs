@@ -775,6 +775,8 @@ impl Renderer {
             depth_format,
             multisample,
             depth_merge: None,
+            line_pass: None,
+            line_list: debug_lines::LineList::default(),
             queue,
             shader,
             runs_dump: switches().runs_dump,

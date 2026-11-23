@@ -131,6 +131,178 @@ impl fmt::Display for UnknownSource {
 
 impl std::error::Error for UnknownSource {}
 
+/// Where the line pass draws a segment: behind what the frame drew at its pixel or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineGroup {
+    /// The segment is hidden where the depth of the frame is nearer than it.
+    Tested,
+    /// The segment is drawn over everything.
+    OnTop,
+}
+
+/// One segment of the line pass: two places in the world space of the game (64-bit, as the
+/// helper keeps its world places), a colour (red, green, blue, alpha) and its group.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Segment {
+    pub a: [f64; 3],
+    pub b: [f64; 3],
+    pub color: [u8; 4],
+    pub group: LineGroup,
+}
+
+/// The segments of a box.
+pub const BOX_SEGMENTS: usize = 12;
+/// The segments of one circle of a sphere.
+pub const CIRCLE_SEGMENTS: usize = 16;
+/// The segments of a sphere: three circles, one in each plane of the axes.
+pub const SPHERE_SEGMENTS: usize = 3 * CIRCLE_SEGMENTS;
+
+/// The one list of the line pass for a frame. Each source adds its segments to it; the pass
+/// knows only segments. A box, a sphere and the box of a projection are functions that add
+/// segments.
+#[derive(Clone, Debug, Default)]
+pub struct LineList {
+    segments: Vec<Segment>,
+}
+
+impl LineList {
+    /// The segments of the frame so far.
+    #[must_use]
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    /// The number of segments.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.segments.len()
+    }
+
+    /// True when the list has no segment.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    /// Takes out every segment, for the next frame.
+    pub fn clear(&mut self) {
+        self.segments.clear();
+    }
+
+    /// Adds one segment.
+    pub fn line(&mut self, a: [f64; 3], b: [f64; 3], color: [u8; 4], group: LineGroup) {
+        self.segments.push(Segment { a, b, color, group });
+    }
+
+    /// Adds the 12 edges of a box of 8 corners. The index of a corner has a bit for each axis
+    /// of the box: 1 the first, 2 the second, 4 the third (a corner and the corner with one
+    /// bit more are the ends of an edge).
+    pub fn box_corners(&mut self, corners: &[[f64; 3]; 8], color: [u8; 4], group: LineGroup) {
+        for from in 0..8usize {
+            for bit in [1usize, 2, 4] {
+                if from & bit == 0 {
+                    self.line(corners[from], corners[from | bit], color, group);
+                }
+            }
+        }
+    }
+
+    /// Adds a box with its edges on the axes of the world, from its least and its most corner.
+    pub fn aligned_box(&mut self, least: [f64; 3], most: [f64; 3], color: [u8; 4], group: LineGroup) {
+        let corners = core::array::from_fn(|i| {
+            core::array::from_fn(|axis| if i & (1 << axis) == 0 { least[axis] } else { most[axis] })
+        });
+        self.box_corners(&corners, color, group);
+    }
+
+    /// Adds a sphere as three circles of [`CIRCLE_SEGMENTS`] segments, one in each plane of the
+    /// axes of the world.
+    pub fn sphere(&mut self, centre: [f64; 3], radius: f64, color: [u8; 4], group: LineGroup) {
+        let point = |plane: usize, step: usize| -> [f64; 3] {
+            let angle = core::f64::consts::TAU * step as f64 / CIRCLE_SEGMENTS as f64;
+            let (sin, cos) = angle.sin_cos();
+            let mut place = centre;
+            place[plane] += radius * cos;
+            place[(plane + 1) % 3] += radius * sin;
+            place
+        };
+        for plane in 0..3 {
+            for step in 0..CIRCLE_SEGMENTS {
+                self.line(point(plane, step), point(plane, step + 1), color, group);
+            }
+        }
+    }
+
+    /// Adds the box that a projection draws into: the corners of its clip space (x and y from
+    /// -1 to 1, the depth from 0 to 1, as Direct3D has it) taken back into the world through
+    /// the inverse of `view_projection` (the layout of Direct3D: a position is a row vector,
+    /// `position * view_projection`). False, and nothing added, when the matrix has no inverse.
+    pub fn projection_box(&mut self, view_projection: &[f32; 16], color: [u8; 4], group: LineGroup) -> bool {
+        let Some(inverse) = inverse(view_projection) else {
+            return false;
+        };
+        let mut corners = [[0.0f64; 3]; 8];
+        for (i, corner) in corners.iter_mut().enumerate() {
+            let clip = [
+                if i & 1 == 0 { -1.0 } else { 1.0 },
+                if i & 2 == 0 { -1.0 } else { 1.0 },
+                if i & 4 == 0 { 0.0 } else { 1.0 },
+                1.0,
+            ];
+            let world: [f64; 4] =
+                core::array::from_fn(|column| (0..4).map(|row| clip[row] * inverse[row * 4 + column]).sum());
+            if world[3].abs() < 1e-12 {
+                return false;
+            }
+            *corner = [world[0] / world[3], world[1] / world[3], world[2] / world[3]];
+        }
+        self.box_corners(&corners, color, group);
+        true
+    }
+}
+
+/// The inverse of a 4 by 4 matrix (16 numbers, row after row), in 64-bit, or `None` when it
+/// has none.
+fn inverse(m: &[f32; 16]) -> Option<[f64; 16]> {
+    let a: [f64; 16] = m.map(f64::from);
+    let at = |row: usize, column: usize| a[row * 4 + column];
+    let s0 = at(0, 0) * at(1, 1) - at(1, 0) * at(0, 1);
+    let s1 = at(0, 0) * at(1, 2) - at(1, 0) * at(0, 2);
+    let s2 = at(0, 0) * at(1, 3) - at(1, 0) * at(0, 3);
+    let s3 = at(0, 1) * at(1, 2) - at(1, 1) * at(0, 2);
+    let s4 = at(0, 1) * at(1, 3) - at(1, 1) * at(0, 3);
+    let s5 = at(0, 2) * at(1, 3) - at(1, 2) * at(0, 3);
+    let c5 = at(2, 2) * at(3, 3) - at(3, 2) * at(2, 3);
+    let c4 = at(2, 1) * at(3, 3) - at(3, 1) * at(2, 3);
+    let c3 = at(2, 1) * at(3, 2) - at(3, 1) * at(2, 2);
+    let c2 = at(2, 0) * at(3, 3) - at(3, 0) * at(2, 3);
+    let c1 = at(2, 0) * at(3, 2) - at(3, 0) * at(2, 2);
+    let c0 = at(2, 0) * at(3, 1) - at(3, 0) * at(2, 1);
+    let determinant = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
+    if determinant.abs() < 1e-30 {
+        return None;
+    }
+    let d = 1.0 / determinant;
+    Some([
+        (at(1, 1) * c5 - at(1, 2) * c4 + at(1, 3) * c3) * d,
+        (-at(0, 1) * c5 + at(0, 2) * c4 - at(0, 3) * c3) * d,
+        (at(3, 1) * s5 - at(3, 2) * s4 + at(3, 3) * s3) * d,
+        (-at(2, 1) * s5 + at(2, 2) * s4 - at(2, 3) * s3) * d,
+        (-at(1, 0) * c5 + at(1, 2) * c2 - at(1, 3) * c1) * d,
+        (at(0, 0) * c5 - at(0, 2) * c2 + at(0, 3) * c1) * d,
+        (-at(3, 0) * s5 + at(3, 2) * s2 - at(3, 3) * s1) * d,
+        (at(2, 0) * s5 - at(2, 2) * s2 + at(2, 3) * s1) * d,
+        (at(1, 0) * c4 - at(1, 1) * c2 + at(1, 3) * c0) * d,
+        (-at(0, 0) * c4 + at(0, 1) * c2 - at(0, 3) * c0) * d,
+        (at(3, 0) * s4 - at(3, 1) * s2 + at(3, 3) * s0) * d,
+        (-at(2, 0) * s4 + at(2, 1) * s2 - at(2, 3) * s0) * d,
+        (-at(1, 0) * c3 + at(1, 1) * c1 - at(1, 2) * c0) * d,
+        (at(0, 0) * c3 - at(0, 1) * c1 + at(0, 2) * c0) * d,
+        (-at(3, 0) * s3 + at(3, 1) * s1 - at(3, 2) * s0) * d,
+        (at(2, 0) * s3 - at(2, 1) * s1 + at(2, 2) * s0) * d,
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +338,88 @@ mod tests {
             LineSources::parse_list("lights,wires"),
             Err(UnknownSource("wires".to_owned()))
         );
+    }
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+
+    fn length(segment: &Segment) -> f64 {
+        (0..3).map(|i| (segment.b[i] - segment.a[i]).powi(2)).sum::<f64>().sqrt()
+    }
+
+    /// A box has 12 edges, 4 along each axis, each the length of the box on that axis.
+    #[test]
+    fn a_box_has_twelve_edges_of_its_sides() {
+        let mut list = LineList::default();
+        list.aligned_box([0.0, 0.0, 0.0], [1.0, 2.0, 4.0], RED, LineGroup::Tested);
+        assert_eq!(list.len(), BOX_SEGMENTS);
+        let mut lengths: Vec<f64> = list.segments().iter().map(length).collect();
+        lengths.sort_by(f64::total_cmp);
+        assert_eq!(lengths, [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0]);
+        assert!(list.segments().iter().all(|s| s.color == RED && s.group == LineGroup::Tested));
+    }
+
+    /// A sphere is 48 segments, each end on the sphere, far from the origin too.
+    #[test]
+    fn a_sphere_is_three_circles_on_its_radius() {
+        let mut list = LineList::default();
+        let centre = [150_000.5, -200_000.25, 1000.0];
+        list.sphere(centre, 512.0, RED, LineGroup::OnTop);
+        assert_eq!(list.len(), SPHERE_SEGMENTS);
+        for segment in list.segments() {
+            for end in [segment.a, segment.b] {
+                let radius = (0..3).map(|i| (end[i] - centre[i]).powi(2)).sum::<f64>().sqrt();
+                assert!((radius - 512.0).abs() < 1e-6, "radius {radius}");
+            }
+        }
+        list.clear();
+        assert!(list.is_empty());
+    }
+
+    /// The inverse times the matrix is the identity.
+    #[test]
+    fn the_inverse_undoes_the_matrix() {
+        let m: [f32; 16] = [
+            2.0, 0.5, 0.0, 1.0, -1.0, 3.0, 0.25, 0.0, 0.0, 1.0, 4.0, -2.0, 5.0, -3.0, 1.0, 1.0,
+        ];
+        let inv = inverse(&m).expect("an inverse");
+        for row in 0..4 {
+            for column in 0..4 {
+                let value: f64 = (0..4).map(|k| f64::from(m[row * 4 + k]) * inv[k * 4 + column]).sum();
+                let identity = if row == column { 1.0 } else { 0.0 };
+                assert!((value - identity).abs() < 1e-9, "({row}, {column}) {value}");
+            }
+        }
+        assert_eq!(inverse(&[0.0; 16]), None);
+    }
+
+    /// The box of an orthographic projection is the box that it draws: here x from -100 to
+    /// 100, y from -50 to 50 and the depth from 10 to 1010 along -z (a view of the identity,
+    /// `D3DXMatrixOrthoRH`, so the depth is 0 at z = -10 and 1 at z = -1010).
+    #[test]
+    fn the_box_of_an_orthographic_projection_is_its_volume() {
+        let (width, height, near, far) = (200.0f32, 100.0f32, 10.0f32, 1010.0f32);
+        let mut m = [0.0f32; 16];
+        m[0] = 2.0 / width;
+        m[5] = 2.0 / height;
+        m[10] = 1.0 / (near - far);
+        m[14] = near / (near - far);
+        m[15] = 1.0;
+        let mut list = LineList::default();
+        assert!(list.projection_box(&m, RED, LineGroup::OnTop));
+        assert_eq!(list.len(), BOX_SEGMENTS);
+        let mut ends: Vec<[f64; 3]> = list.segments().iter().flat_map(|s| [s.a, s.b]).collect();
+        for end in &mut ends {
+            *end = end.map(|v| (v * 1000.0).round() / 1000.0);
+        }
+        for x in [-100.0, 100.0] {
+            for y in [-50.0, 50.0] {
+                for z in [-10.0, -1010.0] {
+                    assert!(ends.contains(&[x, y, z]), "corner {x} {y} {z}");
+                }
+            }
+        }
+        assert!(!list.projection_box(&[0.0; 16], RED, LineGroup::OnTop));
+        assert_eq!(list.len(), BOX_SEGMENTS, "a matrix with no inverse adds nothing");
     }
 
     #[test]
