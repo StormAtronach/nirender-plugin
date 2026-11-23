@@ -1425,7 +1425,7 @@ mod tests {
         use crate::debug_lines::view_id;
         let world = world_shader_source(&crate::extension::extension_shaders(None));
         assert_eq!(world.matches(DEBUG_VIEW_LINE).count(), 1);
-        for variant in [view_id::LIGHTS, view_id::SHADOW_LAYERS] {
+        for variant in [view_id::LIGHTS, view_id::SHADOW_LAYERS, view_id::FOG] {
             let source = world_variant_source(&world, variant).expect("the line is there once");
             let line = format!("const DEBUG_VIEW: u32 = {variant}u;");
             assert_ne!(source, world);
