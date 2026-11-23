@@ -216,8 +216,10 @@ class CheckRecord:
     holds the checks up to a stop. A check whose output has no numbers fails: a check that
     printed nothing cannot pass."""
 
-    def __init__(self, path, tag, dry_run):
+    def __init__(self, path, tag, dry_run, roots):
         self.path, self.tag, self.dry_run, self.rows = path, tag, dry_run, []
+        # The repositories by their names, for the public text of a command (`command_text`).
+        self.roots = roots
 
     def add(self, name, command, numbers, rule, verdict):
         """Keeps one check and writes the file; a FAIL stops the release (a dry run prints it)."""
@@ -232,12 +234,33 @@ class CheckRecord:
         (output, exit code) -> (numbers, rule, passed). Returns the output."""
         code, output = run_teed(command, cwd)
         numbers, rule, passed = judge(output, code)
-        self.add(name, " ".join(command), numbers, rule, PASS if passed else FAIL)
+        self.add(name, command_text(command, self.roots), numbers, rule, PASS if passed else FAIL)
         return output
 
     def summary(self):
         """The line of the notes (`{checks}`)."""
         return checks_summary(self.rows, os.path.basename(self.path))
+
+
+def command_text(command, roots):
+    """The text of `command` for the public checks file (D316: no user name, no local path): a
+    program by its name ("python", "cargo"), a path inside a repository of `roots` ({name:
+    folder}) relative to it, the folder of a repository by its name in angle brackets, any
+    other absolute path by its file name."""
+    def shown(argument, first):
+        if not os.path.isabs(argument):
+            return argument
+        if first:
+            return re.sub(r"\.exe$", "", os.path.basename(argument), flags=re.IGNORECASE).lower()
+        full = os.path.normcase(os.path.realpath(argument))
+        for name, root in roots.items():
+            root = os.path.normcase(os.path.realpath(root))
+            if full == root:
+                return "<%s>" % name
+            if full.startswith(root + os.sep):
+                return os.path.relpath(full, root).replace("\\", "/")
+        return os.path.basename(argument)
+    return " ".join(shown(argument, index == 0) for index, argument in enumerate(command))
 
 
 def run_teed(command, cwd=None):
@@ -280,10 +303,10 @@ REQUIRED_CHECKS = ("mge handshake", "release", "build sets", "sets")
 CHECKS_SUMMARY = re.compile(r"^checks \(\w+\): (\d+) passed.*$", re.MULTILINE)
 
 
-def checks_numbers(output, listed):
+def checks_numbers(output, code, listed):
     """Judges the output of `checks.py all --strict` by its summary line: (numbers, rule,
     passed). `listed` are the names of its list `all`."""
-    rule = "failed = 0, not run = 0, skipped = 0, passed > 0, and these ran and passed: %s" % ", ".join(REQUIRED_CHECKS)
+    rule = "failed = 0, not run = 0, skipped = 0, passed > 0, and these ran and passed: %s; exit 0" % ", ".join(REQUIRED_CHECKS)
     match = CHECKS_SUMMARY.search(output)
     if not match:
         return NO_NUMBERS, rule, False
@@ -301,7 +324,7 @@ def checks_numbers(output, listed):
     for label, names in (("skipped", skipped), ("not run", not_run), ("failed", failed), ("required and not passed", missing)):
         if names:
             numbers += "; %s: %s" % (label, ", ".join(names))
-    return numbers, rule, passed > 0 and not (skipped or not_run or failed or missing)
+    return numbers, rule, code == 0 and passed > 0 and not (skipped or not_run or failed or missing)
 
 
 DOCS_LINE = re.compile(r"^(.+?): exit (\d+), (\d+) warnings in our code, (\d+) other$", re.MULTILINE)
@@ -448,7 +471,7 @@ def gate(folder, record):
     command = gate_command(folder)
     code, output = run_teed(command, PLUGIN)
     numbers, rule, passed, lines, adapters = gate_numbers(output, code)
-    record.add("the capture gate", " ".join(command), numbers, rule, PASS if passed else FAIL)
+    record.add("the capture gate", command_text(command, record.roots), numbers, rule, PASS if passed else FAIL)
     # The pictures are the evidence of one GPU and one driver: on another adapter a pass says
     # nothing about this machine's build, and a fail is not a finding.
     problem = adapter_problem(output)
@@ -663,16 +686,17 @@ def release_checks_self_test(gate_output, nvidia, amd):
     failing one, and one with no summary line, which fails."""
     listed = ["readme", "mge handshake", "release", "build sets", "sets"]
     good = "== a line\nchecks (all): 61 passed\n"
-    assert checks_numbers(good, listed) == ("passed 61, skipped 0, not run 0, failed 0", checks_numbers(good, listed)[1], True)
+    assert checks_numbers(good, 0, listed)[0::2] == ("passed 61, skipped 0, not run 0, failed 0", True)
+    assert not checks_numbers(good, 1, listed)[2], "a summary of passes with exit code 1"
     failed = "checks (all): 59 passed, 2 FAILED: readme, sets. Fix the drift, or commit with --no-verify.\n"
-    numbers, _, passed = checks_numbers(failed, listed)
+    numbers, _, passed = checks_numbers(failed, 1, listed)
     assert not passed and numbers == "passed 59, skipped 0, not run 0, failed 2; failed: readme, sets; required and not passed: sets", numbers
     not_run = "checks (all): 60 passed, 1 NOT RUN (--strict; not on this machine: mge handshake)\n"
-    assert checks_numbers(not_run, listed)[0].endswith("not run: mge handshake; required and not passed: mge handshake")
-    assert not checks_numbers(not_run, listed)[2]
+    assert checks_numbers(not_run, 5, listed)[0].endswith("not run: mge handshake; required and not passed: mge handshake")
+    assert not checks_numbers(not_run, 5, listed)[2]
     # A required check that the list no longer has fails, although every check passed.
-    assert not checks_numbers(good, ["readme", "release", "build sets", "sets"])[2]
-    assert checks_numbers("== the check 'x' failed\n", listed)[0::2] == (NO_NUMBERS, False)
+    assert not checks_numbers(good, 0, ["readme", "release", "build sets", "sets"])[2]
+    assert checks_numbers("== the check 'x' failed\n", 1, listed)[0::2] == (NO_NUMBERS, False)
 
     docs = "the plugin (akulakhan): exit 0, 0 warnings in our code, 0 other\nthe host crate (nirender_wgpu): exit 0, 0 warnings in our code, 0 other\nthe helper (numidium): exit 0, 0 warnings in our code, 2 other\n"
     assert docs_numbers(docs, 0)[2]
@@ -705,6 +729,23 @@ def release_checks_self_test(gate_output, nvidia, amd):
     assert not gate_numbers(gate_output(nvidia, nvidia).replace("2 of 2", "0 of 0"), 0)[2], "no picture"
     assert gate_numbers("the gate ended\n", 1)[:3:2] == (NO_NUMBERS, False)
 
+    # The commands of the public checks file name no user and no local path (D316; verdict 738, 4.1): the commands of
+    # a release as main makes them, with this machine's real folders.
+    mge = os.path.join(os.path.dirname(PLUGIN), "MGE-XE-G7-render-link")
+    roots = {"nirender-plugin": PLUGIN, "render-link": mge}
+    cargo = os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.EXE")
+    commands = [[sys.executable, "-I", os.path.join(HERE, "checks.py"), "all", "--strict"],
+                [sys.executable, "-I", os.path.join(HERE, "docs.py"), "--mge", mge],
+                [sys.executable, "-I", os.path.join(HERE, "clippy_baseline.py"), "--check", "--mge", mge],
+                ["cargo", "test", "-p", "mgeHost64"], [cargo, "xtask", "dist", "--max-perf"],
+                gate_command(os.path.join(mge, "target", "release-gate"))]
+    texts = [command_text(command, roots) for command in commands]
+    assert texts == ["python -I tools/checks.py all --strict", "python -I tools/docs.py --mge <render-link>",
+                     "python -I tools/clippy_baseline.py --check --mge <render-link>", "cargo test -p mgeHost64",
+                     "cargo xtask dist --max-perf", "python -I tools/validate_retained.py baseline --archive target/release-gate"], texts
+    assert command_text(["git", os.path.join(os.path.expanduser("~"), "elsewhere", "x.txt")], roots) == "git x.txt"
+    public = checks_text("v1", [("check %d" % index, text, "n", "r", PASS) for index, text in enumerate(texts)])
+    assert os.path.expanduser("~") not in public and not re.search(r"\b[A-Za-z]:[\\/]", public), public
     rows = [("a", "x", "n", "r", PASS), ("b", "y", "--no-build: the archive in dist", "the build", NOT_RUN), ("c", "z", "m", "-", RECORD)]
     assert checks_summary(rows, "checks-v1.txt") == "the release checks: 1 passed, 1 not run (b: --no-build: the archive in dist); their numbers and rules: checks-v1.txt"
     assert checks_text("v1", rows[:1]).endswith("== a: PASS\ncommand: x\nnumbers: n\nrule: r\n")
@@ -880,14 +921,15 @@ def main():
     cargo = shutil.which("cargo") or os.path.join(os.path.expanduser("~"), ".cargo", "bin", "cargo.exe")
     # Each release check keeps its numbers and its pass rule in dist/checks-<tag>.txt, an asset
     # of the release beside the archive, not in it: the archive's SHA-256 must not depend on it.
-    record = CheckRecord(os.path.join(args.mge, "dist", "checks-%s.txt" % tag), tag, args.dry_run)
+    record = CheckRecord(os.path.join(args.mge, "dist", "checks-%s.txt" % tag), tag, args.dry_run,
+                         {"nirender-plugin": PLUGIN, "render-link": args.mge})
     # The content checks of both repositories, then the doc comments of the three crates (no
     # broken link), then no Clippy lint above its baseline, then the unit tests. They run with
     # --no-build too: the build ids below prove the archive a build of the HEADs, so the checks
     # of the HEADs are the archive's.
     import checks
     record.run("checks.py all --strict", [sys.executable, "-I", os.path.join(HERE, "checks.py"), "all", "--strict"], None,
-               lambda output, code: checks_numbers(output, checks.LISTS["all"]))
+               lambda output, code: checks_numbers(output, code, checks.LISTS["all"]))
     record.run("docs.py", [sys.executable, "-I", os.path.join(HERE, "docs.py"), "--mge", args.mge], None, docs_numbers)
     baseline_commit = run(["git", "-C", PLUGIN, "log", "-1", "--format=%h %cs", "--", "tools/clippy.baseline"], capture=True).strip()
     record.run("clippy_baseline.py --check", [sys.executable, "-I", os.path.join(HERE, "clippy_baseline.py"), "--check", "--mge", args.mge], None,
@@ -895,12 +937,12 @@ def main():
     unit_tests(args.mge, record)
     dist_command = [cargo, "xtask", "dist"] + (["--max-perf"] if args.max_perf else [])
     if args.no_build:
-        record.add("cargo xtask dist", " ".join(dist_command), "--no-build: the archive in dist", "the build", NOT_RUN)
+        record.add("cargo xtask dist", command_text(dist_command, record.roots), "--no-build: the archive in dist", "the build", NOT_RUN)
     else:
         in_repo = len([name for name in os.listdir(os.path.join(args.mge, "assets", "Data Files", "shaders", "core")) if name.endswith(".wgsl")])
         code, output = run_teed(dist_command, args.mge)
         numbers, rule, passed = core_files_numbers(output, code, in_repo)
-        record.add("cargo xtask dist", " ".join(dist_command), numbers, rule, PASS if passed else FAIL)
+        record.add("cargo xtask dist", command_text(dist_command, record.roots), numbers, rule, PASS if passed else FAIL)
         if code != 0:
             # No archive: nothing after this step can run, a dry run neither.
             raise SystemExit("failed (%d): %s" % (code, " ".join(dist_command)))
@@ -947,7 +989,7 @@ def main():
     # The gate on the helper that ships, and its result into the notes.
     values = {SHA_TOKEN: digest}
     if args.no_gate:
-        record.add("the capture gate", " ".join(gate_command(unpacked)), "--no-gate: the notes hold its line by hand", "the gate", NOT_RUN)
+        record.add("the capture gate", command_text(gate_command(unpacked), record.roots), "--no-gate: the notes hold its line by hand", "the gate", NOT_RUN)
     else:
         values[GATE_TOKEN] = gate_text(*gate(unpacked, record))
     values[CHECKS_TOKEN] = record.summary()
