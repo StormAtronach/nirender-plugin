@@ -1764,6 +1764,35 @@ def self_test_fallback_guard():
         finally:
             session.MGE_LOGS, session.RESULTS = saved
 
+    # A --reference run on Direct3D 9 (W326, verdict 731 5.2): the player form's line, its line of the ignored key, or
+    # the wgpu line stops it; the developer form's line and a Direct3D 9 start do not; a wgpu run ignores the lines.
+    player = "build: player form"
+    ignored = "runtime.renderer_wgpu = false is ignored in this build: Direct3D 9 is in developer builds only"
+    developer = "build: developer form, with Direct3D 9"
+    for line in (player, ignored, ">> Using the wgpu renderer: no Direct3D device"):
+        reason = session.not_direct3d9_of([">> MGE XE starts", line])
+        assert reason == "a --reference run that is not on Direct3D 9 (a set of the player's form?): " + line, reason
+    assert session.not_direct3d9_of([developer, ">> Using Direct3D 9"]) is None
+    with tempfile.TemporaryDirectory() as folder:
+        saved = (session.MGE_LOGS, session.RESULTS)
+        session.RESULTS = folder
+        log = os.path.join(folder, "mgeXE.log")
+        session.MGE_LOGS = (log,)
+        try:
+            cases = ((player, False, True, True), (developer, False, True, False), (player, True, False, False),
+                     (player, False, False, False))
+            for index, (text, wgpu, direct3d9, stops) in enumerate(cases):
+                run = session.Run("reference-guard-test-%d" % index)
+                run.wgpu, run.direct3d9 = wgpu, direct3d9
+                run.started = time.time() - 10
+                with open(log, "w", encoding="utf-8") as file:
+                    file.write("MGE-XE G7\n" + text + "\n")
+                reason = run.refusal()
+                assert bool(reason) == stops and run.fell_back == reason, (text, wgpu, direct3d9, reason, run.fell_back)
+                assert bool(not_direct3d9_of_run(direct3d9, run.fell_back)) == stops
+        finally:
+            session.MGE_LOGS, session.RESULTS = saved
+
     # The progress line "own device: false", and the exit code 4 before DONE's 0.
     assert fallback_of_run(False, None, ["own device: false"]) is None, "a reference run has no own device by design"
     assert fallback_of_run(True, None, ["own device: true", "step sh-start: true"]) is None
@@ -3142,6 +3171,7 @@ def main():
     if args.log:
         print("runner log: also %s" % keep_log_in_run(args.log, run.dir, (sys.stdout, sys.stderr)), flush=True)
     run.wgpu = not args.reference and not args.plain_case
+    run.direct3d9 = bool(args.reference) and not args.engine_reference and not args.plain_case
     # Without a save (--save ""), the scenario starts a new game: the films of the game play.
     spec = run.spec("owndevice", save=args.save or None, interior=args.interior, exterior=args.exterior, dir=run.dir.replace("\\", "/"), steps=args.steps,
                     position=args.position, yaw=args.yaw, findWater=args.find_water, findDry=args.find_dry, hour=args.hour, weather=args.weather,
@@ -3233,7 +3263,7 @@ def main():
     failed = no_plugin and loaded
     if failed:
         print("ERROR: the game loaded akulakhan.dll in a reference run without the plugin: the run is no reference")
-    fell_back = fallback_of_run(run.wgpu, run.fell_back, progress)
+    fell_back = fallback_of_run(run.wgpu, run.fell_back, progress) or not_direct3d9_of_run(run.direct3d9, run.fell_back)
     if fell_back:
         print("ERROR: " + fell_back)
     videos = videos_of_run(run.dir, bool(args.reference) and not args.engine_reference)
@@ -3277,7 +3307,8 @@ def main():
 ENDED_DONE, ENDED_BY_HAND, ENDED_OTHER = "done", "by hand", "other"
 EXIT_ENDED_BY_HAND = 3
 # A wgpu run without the renderer: MGE XE fell back to the plain game (the fall-back guard, D328, verdict 314; W462).
-# A --plain-case run without MGE XE's fall-back line fails with it too.
+# A --plain-case run without MGE XE's fall-back line fails with it too, and a --reference run that is not on Direct3D 9
+# (a set of the player's form, W326).
 EXIT_FELL_BACK = 4
 # A run whose steps were done (DONE) and whose game then crashed in its close (W417): the close line of the harness
 # (`close_game`, "[runner] game closed ...") has an exit code that is not 0, or the run kept a dump. The pictures and
@@ -3318,6 +3349,13 @@ def fallback_of_run(wgpu, stopped, progress):
     if any(line.startswith(NO_OWN_DEVICE) for line in progress):
         return "a wgpu run without the renderer: the progress says \"%s\"" % NO_OWN_DEVICE
     return None
+
+
+def not_direct3d9_of_run(direct3d9, stopped):
+    """Why a --reference run on Direct3D 9 failed, or None (W326, verdict 731 5.2). `stopped` is the line of
+    `session.not_direct3d9_of` that stopped the run (`session.Run.fell_back`): a set of the player's form has no
+    Direct3D 9, and its wgpu picture is no reference. The run fails with EXIT_FELL_BACK."""
+    return stopped if direct3d9 else None
 
 
 # The lines of MGE XE (render-link d3d8/cpp/mge/session.cpp) that a --plain-case run must show: the fall-back to the
