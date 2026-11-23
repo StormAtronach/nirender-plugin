@@ -249,6 +249,10 @@ pub struct FrameParameters {
     /// 0 none). A shader key that removes work must keep it while a view of that work's value
     /// is on: [`FrameParameters::lights_view`].
     pub debug_view: u32,
+    /// The line sources that are on in this frame ([`crate::debug_lines::LineSources`]). With
+    /// none, the renderer makes no list and draws no line pass: no cost. With some, it draws
+    /// the line pass after the post chain ([`Extension::debug_lines`]).
+    pub debug_lines: crate::debug_lines::LineSources,
 }
 
 impl FrameParameters {
@@ -973,6 +977,27 @@ pub trait Extension {
     /// writes its result into `target`, the picture of the frame; the user interface of the
     /// game draws over it after. MGE XE runs its shader chain here.
     fn post(&mut self, _scene: &SceneView, _encoder: &mut wgpu::CommandEncoder, _target: &wgpu::TextureView) {}
+
+    /// The renderer calls this one time in a frame whose [`FrameParameters::debug_lines`] has a
+    /// source, after [`Extension::post`]: the extension adds the segments of the sources in
+    /// `sources` that it owns (the shadow boxes, its own bits from 16) to `list`. The renderer
+    /// adds its own sources and draws the list. The default adds nothing.
+    fn debug_lines(
+        &mut self,
+        _scene: &SceneView,
+        _sources: crate::debug_lines::LineSources,
+        _list: &mut crate::debug_lines::LineList,
+    ) {
+    }
+
+    /// The depth terms ([`crate::depth::terms`]) of the projection that drew
+    /// `scene.before_depth`, the depth of what [`Extension::before_world`] drew (MGE XE's
+    /// distant land), when that depth has a projection of its own. A reader of the frame's
+    /// depth then takes a pixel where the game's depth is empty from that depth, as the post
+    /// chain does. The default: [`None`], no such depth.
+    fn before_depth_terms(&self, _scene: &SceneView) -> Option<[f32; 2]> {
+        None
+    }
 
     /// The picture files that the extension wants of this frame. The renderer calls this
     /// after `post` and at the end of the frame, and writes each file one time: a request

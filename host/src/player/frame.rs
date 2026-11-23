@@ -16,6 +16,7 @@ impl Player {
             retained_values: None,
             fog_off_color: 0,
             table_shaded: None,
+            lights_drawn: None,
             shade_frame: None,
             shade_last: None,
             views: engine::views::Views::default(),

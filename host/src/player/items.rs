@@ -173,6 +173,7 @@ impl Player {
             }
         });
         self.table_shaded = None;
+        self.lights_drawn = None;
         // A frame with no set of the world's lights (no light events of MWSE) keeps the draws'
         // own lights: the clusters are not built for the world, so no draw takes them.
         let world = match world_start.filter(|_| self.renderer.clusters.world) {
@@ -1484,7 +1485,13 @@ impl Player {
     pub(crate) fn post_process(&mut self, facts: &WorldFacts) {
         let Some(mut extension) = self.extension.take() else { return };
         // The depth of the end of the world scene, when it was kept; else a copy of that of now.
-        let reads = extension.reads(ReadingCall::Post);
+        // The line pass of the debug views tests its lines against that depth too.
+        let line_sources = self
+            .parameters
+            .as_ref()
+            .map_or(debug_lines::LineSources::NONE, |p| p.debug_lines);
+        let mut reads = extension.reads(ReadingCall::Post);
+        reads.depth |= !line_sources.is_empty();
         let world_depth_kept = self.world_depth_view().is_some();
         let (picture, depth) = self.copy_for(reads, world_depth_kept, ("picture: the post chain", "depth: the post chain"));
         let (device, queue, format) = (
@@ -1519,6 +1526,49 @@ impl Player {
             encoder.pop_debug_group();
             stamp_end(&self.renderer.stamps, encoder, at);
             self.renderer.counts.times[TIME_EXT_POST] += clock.elapsed();
+            // The line pass of the debug views: after the post chain, so that a picture file
+            // shows the lines and the chain does not change them.
+            if !line_sources.is_empty() {
+                pass_report::on_request(&[line_pass::NAME]);
+                let list = &mut self.renderer.line_list;
+                list.clear();
+                self.renderer.light_lines = if line_sources.contains(debug_lines::LineSources::LIGHTS) {
+                    // Before `draw_retained_main` takes them (a frame with no instance), or after.
+                    let shaded = (self.table_shaded.as_ref().map(|(lights, _)| lights))
+                        .or(self.lights_drawn.as_ref())
+                        .map(Vec::as_slice);
+                    self.retained.world_light_lines(&self.renderer.lights_known, shaded, list)
+                } else {
+                    [0; 2]
+                };
+                extension.debug_lines(&scene, line_sources, list);
+                let depths = line_pass::LineDepths {
+                    frame: scene.depth.map(|view| (view, depth::terms(&scene.projection))),
+                    before: scene.before_depth.zip(extension.before_depth_terms(&scene)),
+                };
+                let at = stamp(&self.renderer.stamps, encoder, StampKind::Part, line_pass::NAME);
+                encoder.push_debug_group(line_pass::NAME);
+                let drawn = self
+                    .renderer
+                    .line_pass
+                    .get_or_insert_with(|| line_pass::LinePass::new(&device))
+                    .draw(
+                        &device,
+                        &queue,
+                        encoder,
+                        &color,
+                        list,
+                        scene.eye,
+                        &scene.view,
+                        &scene.projection,
+                        &depths,
+                    );
+                encoder.pop_debug_group();
+                stamp_end(&self.renderer.stamps, encoder, at);
+                pass_report::note_result(line_pass::NAME, if drawn > 0 { Ok(()) } else { Err("no segment") });
+            } else {
+                self.renderer.line_list.clear();
+            }
             // The pictures that the extension wants: one without the interface of the game
             // is the picture as it is now.
             for request in extension.pictures() {

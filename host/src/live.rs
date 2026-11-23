@@ -1433,6 +1433,17 @@ impl ApplicationHandler for App {
                         r.counts.over_array_cap
                     ),
                 );
+                // The line pass of the debug views, while a line source is on.
+                if !r.line_list.is_empty() {
+                    let [with_end, no_end] = r.light_lines;
+                    lines.insert(
+                        1,
+                        format!(
+                            "debug lines {} segments; lights: {with_end} with an end (yellow), {no_end} with no end (cyan)",
+                            r.line_list.len()
+                        ),
+                    );
+                }
             }
             let status = player
                 .extension
