@@ -64,6 +64,10 @@ mod tag;
 mod extension;
 #[path = "../../src/stream_format.rs"]
 pub mod stream_format;
+// The one home of the record of the Lua shapes of the debug views, shared with the plugin
+// crate (see the file). Public: the extension of mgeHost64 reads the record.
+#[path = "../../src/debug_shapes_format.rs"]
+pub mod debug_shapes_format;
 pub use extension::*;
 mod view_kind;
 pub use view_kind::{Additions, ViewKey, ViewKind};

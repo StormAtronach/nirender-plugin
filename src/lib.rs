@@ -49,6 +49,7 @@ pub mod cores;
 pub mod count_locks;
 pub mod crash;
 pub mod d3d;
+pub mod debug_shapes_format;
 pub mod device;
 #[cfg(feature = "rig")]
 pub mod dump;

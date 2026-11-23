@@ -340,6 +340,18 @@ mod tests {
         );
     }
 
+    /// The plugin counts the segments of the Lua shapes before the stream with the numbers of
+    /// the record's file; they are the numbers of the shapes here.
+    #[test]
+    fn the_record_counts_the_segments_of_the_shapes() {
+        use crate::debug_shapes_format::Kind;
+        let mut list = LineList::default();
+        list.line([0.0; 3], [1.0; 3], RED, LineGroup::Tested);
+        assert_eq!(Kind::Line.segments() as usize, list.len());
+        assert_eq!(Kind::Box.segments() as usize, BOX_SEGMENTS);
+        assert_eq!(Kind::Sphere.segments() as usize, SPHERE_SEGMENTS);
+    }
+
     const RED: [u8; 4] = [255, 0, 0, 255];
 
     fn length(segment: &Segment) -> f64 {
