@@ -3,6 +3,8 @@
 
 use super::*;
 use crate::objects::{Create, CreateView};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// A depth texture with its two views, made once with it: the whole texture (a target of a
 /// resolve or of a merge) and its depth aspect (what a pass reads). A frame that uses the
@@ -136,6 +138,12 @@ pub(crate) fn copy_picture(
 /// Saves a picture that `copy_picture` put into `buffer` as a file: the format of the
 /// extension of `path` (`.bmp`, `.tga`, `.dds`, `.jpg`), a PNG file for another one.
 /// `blue_first` for a texture format with the bytes blue, green, red.
+///
+/// The pixels are read on the caller's thread. When the picture writer runs
+/// ([`start_writer`], the live mode), the file is written on its thread, and this call
+/// returns before the disk has the file; else (a replay) the file is written before the return.
+/// The line `picture: <path>`, or `picture: <path> was not written: <problem>`, comes when the
+/// file is written or has failed.
 pub(crate) fn save_picture(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
@@ -162,10 +170,228 @@ pub(crate) fn save_picture(
         pixel[3] = 255;
     }
     drop(mapped);
-    match write_picture(path, &pixels, width, height) {
-        Ok(()) => println!("picture: {path}"),
-        Err(problem) => println!("picture: {path} was not written: {problem}"),
+    let job = PictureJob {
+        path: path.to_string(),
+        pixels,
+        width,
+        height,
+    };
+    match WRITER.get() {
+        Some(writer) => {
+            if let Err(full) = writer.queue(job) {
+                println!("{}", full_line(path, full));
+            }
+        }
+        None => println!("{}", write_job(&job, &write_picture)),
     }
+}
+
+/// The most bytes of pixels that wait for the picture writer, the picture in its write too.
+/// A picture that does not fit is not written, and its line says so: the memory of the
+/// helper stays bounded while the disk holds the writes. 256 MB are 16 pictures of 2560 x 1600,
+/// or 64 pictures of 1280 x 800. An empty queue takes a picture of any size.
+pub(crate) const QUEUE_BYTES: usize = 256 << 20;
+/// The longest wait of the end of the live mode for the pictures in the queue
+/// ([`wait_for_pictures`]): a disk that holds the writes longer loses them.
+pub(crate) const END_WAIT: Duration = Duration::from_secs(10);
+
+/// A picture file that waits for its write.
+pub(crate) struct PictureJob {
+    path: String,
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+/// The function that writes a picture file: [`write_picture`]; a test gives one that waits.
+type WriteFn = dyn Fn(&str, &[u8], u32, u32) -> std::io::Result<()> + Send + Sync;
+/// The function that gets the line of each picture: a print; a test keeps the lines.
+type SayFn = dyn Fn(String) + Send + Sync;
+
+/// The pictures that wait, and the bytes of their pixels with those of the picture in its write.
+#[derive(Default)]
+struct Queue {
+    jobs: std::collections::VecDeque<PictureJob>,
+    bytes: usize,
+    /// The path of the picture in its write.
+    writing: Option<String>,
+}
+
+/// The count and the bytes of a full queue, for the line of the picture that did not fit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Full {
+    pictures: usize,
+    bytes: usize,
+}
+
+/// The picture writer: a thread of its own that writes the picture files in their order.
+/// The frame thread only puts the pixels in the queue: an encode and a write to a disk
+/// that holds the writes took more than the watchdog's 5 s on the frame thread (W425, the run
+/// 20261123-011310-w425-on: a PNG file of 41 bytes and the end with the exit code 30).
+pub(crate) struct PictureWriter {
+    queue: Mutex<Queue>,
+    /// Wakes the thread for a new job, and the end's wait for the last write.
+    changed: Condvar,
+    write: Box<WriteFn>,
+    say: Box<SayFn>,
+    limit: usize,
+    /// The time of the write that runs, with the encode of the picture: for the watchdog's
+    /// cause of a stall.
+    pub(crate) clock: crate::log_pipe::WriteClock,
+}
+
+impl PictureWriter {
+    fn new(write: Box<WriteFn>, say: Box<SayFn>, limit: usize) -> PictureWriter {
+        PictureWriter {
+            queue: Mutex::new(Queue::default()),
+            changed: Condvar::new(),
+            write,
+            say,
+            limit,
+            clock: crate::log_pipe::WriteClock::new(),
+        }
+    }
+
+    /// Starts the thread of the writer. False when the thread cannot start.
+    fn spawn(self: &Arc<Self>) -> bool {
+        let writer = self.clone();
+        std::thread::Builder::new()
+            .name("picture-writer".into())
+            .spawn(move || writer.run())
+            .is_ok()
+    }
+
+    /// Puts a picture behind the others. An error, with the queue as it is, when its pixels do
+    /// not fit the limit; an empty queue takes it.
+    fn queue(&self, job: PictureJob) -> Result<(), Full> {
+        let mut queue = lock(&self.queue);
+        let size = job.pixels.len();
+        if queue.bytes > 0 && queue.bytes + size > self.limit {
+            return Err(Full {
+                pictures: queue.jobs.len() + usize::from(queue.writing.is_some()),
+                bytes: queue.bytes,
+            });
+        }
+        queue.bytes += size;
+        queue.jobs.push_back(job);
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    /// The thread: each picture in its order, for the life of the program.
+    fn run(&self) {
+        loop {
+            let job = {
+                let mut queue = lock(&self.queue);
+                loop {
+                    if let Some(job) = queue.jobs.pop_front() {
+                        queue.writing = Some(job.path.clone());
+                        break job;
+                    }
+                    queue = self.changed.wait(queue).unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+            };
+            let line = {
+                let _write = self.clock.begin();
+                write_job(&job, &*self.write)
+            };
+            (self.say)(line);
+            let mut queue = lock(&self.queue);
+            queue.bytes -= job.pixels.len();
+            queue.writing = None;
+            self.changed.notify_all();
+        }
+    }
+
+    /// Waits until each picture in the queue is written, for at most `limit`. The pictures
+    /// that are not written then: the one in its write first, then the queue in its order.
+    fn wait(&self, limit: Duration) -> Vec<String> {
+        let deadline = Instant::now() + limit;
+        let mut queue = lock(&self.queue);
+        while !queue.jobs.is_empty() || queue.writing.is_some() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            queue = self
+                .changed
+                .wait_timeout(queue, left)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        queue
+            .writing
+            .iter()
+            .cloned()
+            .chain(queue.jobs.iter().map(|job| job.path.clone()))
+            .collect()
+    }
+}
+
+/// The lock of the queue, also after a panic of another thread under it: the queue has no
+/// state that a panic leaves half changed.
+fn lock(queue: &Mutex<Queue>) -> std::sync::MutexGuard<'_, Queue> {
+    queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Writes the file of `job` with `write`; the line of its result.
+fn write_job(job: &PictureJob, write: &WriteFn) -> String {
+    match write(&job.path, &job.pixels, job.width, job.height) {
+        Ok(()) => format!("picture: {}", job.path),
+        Err(problem) => format!("picture: {} was not written: {problem}", job.path),
+    }
+}
+
+/// The line of a picture that did not fit the queue.
+fn full_line(path: &str, full: Full) -> String {
+    format!(
+        "picture: {path} was not written: {} pictures ({} MB) wait for the disk",
+        full.pictures,
+        full.bytes >> 20
+    )
+}
+
+/// The line of a picture that the end did not wait for.
+fn not_written_line(path: &str) -> String {
+    format!(
+        "picture: {path} was not written: the disk held the writes for the {} s of the end",
+        END_WAIT.as_secs()
+    )
+}
+
+/// The picture writer of the program, after [`start_writer`].
+static WRITER: OnceLock<Arc<PictureWriter>> = OnceLock::new();
+
+/// Starts the picture writer of the live mode (`cli::run_with`). Without the thread, each
+/// picture is written by its caller, as in a replay.
+pub(crate) fn start_writer() {
+    let writer = Arc::new(PictureWriter::new(
+        Box::new(write_picture),
+        Box::new(|line| println!("{line}")),
+        QUEUE_BYTES,
+    ));
+    if !writer.spawn() {
+        println!("pictures: no writer thread; the frame thread writes each picture file");
+        return;
+    }
+    let _ = WRITER.set(writer);
+}
+
+/// Waits, for at most [`END_WAIT`], until the picture writer has written each picture in its
+/// queue, and writes a line for each picture that it has not written then. For the end of the
+/// live mode, before the drain of the log. Nothing without the writer.
+pub(crate) fn wait_for_pictures() {
+    if let Some(writer) = WRITER.get() {
+        for path in writer.wait(END_WAIT) {
+            println!("{}", not_written_line(&path));
+        }
+    }
+}
+
+/// How long the write of the picture that the writer writes now has run; None while it
+/// writes none, and without the writer.
+pub(crate) fn write_held() -> Option<Duration> {
+    WRITER.get().and_then(|writer| writer.clock.held())
 }
 
 /// Writes pixels (red, green, blue, alpha; the first row at the top) as a picture file.
@@ -273,7 +499,139 @@ pub(crate) fn write_picture(path: &str, pixels: &[u8], width: u32, height: u32) 
 
 #[cfg(test)]
 mod tests {
-    use super::{resample_nearest, target_size};
+    use super::*;
+
+    fn job(path: &str, bytes: usize) -> PictureJob {
+        PictureJob {
+            path: path.to_string(),
+            pixels: vec![0; bytes],
+            width: 1,
+            height: 1,
+        }
+    }
+
+    /// A disk that holds each write until the test lets it go.
+    #[derive(Clone, Default)]
+    struct Gate(Arc<(Mutex<bool>, Condvar)>);
+
+    impl Gate {
+        fn wait(&self) {
+            let (open, changed) = &*self.0;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = changed.wait(open).unwrap();
+            }
+        }
+
+        fn open(&self) {
+            let (open, changed) = &*self.0;
+            *open.lock().unwrap() = true;
+            changed.notify_all();
+        }
+    }
+
+    /// A writer whose writes wait for `gate`, with the lines that it says.
+    fn held_writer(gate: &Gate, limit: usize) -> (Arc<PictureWriter>, Arc<Mutex<Vec<String>>>) {
+        let said = Arc::new(Mutex::new(Vec::new()));
+        let (gate, lines) = (gate.clone(), said.clone());
+        let writer = Arc::new(PictureWriter::new(
+            Box::new(move |path, _, _, _| {
+                gate.wait();
+                if path.ends_with(".fail") {
+                    Err(std::io::Error::other("a test error"))
+                } else {
+                    Ok(())
+                }
+            }),
+            Box::new(move |line| lines.lock().unwrap().push(line)),
+            limit,
+        ));
+        (writer, said)
+    }
+
+    /// The fault of W425: the disk holds the write of a picture. The frame thread's call puts the
+    /// pictures in the queue and returns; they are written in their order when the disk lets go.
+    #[test]
+    fn a_picture_returns_while_the_disk_holds_its_write() {
+        let gate = Gate::default();
+        let (writer, said) = held_writer(&gate, QUEUE_BYTES);
+        assert!(writer.spawn());
+        let began = Instant::now();
+        for path in ["a.png", "b.fail", "c.png"] {
+            assert_eq!(writer.queue(job(path, 1000)), Ok(()));
+        }
+        assert!(began.elapsed() < Duration::from_secs(1), "the queue waited for the disk");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while writer.clock.held().is_none() {
+            assert!(Instant::now() < deadline, "the writer did not start its write");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(said.lock().unwrap().is_empty());
+
+        gate.open();
+        assert_eq!(writer.wait(Duration::from_secs(5)), Vec::<String>::new());
+        assert_eq!(
+            *said.lock().unwrap(),
+            [
+                "picture: a.png",
+                "picture: b.fail was not written: a test error",
+                "picture: c.png"
+            ]
+        );
+        assert_eq!(writer.clock.held(), None);
+        assert_eq!(lock(&writer.queue).bytes, 0);
+    }
+
+    /// The bound of the queue counts the bytes of the pictures that wait and of the one in its
+    /// write; a picture over it is not taken. An empty queue takes a picture of any size.
+    #[test]
+    fn the_queue_keeps_to_its_bytes() {
+        let gate = Gate::default();
+        // No thread: the pictures stay in the queue.
+        let (writer, _) = held_writer(&gate, 100);
+        assert_eq!(writer.queue(job("a.png", 60)), Ok(()));
+        assert_eq!(writer.queue(job("b.png", 60)), Err(Full { pictures: 1, bytes: 60 }));
+        assert_eq!(writer.queue(job("c.png", 40)), Ok(()));
+        assert_eq!(writer.queue(job("d.png", 1)), Err(Full { pictures: 2, bytes: 100 }));
+        let (empty, _) = held_writer(&gate, 100);
+        assert_eq!(empty.queue(job("big.png", 500)), Ok(()));
+        assert_eq!(
+            full_line(
+                "b.png",
+                Full {
+                    pictures: 3,
+                    bytes: 300 << 20
+                }
+            ),
+            "picture: b.png was not written: 3 pictures (300 MB) wait for the disk"
+        );
+    }
+
+    /// The end waits for the queue at most its limit, and names the pictures that are not
+    /// written: the one in its write first.
+    #[test]
+    fn the_end_names_the_pictures_that_it_did_not_wait_for() {
+        let gate = Gate::default();
+        let (writer, said) = held_writer(&gate, QUEUE_BYTES);
+        assert!(writer.spawn());
+        assert_eq!(writer.queue(job("a.png", 10)), Ok(()));
+        assert_eq!(writer.queue(job("b.png", 10)), Ok(()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while writer.clock.held().is_none() {
+            assert!(Instant::now() < deadline, "the writer did not start its write");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let began = Instant::now();
+        assert_eq!(writer.wait(Duration::from_millis(100)), ["a.png", "b.png"]);
+        assert!(began.elapsed() < Duration::from_secs(2), "the end kept to its limit");
+        assert_eq!(
+            not_written_line("a.png"),
+            "picture: a.png was not written: the disk held the writes for the 10 s of the end"
+        );
+        gate.open();
+        assert_eq!(writer.wait(Duration::from_secs(5)), Vec::<String>::new());
+        assert_eq!(*said.lock().unwrap(), ["picture: a.png", "picture: b.png"]);
+    }
 
     #[test]
     fn a_target_side_over_the_largest_is_cut_on_its_own() {

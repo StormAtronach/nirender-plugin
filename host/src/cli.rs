@@ -71,7 +71,11 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         if let Some(file) = log_file {
             crate::log_pipe::start(file);
         }
+        // The picture files go to a thread of their own for the same reason (`picture`); the
+        // end waits for the pictures in its queue, then drains the log with their lines.
+        crate::picture::start_writer();
         live::run(&name, backends, &args, extension);
+        crate::picture::wait_for_pictures();
         if let Some(line) = crate::wgpu_log::dropped_line() {
             println!("{line}");
         }
