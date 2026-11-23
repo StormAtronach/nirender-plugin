@@ -1095,6 +1095,8 @@ impl App {
         player.feed(super::tag::HEADER, &self.header);
         player.extension = self.extension.take();
         player.renderer.anisotropy = player.extension.as_ref().map_or(1, |extension| extension.anisotropy());
+        let setting = player.extension.as_ref().and_then(|extension| extension.table_order());
+        player.take_table_order(setting);
         player.film_shot = self.shot_film.take();
         player.film_shot_at = self.shot_film_frame;
         player.reply = self.reply.take().map(|mut reply| {

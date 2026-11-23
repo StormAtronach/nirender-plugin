@@ -564,6 +564,15 @@ pub trait Extension {
         2
     }
 
+    /// The order of the table's unsorted draws, from the settings of the extension
+    /// (`render.table_order`): the groups of the draws whose order cannot show, or the engine's
+    /// order with no group; [`None`] for an extension without such a setting (the default
+    /// order). The renderer asks one time, when it is made; `MGE_XE_TABLE_ORDER` overrides it
+    /// for a test.
+    fn table_order(&self) -> Option<crate::TableOrder> {
+        None
+    }
+
     /// Whether the window waits for the refresh of the screen before it shows a frame, from
     /// the settings of the extension: the frame rate is then capped at the refresh rate.
     /// Without it, the window shows a frame when the game gives one. The window asks one

@@ -333,8 +333,10 @@ GATE_PATHS = {"plugin": ("host/src/", "Cargo.toml", "Cargo.lock", "host/Cargo.to
 # w535-w538-order-and-origin section 1, verdicts 595 and 597). ORDER_NAMES are the names of that code: a tracked file
 # under host/ or src/ outside this list that names one of them fails the self-test (`order_drift`), so the list cannot
 # miss a new reader. README.md names the switch too; it is not code, and a change of it does not run the stage.
+# W563 added the extension's setting render.table_order (the trait's method in extension.rs, its take in live.rs and
+# cli.rs). The render-link's half only hands the setting over, and the stage's switch goes over it: "mge" stays empty.
 ORDER_PATHS = {"plugin": ("host/src/table_order.rs", "host/src/switches.rs", "host/src/retained.rs", "host/src/player/report.rs",
-                          "host/src/cli.rs", "host/src/lib.rs"), "mge": ()}
+                          "host/src/cli.rs", "host/src/lib.rs", "host/src/extension.rs", "host/src/live.rs"), "mge": ()}
 ORDER_NAMES = ("MGE_XE_TABLE_ORDER", "table_order", "TableOrder", "collect_order", "order_keys", "add_to_digest", "digest_frame", "take_digest")
 ORDER_STAGE = "table order"
 D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}

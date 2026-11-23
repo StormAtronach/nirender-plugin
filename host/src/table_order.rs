@@ -18,9 +18,10 @@
 
 use std::collections::HashMap;
 
-/// The values of `MGE_XE_TABLE_ORDER`.
+/// The values of the setting `render.table_order` of the extension ([`crate::Extension::table_order`])
+/// and of the switch `MGE_XE_TABLE_ORDER` (W563).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) enum TableOrder {
+pub enum TableOrder {
     /// The engine's order with the groups and the units: the default.
     #[default]
     Grouped,
@@ -46,6 +47,16 @@ impl TableOrder {
     /// The route line of a run: the order that the helper uses.
     pub(crate) fn route_line(self) -> String {
         format!("table order: {}", self.name())
+    }
+
+    /// The order of a run, and the words of its source: the switch, else the setting of the
+    /// extension, else the default (W563).
+    pub(crate) fn pick(switch: Option<TableOrder>, setting: Option<TableOrder>) -> (TableOrder, &'static str) {
+        match (switch, setting) {
+            (Some(order), _) => (order, "the switch MGE_XE_TABLE_ORDER"),
+            (None, Some(order)) => (order, "the setting render.table_order"),
+            (None, None) => (TableOrder::default(), "the default"),
+        }
     }
 }
 
@@ -960,6 +971,30 @@ mod tests {
         assert_eq!(
             Digest::default().line(0),
             "table order digest: frame 0 cbf29ce484222325 0 draws"
+        );
+    }
+
+    /// W563: the switch goes over the setting, the setting over the default; each with the
+    /// words of its source.
+    #[test]
+    fn the_switch_goes_over_the_setting_and_the_setting_over_the_default() {
+        use TableOrder::{Engine, Grouped};
+        assert_eq!(TableOrder::pick(None, None), (Grouped, "the default"));
+        assert_eq!(
+            TableOrder::pick(None, Some(Engine)),
+            (Engine, "the setting render.table_order")
+        );
+        assert_eq!(
+            TableOrder::pick(None, Some(Grouped)),
+            (Grouped, "the setting render.table_order")
+        );
+        assert_eq!(
+            TableOrder::pick(Some(Grouped), Some(Engine)),
+            (Grouped, "the switch MGE_XE_TABLE_ORDER")
+        );
+        assert_eq!(
+            TableOrder::pick(Some(Engine), None),
+            (Engine, "the switch MGE_XE_TABLE_ORDER")
         );
     }
 }
