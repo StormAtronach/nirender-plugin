@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::{light_reach, Counts, LightData};
+use crate::{light_reach, Counts, FrameLights, LightData};
 
 /// The grid of the clusters: tiles across and down the screen, slices of depth.
 pub(crate) const CLUSTER_GRID: [u32; 3] = [16, 9, 24];
@@ -395,6 +395,33 @@ pub(crate) struct ExtensionLights {
     /// positions are relative to.
     pub(crate) built: bool,
     pub(crate) origin: [f64; 3],
+    /// The number of lights in `lights` (its capacity can be more).
+    pub(crate) count: u32,
+}
+
+/// The buffers of [`ExtensionLights`] for one call of the extension. They are handles of
+/// their own, so that the caller can use the renderer mutably while it gives them.
+pub(crate) struct LightHandles {
+    lights: wgpu::Buffer,
+    clusters: wgpu::Buffer,
+    table: wgpu::Buffer,
+    indexes: wgpu::Buffer,
+    origin: [f64; 3],
+    count: u32,
+}
+
+impl LightHandles {
+    /// The lights as the extension sees them ([`crate::SceneView::lights`]).
+    pub(crate) fn frame_lights(&self) -> FrameLights<'_> {
+        FrameLights {
+            lights: &self.lights,
+            clusters: &self.clusters,
+            table: &self.table,
+            indexes: &self.indexes,
+            origin: self.origin,
+            count: self.count,
+        }
+    }
 }
 
 impl ExtensionLights {
@@ -417,6 +444,7 @@ impl ExtensionLights {
             scene_origin: None,
             built: false,
             origin: [0.0; 3],
+            count: 0,
         }
     }
 
@@ -513,7 +541,20 @@ impl ExtensionLights {
         }
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&data));
         self.origin = origin.unwrap_or([0.0; 3]);
+        self.count = lights.len() as u32;
         self.built = true;
+    }
+
+    /// The handles of the lights of this frame, when [`ExtensionLights::build`] made them.
+    pub(crate) fn handles(&self) -> Option<LightHandles> {
+        self.built.then(|| LightHandles {
+            lights: self.lights.clone(),
+            clusters: self.uniform.clone(),
+            table: self.table.clone(),
+            indexes: self.indexes.clone(),
+            origin: self.origin,
+            count: self.count,
+        })
     }
 }
 
