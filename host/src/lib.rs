@@ -64,6 +64,10 @@ mod tag;
 mod extension;
 #[path = "../../src/stream_format.rs"]
 pub mod stream_format;
+// The one home of the record of the Lua shapes of the debug views, shared with the plugin
+// crate (see the file). Public: the extension of mgeHost64 reads the record.
+#[path = "../../src/debug_shapes_format.rs"]
+pub mod debug_shapes_format;
 pub use extension::*;
 mod view_kind;
 pub use view_kind::{Additions, ViewKey, ViewKind};
@@ -793,6 +797,9 @@ struct Renderer {
     /// The lights that the line source `lights` drew in the last frame: with an end, with no
     /// end (`RetainedSet::world_light_lines`).
     light_lines: [u32; 2],
+    /// The spheres that the line source `bounds` drew in the last frame, and the instances that
+    /// the main view drew (`RetainedSet::bound_lines`).
+    bound_lines: [u32; 2],
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
     /// Where the world shader's text stands: the text of a core mod that fails in the driver

@@ -639,6 +639,9 @@ impl Player {
         self.renderer
             .set_debug_variant(crate::debug_lines::world_variant(parameters.debug_view));
         self.particle_answers_last = super::draws::ParticleAnswers::of(&parameters);
+        // The line source `bounds`: the main view keeps its drawn slots for the post step.
+        self.retained
+            .keep_main_drawn(parameters.debug_lines.contains(debug_lines::LineSources::BOUNDS));
         self.parameters = Some(parameters);
         self.takes = self
             .parameters
@@ -1538,6 +1541,11 @@ impl Player {
                         .or(self.lights_drawn.as_ref())
                         .map(Vec::as_slice);
                     self.retained.world_light_lines(&self.renderer.lights_known, shaded, list)
+                } else {
+                    [0; 2]
+                };
+                self.renderer.bound_lines = if line_sources.contains(debug_lines::LineSources::BOUNDS) {
+                    self.retained.bound_lines(scene.eye, list)
                 } else {
                     [0; 2]
                 };
