@@ -45,7 +45,7 @@ MGE = os.path.join(os.path.dirname(os.path.dirname(HERE)), "MGE-XE-G7-render-lin
 
 # (file below mgeHost64/src, or shaders/... below assets/Data Files, product with its spaces collapsed): how many times, and why it is no absolute clip product.
 ALLOWED = {
-    ("renderer/view.rs", "relative * vec4f(world - u.eye.xyz, 1.0)"): (1, "clip_with itself: the position less the eye, with a matrix relative to the eye"),
+    ("shaders/core/XE Common.wgsl", "relative * vec4f(world - u.eye.xyz, 1.0)"): (1, "clip_with itself: the position less the eye, with a matrix relative to the eye"),
     ("shaders/core/XE Mod Water Volume.wgsl", "s.world * vec4f(local, 1.0)"): (1, "model to world, with the matrix of the mesh (vs)"),
     ("shaders/core/XE Mod Water Volume.wgsl", "s.world * vec4f(position.xyz, 1.0)"): (1, "model to world, with the matrix of the mesh (vs_far)"),
     ("renderer.rs", "draw.view * vec4f(in.world_position, 1.0)"): (3, "world to view for the depth of a draw, with the view of that draw (view_z, view_position)"),
@@ -204,7 +204,7 @@ def self_test():
                 file.write(text)
 
     clean = {
-        "renderer/view.rs": "fn clip_with(relative: mat4x4f, world: vec3f) -> vec4f { return relative * vec4f(world - u.eye.xyz, 1.0); }\n",
+        "shaders/core/XE Common.wgsl": "fn clip_with(relative: mat4x4f, world: vec3f) -> vec4f { return relative * vec4f(world - u.eye.xyz, 1.0); }\n",
         "shaders/core/XE Mod Water Volume.wgsl": "out.world = (s.world * vec4f(local, 1.0)).xyz;\nout.world = (s.world * vec4f(position.xyz, 1.0)).xyz;\n"
                                     "out.position = clip_with(s.clip, out.world);\n",
         "renderer.rs": "let a = draw.view * vec4f(in.world_position, 1.0);\nlet b = (draw.view * vec4f(in.world_position, 1.0)).z;\n"
