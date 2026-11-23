@@ -560,9 +560,10 @@ pub(crate) struct Counts {
     /// The engine's own point lights of the draws with a world list, against their bounds.
     pub(crate) vertex_world_own: crate::lights::OwnLights,
     /// The draws in the world's own space that took the world's lights for each pixel
-    /// ([`crate::WORLD_SPACE_LIGHTS_BIT`]), and the scenes whose draws in that space kept their
-    /// own, by [`crate::engine::scene::WorldSpaceRefusal`]: not lit, no world view, the view,
-    /// the projection, a scene with a camera origin.
+    /// ([`crate::WORLD_SPACE_LIGHTS_BIT`]) in a frame with a set of the world's lights, and the
+    /// scenes whose draws in that space kept their own, by
+    /// [`crate::engine::scene::WorldSpaceRefusal`]: not lit, no world view, the view, the
+    /// projection, a scene with a camera origin.
     pub(crate) world_space_lights: u32,
     pub(crate) world_space_refused: [u32; 5],
     /// The own point lights of the shadow casters' draws that took the world's lights and

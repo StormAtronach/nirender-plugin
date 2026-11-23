@@ -648,15 +648,16 @@ impl Player {
         // for them takes the point lights of its pixel's cluster in place of its own. A draw
         // with the world's lights as its list does not take them twice.
         if shaded && space.is_some() && renderer.clusters.world && !derived.no_lights && !blind && !listed {
+            // The draws are counted only in a frame with a set of the world's lights: in a frame
+            // without one, the clusters are not built for the world (`run_items_inner`), and the
+            // draw keeps its own lights.
+            let world_set = self.retained.has_world_lights();
             draw_data.light_range[3] |= crate::WORLD_LIGHTS_BIT;
             if space == Some(crate::lights::DrawSpace::World) {
                 draw_data.light_range[3] |= crate::WORLD_SPACE_LIGHTS_BIT;
-                renderer.counts.world_space_lights += 1;
+                renderer.counts.world_space_lights += u32::from(world_set);
             }
-            // The casters are counted only in a frame with a set of the world's lights: in a
-            // frame without one, the clusters are not built for the world (`run_items_inner`), and
-            // the draw keeps its own lights.
-            let counted = caster && self.retained.has_world_lights();
+            let counted = caster && world_set;
             renderer.counts.caster_world_lights += u32::from(counted);
             if counted {
                 // The own point lights that the world's lights do not hold: lost to this draw.
