@@ -491,6 +491,9 @@ pub unsafe fn after_present() {
         }
         return;
     }
+    if crate::effect_cache_count::on() {
+        crate::effect_cache_count::note_end_frame(&MainThread::claim());
+    }
     stream_present();
     crate::capture::run_pending_purge();
     crate::state_summary::run_pending();
@@ -1220,6 +1223,7 @@ unsafe fn set_camera_data(args: &[usize]) {
 unsafe fn begin_paint(args: &[usize]) {
     // A `before` function of a port: the main thread (`shadow::run_before`).
     let t = &MainThread::claim();
+    crate::effect_cache_count::note_begin_paint(t);
     // A caller other than `NiCamera::Click` did not go through `SetCameraData`.
     if SCENE_SENT_FOR.swap(0, Ordering::Relaxed) != args[1] {
         send_scene(args[1], crate::camera_space::scene_begin(t, 0));

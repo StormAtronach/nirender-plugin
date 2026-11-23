@@ -1372,6 +1372,11 @@ impl Renderer {
             return;
         }
         let format = if decode { wgpu::TextureFormat::Bgra8Unorm } else { format };
+        if decode {
+            self.decoded.insert(handle);
+        } else {
+            self.decoded.remove(&handle);
+        }
         let mut bytes = Vec::new();
         for level in 0..levels {
             let (w, h) = (
@@ -3155,5 +3160,90 @@ mod making_tests {
         assert!(line.contains("), the stage thread 1 ("), "{line}");
         assert!(line.contains("; general pipelines: the frame's thread 1 ("), "{line}");
         assert!(line.ends_with("), the stage thread 0 (sum 0.000, largest 0.000)"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod link_decode_tests {
+    use super::*;
+
+    const DXT1: u32 = 0x3154_5844;
+
+    /// The bytes of level 0 of a DXT1 texture of this size.
+    fn level_bytes(width: u32, height: u32) -> usize {
+        width.div_ceil(4) as usize * height.div_ceil(4) as usize * 8
+    }
+
+    /// A TEXTURE record of the link with one DXT1 level of zero bytes.
+    fn texture_record(handle: u32, width: u32, height: u32) -> Vec<u8> {
+        let size = level_bytes(width, height) as u32;
+        let words = [handle, 0, width, height, 1, DXT1, 0, 0, 0, 0, size, width, height];
+        let mut data: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        data.resize(data.len() + size as usize, 0);
+        data
+    }
+
+    /// A TEXTURE_UPDATE record of level 0 with zero bytes.
+    fn update_record(handle: u32, width: u32, height: u32) -> Vec<u8> {
+        let size = level_bytes(width, height) as u32;
+        let words = [handle, 0, width, height, DXT1, size];
+        let mut data: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        data.resize(data.len() + size as usize, 0);
+        data
+    }
+
+    fn renderer() -> Renderer {
+        let (renderer, _) = Renderer::new(
+            wgpu::Backends::all(),
+            None,
+            wgpu::TextureFormat::Rgba8Unorm,
+            crate::extension::extension_shaders(None),
+            0,
+            1,
+        )
+        .expect("a device");
+        renderer
+    }
+
+    /// Sends the update and gives the validation error of the device, if there is one.
+    fn update(renderer: &mut Renderer, handle: u32, width: u32, height: u32) -> Option<wgpu::Error> {
+        let scope = renderer.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        renderer.texture_update(&update_record(handle, width, height));
+        pollster::block_on(scope.pop())
+    }
+
+    /// A link texture that this program decodes is marked, so that its update is decoded too and
+    /// is not lost. The null: without the mark, the update goes as DXT1 blocks into the decoded
+    /// texture and the mark check fails. Needs a GPU:
+    /// `cargo test -p nirender-host -- --ignored link_decode --test-threads=1`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn link_decode_an_update_of_a_decoded_link_texture_is_decoded() {
+        let mut renderer = renderer();
+        renderer.texture(&texture_record(7, 6, 6));
+        assert!(renderer.decoded.contains(&7), "the 6 x 6 DXT1 texture has no decode mark");
+        let error = update(&mut renderer, 7, 6, 6);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(
+            (renderer.counts.texture_updates, renderer.counts.texture_updates_lost),
+            (1, 0)
+        );
+    }
+
+    /// The same handle made again with a size that the GPU takes as blocks loses its mark, so its
+    /// update goes as blocks.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn link_decode_a_handle_made_again_as_blocks_loses_its_mark() {
+        let mut renderer = renderer();
+        renderer.texture(&texture_record(7, 6, 6));
+        renderer.texture(&texture_record(7, 8, 8));
+        assert!(!renderer.decoded.contains(&7), "the 8 x 8 DXT1 texture keeps the decode mark");
+        let error = update(&mut renderer, 7, 8, 8);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(
+            (renderer.counts.texture_updates, renderer.counts.texture_updates_lost),
+            (1, 0)
+        );
     }
 }

@@ -258,6 +258,12 @@ The A/B:
   sends the engine's projection of each texture effect under a turning billboard, after the
   billboard's display, and clears the billboard's displayed flag. The helper compares it with
   its own (`host/src/effect_turn.rs`) and reports the largest difference by the pair of modes.
+- `NIRENDER_EFFECT_CACHE_COUNT=1` (a test switch, W255): the plugin copies the engine's one-entry
+  cache of the effect stages (`setTexturePipeline`, `field_B04`) over the streamed draws and
+  counts, for the environment map and the fog map apart, the draws whose stage words differ
+  from the words the cache keeps, by their cause (an input of the effect, the camera, other),
+  the resets by their kind and the calls of `BeginPaint` in each frame
+  (`src/effect_cache_count.rs`; a log line every 600 frames).
 - `MGE_XE_DEPTH_FORMAT=24` keeps the depth of the frame in `Depth24PlusStencil8` when the
   adapter has `Depth32FloatStencil8` (the format before 2026-10-27; the helper's log line
   `depth:` names the format in use).
