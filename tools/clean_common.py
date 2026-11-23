@@ -198,6 +198,10 @@ def files_in(root):
 # folder and the read of a file stay; only a walk of a tree goes.
 EXPORT_PLACES = [KEEP_ROOT, "E:\\nirender-results"]
 EXPORT_GLOB = "C:\\tmp\\wiztree-*\\*.csv"
+# What a line of a missing or old export says to do (verdict 664): an export of folders only does not serve.
+EXPORT_HELP = ('make a WizTree export of files and folders of each place, WizTree\'s default and not an export of folders '
+               'only, in the background with no game: "C:\\Program Files\\WizTree\\WizTree64.exe" "<place>" '
+               '/export="C:\\tmp\\wiztree-<date>\\<name>.csv" /admin=0')
 # An older export is no ground for a removal: the evidence names it as a problem.
 EXPORT_HOURS = 24
 FILE_ATTRIBUTE_COMPRESSED = 0x800
@@ -369,11 +373,12 @@ def export_problems(now=None):
         holding = [export for export in exports() if export.covers(place)]
         files = [export for export in holding if not export.folders_only]
         if not files:
-            problems.append("no WizTree export of the files of %s%s (D587: it is not walked; %s)" % (
-                place, ", only of its folders" if holding else "", EXPORT_GLOB))
+            problems.append("no WizTree export of the files of %s in %s%s (D587: it is not walked); %s" % (
+                place, EXPORT_GLOB, ", only one of its folders" if holding else "", EXPORT_HELP))
         for export in files:
             if export.hours_old(now) > EXPORT_HOURS:
-                problems.append("the WizTree export %s is %.0f hours old, more than %d" % (export.path, export.hours_old(now), EXPORT_HOURS))
+                problems.append("the WizTree export %s is %.0f hours old, more than %d; %s" % (
+                    export.path, export.hours_old(now), EXPORT_HOURS, EXPORT_HELP))
     return problems
 
 
