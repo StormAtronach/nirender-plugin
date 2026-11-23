@@ -350,6 +350,12 @@ fn fog_view(clear: f32, alpha: f32) -> vec4f {
     if draw_adds() { return vec4f(0.0, 0.0, 0.0, alpha); }
     return vec4f(vec3f(1.0 - clear), alpha);
 }
+// A draw of the sky in the fog view (SKY_DRAW_BIT, 256 of `light_range.w`): the sky's colour
+// with the draw's own alpha. A sky draw that adds (the sun glare) writes black, so it adds nothing.
+fn fog_view_sky(alpha: f32) -> vec4f {
+    if draw_adds() { return vec4f(0.0, 0.0, 0.0, alpha); }
+    return vec4f(FOG_VIEW_SKY, alpha);
+}
 fn draw_clip_plane() -> vec4f {
     if from_scene() { return scene.clip_plane; }
     return draws[record].clip_plane;
@@ -954,7 +960,7 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
             discard;
         }
         if DEBUG_VIEW == VIEW_FOG {
-            return vec4f(FOG_VIEW_SKY, cloud.a);
+            return fog_view_sky(cloud.a);
         }
         return cloud;
     }
@@ -1002,8 +1008,14 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         clear = clamp((fog.y - inp.fog) / max(fog.y - fog.x, 0.0001), 0.0, 1.0);
     }
     if DEBUG_VIEW == VIEW_FOG {
-        if (draw_counts_w() & 8u) != 0u {
-            return vec4f(FOG_VIEW_SKY, current.a);
+        // A draw of the sky (SKY_DRAW_BIT) has the sky's colour. A draw with a stencil test
+        // that can fail (STENCIL_TEST_BIT, 512: the dark overlay of the stencil shadows) only
+        // darkens what is under it: it writes nothing, so the fog of that pixel stays.
+        if (draw_light_range_w() & 256u) != 0u {
+            return fog_view_sky(current.a);
+        }
+        if (draw_light_range_w() & 512u) != 0u {
+            discard;
         }
         return fog_view(clear, current.a);
     }

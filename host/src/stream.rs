@@ -179,7 +179,10 @@ impl Stream {
             frame_lights.len() as u32,
             lights as u32,
             0,
-            flat_shading_bit(derived) | adds_bit(pass.blend),
+            flat_shading_bit(derived)
+                | adds_bit(pass.blend)
+                | sky_draw_bit(self.object_class)
+                | stencil_test_bit(derived.stencil),
         ];
         data.counts[0] = lights as u32;
         if let Some((first, _)) = self.shape_bones {

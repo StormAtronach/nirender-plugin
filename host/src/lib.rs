@@ -457,6 +457,38 @@ pub(crate) fn adds_bit(blend: [u32; 3]) -> u32 {
     }
 }
 
+/// Bit 256 of `light_range[3]`: a draw of the sky, of any of its classes
+/// ([`engine::scene::sky_class`]), with or without the sky values of the extension. The fog
+/// view (`VIEW_FOG` in the shader) gives it the sky's colour: the sky takes no fog of the draws.
+pub(crate) const SKY_DRAW_BIT: u32 = 256;
+
+/// [`SKY_DRAW_BIT`] for a draw of an object of this class (MGE_LINK_CLASS_*), or 0.
+pub(crate) fn sky_draw_bit(class: u32) -> u32 {
+    if engine::scene::sky_class(class) {
+        SKY_DRAW_BIT
+    } else {
+        0
+    }
+}
+
+/// Bit 512 of `light_range[3]`: a draw with a stencil test that can fail (the test on, its
+/// function not D3DCMP_ALWAYS). In the game this is the dark overlay of the stencil shadows:
+/// `ShadowManager::render` 0x4352A0 draws the volumes with the function ALWAYS, then the
+/// overlay with "not equal 0", and is the only writer of the stencil. The fog view leaves the
+/// pixels of such a draw as they are.
+pub(crate) const STENCIL_TEST_BIT: u32 = 512;
+
+/// [`STENCIL_TEST_BIT`] for a draw with this stencil state (on, function, reference, mask,
+/// fail, depth fail, pass; `material::Derived::stencil`), or 0.
+pub(crate) fn stencil_test_bit(stencil: [u32; 7]) -> u32 {
+    const ALWAYS: u32 = 8;
+    if stencil[0] != 0 && stencil[1] != ALWAYS {
+        STENCIL_TEST_BIT
+    } else {
+        0
+    }
+}
+
 /// Bit 16 of `light_range[3]` for a material with flat shading (NiShadeProperty off): the
 /// shader takes the lit colour and the normal of the first vertex of each triangle, as
 /// Direct3D 8 does. The plugin sends the shade of a shape only with
@@ -1300,6 +1332,61 @@ mod tests {
         assert!(adds_to_picture([1, 2, 1]), "a source of ONE, a destination of ZERO");
         assert_eq!(adds_bit([1, 5, 2]), ADDS_BIT);
         assert_eq!(adds_bit([1, 5, 6]), 0);
+    }
+
+    /// Every class of the sky takes the sky's bit, with or without the sky values of the
+    /// extension; no other class does.
+    #[test]
+    fn each_class_of_the_sky_and_no_other_takes_the_sky_bit() {
+        use super::{sky_draw_bit, SKY_DRAW_BIT};
+        for class in 1..=8 {
+            assert_eq!(sky_draw_bit(class), SKY_DRAW_BIT, "class {class}");
+        }
+        for class in [0, 9, 10, 11, 20] {
+            assert_eq!(sky_draw_bit(class), 0, "class {class}");
+        }
+    }
+
+    /// Only a stencil test that can fail takes the bit: the overlay of the stencil shadows
+    /// ("not equal 0", D3DCMP_NOTEQUAL 6), not the volumes (ALWAYS 8) and not a draw with the
+    /// test off.
+    #[test]
+    fn only_a_stencil_test_that_can_fail_takes_the_stencil_bit() {
+        use super::{stencil_test_bit, STENCIL_TEST_BIT};
+        assert_eq!(stencil_test_bit([0; 7]), 0, "the test off");
+        assert_eq!(stencil_test_bit([0, 6, 0, 255, 1, 1, 1]), 0, "a function with the test off");
+        assert_eq!(stencil_test_bit([1, 8, 0, 255, 1, 7, 1]), 0, "a volume: ALWAYS");
+        assert_eq!(
+            stencil_test_bit([1, 6, 0, 255, 1, 1, 1]),
+            STENCIL_TEST_BIT,
+            "the overlay: NOT EQUAL"
+        );
+        for function in 1..=7 {
+            assert_eq!(
+                stencil_test_bit([1, function, 0, 255, 1, 1, 1]),
+                STENCIL_TEST_BIT,
+                "function {function}"
+            );
+        }
+    }
+
+    /// The two bits of the fog view are free bits of `light_range[3]`, apart from the stage key's
+    /// facts, and the world shader reads them with these values.
+    #[test]
+    fn the_fog_views_bits_are_free_and_the_shader_reads_them() {
+        use super::{ADDS_BIT, SKY_DRAW_BIT, STENCIL_TEST_BIT, WORLD_LIGHTS_BIT, WORLD_SPACE_LIGHTS_BIT};
+        // 1 the clusters, 2 4 8 the retained record's bits, 16 flat, 32 64 128 below.
+        let taken = 1 | 2 | 4 | 8 | 16 | WORLD_LIGHTS_BIT | ADDS_BIT | WORLD_SPACE_LIGHTS_BIT;
+        assert_eq!(SKY_DRAW_BIT & taken, 0);
+        assert_eq!(STENCIL_TEST_BIT & taken, 0);
+        assert_eq!(SKY_DRAW_BIT & STENCIL_TEST_BIT, 0);
+        let shader = include_str!("shader.wgsl");
+        assert!(shader.contains(&format!("(draw_light_range_w() & {SKY_DRAW_BIT}u) != 0u")));
+        assert!(shader.contains(&format!("(draw_light_range_w() & {STENCIL_TEST_BIT}u) != 0u")));
+        assert!(
+            shader.contains("const LIGHT_FACT_BITS: u32 = 84u;"),
+            "the key keeps 4, 16 and 64 only"
+        );
     }
 
     #[test]
