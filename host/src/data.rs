@@ -559,6 +559,21 @@ pub(crate) struct Counts {
     pub(crate) vertex_world_no_space: u32,
     /// The engine's own point lights of the draws with a world list, against their bounds.
     pub(crate) vertex_world_own: crate::lights::OwnLights,
+    /// The same for the draws of the world lit for each pixel in the mode `world` (W587): their
+    /// lists, the world's lights added, those the cap left out, the most lights in one list,
+    /// and those with no bound or no space. A list is made only when the last frame's world had
+    /// point lights with no end (`Clusters::world_no_end`); the draws without one in such a
+    /// frame are `pixel_world_skipped`.
+    pub(crate) pixel_world_lists: u32,
+    pub(crate) pixel_world_lights: u64,
+    pub(crate) pixel_world_dropped: u32,
+    pub(crate) pixel_world_most: u32,
+    pub(crate) pixel_world_no_bound: u32,
+    pub(crate) pixel_world_no_space: u32,
+    pub(crate) pixel_world_skipped: u32,
+    /// The world's point lights with no end that the frames' clusters left out, summed over
+    /// the frames (`Clusters::world_no_end`).
+    pub(crate) world_no_end_lights: u64,
     /// The draws in the world's own space that took the world's lights for each pixel
     /// ([`crate::WORLD_SPACE_LIGHTS_BIT`]) in a frame with a set of the world's lights, and the
     /// scenes whose draws in that space kept their own, by

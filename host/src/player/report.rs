@@ -147,6 +147,10 @@ impl Player {
             "vertex world: {} draws lit for each vertex took the world's lights ({} lights, {} left out by the cap); {} kept their own for want of a bound, {} for want of a space of the world's lights",
             c.vertex_world_lists, c.vertex_world_lights, c.vertex_world_dropped, c.vertex_world_no_bound, c.vertex_world_no_space
         );
+        println!(
+            "pixel world: {} draws lit for each pixel took the world's lights with no end in their lists ({} lights, {} left out by the cap, the most in one list {}); {} kept their own for want of a bound, {} for want of a space; {} took none, as the last frame's world had no light with no end; {} lights with no end left out of the world's clusters over the frames",
+            c.pixel_world_lists, c.pixel_world_lights, c.pixel_world_dropped, c.pixel_world_most, c.pixel_world_no_bound, c.pixel_world_no_space, c.pixel_world_skipped, c.world_no_end_lights
+        );
         let own = c.vertex_world_own;
         println!(
             "vertex world own lights: {} own point lights kept in the draws' lists, {} of them within the reach of the draw, {} beyond it (the largest gap {:.2} of the reach), {} not among the world's lights",
@@ -208,6 +212,10 @@ impl Player {
         println!(
             "retained vertex world: {} world runs made, {} world lights moved, came or went, {} tests of them against a slot, {} lights left out by the cap, {} compactions, {} times every slot pointed again",
             r.vertex_world_rebuilds, r.vertex_world_changed_lights, r.vertex_world_tests, r.vertex_world_dropped, r.vertex_world_compactions, r.vertex_world_repoints
+        );
+        println!(
+            "retained pixel world: {} of the world runs for slots lit for each pixel, {} lights left out of them by the cap, the most in one run {}",
+            r.pixel_world_runs, r.pixel_world_dropped, r.pixel_world_most
         );
         let j = &r.joins;
         let (views, pairs) = (r.views.max(1) as f64, j.pairs.max(1) as f64);

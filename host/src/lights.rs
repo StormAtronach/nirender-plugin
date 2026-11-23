@@ -146,6 +146,10 @@ pub(crate) struct Clusters {
     pub(crate) world: bool,
     /// The clusters of this frame hold the lights of the world.
     pub(crate) world_built: bool,
+    /// The point lights of the world with no end that the last `build_world` left out of the
+    /// clusters ([`world_bin_reach`]): the next frame's draws lit for each pixel take them in
+    /// their own lists when this is not 0. 0 after a frame without the world's clusters.
+    pub(crate) world_no_end: u32,
     pub(crate) uniform: wgpu::Buffer,
     pub(crate) table: wgpu::Buffer,
     pub(crate) indexes: wgpu::Buffer,
@@ -180,6 +184,7 @@ impl Clusters {
             forced,
             world: crate::switches().world_lights,
             world_built: false,
+            world_no_end: 0,
             uniform: device.counted_buffer(&wgpu::BufferDescriptor {
                 label: Some("clusters"),
                 size: core::mem::size_of::<ClusterData>() as u64,
@@ -225,6 +230,7 @@ impl Clusters {
         counts: &mut Counts,
     ) -> bool {
         self.world_built = false;
+        self.world_no_end = 0;
         let overflow = core::mem::replace(&mut self.overflow, false);
         if overflow {
             counts.cluster_frames_many += 1;
@@ -263,8 +269,9 @@ impl Clusters {
                 view_point(&view, position)
             });
             // The reach: the cut-off of the extension (its fade), or where the light's own
-            // attenuation ends (`cluster_reach`). A draw takes only the lights of its own set,
-            // so a reach past the objects the game attached the light to lights nothing more.
+            // attenuation ends (`cluster_reach`). These clusters have masks: a draw takes only
+            // the lights of its own set, so a reach past the objects the game attached the light
+            // to lights nothing more.
             Some((index | slot << 16, centre, crate::extension::cluster_reach(light)))
         });
         let (table, indexes, data) = bin_lights(
@@ -306,6 +313,7 @@ impl Clusters {
         self.unique.clear();
         self.overflow = false;
         self.world_built = false;
+        self.world_no_end = 0;
         let Some((mut view, projection, depth_range)) = view else {
             queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&ClusterData::zeroed()));
             return false;
@@ -317,8 +325,16 @@ impl Clusters {
             view[14] = 0.0;
         }
         counts.cluster_lights += slots.len() as u64;
+        let no_end = slots
+            .iter()
+            .filter_map(|&slot| lights.get(slot as usize))
+            .filter(|light| world_bin_reach(light).is_none())
+            .count() as u32;
+        self.world_no_end = no_end;
+        counts.world_no_end_lights += u64::from(no_end);
         let items = slots.iter().filter_map(|&slot| {
             let light = lights.get(slot as usize)?;
+            let reach = world_bin_reach(light)?;
             let p = light.position;
             let centre = [
                 (p[0] as f64 + to_scene[0]) as f32,
@@ -326,7 +342,7 @@ impl Clusters {
                 (p[2] as f64 + to_scene[2]) as f32,
                 p[3],
             ];
-            Some((slot, Some(view_point(&view, centre)), crate::extension::cluster_reach(light)))
+            Some((slot, Some(view_point(&view, centre)), reach))
         });
         let (table, indexes, mut data) = bin_lights(
             &mut self.lists,
@@ -363,6 +379,18 @@ impl Clusters {
         }
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(data));
     }
+}
+
+/// The reach of a light of the world in the world's clusters, which have no masks: a pixel
+/// takes each light of its cluster. Only a light with an end (the cut-off of the extension's
+/// fade, `cone[3]`) goes into them, with that cut-off as its reach. A point light with no end
+/// gives [`None`]: in the clusters it would light each pixel of its reach, as far as its
+/// attenuation shows (one cell). It reaches a draw through the draw's own list instead: the
+/// engine's lights, then the world's lights whose sphere meets the draw's bound
+/// ([`world_lights_in_reach`]). The shader takes a light with no end only from that list
+/// (W587).
+pub(crate) fn world_bin_reach(light: &LightData) -> Option<f32> {
+    (light.position[3] == 3.0 || light.cone[3] > 0.0).then(|| crate::extension::cluster_reach(light))
 }
 
 /// A point in the space of a view (the layout of Direct3D).
@@ -907,6 +935,24 @@ mod tests {
         }
         words[19] = 10000.0f32.to_bits();
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    /// W587: the world's clusters take a light with an end, with its cut-off as the reach, and
+    /// leave out a point light with no end: the fade off, or a light with no radius (made in
+    /// Lua). The null: the reach of the masked clusters bins the light with no end, as far as
+    /// its attenuation shows.
+    #[test]
+    fn the_worlds_clusters_take_only_lights_with_an_end() {
+        let mut light = crate::retained::light_data(&record(1, [0.0; 3], 256.0), None);
+        light.diffuse = [0.96, 0.55, 0.16, 0.0];
+        light.attenuation = [0.0, 3.0 / 256.0, 0.0, 0.0];
+        assert_eq!(world_bin_reach(&light), None);
+        assert_eq!(crate::extension::cluster_reach(&light), crate::extension::LIGHT_REACH_MAX);
+        light.cone[3] = 1.0 / 512.0;
+        assert_eq!(world_bin_reach(&light), Some(512.0));
+        let mut sky = crate::retained::light_data(&record(3, [0.0; 3], 0.0), None);
+        sky.direction = [0.0, 0.0, -1.0, 0.0];
+        assert!(world_bin_reach(&sky).is_some());
     }
 
     #[test]

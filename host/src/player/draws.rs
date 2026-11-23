@@ -478,6 +478,7 @@ impl Player {
             crate::light_dump("record path", &self.frame_lights[first..first + count]);
         }
         let mut shaded = false;
+        let mut shade_facts = None;
         if shade && lit {
             if let Some(extension) = self.extension.as_mut() {
                 let (first, count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
@@ -493,6 +494,7 @@ impl Player {
                 extension.shade(&mut draw_data, &mut self.frame_lights[first..first + count], &facts);
                 crate::draw_dump("record path, shaded", self.stream.shape.geometry, &draw_data);
                 shaded = true;
+                shade_facts = Some(facts);
                 renderer.counts.caster_shaded += u32::from(caster);
             }
         }
@@ -564,18 +566,22 @@ impl Player {
         if takes_clusters(masked, noted) {
             draw_data.light_range[3] |= 1;
         }
-        // The lights of the world for a draw lit for each vertex (the extension left
-        // `PER_PIXEL_BIT` clear): its own lights stay, and the world's point lights that reach
-        // its bound and are not its own follow them (W554 addendum 17). A draw with no bound, or
-        // in no space of the world's lights, keeps the engine's lights and is counted.
-        let per_vertex = lit
-            && renderer.clusters.world
-            && derived.lighting
-            && !derived.no_lights
-            && !blind
-            && draw_data.counts[3] & crate::PER_PIXEL_BIT == 0;
+        // The lights of the world in the draw's own list: its own lights stay, and the world's
+        // point lights that reach its bound and are not its own follow them. A draw lit for each
+        // vertex (the extension left `PER_PIXEL_BIT` clear) takes them all (W554 addendum 17). A
+        // draw lit for each pixel takes them when the last frame's world had point lights with
+        // no end (W587): the shader takes only those from the list, and the lights with an end
+        // from the clusters. A draw with no bound, or in no space of the world's lights, keeps
+        // the engine's lights and is counted.
+        let world_list = lit && renderer.clusters.world && derived.lighting && !derived.no_lights && !blind;
+        let per_pixel = draw_data.counts[3] & crate::PER_PIXEL_BIT != 0;
+        let per_vertex = world_list && !per_pixel;
+        let pixel_list = world_list && per_pixel && renderer.clusters.world_no_end != 0;
+        if world_list && per_pixel && !pixel_list {
+            renderer.counts.pixel_world_skipped += 1;
+        }
         let mut listed = false;
-        if per_vertex {
+        if per_vertex || pixel_list {
             let palette = self
                 .stream
                 .shape_bones
@@ -584,7 +590,9 @@ impl Player {
             let sphere = model_bound
                 .and_then(|model| crate::bound::draw_sphere(&model, draw_data.flags[3], &draw_data.world, palette));
             match (sphere, space) {
+                (_, None) if per_pixel => renderer.counts.pixel_world_no_space += 1,
                 (_, None) => renderer.counts.vertex_world_no_space += 1,
+                (None, Some(_)) if per_pixel => renderer.counts.pixel_world_no_bound += 1,
                 (None, Some(_)) => renderer.counts.vertex_world_no_bound += 1,
                 (Some(sphere), Some(space)) => {
                     let world = &mut self.vertex_world;
@@ -611,13 +619,15 @@ impl Player {
                             .filter(|(_, light)| light.position[3] != 3.0)
                             .map(|(record, _)| word(record, 0)),
                     );
-                    world.tally_own(
-                        world.own_keys.iter().copied(),
-                        centre,
-                        sphere.radius,
-                        &mut renderer.counts.vertex_world_own,
-                    );
-                    renderer.counts.vertex_world_dropped += crate::lights::world_lights_in_reach(
+                    if !per_pixel {
+                        world.tally_own(
+                            world.own_keys.iter().copied(),
+                            centre,
+                            sphere.radius,
+                            &mut renderer.counts.vertex_world_own,
+                        );
+                    }
+                    let dropped = crate::lights::world_lights_in_reach(
                         &world.lights,
                         |light| world.own_keys.contains(&light.key),
                         crate::lights::world_room(world.own_keys.len()),
@@ -628,6 +638,7 @@ impl Player {
                     // The own lights first, as the engine gave them, then the world's.
                     let first = self.frame_lights.len();
                     self.frame_lights.extend_from_within(own_first..own_first + own_count);
+                    let world_first = self.frame_lights.len();
                     for &i in &world.in_reach {
                         if let Some(record) = renderer.lights_known.get(&world.lights[i].key) {
                             // In the draw's space, as the draw's own lights.
@@ -638,15 +649,32 @@ impl Player {
                     draw_data.light_range[0] = first as u32;
                     draw_data.light_range[1] = count;
                     draw_data.counts[0] = count;
-                    renderer.counts.vertex_world_lists += 1;
-                    renderer.counts.vertex_world_lights += world.in_reach.len() as u64;
-                    listed = true;
+                    let added = world.in_reach.len() as u64;
+                    if per_pixel {
+                        // The world's lights as the extension shades the draw's own: on a copy of
+                        // the record, so that the draw is not shaded twice.
+                        if let (Some(extension), Some(facts)) = (self.extension.as_mut(), shade_facts.as_ref()) {
+                            let mut copy = draw_data;
+                            extension.shade(&mut copy, &mut self.frame_lights[world_first..], facts);
+                        }
+                        renderer.counts.pixel_world_dropped += dropped;
+                        renderer.counts.pixel_world_lists += 1;
+                        renderer.counts.pixel_world_lights += added;
+                        renderer.counts.pixel_world_most = renderer.counts.pixel_world_most.max(count);
+                    } else {
+                        renderer.counts.vertex_world_dropped += dropped;
+                        renderer.counts.vertex_world_lists += 1;
+                        renderer.counts.vertex_world_lights += added;
+                    }
+                    listed = !per_pixel;
                 }
             }
         }
         // The lights of the world (`MGE_XE_LIGHTS=world`): a lit draw of the world with a space
-        // for them takes the point lights of its pixel's cluster in place of its own. A draw
-        // with the world's lights as its list does not take them twice.
+        // for them takes the point lights with an end of its pixel's cluster in place of its own
+        // lights with an end. A draw lit for each vertex with the world's lights in its list
+        // does not take them twice. A draw lit for each pixel takes the clusters' lights also
+        // with a list: the list gives it only the lights with no end.
         if shaded && space.is_some() && renderer.clusters.world && !derived.no_lights && !blind && !listed {
             // The draws are counted only in a frame with a set of the world's lights: in a frame
             // without one, the clusters are not built for the world (`run_items_inner`), and the

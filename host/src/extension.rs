@@ -224,9 +224,13 @@ pub struct FrameParameters {
     /// of the draw: the same picture as the lights of the draw. `MGE_XE_CLUSTERS` (0 or 1)
     /// overrides it.
     pub clustered_lights: bool,
-    /// True when a lit draw of the world takes the point lights of the world that reach its
-    /// pixel (`world_lights_here` in the shader), not the lights the engine chose for it.
-    /// `MGE_XE_LIGHTS=world` makes it true.
+    /// True when a lit draw of the world takes the point lights of the world that reach it
+    /// (`world_lights_here` in the shader), not only the lights the engine chose for it: a light
+    /// with an end from the cluster of its pixel, a light with no end from its own list (the
+    /// engine's lights, then the world's lights whose sphere meets its bound,
+    /// `lights::world_bin_reach`). The mode `world` of `MGE_XE_LIGHTS`, the default since W554
+    /// (the owner's D498), makes it true for every frame; `MGE_XE_LIGHTS=engine` leaves it to
+    /// this field.
     pub world_lights: bool,
     /// True when a particle draw lit for each pixel takes its lights at the corners of its
     /// quads, in the vertex stage ([`crate::CORNER_LIGHT_BIT`]): the setting
@@ -343,9 +347,10 @@ pub fn light_reach(light: &LightData) -> f32 {
 /// The reach of a point or spot light in the clusters of the game's draws. With a cut-off
 /// (the extension's fade: `cone[3]` is 1 over it), the cut-off. Without one (a light with no
 /// radius, as a mod's light made in Lua; or the fade off), the distance where its own
-/// attenuation brings its brightest colour under one level: the engine's light has no end,
-/// and a draw takes a clustered light only when the light is one of its own, so the reach
-/// only bins it.
+/// attenuation brings its brightest colour under one level: the engine's light has no end.
+/// In the clusters with masks a draw takes a light only when the light is one of its own, so
+/// there the reach only bins it. The world's clusters have no masks, and take no light without
+/// a cut-off (`lights::world_bin_reach`, W587).
 pub(crate) fn cluster_reach(light: &LightData) -> f32 {
     let reach = if light.cone[3] > 0.0 {
         1.0 / light.cone[3]
