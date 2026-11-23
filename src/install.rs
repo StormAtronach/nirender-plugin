@@ -276,6 +276,9 @@ pub unsafe fn install() -> Result<String, String> {
     // The census runs before the detours, because the detours change the entry bytes.
     crate::count_locks::log_state();
     let changed = census(false);
+    // The census follows MWSE's call at 0x6B42AC by its two bytes only: a line when the call
+    // goes into another module (W195).
+    ports::ct_pipeline_state::log_base_texcoord_call(module_name_of);
     CODE_CHANGED.store(true, Ordering::Relaxed);
     #[cfg(not(test))]
     if crate::link_client::own_d3d8() && !crate::ports::texture_link::install_format_rule() {

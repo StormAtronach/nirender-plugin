@@ -34,9 +34,40 @@ const ADDR_RESET_PASS_FLAGS: usize = 0x6B59E0;
 
 /// The two stores of the base stage that MWSE replaces with a call into MWSE.dll. No port
 /// reads or calls the bytes there: the port always does the fix of that call. The probe of
-/// MWSE's features (a test) looks for this address in MWSE.dll.
-#[cfg(test)]
+/// MWSE's features (a test) looks for this address in MWSE.dll, and the install logs a call
+/// there that goes elsewhere ([`base_texcoord_call_line`]).
 pub(crate) const BASE_TEXCOORD_PATCH: usize = 0x6B42AC;
+
+/// The log line for the code at [`BASE_TEXCOORD_PATCH`] when it is a call whose target is not
+/// in MWSE.dll; `None` for the game's own stores or for MWSE's call. The census follows the
+/// inserted call by its two bytes only (`Followed::InsertedCall`), and the port does MWSE's
+/// fix in Rust: a call of another module there is a patch that the port does not do.
+pub(crate) fn base_texcoord_call_line(first_byte: u8, target: usize, module: &str) -> Option<String> {
+    if first_byte != 0xE8 || module.eq_ignore_ascii_case("MWSE.dll") {
+        return None;
+    }
+    Some(format!(
+        "ct_pipeline_state: the call at {BASE_TEXCOORD_PATCH:#x} goes to {target:#x} in {module}, not to MWSE.dll: \
+         the port does MWSE's base map texture coordinate fix in Rust and not what that call does"
+    ))
+}
+
+/// Logs the line of [`base_texcoord_call_line`] for the code in memory. `module_of` gives the
+/// module of an address.
+///
+/// # Safety
+///
+/// The game's code at [`BASE_TEXCOORD_PATCH`] is readable: the loaded Morrowind.exe.
+pub(crate) unsafe fn log_base_texcoord_call(module_of: impl Fn(usize) -> String) {
+    let first_byte = *(BASE_TEXCOORD_PATCH as *const u8);
+    if first_byte != 0xE8 {
+        return;
+    }
+    let target = crate::site::call_target(BASE_TEXCOORD_PATCH);
+    if let Some(line) = base_texcoord_call_line(first_byte, target, &module_of(target)) {
+        crate::log!("{line}");
+    }
+}
 
 /// The size of a texture stage. The game code multiplies an index by this size.
 const STAGE: usize = ST::SIZE;
@@ -2258,5 +2289,21 @@ mod tests {
             assert!(model.skip);
             assert_eq!(rd::<u32>(this, TP::field_CD8), 0);
         }
+    }
+
+    /// W195: a call at 0x6B42AC into another module gives a line with the target and the
+    /// module. The nulls: MWSE's own call (any case of the name) and the game's stores give none.
+    #[test]
+    fn a_base_texcoord_call_outside_mwse_is_logged() {
+        assert_eq!(base_texcoord_call_line(0xE8, 0x1000_2000, "MWSE.dll"), None);
+        assert_eq!(base_texcoord_call_line(0xE8, 0x1000_2000, "mwse.DLL"), None);
+        assert_eq!(base_texcoord_call_line(0x89, 0x1000_2000, "d3d8.dll"), None);
+        let line = base_texcoord_call_line(0xE8, 0x1000_2000, "d3d8.dll").expect("a line for another module");
+        assert!(
+            line.contains("0x6b42ac") && line.contains("0x10002000") && line.contains("d3d8.dll"),
+            "{line}"
+        );
+        let line = base_texcoord_call_line(0xE8, 0x1234, "?").expect("a line for memory outside any module");
+        assert!(line.contains("in ?"), "{line}");
     }
 }
