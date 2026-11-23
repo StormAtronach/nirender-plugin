@@ -150,6 +150,22 @@ pub struct Segment {
     pub group: LineGroup,
 }
 
+/// The overlay line of the line pass: the segments, then the counts of the host's sources
+/// that are on: the lights with an end and with no end, the bounds drawn and the instances
+/// that the main view drew.
+pub fn overlay_line(sources: LineSources, segments: usize, lights: [u32; 2], bounds: [u32; 2]) -> String {
+    let mut line = format!("debug lines {segments} segments");
+    if sources.contains(LineSources::LIGHTS) {
+        let [with_end, no_end] = lights;
+        line += &format!("; lights: {with_end} with an end (yellow), {no_end} with no end (cyan)");
+    }
+    if sources.contains(LineSources::BOUNDS) {
+        let [drawn, instances] = bounds;
+        line += &format!("; bounds: {drawn} of {instances} instances drawn, the nearest first");
+    }
+    line
+}
+
 /// The segments of a box.
 pub const BOX_SEGMENTS: usize = 12;
 /// The segments of one circle of a sphere.
@@ -350,6 +366,21 @@ mod tests {
         assert_eq!(Kind::Line.segments() as usize, list.len());
         assert_eq!(Kind::Box.segments() as usize, BOX_SEGMENTS);
         assert_eq!(Kind::Sphere.segments() as usize, SPHERE_SEGMENTS);
+    }
+
+    /// The overlay line names the counts of the sources that are on only (verdict 695, note
+    /// 4.5: with only shadow-boxes on, it said "lights: 0, 0").
+    #[test]
+    fn the_overlay_line_names_the_sources_that_are_on() {
+        assert_eq!(
+            overlay_line(LineSources::SHADOW_BOXES, 24, [0; 2], [0; 2]),
+            "debug lines 24 segments"
+        );
+        let both = LineSources::from_bits(LineSources::LIGHTS.bits() | LineSources::BOUNDS.bits());
+        assert_eq!(
+            overlay_line(both, 100, [1, 2], [3, 4]),
+            "debug lines 100 segments; lights: 1 with an end (yellow), 2 with no end (cyan); bounds: 3 of 4 instances drawn, the nearest first"
+        );
     }
 
     const RED: [u8; 4] = [255, 0, 0, 255];

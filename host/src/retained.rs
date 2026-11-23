@@ -71,6 +71,13 @@ const RETAINED_RECORD_BITS: u32 = 2 | 4 | 8;
 pub(crate) const LIGHT_WITH_END: [u8; 4] = [255, 220, 0, 255];
 /// The colour of the sphere of a light with no end in the line source `lights`: cyan.
 pub(crate) const LIGHT_WITH_NO_END: [u8; 4] = [0, 230, 255, 255];
+/// The most spheres of the line source `bounds` in a frame (98,304 segments).
+pub(crate) const BOUNDS_MOST: usize = 2_048;
+/// The colours of the spheres of the line source `bounds`, by the kind of draw: a plain draw
+/// magenta, a blend that the engine sorts orange, a skinned draw blue.
+pub(crate) const BOUND_PLAIN: [u8; 4] = [255, 0, 255, 255];
+pub(crate) const BOUND_BLEND: [u8; 4] = [255, 128, 0, 255];
+pub(crate) const BOUND_SKINNED: [u8; 4] = [64, 128, 255, 255];
 
 /// The values of a view for the retained draws: `Scene` in the shader.
 #[repr(C)]
@@ -607,11 +614,17 @@ pub struct RetainedSet {
     shown: Vec<u32>,
     shown_ids: std::collections::HashSet<u32>,
     pub counts: RetainedCounts,
+    /// The line source `bounds` is on in this frame: the main view keeps its drawn slots in
+    /// `main_drawn` ([`RetainedSet::bound_lines`]). Off, the cull keeps nothing.
+    keep_main_drawn: bool,
+    main_drawn: Vec<u32>,
 }
 
 impl RetainedSet {
     pub fn new() -> RetainedSet {
         RetainedSet {
+            keep_main_drawn: false,
+            main_drawn: Vec::new(),
             claimed: std::collections::HashSet::new(),
             effect_chains: HashMap::new(),
             chains_before: HashMap::new(),
@@ -1350,6 +1363,49 @@ impl RetainedSet {
             counts[kind] += 1;
         }
         counts
+    }
+
+    /// The line source `bounds` is on (or off) for the frame that starts: its main view keeps
+    /// its drawn slots. The slots of an earlier frame go.
+    pub(crate) fn keep_main_drawn(&mut self, on: bool) {
+        self.keep_main_drawn = on;
+        self.main_drawn.clear();
+    }
+
+    /// The line source `bounds` of the debug views: the cull sphere of each slot that the main
+    /// view of this frame drew (the verdict "drawn"), the sphere that decides whether the shape
+    /// is cut. The bounds are the engine's, in the space of the world. One sphere for each
+    /// instance (its slots share the bound), the nearest to `eye` first, at most
+    /// [`BOUNDS_MOST`]. The colour is that of the kind of draw: [`BOUND_PLAIN`],
+    /// [`BOUND_BLEND`] (a blend that the engine sorts) or [`BOUND_SKINNED`]. Returns the
+    /// spheres drawn and the instances drawn.
+    pub(crate) fn bound_lines(&self, eye: [f64; 3], list: &mut crate::debug_lines::LineList) -> [u32; 2] {
+        let mut seen = std::collections::HashSet::new();
+        let mut spheres: Vec<(f64, &Slot)> = self
+            .main_drawn
+            .iter()
+            .filter_map(|&slot| self.slots.get(slot as usize)?.as_ref())
+            .filter(|s| seen.insert(s.id))
+            .map(|s| {
+                let distance: f64 = (0..3).map(|i| (f64::from(s.bound[i]) - eye[i]).powi(2)).sum();
+                (distance, s)
+            })
+            .collect();
+        let instances = spheres.len() as u32;
+        spheres.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        spheres.truncate(BOUNDS_MOST);
+        for (_, s) in &spheres {
+            let color = if s.flags & INSTANCE_SKINNED != 0 {
+                BOUND_SKINNED
+            } else if s.sorted {
+                BOUND_BLEND
+            } else {
+                BOUND_PLAIN
+            };
+            let centre = core::array::from_fn(|i| f64::from(s.bound[i]));
+            list.sphere(centre, f64::from(s.bound[3]), color, crate::debug_lines::LineGroup::Tested);
+        }
+        [spheres.len() as u32, instances]
     }
 
     /// The translation from the space of the set (the positions of `light_values`) to the
@@ -2508,6 +2564,10 @@ impl RetainedSet {
         let near = view.planes[4];
         let tests_planes = tests_planes(view);
         let mut sequence = 0u32;
+        let keep_drawn = self.keep_main_drawn && view.sorted == Sorted::Keep;
+        if keep_drawn {
+            self.main_drawn.clear();
+        }
         // The listed slots with their buckets, but those of the classes the view does not draw.
         let (slots, buckets) = (&self.slots, &self.buckets);
         let listed = listed_passes(&self.shown, &self.by_id)
@@ -2531,6 +2591,9 @@ impl RetainedSet {
             };
             self.counts.drawn += 1;
             sequence += 1;
+            if keep_drawn {
+                self.main_drawn.push(slot);
+            }
             if s.sorted {
                 let centre = near[0] * s.bound[0] + near[1] * s.bound[1] + near[2] * s.bound[2] + near[3];
                 self.counts.sorted += 1;
@@ -4307,6 +4370,37 @@ mod list_tests {
         assert!(set.slots[0].as_ref().unwrap().world_run.is_none());
         assert_eq!(set.slots[0].as_ref().unwrap().data.light_range[0..2], engine[..]);
         assert_eq!(rebuilds_after(&mut set, &known), 0);
+    }
+
+    /// W323 2b, the line source `bounds`: the main view keeps its drawn slots only while the
+    /// source is on; a sphere is the slot's cull sphere, one for each instance, the nearest to
+    /// the eye first, in the colour of its kind of draw.
+    #[test]
+    fn the_bound_lines_are_the_cull_spheres_of_the_drawn_slots() {
+        use crate::debug_lines::{LineList, SPHERE_SEGMENTS};
+        let (mut set, _) = world_set();
+        // Off: the cull keeps nothing.
+        set.keep_main_drawn(false);
+        set.main_drawn.push(0);
+        set.keep_main_drawn(false);
+        assert!(set.main_drawn.is_empty());
+        set.keep_main_drawn(true);
+        set.main_drawn.extend([0, 1]);
+        set.slots[1].as_mut().unwrap().sorted = true;
+        // The eye near T (slot 1): its sphere comes first.
+        let mut list = LineList::default();
+        assert_eq!(set.bound_lines([159_000.0, -90_000.0, 2_000.0], &mut list), [2, 2]);
+        assert_eq!(list.len(), 2 * SPHERE_SEGMENTS);
+        let first = &list.segments()[0];
+        assert_eq!(first.color, BOUND_BLEND);
+        // The first point of a sphere is the centre plus the radius on the first axis.
+        assert_eq!(first.a, [160_050.0, -90_000.0, 2_000.0]);
+        assert_eq!(list.segments()[SPHERE_SEGMENTS].color, BOUND_PLAIN);
+        assert_eq!(list.segments()[SPHERE_SEGMENTS].a, [150_050.0, -90_000.0, 2_000.0]);
+        // Two slots of one instance give one sphere.
+        set.main_drawn.push(1);
+        let mut list = LineList::default();
+        assert_eq!(set.bound_lines([0.0; 3], &mut list), [2, 2]);
     }
 
     /// W323, the line source `lights`: the sphere of a world light is at its absolute place
