@@ -48,6 +48,87 @@ local function testPictures(spec, plugin)
     end
 end
 
+-- The Lua shapes of the debug views (W323): `nirender.debug.line(a, b [, options])`,
+-- `box(min, max [, options])`, `sphere(centre, radius [, options])` and `clear([tag])`. A place
+-- is a value with the numbers x, y and z (a tes3vector3, or a table), in world units. The
+-- options, all optional: `color = { r, g, b }` from 0 to 1 (white), `seconds` (0: this frame
+-- only), `onTop` (over everything; else tested against the frame's depth) and `tag` (a string
+-- for `clear(tag)`). These functions check the arguments, raise an error that names the call
+-- and the argument, and send one record through the plugin's `debug.shape`, which returns
+-- false when it dropped the shape past the limit of the Lua segments of the frame, else true.
+local function addDebugShapes(debug)
+    local function fail(call, text)
+        -- Level 0: the checks run at several depths, so the text names the call itself.
+        error(string.format("nirender.debug.%s: %s", call, text), 0)
+    end
+    local function number(call, name, value)
+        if type(value) ~= "number" then
+            fail(call, string.format("%s must be a number, not %s", name, type(value)))
+        end
+        return value
+    end
+    local function place(call, name, value)
+        local kind = type(value)
+        if kind ~= "table" and kind ~= "userdata" then
+            fail(call, string.format("%s must be a place with x, y and z, not %s", name, kind))
+        end
+        return number(call, name .. ".x", value.x), number(call, name .. ".y", value.y), number(call, name .. ".z", value.z)
+    end
+    local function tagOf(call, value)
+        if value ~= nil and type(value) ~= "string" then
+            fail(call, string.format("tag must be a string, not %s", type(value)))
+        end
+        return value
+    end
+    local function options(call, value)
+        if value == nil then
+            return false, nil, 0, 1, 1, 1
+        end
+        if type(value) ~= "table" then
+            fail(call, string.format("options must be a table, not %s", type(value)))
+        end
+        local r, g, b = 1, 1, 1
+        if value.color ~= nil then
+            if type(value.color) ~= "table" then
+                fail(call, string.format("options.color must be a table { r, g, b }, not %s", type(value.color)))
+            end
+            r = number(call, "options.color[1]", value.color[1])
+            g = number(call, "options.color[2]", value.color[2])
+            b = number(call, "options.color[3]", value.color[3])
+        end
+        local seconds = 0
+        if value.seconds ~= nil then
+            seconds = number(call, "options.seconds", value.seconds)
+        end
+        return value.onTop == true, tagOf(call, value.tag), seconds, r, g, b
+    end
+
+    function debug.line(a, b, opts)
+        local ax, ay, az = place("line", "a", a)
+        local bx, by, bz = place("line", "b", b)
+        local onTop, tag, seconds, r, g, blue = options("line", opts)
+        return debug.shape(1, onTop, tag, seconds, r, g, blue, ax, ay, az, bx, by, bz)
+    end
+
+    function debug.box(min, max, opts)
+        local ax, ay, az = place("box", "min", min)
+        local bx, by, bz = place("box", "max", max)
+        local onTop, tag, seconds, r, g, blue = options("box", opts)
+        return debug.shape(2, onTop, tag, seconds, r, g, blue, ax, ay, az, bx, by, bz)
+    end
+
+    function debug.sphere(centre, radius, opts)
+        local x, y, z = place("sphere", "centre", centre)
+        local size = number("sphere", "radius", radius)
+        local onTop, tag, seconds, r, g, blue = options("sphere", opts)
+        return debug.shape(3, onTop, tag, seconds, r, g, blue, x, y, z, size, 0, 0)
+    end
+
+    function debug.clear(tag)
+        return debug.shape(4, false, tagOf("clear", tag), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    end
+end
+
 local nirender = include("akulakhan")
 if not nirender then
     -- A reference run without the plugin (`noPlugin` in the run spec): the scenario runs with
@@ -67,6 +148,7 @@ if not nirender then
     return
 end
 package.loaded["nirender"] = nirender
+addDebugShapes(nirender.debug)
 
 local config = mwse.loadConfig("nirender", { mode = "off", early = false, captureKey = "f11", overlayKey = "f10", offNotice = true })
 

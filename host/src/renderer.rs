@@ -778,6 +778,7 @@ impl Renderer {
             line_pass: None,
             line_list: debug_lines::LineList::default(),
             light_lines: [0; 2],
+            bound_lines: [0; 2],
             queue,
             shader,
             runs_dump: switches().runs_dump,

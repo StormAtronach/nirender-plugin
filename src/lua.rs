@@ -285,6 +285,62 @@ unsafe extern "C" fn debug_lines(l: LuaState) -> i32 {
     0
 }
 
+/// `nirender.debug.shape(kind, onTop, tag, seconds, r, g, b, v1, v2, v3, v4, v5, v6)`: one
+/// record of the Lua shapes ([`crate::debug_shapes_format`]). The calls of a mod are
+/// `nirender.debug.line`, `box`, `sphere` and `clear` of the mod's main.lua: they check the
+/// arguments, raise the errors and call this one with numbers. The kind is 1 a line, 2 a box,
+/// 3 a sphere, 4 a clear; the tag is a string or nil. A shape that would pass the limit of
+/// the Lua segments of the frame is dropped here, before the stream ring. A call of a later
+/// frame writes the count of the dropped shapes to the log, at most one line a second. Returns false for a dropped shape and for an
+/// unknown kind, else true (the record goes nowhere while the plugin records no stream).
+unsafe extern "C" fn debug_shape(l: LuaState) -> i32 {
+    use crate::debug_shapes_format::{tag_hash, FrameBudget, Kind, Shape};
+    static BUDGET: MainCell<FrameBudget> = MainCell::new(FrameBudget::new());
+    // The shapes dropped since the last log line, the time of that line, the frame of the
+    // last drop.
+    static DROPPED: MainCell<(u64, Option<std::time::Instant>, u32)> = MainCell::new((0, None, 0));
+    let Some(kind) = Kind::from_word(lua_tonumber(l, 1) as u32) else {
+        lua_pushboolean(l, 0);
+        return 1;
+    };
+    let t = MainThread::claim();
+    let frame = crate::camera_space::frame(&t);
+    let admitted = BUDGET.get(&t).admit(frame, kind);
+    // The dropped shapes wait for a call of a later frame, so that the line has the whole
+    // count of a frame, and for a second since the last line.
+    let mut dropped = DROPPED.get(&t);
+    if !admitted {
+        dropped.0 += 1;
+        dropped.2 = frame;
+    }
+    let now = std::time::Instant::now();
+    if dropped.0 > 0 && dropped.2 != frame && dropped.1.is_none_or(|last| now.duration_since(last).as_secs() >= 1) {
+        crate::log!(
+            "lua: nirender.debug: {} shapes dropped, past the limit of {} segments in a frame",
+            dropped.0,
+            crate::debug_shapes_format::MOST_SEGMENTS
+        );
+        dropped.0 = 0;
+        dropped.1 = Some(now);
+    }
+    drop(dropped);
+    if !admitted {
+        lua_pushboolean(l, 0);
+        return 1;
+    }
+    let shape = Shape {
+        kind,
+        on_top: lua_toboolean(l, 2) != 0,
+        tag: arg_str(l, 3).map_or(0, |tag| tag_hash(&tag)),
+        seconds: lua_tonumber(l, 4) as f32,
+        color: core::array::from_fn(|i| lua_tonumber(l, 5 + i as i32) as f32),
+        values: core::array::from_fn(|i| lua_tonumber(l, 8 + i as i32)),
+    };
+    crate::capture::extension(crate::debug_shapes_format::RECORD_ID, &shape.encode());
+    lua_pushboolean(l, 1);
+    1
+}
+
 /// `nirender.hostState()` returns nil while the host program is well, else `{ code, word }`:
 /// its exit code (0 for a lost graphics device) and the words of the failure, for the
 /// autosave of failure.lua of the mod. It makes no table while nil.
@@ -930,9 +986,10 @@ pub unsafe extern "C" fn luaopen_akulakhan(l: LuaState) -> i32 {
     set_fn(l, "overlay", overlay);
     set_fn(l, "tune", tune);
     // `nirender.debug`: the debug views.
-    lua_createtable(l, 0, 2);
+    lua_createtable(l, 0, 3);
     set_fn(l, "view", debug_view);
     set_fn(l, "lines", debug_lines);
+    set_fn(l, "shape", debug_shape);
     lua_setfield(l, -2, c"debug".as_ptr());
     set_fn(l, "hostState", host_state);
     set_fn(l, "failureHandled", failure_handled);

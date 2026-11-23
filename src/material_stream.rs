@@ -767,19 +767,54 @@ pub const EFFECT_SIGNATURE_WORDS: usize = 4 + crate::ports::texture_pass_b::EFFE
 /// live nodes above it.
 pub unsafe fn effect_signature(t: &MainThread, renderer: usize, effect: usize) -> [u32; EFFECT_SIGNATURE_WORDS] {
     let mut words = [0u32; EFFECT_SIGNATURE_WORDS];
+    if let Some(head) = effect_signature_head(effect) {
+        words[..4].copy_from_slice(&head);
+        words[4..].copy_from_slice(&effect_projection_words(t, renderer, effect));
+    }
+    words
+}
+
+/// The words of [`effect_signature`] with the static projection words also for an effect
+/// with a turning chain, read with no side effect: no note of the chain. For the count of the
+/// retained draws (`effect_cache_count`, W620).
+///
+/// # Safety
+///
+/// As [`effect_signature`].
+pub unsafe fn effect_signature_read(renderer: usize, effect: usize) -> [u32; EFFECT_SIGNATURE_WORDS] {
+    let mut words = [0u32; EFFECT_SIGNATURE_WORDS];
+    if let Some(head) = effect_signature_head(effect) {
+        words[..4].copy_from_slice(&head);
+        words[4..].copy_from_slice(&crate::ports::texture_pass_b::effect_static_words(renderer, effect));
+    }
+    words
+}
+
+/// True when the words of [`effect_signature`] name a turning chain in place of the
+/// projection: the helper makes the projection of such an effect.
+pub fn effect_signature_turns(words: &[u32; EFFECT_SIGNATURE_WORDS]) -> bool {
+    words[EFFECT_SIGNATURE_WORDS - 1] & EFFECT_TURNS != 0
+}
+
+/// The texture and the three modes of an effect; `None` for an effect that gives no stage.
+///
+/// # Safety
+///
+/// `effect` is 0 or a live `NiTextureEffect`.
+unsafe fn effect_signature_head(effect: usize) -> Option<[u32; 4]> {
     if effect == 0 || rd::<u8>(effect, EFFECT_ENABLED) == 0 {
-        return words;
+        return None;
     }
     let texture: usize = rd(effect, EFFECT_TEXTURE);
     if texture == 0 {
-        return words;
+        return None;
     }
-    words[0] = texture as u32;
-    words[1] = rd(effect, EFFECT_CLAMP_MODE);
-    words[2] = rd(effect, EFFECT_FILTER_MODE);
-    words[3] = rd(effect, EFFECT_COORDINATE_MODE);
-    words[4..].copy_from_slice(&effect_projection_words(t, renderer, effect));
-    words
+    Some([
+        texture as u32,
+        rd(effect, EFFECT_CLAMP_MODE),
+        rd(effect, EFFECT_FILTER_MODE),
+        rd(effect, EFFECT_COORDINATE_MODE),
+    ])
 }
 
 #[cfg(test)]

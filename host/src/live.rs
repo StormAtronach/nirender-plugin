@@ -1435,13 +1435,10 @@ impl ApplicationHandler for App {
                 );
                 // The line pass of the debug views, while a line source is on.
                 if !r.line_list.is_empty() {
-                    let [with_end, no_end] = r.light_lines;
+                    let sources = player.parameters.as_ref().map(|p| p.debug_lines).unwrap_or_default();
                     lines.insert(
                         1,
-                        format!(
-                            "debug lines {} segments; lights: {with_end} with an end (yellow), {no_end} with no end (cyan)",
-                            r.line_list.len()
-                        ),
+                        crate::debug_lines::overlay_line(sources, r.line_list.len(), r.light_lines, r.bound_lines),
                     );
                 }
             }

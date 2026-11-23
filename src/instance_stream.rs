@@ -254,6 +254,16 @@ impl EffectWatch {
     }
 }
 
+/// The table's copy of the words of the texture effect `effect` (its `EffectWatch`), read
+/// with no change to the watch. `None` when the table watches no such effect, or while the
+/// table is open. For the count of the retained draws (`effect_cache_count`, W620).
+pub fn watched_effect_words(
+    mt: &MainThread,
+    effect: usize,
+) -> Option<[u32; crate::material_stream::EFFECT_SIGNATURE_WORDS]> {
+    tables_try(mt)?.effects.get(&effect).map(|watch| watch.words)
+}
+
 /// The frames an effect stays in the watch list without a display of a shape it lights.
 const EFFECT_FRAMES: u32 = 4096;
 

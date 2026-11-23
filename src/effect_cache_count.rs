@@ -12,6 +12,15 @@
 //! input of the effect (its switch, texture, coordinate mode, world projection or the stages
 //! before it), the camera of the pipeline, or neither. The resets are counted by their kind,
 //! and the calls of `BeginPaint` in each frame.
+//!
+//! The retained draws (W620): the engine does not draw a retained shape, so its entry does
+//! not see them. The count takes each of them at the place where the engine would draw it:
+//! at its display, or in the flush of the main sorted queue (`ports::scene`). Their counts are
+//! apart from the streamed ones. A second count compares, for each effect of a retained draw,
+//! the table's copy of its words (`instance_stream::watched_effect_words`), from which the
+//! helper makes the stage, with the words read at the draw. An effect with a turning chain
+//! counts apart: the helper makes its projection. The count only reads: it changes no watch,
+//! notes no chain and sends nothing.
 
 use std::sync::OnceLock;
 
@@ -48,9 +57,19 @@ pub struct StageInput {
     pub before: u32,
 }
 
-/// What the count takes from one streamed draw.
+/// Where a draw comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Source {
+    /// A draw of the shape stream (`shape_stream::record`).
+    Streamed,
+    /// A draw of the retained table, at the place of the engine's draw.
+    Retained,
+}
+
+/// What the count takes from one draw.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Draw {
+    pub source: Source,
     pub effect_state: usize,
     /// The pass that `selectAndLinkPass` takes for the draw.
     pub pass: usize,
@@ -74,14 +93,63 @@ pub struct StageCount {
     pub other: u64,
 }
 
-/// The count: the copy of the engine's entry, the counts of each stage, the resets by their
-/// kind and the calls of `BeginPaint` in each frame.
+/// The second count of one stage over the retained draws: the table's copy of the effect's
+/// words against the words at the draw.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CopyCount {
+    /// The retained draws with this effect and a projection in the copy.
+    pub draws: u64,
+    /// Those of them whose copy differs from the words at the draw.
+    pub differ: u64,
+    /// The retained draws with this effect and a turning chain in the copy.
+    pub turning: u64,
+    /// Those of them whose texture or modes differ (the projection is the helper's).
+    pub turning_differ: u64,
+    /// The retained draws with this effect that the table does not watch.
+    pub not_watched: u64,
+}
+
+impl CopyCount {
+    /// One retained draw: `copy` is the table's copy, `now` the words at the draw.
+    pub fn take(
+        &mut self,
+        copy: Option<[u32; crate::material_stream::EFFECT_SIGNATURE_WORDS]>,
+        now: [u32; crate::material_stream::EFFECT_SIGNATURE_WORDS],
+    ) {
+        let Some(copy) = copy else {
+            self.not_watched += 1;
+            return;
+        };
+        if crate::material_stream::effect_signature_turns(&copy) {
+            self.turning += 1;
+            self.turning_differ += u64::from(copy[..4] != now[..4]);
+        } else {
+            self.draws += 1;
+            self.differ += u64::from(copy != now);
+        }
+    }
+}
+
+/// The count: the copy of the engine's entry, the counts of each stage by the source of the
+/// draw, the counts of the table's copy, the resets by their kind and the calls of
+/// `BeginPaint` in each frame.
 #[derive(Clone, Debug)]
 pub struct Count {
     kept: Option<Draw>,
     last_pass: Option<usize>,
+    /// The streamed draws.
     pub draws: u64,
+    /// The counts of the streamed draws.
     pub stages: [StageCount; 2],
+    /// The retained draws.
+    pub retained_draws: u64,
+    /// Those of them that the count takes at their display, though the engine would draw them
+    /// in an accumulator other than the main one, at a place that the count does not know.
+    pub retained_order_unknown: u64,
+    /// The counts of the retained draws.
+    pub retained_stages: [StageCount; 2],
+    /// The counts of the table's copy, for each stage.
+    pub copies: [CopyCount; 2],
     pub resets_begin_paint: u64,
     pub resets_pass: u64,
     paints: u32,
@@ -93,17 +161,29 @@ pub struct Count {
 
 impl Count {
     pub const fn new() -> Count {
+        const NO_STAGE: StageCount = StageCount {
+            draws: 0,
+            hits: 0,
+            by_input: 0,
+            by_camera: 0,
+            other: 0,
+        };
+        const NO_COPY: CopyCount = CopyCount {
+            draws: 0,
+            differ: 0,
+            turning: 0,
+            turning_differ: 0,
+            not_watched: 0,
+        };
         Count {
             kept: None,
             last_pass: None,
             draws: 0,
-            stages: [StageCount {
-                draws: 0,
-                hits: 0,
-                by_input: 0,
-                by_camera: 0,
-                other: 0,
-            }; 2],
+            stages: [NO_STAGE; 2],
+            retained_draws: 0,
+            retained_order_unknown: 0,
+            retained_stages: [NO_STAGE; 2],
+            copies: [NO_COPY; 2],
             resets_begin_paint: 0,
             resets_pass: 0,
             paints: 0,
@@ -128,9 +208,18 @@ impl Count {
         self.paints = 0;
     }
 
-    /// A streamed draw, in the order of the engine's draws.
+    /// A draw, streamed or retained, in the order of the engine's draws.
     pub fn draw(&mut self, d: Draw) {
-        self.draws += 1;
+        let stages = match d.source {
+            Source::Streamed => {
+                self.draws += 1;
+                &mut self.stages
+            }
+            Source::Retained => {
+                self.retained_draws += 1;
+                &mut self.retained_stages
+            }
+        };
         // `selectAndLinkPass` clears the entry when the pass in use changes.
         if self.last_pass != Some(d.pass) {
             if self.last_pass.is_some() {
@@ -141,7 +230,7 @@ impl Count {
         }
         match self.kept {
             Some(k) if k.effect_state == d.effect_state => {
-                for (i, stage) in self.stages.iter_mut().enumerate() {
+                for (i, stage) in stages.iter_mut().enumerate() {
                     if d.inputs[i].effect == 0 && k.inputs[i].effect == 0 {
                         continue;
                     }
@@ -159,7 +248,7 @@ impl Count {
                 }
             }
             _ => {
-                for (i, stage) in self.stages.iter_mut().enumerate() {
+                for (i, stage) in stages.iter_mut().enumerate() {
                     if d.inputs[i].effect != 0 {
                         stage.draws += 1;
                     }
@@ -171,22 +260,40 @@ impl Count {
 
     /// The line of the log.
     pub fn line(&self) -> String {
-        let stages: Vec<String> = STAGES
+        let stages = |counts: &[StageCount; 2]| -> String {
+            let parts: Vec<String> = STAGES
+                .iter()
+                .zip(counts)
+                .map(|(name, s)| {
+                    format!(
+                        "{name}: {} draws, {} hits, differ: {} by an effect input, {} by the camera, {} other",
+                        s.draws, s.hits, s.by_input, s.by_camera, s.other
+                    )
+                })
+                .collect();
+            parts.join("; ")
+        };
+        let copies: Vec<String> = STAGES
             .iter()
-            .zip(&self.stages)
-            .map(|(name, s)| {
+            .zip(&self.copies)
+            .map(|(name, c)| {
                 format!(
-                    "{name}: {} draws, {} hits, differ: {} by an effect input, {} by the camera, {} other",
-                    s.draws, s.hits, s.by_input, s.by_camera, s.other
+                    "{name}: {} draws, {} differ; turning chain {} draws, {} differ in the texture or the modes; {} not watched",
+                    c.draws, c.differ, c.turning, c.turning_differ, c.not_watched
                 )
             })
             .collect();
         let t = &self.paint_table;
         format!(
-            "effect cache count (W255): {} streamed draws; {}; resets: {} at BeginPaint, {} at a pass change; \
+            "effect cache count (W255, W620): {} streamed draws; {}; {} retained draws ({} at a place not known); {}; \
+             the table's copy at the retained draws: {}; resets: {} at BeginPaint, {} at a pass change; \
              BeginPaint in each of {} frames: 0 x {}, 1 x {}, 2 x {}, 3 x {}, 4+ x {}, most {}",
             self.draws,
-            stages.join("; "),
+            stages(&self.stages),
+            self.retained_draws,
+            self.retained_order_unknown,
+            stages(&self.retained_stages),
+            copies.join("; "),
             self.resets_begin_paint,
             self.resets_pass,
             self.frames,
@@ -237,8 +344,21 @@ unsafe fn input_of(effect: usize, before: u32) -> StageInput {
 /// The main thread. `renderer` points at the live `NiDX8Renderer` of the draw in progress, as
 /// for `shape_stream::effect_words`, with its pipeline and its current property state.
 unsafe fn read_draw(renderer: usize) -> Draw {
-    let effect_state: usize = rd(renderer, R::currentEffectState);
-    let property_state: usize = rd(renderer, R::currentPropertyState);
+    read_draw_of(
+        Source::Streamed,
+        renderer,
+        rd(renderer, R::currentEffectState),
+        rd(renderer, R::currentPropertyState),
+    )
+}
+
+/// What the count takes from a draw with the effect state and the property state given.
+///
+/// # Safety
+///
+/// The main thread. `renderer` points at the live `NiDX8Renderer` with its pipeline and the
+/// camera of the scene; `effect_state` and `property_state` are 0 or live.
+unsafe fn read_draw_of(source: Source, renderer: usize, effect_state: usize, property_state: usize) -> Draw {
     let pipeline: usize = rd(renderer, R::configurableTexturePipeline);
     let pass = if pipeline != 0 && property_state != 0 {
         crate::ports::texture_pipeline::pass_for_draw(pipeline, property_state)
@@ -266,11 +386,53 @@ unsafe fn read_draw(renderer: usize) -> Draw {
         }
     }
     Draw {
+        source,
         effect_state,
         pass,
         camera,
         inputs,
         words,
+    }
+}
+
+/// Counts a draw of the retained shape `shape` when the switch is on, at the place where the
+/// engine would draw it. `order_known` is false when the engine would draw it at a place that
+/// the count does not know (an accumulator other than the main one): the count takes it at its
+/// display. Only reads: the table's watch and the effect chains stay as they are.
+///
+/// # Safety
+///
+/// The main thread, in a scene of the engine, with the tables of `instance_stream` closed.
+/// `shape` points at a live `NiGeometry` whose states are 0 or live.
+pub unsafe fn note_retained_draw(t: &MainThread, shape: usize, order_known: bool) {
+    use crate::gen::layouts::NiGeometry as G;
+    if !on() {
+        return;
+    }
+    let renderer = crate::engine::renderer();
+    if renderer == 0 {
+        return;
+    }
+    let draw = read_draw_of(
+        Source::Retained,
+        renderer,
+        rd(shape, G::spEffectState),
+        rd(shape, G::spPropertyState),
+    );
+    let mut copies = [None; 2];
+    for (i, input) in draw.inputs.iter().enumerate() {
+        if input.effect != 0 {
+            let copy = crate::instance_stream::watched_effect_words(t, input.effect);
+            copies[i] = Some((copy, crate::material_stream::effect_signature_read(renderer, input.effect)));
+        }
+    }
+    let mut count = COUNT.get(t);
+    count.draw(draw);
+    count.retained_order_unknown += u64::from(!order_known);
+    for (i, taken) in copies.into_iter().enumerate() {
+        if let Some((copy, now)) = taken {
+            count.copies[i].take(copy, now);
+        }
     }
 }
 
@@ -317,6 +479,7 @@ mod tests {
 
     fn draw(effect_state: usize, pass: usize) -> Draw {
         let mut d = Draw {
+            source: Source::Streamed,
             effect_state,
             pass,
             camera: [0; CAMERA_WORDS],
@@ -490,9 +653,84 @@ mod tests {
     }
 
     #[test]
+    fn the_retained_draws_count_apart_and_share_the_entry() {
+        let mut c = Count::new();
+        c.draw(draw(1, 9));
+        let mut d = draw(1, 9);
+        d.source = Source::Retained;
+        d.camera[0] = 1;
+        d.words[0][3] = 1;
+        c.draw(d);
+        assert_eq!(
+            c.stages[0],
+            StageCount {
+                draws: 1,
+                ..StageCount::default()
+            }
+        );
+        assert_eq!(
+            c.retained_stages[0],
+            StageCount {
+                draws: 1,
+                hits: 1,
+                by_camera: 1,
+                ..StageCount::default()
+            }
+        );
+        assert_eq!((c.draws, c.retained_draws), (1, 1));
+    }
+
+    #[test]
+    fn the_copy_count_takes_the_turning_chains_apart() {
+        use crate::material_stream::EFFECT_SIGNATURE_WORDS as N;
+        let plain = {
+            let mut w = [0u32; N];
+            w[0] = 0x500;
+            w[4] = 1;
+            w
+        };
+        let turning = {
+            let mut w = plain;
+            w[4] = 0x700;
+            w[N - 1] = 0x8000_0000;
+            w
+        };
+        let mut c = CopyCount::default();
+        c.take(None, plain);
+        c.take(Some(plain), plain);
+        let mut moved = plain;
+        moved[5] = 2;
+        c.take(Some(plain), moved);
+        // The projection of a turning chain is the helper's: only the texture and the modes count.
+        c.take(Some(turning), plain);
+        let mut other_texture = plain;
+        other_texture[0] = 0x600;
+        c.take(Some(turning), other_texture);
+        assert_eq!(
+            c,
+            CopyCount {
+                draws: 2,
+                differ: 1,
+                turning: 2,
+                turning_differ: 1,
+                not_watched: 1,
+            }
+        );
+    }
+
+    #[test]
     fn the_line_names_both_stages_and_both_resets() {
         let line = Count::new().line();
-        for part in ["environment map:", "fog map:", "at BeginPaint", "at a pass change", "4+ x 0"] {
+        for part in [
+            "environment map:",
+            "fog map:",
+            "at BeginPaint",
+            "at a pass change",
+            "4+ x 0",
+            "0 retained draws (0 at a place not known)",
+            "the table's copy at the retained draws",
+            "turning chain 0 draws",
+        ] {
             assert!(line.contains(part), "{line}");
         }
     }
