@@ -28,6 +28,7 @@ import ctypes.wintypes as wt
 import glob
 import importlib.util
 import io
+import itertools
 import json
 import os
 import re
@@ -130,7 +131,15 @@ def short_path(path):
 
 def walk(root):
     """The facts of a tree by a walk that never goes through a link: (bytes, files, the newest
-    time of a write, the reparse points, the folders that could not be read)."""
+    time of a write, the reparse points, the folders that could not be read). A tree under EXPORT_PLACES is not
+    walked: its facts come from its WizTree export, and with no export it is one folder that could not be read."""
+    export = export_of(root)
+    if export is not None:
+        with contextlib.suppress(NotExported):
+            return export.walk(root)
+        return 0, 0, 0.0, [], 1
+    if needs_export(root):
+        return 0, 0, 0.0, [], 1
     size = files = 0
     newest = 0.0
     links = []
@@ -159,7 +168,13 @@ def walk(root):
 
 
 def files_in(root):
-    """Each file of a tree, never through a link: (path, bytes, the time of its write)."""
+    """Each file of a tree, never through a link: (path, bytes, the time of its write). A tree under EXPORT_PLACES
+    comes from its WizTree export and is not walked (D587); with no export it raises NotExported."""
+    export = export_of(root)
+    if export is not None:
+        return export.files_in(root)
+    if needs_export(root):
+        raise NotExported("no WizTree export holds %s, and it is not walked (D587)" % root)
     found = []
     stack = [long_path(root)]
     while stack:
@@ -173,6 +188,193 @@ def files_in(root):
                     info = entry.stat(follow_symlinks=False)
                     found.append((short_path(entry.path), info.st_size, info.st_mtime))
     return found
+
+
+# ---- the WizTree exports (D587, W565)
+
+# The places whose trees no tool walks: E: is a disk with heads, and the walks of 2026-11-17 took about 30 minutes each
+# and held the game (records entry 2732). Their files come from WizTree CSV exports of files and folders (WizTree's
+# default export: `WizTree64.exe "<place>" /export="C:\tmp\wiztree-<date>\<name>.csv" /admin=0`). One listing of a
+# folder and the read of a file stay; only a walk of a tree goes.
+EXPORT_PLACES = [KEEP_ROOT, "E:\\nirender-results"]
+EXPORT_GLOB = "C:\\tmp\\wiztree-*\\*.csv"
+# An older export is no ground for a removal: the evidence names it as a problem.
+EXPORT_HOURS = 24
+FILE_ATTRIBUTE_COMPRESSED = 0x800
+
+
+class NotExported(OSError):
+    """A tree under EXPORT_PLACES that no WizTree export holds: it is not walked (D587)."""
+
+
+class ExportRow(tuple):
+    """A row of an export: (path, folder, bytes, bytes on the disk, time of the write, the attributes)."""
+    __slots__ = ()
+    path = property(lambda self: self[0])
+    folder = property(lambda self: self[1])
+    size = property(lambda self: self[2])
+    on_disk = property(lambda self: self[3])
+    written = property(lambda self: self[4])
+    attributes = property(lambda self: self[5])
+    is_link = property(lambda self: bool(self[5] & FILE_ATTRIBUTE_REPARSE_POINT))
+
+
+def export_key(path):
+    """A path in the one spelling of the exports: absolute, Windows' case, no separator at the end."""
+    return os.path.normcase(os.path.abspath(path)).rstrip("\\/")
+
+
+def export_time(text):
+    """The seconds of a Modified of WizTree, `2026/11/22 19:22:10`, in local time; 0 for an empty field."""
+    if not text:
+        return 0.0
+    return time.mktime((int(text[0:4]), int(text[5:7]), int(text[8:10]), int(text[11:13]), int(text[14:16]), int(text[17:19]), 0, 0, -1))
+
+
+def export_lines(file):
+    """The lines of a WizTree CSV from its header on: the banner line before it is left out (verdict 613)."""
+    first = file.readline()
+    return itertools.chain([first], file) if first.lstrip('"').startswith("File Name") else file
+
+
+def export_root(path):
+    """The root folder of a WizTree CSV (the folder line first after the header), or None for a file that is no
+    export. Reads three lines."""
+    import csv
+
+    with contextlib.suppress(OSError, UnicodeDecodeError, ValueError, KeyError, TypeError, StopIteration, csv.Error):
+        with open(path, encoding="utf-8-sig", newline="") as file:
+            row = next(csv.DictReader(itertools.islice(export_lines(file), 2)))
+        return export_key(row["File Name"]) if row["File Name"].endswith(("\\", "/")) else None
+    return None
+
+
+class Export:
+    """One WizTree CSV export: its root, the time of its file, and its rows by their folder. An export of folders only
+    (WizTree's /exportfiles=0) holds no file: it gives the sizes of folders, and is no list of the files of a tree."""
+
+    def __init__(self, path):
+        import csv
+
+        self.path = path
+        self.made = os.path.getmtime(path)
+        self.rows = {}
+        self.children = {}
+        self.root = None
+        root_files = file_rows = 0
+        with open(path, encoding="utf-8-sig", newline="") as file:
+            for row in csv.DictReader(export_lines(file)):
+                name = row["File Name"]
+                folder = name.endswith(("\\", "/"))
+                entry = ExportRow((name.rstrip("\\/"), folder, int(row["Size"]), int(row["Allocated"] or 0), export_time(row["Modified"]),
+                                   int(row["Attributes"] or 0)))
+                key = export_key(entry.path)
+                if self.root is None:
+                    if not folder:
+                        raise ValueError("%s: the first row is no folder" % path)
+                    self.root, root_files = key, int(row.get("Files") or 0)
+                else:
+                    self.children.setdefault(os.path.dirname(key), []).append(entry)
+                self.rows[key] = entry
+                file_rows += not folder
+        if self.root is None:
+            raise ValueError("%s: no rows" % path)
+        self.folders_only = root_files > 0 and file_rows == 0
+
+    def hours_old(self, now=None):
+        return ((now or time.time()) - self.made) / 3600
+
+    def covers(self, path):
+        return same_or_under(path, self.root)
+
+    def row(self, path):
+        return self.rows.get(export_key(path))
+
+    def tree(self, root):
+        """The files and the links of a tree, never through a link. Raises NotExported for a folder that the export
+        does not hold (one made after it, or an export of folders only)."""
+        key = export_key(root)
+        top = self.rows.get(key)
+        if self.folders_only or top is None or not top.folder:
+            raise NotExported("the WizTree export %s holds no files of %s" % (self.path, root))
+        files, links, stack = [], [], [key]
+        while stack:
+            for entry in self.children.get(stack.pop(), ()):
+                if entry.is_link:
+                    links.append(entry.path)
+                elif entry.folder:
+                    stack.append(export_key(entry.path))
+                else:
+                    files.append(entry)
+        return files, links
+
+    def files_in(self, root):
+        return [(entry.path, entry.size, entry.written) for entry in self.tree(root)[0]]
+
+    def walk(self, root):
+        files, links = self.tree(root)
+        return sum(entry.size for entry in files), len(files), max((entry.written for entry in files), default=0.0), links, 0
+
+
+# The exports in use: None until the first need, then the newest export of each root (use_exports).
+EXPORTS = None
+
+
+def find_exports(pattern=None):
+    """The newest WizTree CSV of each root among the files of `pattern` (EXPORT_GLOB), by the file's time."""
+    newest = {}
+    for path in glob.glob(pattern or EXPORT_GLOB):
+        root = export_root(path)
+        with contextlib.suppress(OSError):
+            made = os.path.getmtime(path)
+            if root is not None and (root not in newest or made > newest[root][0]):
+                newest[root] = (made, path)
+    return [path for _, path in sorted(newest.values())]
+
+
+def use_exports(paths):
+    """Reads the exports of `paths`; the tools take them from here. A file that cannot be read is said and left out."""
+    global EXPORTS
+    EXPORTS = []
+    for path in paths:
+        try:
+            EXPORTS.append(Export(path))
+        except (OSError, ValueError, KeyError, UnicodeDecodeError) as error:
+            print("the WizTree export %s cannot be read, and it is not used: %s" % (path, error))
+    return EXPORTS
+
+
+def exports():
+    return use_exports(find_exports()) if EXPORTS is None else EXPORTS
+
+
+def needs_export(path):
+    return any(same_or_under(path, place) for place in EXPORT_PLACES)
+
+
+def export_of(path):
+    """The export that holds `path` (the one with the deepest root), or None. Only a path that needs an export loads
+    them, so a tool that reads no such path reads no CSV."""
+    if not needs_export(path):
+        return None
+    holding = [export for export in exports() if export.covers(path) and not export.folders_only]
+    return max(holding, key=lambda export: len(export.root), default=None)
+
+
+def export_problems(now=None):
+    """What makes the exports no ground for a removal: a place with no export of its files, an export of folders only,
+    an export older than EXPORT_HOURS."""
+    problems = []
+    for place in EXPORT_PLACES:
+        holding = [export for export in exports() if export.covers(place)]
+        files = [export for export in holding if not export.folders_only]
+        if not files:
+            problems.append("no WizTree export of the files of %s%s (D587: it is not walked; %s)" % (
+                place, ", only of its folders" if holding else "", EXPORT_GLOB))
+        for export in files:
+            if export.hours_old(now) > EXPORT_HOURS:
+                problems.append("the WizTree export %s is %.0f hours old, more than %d" % (export.path, export.hours_old(now), EXPORT_HOURS))
+    return problems
 
 
 def remove_link(path):
@@ -595,10 +797,16 @@ class Evidence:
         names = glob.glob(os.path.join(KEEP_ROOT, "baseline-*")) + glob.glob(os.path.join(KEEP_ROOT, "gate-*")) if names is None else names
         # The name of a baseline can hold the set that it needs: baseline-accepted-20261102-f194.
         parts = [os.path.basename(name) for name in names]
-        problems = []
+        # The folders on E come from the WizTree exports: with no export, an old one or one of folders only, the text
+        # may lack a citation (D587, W565).
+        problems = export_problems() if any(needs_export(folder) for folder in folders) else []
         for folder in folders:
             try:
                 found = files_in(folder)
+            except NotExported as error:
+                if not any("no WizTree export" in problem for problem in problems):
+                    problems.append("a folder cannot be read: %s (%s)" % (folder, error))
+                continue
             except OSError as error:
                 problems.append("a folder cannot be read: %s (%s)" % (folder, error))
                 continue

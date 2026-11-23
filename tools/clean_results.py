@@ -4,8 +4,8 @@ Without `--apply` it only lists.
     python tools/clean_results.py                 # the sums of each place
     python tools/clean_results.py --list          # and each run, dump and set by name
     python tools/clean_results.py --apply         # trim, compress and remove what the list names
-    python tools/clean_results.py --during-game   # the list while a game runs: the walk reads the whole
-                                                  # disk, so never in a timing
+    python tools/clean_results.py --during-game   # the list while a game runs: it reads the text files
+                                                  # of E:, so never in a timing
     python -I tools/clean_results.py --self-test  # the pure parts and a real junction
 
 A run folder `<YYYYmmdd-HHMMSS>-<label>` lives in `results/` of a checkout, in E:\\nirender-results or in
@@ -47,8 +47,15 @@ names (clean_common.current_set). A sealed set s-<nir8>-<rl8>-<mwse8> also stays
 merge_step.py keeps for a refs/merge-step/<branch> (the base set of the next round), or when it is one of the newest 20
 sealed sets that no other reason keeps; another goes 7 days after it was made (W567 part C). Every other set goes 30
 days after the later of its folder's time and its Modified in the CSV. When neither names a set that is here, no set
-goes. No set is walked (D587, W565): the sizes come from a WizTree CSV of folders, `--sizes-csv FILE`, and are not
-known without it.
+goes. No set is walked (D587, W565): the sizes come from a WizTree CSV of folders, `--sizes-csv FILE` or the export
+that holds the sets, and are not known without it.
+
+No tree of E: is walked (D587, W565). The files of E:\\nirender-keep and E:\\nirender-results come from WizTree CSV
+exports of files and folders (clean_common.EXPORT_PLACES): the newest of each place in C:\\tmp\\wiztree-*\\*.csv, or
+`--export FILE` for each place. A run or a folder that the export does not hold is not read, and it stays. An export
+of folders only lists no files. With no export of the files of a place, or with one older than 24 hours, the evidence
+is not whole, and --apply refuses. The tool still lists one folder of E: at a time and reads the text files that the
+export names; a removal still walks the folder that it removes.
 
 The tool refuses while a game or a helper runs. A removal never goes through a link. Each act goes to
 E:\\nirender-keep\\clean-worktrees.log.
@@ -143,6 +150,9 @@ def trim_run(row):
         try:
             remove_file(path)
             gone.append(os.path.relpath(path, row["path"]))
+        except FileNotFoundError:
+            # A file of the export that went after it (D587): nothing to take.
+            continue
         except OSError as error:
             failures.append((path, str(error)))
     with open(long_path(os.path.join(row["path"], "trimmed.txt")), "a", encoding="ascii", errors="replace") as note:
@@ -220,10 +230,15 @@ def dump_owners(plans):
             for path, _, _ in row["files"]:
                 if os.path.basename(path).lower() != common.DUMPS_FILE:
                     continue
-                with open(long_path(path), encoding="utf-8", errors="replace") as pointer:
-                    for line in pointer.read().splitlines():
-                        if line.strip():
-                            owners[os.path.normcase(line.split("\t")[0])] = (row["name"], row["treatment"])
+                try:
+                    with open(long_path(path), encoding="utf-8", errors="replace") as pointer:
+                        lines = pointer.read().splitlines()
+                except FileNotFoundError:
+                    # A pointer of the export that went after it (D587): its run went too.
+                    continue
+                for line in lines:
+                    if line.strip():
+                        owners[os.path.normcase(line.split("\t")[0])] = (row["name"], row["treatment"])
     return owners
 
 
@@ -234,15 +249,26 @@ def plan_dumps(places, evidence, now, owners=None):
     for place in places:
         if not os.path.isdir(place) or is_link(place):
             continue
-        for path, size, written in files_in(place):
+        try:
+            found = files_in(place)
+        except common.NotExported as error:
+            print("not read, and its dumps stay: %s (%s)" % (place, error))
+            continue
+        for path, size, written in found:
             if not path.lower().endswith(common.DUMP_FILES):
                 continue
             parts = os.path.relpath(path, place).split(os.sep)[:-1] + [os.path.basename(place)]
             # A folder named after a run counts by the citations of the run, as the run itself does.
             cited = evidence.cites_dump(path) or any(part not in PLAIN_DUMP_ROOTS and (evidence.cites_word(part) or (run_age_days(part, now) is not None and evidence.cites_run(part))) for part in parts)
             run, run_treatment_now = owners.get(os.path.normcase(path), (None, None))
-            disk_size = on_disk(path)
-            attribute = bool(os.stat(long_path(path)).st_file_attributes & FILE_ATTRIBUTE_COMPRESSED)
+            # A dump on E has its size on the disk and its attributes in the export (D587).
+            export = common.export_of(path)
+            row = export.row(path) if export else None
+            if row is not None:
+                disk_size, attribute = row.on_disk, bool(row.attributes & FILE_ATTRIBUTE_COMPRESSED)
+            else:
+                disk_size = on_disk(path)
+                attribute = bool(os.stat(long_path(path)).st_file_attributes & FILE_ATTRIBUTE_COMPRESSED)
             treatment = dump_treatment((now - written) / 86400, cited, needs_compressing(size, disk_size, attribute), run_treatment_now)
             rows.append({"path": path, "size": size, "disk": disk_size, "attribute": attribute, "cited": cited, "run": run, "treatment": treatment})
     return rows
@@ -282,7 +308,12 @@ def other_dumps():
     for entry in found:
         if entry.path in (SETS, common.KEPT_DUMPS) or entry.name.startswith(("runs-", "full-dumps-")):
             continue
-        for path, size, _ in files_in(entry.path):
+        try:
+            found = files_in(entry.path)
+        except common.NotExported:
+            # The list of the export problems names the place; these dumps are only listed anyway.
+            continue
+        for path, size, _ in found:
             if path.lower().endswith(common.DUMP_FILES):
                 rows.append((size, path))
     return sorted(rows, reverse=True)
@@ -473,7 +504,11 @@ def main():
     parser.add_argument("--apply", action="store_true", help="trim, compress and remove; without it the tool only lists")
     parser.add_argument("--list", action="store_true", help="name each run and each set")
     parser.add_argument("--during-game", action="store_true", help="the list while a game runs; --apply still refuses")
-    parser.add_argument("--sizes-csv", metavar="FILE", help="a WizTree CSV of folders: the sizes of the sets (no set is walked, D587)")
+    parser.add_argument("--sizes-csv", metavar="FILE", help="a WizTree CSV of folders: the sizes of the sets (no set is walked, D587); "
+                        "without it, the export that holds the sets")
+    parser.add_argument("--export", metavar="FILE", action="append",
+                        help="a WizTree CSV export of files and folders of a place on E (D587), in place of the newest of each place in %s; "
+                        "again for each place" % common.EXPORT_GLOB)
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts and of a real junction")
     args = parser.parse_args()
     if args.self_test:
@@ -498,6 +533,11 @@ def clean(args):
         print("A run writes into its results, and the walk would disturb a timing. --during-game gives the list anyway.")
         return 1
     now = time.time()
+    # The trees of E come from WizTree exports, never from a walk (D587, W565).
+    for export in common.use_exports(args.export if args.export else common.find_exports()):
+        kind = "folders only: the sizes of folders, no files" if export.folders_only else "files and folders"
+        print("the WizTree export of %s: %s, %s, made %s (%.1f hours ago)" % (
+            export.root, export.path, kind, time.strftime("%Y-%m-%d %H:%M", time.localtime(export.made)), export.hours_old(now)))
     evidence = Evidence.load()
     print("The evidence: %.1f MB of text, %d full and %d short citations; %d runs on the keep list %s." % (len(evidence.text) / 1e6, len(evidence.stamps), len(evidence.shorts), len(evidence.kept), common.KEEP_LIST))
     for problem in evidence.problems:
@@ -511,11 +551,13 @@ def clean(args):
     current = current_set()
     plugin_main = shared.checkout_of(os.path.dirname(os.path.abspath(__file__)))
     pairs = merge_step_pairs(plugin_main, os.path.join(os.path.dirname(plugin_main), "MGE-XE-G7-render-link") if plugin_main else None)
-    sizes = read_sizes_csv(args.sizes_csv, SETS) if args.sizes_csv else None
+    sets_export = next((export for export in common.exports() if export.covers(SETS)), None)
+    sizes_csv = args.sizes_csv or (sets_export.path if sets_export else None)
+    sizes = read_sizes_csv(sizes_csv, SETS) if sizes_csv else None
     sets = plan_sets(SETS, evidence, current, running, now, sizes, pairs)
     if sizes is not None:
         # Verdict 613: a CSV of another form gives no size, and this line says so.
-        print("the CSV %s gave the sizes of %d of the %d sets" % (args.sizes_csv, sum(row["size"] is not None for row in sets), len(sets)))
+        print("the CSV %s gave the sizes of %d of the %d sets" % (sizes_csv, sum(row["size"] is not None for row in sets), len(sets)))
     print_runs(plans, links, args.list)
     print_labels(plans, evidence)
     print_dumps(dumps, other_dumps())
@@ -619,6 +661,110 @@ def self_test_sealed_sets(temp, now):
     run(plugin, "update-ref", "-d", "refs/merge-step/master")
     assert merge_step_pairs(plugin, mge) == {(commits[(plugin, "one")][:8], commits[(mge, "two")][:8])}
     assert merge_step_pairs(None, mge) == set()
+
+
+def write_export(path, root, rows, *, banner=True, age_hours=0.0, files=None):
+    """A WizTree CSV export in WizTree 4.33's form (read on its export of a sample folder, 2026-11-23): the banner, the
+    header, the root's line first; a folder's name ends with a separator. `rows`: (path under root, size, on disk,
+    attributes); a path that ends with a separator is a folder. `files`: the root's count of files, which an export of
+    folders only gives too (143930 in the export of E:\\nirender-keep of 2026-11-22); by default the file rows."""
+    stamp = "2026/11/22 19:22:10"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8-sig", newline="") as file:
+        if banner:
+            file.write("Generated by WizTree 4.33 22/11/2026 7:23:03 PM (You can hide this message by making a donation)\r\n")
+        file.write("File Name,Size,Allocated,Modified,Attributes,Files,Folders,DRIVECAPACITY,FREESPACE,USEDSPACE,RESERVEDSPACE\r\n")
+        files = sum(not name.endswith("\\") for name, _, _, _ in rows) if files is None else files
+        file.write('"%s\\",%d,0,%s,0,%d,0,999036022784,106807623680,892228399104,0\r\n' % (root, sum(size for _, size, _, _ in rows), stamp, files))
+        for name, size, disk, attributes in rows:
+            file.write('"%s",%d,%d,%s,%d,0,0\r\n' % (os.path.join(root, name), size, disk, stamp, attributes))
+    moment = time.time() - age_hours * 3600
+    os.utime(path, (moment, moment))
+
+
+def self_test_exports(temp, now):
+    """D587, W565: the trees of the export places come from WizTree exports, and no tree there is walked."""
+    saved = (common.EXPORT_PLACES, common.EXPORT_GLOB, common.EXPORTS)
+    place = os.path.join(temp, "e-place")
+    exports_glob = os.path.join(temp, "wiztree-*", "*.csv")
+    common.EXPORT_PLACES, common.EXPORT_GLOB, common.EXPORTS = [place], exports_glob, None
+    try:
+        def stamp(days):
+            return time.strftime("%Y%m%d-%H%M%S", time.localtime(now - days * 86400))
+
+        old, new = stamp(10) + "-old", stamp(0.5) + "-new"
+        # On the disk: the two runs, and in the old one a file that the export does not hold. A walk would see it.
+        for name in (old, new):
+            os.makedirs(os.path.join(place, "runs", name))
+        with open(os.path.join(place, "runs", old, "after-the-export.png"), "w") as out:
+            out.write("w" * 5000)
+        # No export yet: the place is not walked.
+        try:
+            files_in(os.path.join(place, "runs", old))
+            raise AssertionError("a tree of an export place with no export was walked")
+        except common.NotExported:
+            pass
+        assert walk(os.path.join(place, "runs", old)) == (0, 0, 0.0, [], 1)
+        assert plan_dumps([os.path.join(place, "runs")], Evidence(""), now) == [], "the dumps of a place with no export stay unread"
+        assert any("no WizTree export of the files of %s" % place in problem for problem in common.export_problems(now))
+
+        # A folders-only export lists no files, and is said.
+        write_export(os.path.join(temp, "wiztree-1", "folders.csv"), place, [("runs\\", 7, 0, 16)], age_hours=2, files=5)
+        common.EXPORTS = None
+        assert common.export_of(os.path.join(place, "runs")) is None and common.exports()[0].folders_only
+        assert any("only of its folders" in problem for problem in common.export_problems(now))
+
+        # A files export, without the banner (verdict 613). The run made after it is not in it.
+        link = os.path.join("runs", old, "link\\")
+        rows = [("runs\\", 1303, 0, 16), ("runs\\%s\\" % old, 1303, 0, 16), ("runs\\%s\\host-a.png" % old, 300, 4096, 32),
+                ("runs\\%s\\progress.log" % old, 3, 0, 32), (link, 0, 0, 1040), (os.path.join(link, "under-the-link.txt"), 999, 0, 32),
+                ("runs\\%s\\Morrowind.exe.900.dmp" % old, 1000, 100, 32), ("other\\", 0, 0, 16), ("other\\note.txt", 0, 0, 32)]
+        write_export(os.path.join(temp, "wiztree-2", "e-place.csv"), place, rows, banner=False, age_hours=1)
+        with open(os.path.join(temp, "wiztree-2", "text.csv"), "w") as out:
+            out.write("no export\r\n")
+        common.EXPORTS = None
+        export = common.export_of(place)
+        assert export is not None and not export.folders_only and export.path.endswith("e-place.csv"), common.exports()
+        # The newest export of a root wins: the files export replaces the older export of folders only.
+        assert common.find_exports(exports_glob) == [os.path.join(temp, "wiztree-2", "e-place.csv")], common.find_exports(exports_glob)
+        listed = sorted(os.path.basename(path) for path, _, _ in files_in(os.path.join(place, "runs", old)))
+        assert listed == ["Morrowind.exe.900.dmp", "host-a.png", "progress.log"], "the export's files, none of a walk, none through the link: %s" % listed
+        size, count, _, links, unread = walk(os.path.join(place, "runs", old))
+        assert (size, count, unread) == (1303, 3, 0) and [os.path.basename(path) for path in links] == ["link"], (size, count, links, unread)
+        assert common.export_problems(now) == [], common.export_problems(now)
+
+        # The runs: the old one from the export, the new one not in it stays unread.
+        plans = {row["name"]: row for row in plan_root(os.path.join(place, "runs"), Evidence(""), now)}
+        assert set(plans) == {old} and plans[old]["treatment"] == "trim" and [os.path.basename(f[0]) for f in plans[old]["heavy"]] == ["host-a.png"], plans
+        # host-a.png is in the export and not on the disk: the trim has nothing to take there, and no failure.
+        assert trim_run(plans[old]) == [] and os.path.exists(os.path.join(place, "runs", old, "after-the-export.png"))
+        # The dump's size on the disk is the export's: packed, so it is not packed again.
+        dumps = plan_dumps([os.path.join(place, "runs")], Evidence(""), now)
+        assert [(row["disk"], row["attribute"], row["treatment"]) for row in dumps] == [(100, False, "stay")], dumps
+
+        # The evidence: the text that the export names is read, and an old export is a problem.
+        os.makedirs(os.path.join(place, "other"))
+        with open(os.path.join(place, "other", "note.txt"), "w") as out:
+            out.write("a record of %s" % new)
+        keep_list = os.path.join(temp, "keep-e.txt")
+        with open(keep_list, "w") as out:
+            out.write("")
+        evidence = Evidence.load(folders=[os.path.join(place, "other")], names=[], repos=[], least=0, keep_list=keep_list)
+        assert evidence.cites_run(new) and evidence.problems == [], evidence.problems
+        # The older export of folders only stays older, or it would be the newest of the root.
+        os.utime(os.path.join(temp, "wiztree-1", "folders.csv"), (now - 30 * 3600, now - 30 * 3600))
+        os.utime(export.path, (now - 25 * 3600, now - 25 * 3600))
+        common.EXPORTS = None
+        stale = Evidence.load(folders=[os.path.join(place, "other")], names=[], repos=[], least=0, keep_list=keep_list)
+        assert any("hours old, more than 24" in problem for problem in stale.problems), stale.problems
+        # A folder of the place that the export does not hold is no text, and the load says so.
+        os.makedirs(os.path.join(place, "later"))
+        os.utime(export.path, (now, now))
+        common.EXPORTS = None
+        later = Evidence.load(folders=[os.path.join(place, "later")], names=[], repos=[], least=0, keep_list=keep_list)
+        assert any("cannot be read" in problem and "later" in problem for problem in later.problems), later.problems
+    finally:
+        common.EXPORT_PLACES, common.EXPORT_GLOB, common.EXPORTS = saved
 
 
 def self_test():
@@ -824,6 +970,7 @@ def self_test():
         assert not os.path.exists(os.path.join(sets, "f101")) and not os.path.exists(os.path.join(sets, "vd-a")) and os.path.exists(os.path.join(sets, "f100"))
         assert os.path.getsize(os.path.join(outside, "precious.txt")) == 1000
         self_test_sealed_sets(temp, now)
+        self_test_exports(temp, now)
 
         # A file that cannot go is said, and what could go is gone.
         tree = os.path.join(temp, "held")
