@@ -51,6 +51,8 @@ mod cli;
 use cli::*;
 mod crash;
 pub use crash::{hold_next_dump, rotate_log};
+#[cfg(test)]
+mod exit_drain_tests;
 mod log_pipe;
 mod watchdog;
 mod wgpu_log;

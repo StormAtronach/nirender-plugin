@@ -492,7 +492,7 @@ fn distinct(samples: &[usize]) -> usize {
 /// allocation holds its lock. They are written without the lock of stdout
 /// ([`crate::log_pipe::write_direct`]): a frame thread held inside a print holds that lock,
 /// and a print of the watchdog would wait for it, with no dump and no end.
-fn stalled(frame_thread: u32, seconds: u64) -> ! {
+pub(crate) fn stalled(frame_thread: u32, seconds: u64) -> ! {
     let disk = disk_held();
     let code = stall_code(disk);
     // First the exit for the plugin: a dump that hangs is then ended with the code of the

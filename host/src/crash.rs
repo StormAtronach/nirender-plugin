@@ -947,7 +947,7 @@ pub(crate) mod tests {
 
     /// The exit status of `child` when it ends within `seconds`; else the child is ended, and
     /// the result is none.
-    fn end_of_child(mut child: std::process::Child, seconds: u64) -> Option<std::process::ExitStatus> {
+    pub(crate) fn end_of_child(mut child: std::process::Child, seconds: u64) -> Option<std::process::ExitStatus> {
         let started = std::time::Instant::now();
         loop {
             if let Some(status) = child.try_wait().unwrap() {
