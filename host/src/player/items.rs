@@ -173,6 +173,7 @@ impl Player {
             }
         });
         self.table_shaded = None;
+        self.lights_drawn = None;
         // A frame with no set of the world's lights (no light events of MWSE) keeps the draws'
         // own lights: the clusters are not built for the world, so no draw takes them.
         let world = match world_start.filter(|_| self.renderer.clusters.world) {
@@ -1531,6 +1532,15 @@ impl Player {
                 pass_report::on_request(&[line_pass::NAME]);
                 let list = &mut self.renderer.line_list;
                 list.clear();
+                self.renderer.light_lines = if line_sources.contains(debug_lines::LineSources::LIGHTS) {
+                    // Before `draw_retained_main` takes them (a frame with no instance), or after.
+                    let shaded = (self.table_shaded.as_ref().map(|(lights, _)| lights))
+                        .or(self.lights_drawn.as_ref())
+                        .map(Vec::as_slice);
+                    self.retained.world_light_lines(&self.renderer.lights_known, shaded, list)
+                } else {
+                    [0; 2]
+                };
                 extension.debug_lines(&scene, line_sources, list);
                 let depths = line_pass::LineDepths {
                     frame: scene.depth.map(|view| (view, depth::terms(&scene.projection))),

@@ -790,6 +790,9 @@ struct Renderer {
     line_pass: Option<line_pass::LinePass>,
     /// The segments of the frame's line pass, kept between frames for its room.
     line_list: debug_lines::LineList,
+    /// The lights that the line source `lights` drew in the last frame: with an end, with no
+    /// end (`RetainedSet::world_light_lines`).
+    light_lines: [u32; 2],
     queue: wgpu::Queue,
     shader: wgpu::ShaderModule,
     /// Where the world shader's text stands: the text of a core mod that fails in the driver
@@ -1051,6 +1054,10 @@ struct Player {
     /// what the shade gives the scene: made before the clusters of the lights of the world
     /// (`MGE_XE_LIGHTS=world`), then taken by `draw_retained_main`.
     table_shaded: Option<(Vec<LightData>, Option<TableShade>)>,
+    /// The shaded lights of `table_shaded` after `draw_retained_main` took them, for the rest
+    /// of the frame: the line source `lights` of the debug views reads the end of each light
+    /// from them in the post step (W323).
+    lights_drawn: Option<Vec<LightData>>,
     /// The shade of the table as it was made in this frame (once, from the world camera's
     /// view), and the one of the last frame that had one: what the views of their own take
     /// ([`engine::views::shade_choice`]).

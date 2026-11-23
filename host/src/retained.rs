@@ -67,6 +67,11 @@ fn slot_bones(first: u32, count: u32, needed: u32) -> u32 {
 /// the instance, the values of the view from the scene, the lights through the indexes.
 const RETAINED_RECORD_BITS: u32 = 2 | 4 | 8;
 
+/// The colour of the sphere of a light with an end in the line source `lights`: yellow.
+pub(crate) const LIGHT_WITH_END: [u8; 4] = [255, 220, 0, 255];
+/// The colour of the sphere of a light with no end in the line source `lights`: cyan.
+pub(crate) const LIGHT_WITH_NO_END: [u8; 4] = [0, 230, 255, 255];
+
 /// The values of a view for the retained draws: `Scene` in the shader.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -1310,6 +1315,41 @@ impl RetainedSet {
             let slot = *self.light_slot_of.get(key)?;
             crate::lights::PlacedLight::of_record(*key, slot, known.get(key)?)
         }));
+    }
+
+    /// The line source `lights` of the debug views: a sphere for each point light of the world
+    /// that is on, at its absolute place from the game's record (`known`), with the reach that
+    /// the draws use (W587). A light with an end (the extension's fade, in `shaded`: the
+    /// table's lights as the extension shaded them for the main view, by slot, as the clusters
+    /// read them): its reach in the clusters ([`crate::lights::world_bin_reach`]), in
+    /// [`LIGHT_WITH_END`]. A light with no end: the radius by which it reaches a draw's bound
+    /// ([`crate::lights::PlacedLight::of_record`], the test of `world_lights_in_reach`), in
+    /// [`LIGHT_WITH_NO_END`]. Returns the numbers of the two kinds.
+    pub(crate) fn world_light_lines(
+        &self,
+        known: &HashMap<u32, [u8; 104]>,
+        shaded: Option<&[LightData]>,
+        list: &mut crate::debug_lines::LineList,
+    ) -> [u32; 2] {
+        let mut counts = [0u32; 2];
+        for key in &self.world_keys {
+            let (Some(&slot), Some(record)) = (self.light_slot_of.get(key), known.get(key)) else {
+                continue;
+            };
+            let Some(placed) = crate::lights::PlacedLight::of_record(*key, slot, record) else {
+                continue;
+            };
+            let end = shaded
+                .and_then(|lights| lights.get(slot as usize))
+                .and_then(crate::lights::world_bin_reach);
+            let (radius, color, kind) = match end {
+                Some(reach) => (reach, LIGHT_WITH_END, 0),
+                None => (placed.reach, LIGHT_WITH_NO_END, 1),
+            };
+            list.sphere(placed.place, f64::from(radius), color, crate::debug_lines::LineGroup::Tested);
+            counts[kind] += 1;
+        }
+        counts
     }
 
     /// The translation from the space of the set (the positions of `light_values`) to the
@@ -3174,6 +3214,7 @@ impl Player {
         if crate::dump_wanted() != 0 {
             self.retained.dump_lights(crate::dump_wanted(), &lights);
         }
+        self.lights_drawn = Some(lights);
         self.renderer.scene_main = scene;
         self.renderer.write_scene(0, &scene);
         if crate::dump_wanted() != 0 {
@@ -4266,6 +4307,39 @@ mod list_tests {
         assert!(set.slots[0].as_ref().unwrap().world_run.is_none());
         assert_eq!(set.slots[0].as_ref().unwrap().data.light_range[0..2], engine[..]);
         assert_eq!(rebuilds_after(&mut set, &known), 0);
+    }
+
+    /// W323, the line source `lights`: the sphere of a world light is at its absolute place
+    /// and has the reach that the draws use. The end comes from the shaded lights, not from the
+    /// record (the record has no fade): with no shaded lights, or a shaded light with no fade,
+    /// the light has no end and its sphere has the attach radius; with a fade it has an end and
+    /// its sphere has the cluster reach.
+    #[test]
+    fn the_light_lines_take_the_end_from_the_shaded_lights() {
+        use crate::debug_lines::LineList;
+        let (set, known) = world_set();
+        let slot = set.light_slot_of[&LIGHT] as usize;
+        let placed = crate::lights::PlacedLight::of_record(LIGHT, slot as u32, &known[&LIGHT]).unwrap();
+        let mut shaded = vec![light_data(&known[&LIGHT], None); slot + 1];
+        let radius_of = |list: &LineList| {
+            let a = list.segments()[0].a;
+            let d: f64 = (0..3).map(|i| (a[i] - f64::from(NEAR_S[i])).powi(2)).sum();
+            d.sqrt()
+        };
+        for lights in [None, Some(&shaded[..])] {
+            let mut list = LineList::default();
+            assert_eq!(set.world_light_lines(&known, lights, &mut list), [0, 1]);
+            assert_eq!(list.len(), crate::debug_lines::SPHERE_SEGMENTS);
+            assert!(list.segments().iter().all(|s| s.color == LIGHT_WITH_NO_END));
+            assert!((radius_of(&list) - f64::from(placed.reach)).abs() < 0.01);
+        }
+        shaded[slot].cone[3] = 1.0 / 512.0;
+        let reach = crate::lights::world_bin_reach(&shaded[slot]).unwrap();
+        assert_ne!(reach, placed.reach);
+        let mut list = LineList::default();
+        assert_eq!(set.world_light_lines(&known, Some(&shaded), &mut list), [1, 0]);
+        assert!(list.segments().iter().all(|s| s.color == LIGHT_WITH_END));
+        assert!((radius_of(&list) - f64::from(reach)).abs() < 0.01);
     }
 }
 
