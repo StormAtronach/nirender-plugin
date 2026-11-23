@@ -1170,6 +1170,9 @@ pub unsafe fn forget(mt: &MainThread, shape: usize) -> bool {
 /// retained instance whose handles need no check this frame. The handles of the draw are
 /// then those of the instance, and the draw in progress is pending for `draw`.
 pub unsafe fn seen(mt: &MainThread, shape: usize, kind: u32, class_out: &mut u32) -> Option<(u32, u32)> {
+    // A destroy of a shape at this address that waits for the drain goes first (W589): the
+    // shape here is then a new one, and the drain does not forget it.
+    crate::worker_events::settle(mt, crate::worker_events::Key::Shape(shape));
     if mode(mt) != Mode::Gpu {
         return None;
     }
@@ -1210,6 +1213,8 @@ pub unsafe fn consider(
     material: u32,
     property_state: usize,
 ) {
+    // As in `seen`: a waiting destroy at this address goes before the shape is noted (W589).
+    crate::worker_events::settle(mt, crate::worker_events::Key::Shape(shape));
     let cause = if !eligible {
         Some(0)
     } else if geometry == 0 {
@@ -3501,6 +3506,40 @@ mod tests {
             let deletes = capture::test_record_deletes(false);
             crate::shadow::restore_main_thread(before);
             assert_eq!(deletes, [77, 78]);
+        }
+    }
+
+    /// The worker destroyed a shape, and the engine gave its address to a new shape before the
+    /// drain (W589). The lookup of the new shape applies the destroy first: the old instance goes
+    /// with its delete, the new shape is not the old instance, and the drain finds no event of
+    /// the address to apply later.
+    #[test]
+    fn a_new_shape_at_a_freed_address_is_new() {
+        use crate::worker_events::{queue_for_test, waits_for_test, Key};
+        let _turn = crate::main_thread::TestTurn::take();
+        unsafe {
+            let before = crate::shadow::main_thread_for_test();
+            let mt = MainThread::claim();
+            capture::test_record_deletes(true);
+            let shape = 0x7701_0000;
+            let mut old = Instance::new(91, 0, 1, 2, 0, false, false, false);
+            old.filled = true;
+            old.sent = true;
+            tables(&mt).instances.insert(shape, old);
+            queue_for_test(Key::Shape(shape));
+
+            let mut class = 0;
+            assert_eq!(
+                seen(&mt, shape, 0, &mut class),
+                None,
+                "the new shape took the old one's handles"
+            );
+            assert!(!tables(&mt).instances.contains_key(&shape));
+            assert!(!waits_for_test(Key::Shape(shape)), "the drain would apply the destroy again");
+
+            let deletes = capture::test_record_deletes(false);
+            crate::shadow::restore_main_thread(before);
+            assert_eq!(deletes, [91]);
         }
     }
 

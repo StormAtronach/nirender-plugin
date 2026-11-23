@@ -8,9 +8,31 @@
 //! call's kind and arguments. It touches no table of the plugin. The main thread drains the
 //! queue at fixed points, before it reads the pointers it keeps (the start of each scene, a
 //! change of the mode, the end of the frame). It applies each event as the port does on the
-//! main thread. Applying an event reads nothing of the object: it can be freed by then. A
-//! block freed and used again before the drain makes the plugin forget the new object too: it
-//! is found again at its next draw.
+//! main thread. Applying an event reads nothing of the object: it can be freed by then.
+//!
+//! The same address is never the same object (lifetime rule 4, W589). The worker can free an
+//! object and the engine can give its address, or a light's index, to a new object before the
+//! drain. So a keyed lookup of the main thread applies the pending destroys of its key first
+//! ([`settle`]): the new object is then new, and the later drain does not forget it. The keys
+//! are a shape's address (`instance_stream::seen`, `consider`) and a light's index
+//! (`light_stream::note_values`). A texture's renderer data has its own form: its mark takes the
+//! pending free of its address out of the queue (`ports::textures::mark_unreadable`). Geometry
+//! data needs none: its record carries the engine's unique id.
+//!
+//! The plugin reads through a kept engine address only with a proof of life in the same call,
+//! or after a destroy event removed every freed one (lifetime rule 3, W589):
+//! - `world_lights`, the lights: a light leaves the set at MWSE's LIGHT_REMOVED and at
+//!   `RemoveLight` (the hook below), under the set's lock, before the free.
+//! - `world_lights`, the light's cell: the engine frees a cell only in
+//!   `RecordsHandler::clearAllRecords`, at the game's start (`loadESMPsEverything`) and at its
+//!   exit (`DataHandler::dtor`) [IDA, Morrowind2.i64 0x4B8741]. A cell lives through the play.
+//! - `camera_space`, the roots of the eye: found in the live camera's parent chain in the same
+//!   call (`copied_root_above`).
+//! - `effect_chain`: none. The draw that notes a chain notes the effect's projection, its stage
+//!   words and its billboards' flags as values, and the check at the scene's end reads those.
+//!
+//! A new store of an engine address needs its line in `known_stores.txt` (the test
+//! `every_store_of_an_address_is_known`).
 //!
 //! The events:
 //! - `NiGeometry::dtor`: the shape leaves the table.
@@ -24,12 +46,14 @@
 //!   (`geometry_stream::gone`). Its one caller is the data's destructor. The hook reads the
 //!   unique id while the data is alive; on the main thread it sends the record at once.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use crate::main_thread::MainThread;
 use crate::mem::rd;
+use crate::ptr_hash::{HashMap, PtrBuild};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Event {
     /// A geometry was destroyed.
     Destroyed(usize),
@@ -49,6 +73,15 @@ const KIND_NAMES: [&str; KINDS] = [
     "geometry data destroyed",
 ];
 
+/// The key of a lookup on the main thread that [`settle`] settles.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Key {
+    /// A shape's address (`NiGeometry`).
+    Shape(usize),
+    /// A light's index (`NiLight::index`).
+    Light(u32),
+}
+
 impl Event {
     fn kind(self) -> usize {
         match self {
@@ -58,12 +91,34 @@ impl Event {
             Event::GeometryGone(..) => 3,
         }
     }
+
+    /// The key that a lookup settles, for the kinds that have one.
+    fn key(self) -> Option<Key> {
+        match self {
+            Event::Destroyed(shape) => Some(Key::Shape(shape)),
+            Event::LightGone(index) => Some(Key::Light(index)),
+            Event::TextureFreed(_) | Event::GeometryGone(..) => None,
+        }
+    }
 }
 
-static QUEUE: Mutex<Vec<Event>> = Mutex::new(Vec::new());
+/// The events in their order, and the number of events of each key that waits.
+struct Queue {
+    events: Vec<Event>,
+    keys: HashMap<Key, u32>,
+}
+
+static QUEUE: Mutex<Queue> = Mutex::new(Queue {
+    events: Vec::new(),
+    keys: HashMap::with_hasher(PtrBuild::new()),
+});
 static WAITING: AtomicBool = AtomicBool::new(false);
+/// The number of events with a key in the queue: 0 lets [`settle`] return at once.
+static KEYED: AtomicUsize = AtomicUsize::new(0);
 static QUEUED: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
 static APPLIED: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
+/// Of the applied events, those that a lookup of their key applied before the drain.
+static SETTLED: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
 /// Of the shapes the worker destroyed, those the table had as instances when the main thread
 /// applied the event. A count above 0 means the worker frees objects the plugin models, and
 /// the window between the free and the drain is real.
@@ -82,8 +137,34 @@ fn push(event: Event) {
     if crate::shadow::on_main_thread() {
         return;
     }
+    enqueue(event);
+}
+
+/// A destroy of a shape or a light from the cell worker, for a test on the main thread.
+#[cfg(test)]
+pub(crate) fn queue_for_test(key: Key) {
+    enqueue(match key {
+        Key::Shape(shape) => Event::Destroyed(shape),
+        Key::Light(index) => Event::LightGone(index),
+    });
+}
+
+/// True when a destroy of `key` waits in the queue.
+#[cfg(test)]
+pub(crate) fn waits_for_test(key: Key) -> bool {
+    let queue = QUEUE.lock().unwrap();
+    queue.keys.contains_key(&key) || queue.events.iter().any(|event| event.key() == Some(key))
+}
+
+fn enqueue(event: Event) {
     if let Ok(mut queue) = QUEUE.lock() {
-        queue.push(event);
+        queue.events.push(event);
+        // The key and the count under the lock: a lookup that reads the count after the free
+        // of the object finds its key.
+        if let Some(key) = event.key() {
+            *queue.keys.entry(key).or_insert(0) += 1;
+            KEYED.fetch_add(1, Ordering::Release);
+        }
         QUEUED[event.kind()].fetch_add(1, Ordering::Relaxed);
         WAITING.store(true, Ordering::Release);
     }
@@ -92,12 +173,53 @@ fn push(event: Event) {
 /// Takes the frees of renderer data at `data` out of the queue: the address is in use again.
 pub fn drop_texture_freed(data: usize) {
     if let Ok(mut queue) = QUEUE.lock() {
-        let before = queue.len();
-        queue.retain(|event| !matches!(event, Event::TextureFreed(freed) if *freed == data));
-        let dropped = before - queue.len();
+        let before = queue.events.len();
+        queue
+            .events
+            .retain(|event| !matches!(event, Event::TextureFreed(freed) if *freed == data));
+        let dropped = before - queue.events.len();
         if dropped != 0 {
             QUEUED[Event::TextureFreed(data).kind()].fetch_sub(dropped as u64, Ordering::Relaxed);
         }
+    }
+}
+
+/// A lookup of `key` on the main thread: applies the destroys of `key` that wait in the queue,
+/// in their order, before the lookup. Then an object at the address or the index of a freed one
+/// is new, and the later drain does not forget it (lifetime rule 4, W589). With no keyed event in
+/// the queue, the function returns at once.
+///
+/// The hook pushes an event in the object's destructor, before the free, so a new object at its
+/// address or index comes after the event, and a lookup of the new object finds the key.
+///
+/// # Safety
+///
+/// As [`drain`]: the events only make the plugin forget. `t` is the proof of the main thread.
+/// The caller holds no table that the applied events open: a shape's event opens
+/// `instance_stream`'s tables, a light's event `light_stream`'s lists.
+pub unsafe fn settle(t: &MainThread, key: Key) {
+    if KEYED.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let settled = {
+        let Ok(mut queue) = QUEUE.lock() else { return };
+        if queue.keys.remove(&key).is_none() {
+            return;
+        }
+        let mut settled = Vec::new();
+        queue.events.retain(|&event| {
+            if event.key() == Some(key) {
+                settled.push(event);
+                return false;
+            }
+            true
+        });
+        KEYED.fetch_sub(settled.len(), Ordering::Relaxed);
+        settled
+    };
+    for event in settled {
+        apply(t, event);
+        SETTLED[event.kind()].fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -260,29 +382,36 @@ pub unsafe fn drain() {
     let events = match QUEUE.lock() {
         Ok(mut queue) => {
             WAITING.store(false, Ordering::Relaxed);
-            core::mem::take(&mut *queue)
+            queue.keys.clear();
+            KEYED.store(0, Ordering::Relaxed);
+            core::mem::take(&mut queue.events)
         }
         Err(_) => return,
     };
     for &event in &events {
-        match event {
-            Event::Destroyed(shape) => {
-                if crate::instance_stream::forget(t, shape) {
-                    DESTROYED_INSTANCES.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            Event::TextureFreed(data) => crate::ports::textures::forget_unreadable(data),
-            Event::LightGone(key) => crate::light_stream::forget(t, key),
-            Event::GeometryGone(data, unique) => crate::geometry_stream::gone(t, data, unique),
-        }
-        if APPLIED[event.kind()].fetch_add(1, Ordering::Relaxed) == 0 {
-            crate::log!(
-                "worker events: the first of the {} applied on the main thread",
-                KIND_NAMES[event.kind()]
-            );
-        }
+        apply(t, event);
     }
     log_notes();
+}
+
+/// Applies one event as the port does on the main thread.
+unsafe fn apply(t: &MainThread, event: Event) {
+    match event {
+        Event::Destroyed(shape) => {
+            if crate::instance_stream::forget(t, shape) {
+                DESTROYED_INSTANCES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Event::TextureFreed(data) => crate::ports::textures::forget_unreadable(data),
+        Event::LightGone(key) => crate::light_stream::forget(t, key),
+        Event::GeometryGone(data, unique) => crate::geometry_stream::gone(t, data, unique),
+    }
+    if APPLIED[event.kind()].fetch_add(1, Ordering::Relaxed) == 0 {
+        crate::log!(
+            "worker events: the first of the {} applied on the main thread",
+            KIND_NAMES[event.kind()]
+        );
+    }
 }
 
 /// Writes the notes on the worker's destructors of marked shapes to the log as they come (at
@@ -309,9 +438,11 @@ pub fn report() -> String {
         })
         .collect();
     format!(
-        "worker events (C26, C27): {}; of the shapes destroyed, {} were instances of the table",
+        "worker events (C26, C27): {}; of the shapes destroyed, {} were instances of the table; applied at a lookup of their key before the drain (W589): shapes {}, lights {}",
         parts.join("; "),
-        DESTROYED_INSTANCES.load(Ordering::Relaxed)
+        DESTROYED_INSTANCES.load(Ordering::Relaxed),
+        SETTLED[Event::Destroyed(0).kind()].load(Ordering::Relaxed),
+        SETTLED[Event::LightGone(0).kind()].load(Ordering::Relaxed)
     )
 }
 
@@ -346,9 +477,10 @@ mod tests {
         assert!(is_unreadable(data));
         let mut queue = QUEUE.lock().unwrap();
         let at = queue
+            .events
             .iter()
             .position(|event| matches!(event, Event::TextureFreed(freed) if *freed == data));
-        queue.remove(at.expect("the hook writes the address into the queue"));
+        queue.events.remove(at.expect("the hook writes the address into the queue"));
         drop(queue);
         forget_unreadable(data);
         assert!(!is_unreadable(data));
@@ -366,6 +498,7 @@ mod tests {
             QUEUE
                 .lock()
                 .unwrap()
+                .events
                 .iter()
                 .any(|event| matches!(event, Event::TextureFreed(freed) if *freed == address))
         };
@@ -374,6 +507,119 @@ mod tests {
         assert!(is_unreadable(data));
         drop_texture_freed(other);
         forget_unreadable(data);
+    }
+
+    /// The name of a module static on `line` whose type holds addresses in a map, a set or a list.
+    /// A static inside a block (a `thread_local!` of a test) has an indent and is not one.
+    fn store_on(line: &str) -> Option<&str> {
+        let rest = ["static ", "pub static ", "pub(crate) static "]
+            .iter()
+            .find_map(|start| line.strip_prefix(start))?;
+        let (name, kind) = rest.split_once(':')?;
+        let kind = kind.split('=').next().unwrap_or("");
+        ["HashMap<usize", "HashSet<usize", "Vec<usize"]
+            .iter()
+            .any(|pattern| kind.contains(pattern))
+            .then_some(name.trim())
+    }
+
+    /// The stores of the `.rs` files below `dir`, as "path NAME" with the path from `src`.
+    fn stores_below(src: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stores_below(src, &path, out);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let file = path.strip_prefix(src).unwrap().to_string_lossy().replace('\\', "/");
+                for line in std::fs::read_to_string(&path).unwrap().lines() {
+                    if let Some(name) = store_on(line) {
+                        out.push(format!("{file} {name}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The stores without a line, and the lines without a store, of `known` (the text of
+    /// `known_stores.txt`).
+    fn unknown_stores(found: &[String], known: &str) -> (Vec<String>, Vec<String>) {
+        let lines: Vec<&str> = known
+            .lines()
+            .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+            .map(|line| line.split(':').next().unwrap_or("").trim())
+            .collect();
+        let missing = found
+            .iter()
+            .filter(|store| !lines.contains(&store.as_str()))
+            .cloned()
+            .collect();
+        let stale = lines
+            .iter()
+            .filter(|line| !found.iter().any(|store| store == *line))
+            .map(|line| line.to_string())
+            .collect();
+        (missing, stale)
+    }
+
+    /// Lifetime rule 3 (W589): each module static that holds addresses has its line in
+    /// `known_stores.txt`, "key only" or its proof of life, and each line has its static.
+    #[test]
+    fn every_store_of_an_address_is_known() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        stores_below(&src, &src, &mut found);
+        let known = std::fs::read_to_string(src.join("known_stores.txt")).unwrap();
+        let (missing, stale) = unknown_stores(&found, &known);
+        assert!(
+            missing.is_empty(),
+            "stores of addresses without a line in src/known_stores.txt: {missing:?}"
+        );
+        assert!(
+            stale.is_empty(),
+            "lines of src/known_stores.txt without their store: {stale:?}"
+        );
+        // A new store fails until it has its line.
+        found.push("new.rs NEW".to_owned());
+        assert_eq!(unknown_stores(&found, &known).0, ["new.rs NEW"]);
+    }
+
+    #[test]
+    fn a_store_is_a_module_static_of_addresses() {
+        assert_eq!(
+            store_on("static X: MainCell<Vec<usize>> = MainCell::new(Vec::new());"),
+            Some("X")
+        );
+        assert_eq!(
+            store_on("pub(crate) static Y: LockCell<Option<HashMap<usize, u32>>> = x;"),
+            Some("Y")
+        );
+        assert_eq!(
+            store_on("    static Z: RefCell<Vec<usize>> = x;"),
+            None,
+            "a static in a block"
+        );
+        assert_eq!(store_on("static W: MainCell<Vec<u32>> = x;"), None);
+        assert_eq!(
+            store_on("static V: MainCell<u32> = f::<Vec<usize>>();"),
+            None,
+            "the value is not the type"
+        );
+    }
+
+    /// A lookup settles only its own key: a destroy of another key waits for the drain, and a
+    /// lookup with nothing waiting changes nothing (W589).
+    #[test]
+    fn a_lookup_settles_only_its_own_key() {
+        let t = crate::main_thread::MainThread::for_test();
+        let (waiting, looked_up) = (Key::Shape(0x7E57_0100), Key::Shape(0x7E57_0104));
+        queue_for_test(waiting);
+        let settled_before = SETTLED[0].load(Ordering::Relaxed);
+        unsafe { settle(&t, looked_up) };
+        assert!(waits_for_test(waiting));
+        assert_eq!(SETTLED[0].load(Ordering::Relaxed), settled_before);
+        unsafe { settle(&t, waiting) };
+        assert!(!waits_for_test(waiting));
+        assert!(SETTLED[0].load(Ordering::Relaxed) > settled_before);
     }
 
     /// The mark of the old texture is still in the list when its free waits in the queue.
