@@ -22,7 +22,7 @@
 //! keeps the plain file.
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -94,10 +94,62 @@ extern "system" {
     fn Sleep(milliseconds: u32);
 }
 
+/// The time of a write to the disk that a thread of its own does (the log writer, the
+/// picture writer): the watchdog reads it at a stall, and a write that has waited
+/// long names the disk as the cause (`watchdog::stalled`). The picture writer's clock also
+/// runs during the encode of the picture (PNG, JPEG), which writes to the file as it goes: an
+/// encode of 2 s or more with no disk wait would count too, but the fast PNG compression of a
+/// picture of the game takes far less \[I\].
+pub(crate) struct WriteClock {
+    /// [`clock_ms`] at the start of the write that runs; 0 while no write runs.
+    began_ms: AtomicU64,
+}
+
+/// The milliseconds since the first call, from 1: 0 is "no write" of [`WriteClock`].
+fn clock_ms() -> u64 {
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+impl WriteClock {
+    pub(crate) const fn new() -> WriteClock {
+        WriteClock {
+            began_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Marks the start of a write; the end comes when the mark is dropped.
+    pub(crate) fn begin(&self) -> WriteMark<'_> {
+        self.began_ms.store(clock_ms(), Ordering::Release);
+        WriteMark { clock: self }
+    }
+
+    /// How long the write that runs has run; None while no write runs.
+    pub(crate) fn held(&self) -> Option<Duration> {
+        match self.began_ms.load(Ordering::Acquire) {
+            0 => None,
+            began => Some(Duration::from_millis(clock_ms().saturating_sub(began))),
+        }
+    }
+}
+
+/// A write that runs, from [`WriteClock::begin`] until the drop.
+pub(crate) struct WriteMark<'a> {
+    clock: &'a WriteClock,
+}
+
+impl Drop for WriteMark<'_> {
+    fn drop(&mut self) {
+        self.clock.began_ms.store(0, Ordering::Release);
+    }
+}
+
 /// The read of the writer thread. The kernel writes the state of the read into it while the
 /// read waits, so it lives in an [`Arc`] that the writer thread holds until its last read ends.
 struct PendingRead {
     overlapped: UnsafeCell<Overlapped>,
+    /// The writer's write of the bytes into the file.
+    writing: WriteClock,
 }
 
 // SAFETY: the writer thread starts the reads; other threads only read the state word, which
@@ -186,6 +238,7 @@ impl LogPipe {
         };
         let reading = Arc::new(PendingRead {
             overlapped: UnsafeCell::new(overlapped),
+            writing: WriteClock::new(),
         });
         Some(LogPipe {
             read,
@@ -301,6 +354,7 @@ fn copy_out(read: isize, file: isize, reading: &PendingRead) {
         if !read_ok || got == 0 {
             return;
         }
+        let _write = reading.writing.begin();
         write_all(file, &buffer[..got as usize]);
     }
 }
@@ -364,6 +418,12 @@ pub(crate) fn start(file: isize) {
 /// lines that are still in the pipe.
 pub(crate) fn drain(limit: Duration) -> bool {
     PIPE.get().is_none_or(|pipe| pipe.drain(limit))
+}
+
+/// How long the log writer's write into the file has run; None while it writes nothing, and
+/// without a pipe.
+pub(crate) fn write_held() -> Option<Duration> {
+    PIPE.get().and_then(|pipe| pipe.reading.writing.held())
 }
 
 /// Writes `text` into the log without a lock of the standard library: a thread that is held
@@ -556,6 +616,45 @@ mod tests {
         assert_eq!(got.len(), text.len());
         assert!(got == text, "the bytes arrived out of order");
         assert!(pipe.drain(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_write_clock_runs_from_the_mark_to_its_drop() {
+        let clock = WriteClock::new();
+        assert_eq!(clock.held(), None);
+        {
+            let _write = clock.begin();
+            std::thread::sleep(Duration::from_millis(30));
+            let held = clock.held().expect("a write runs");
+            assert!(held >= Duration::from_millis(25) && held < Duration::from_secs(5), "{held:?}");
+        }
+        assert_eq!(clock.held(), None);
+    }
+
+    /// The watchdog's look at the disk: while the disk holds the writer's write, the writer's
+    /// clock runs; when the disk lets go and the writer waits for lines, it stops.
+    #[test]
+    fn the_writers_clock_runs_while_the_disk_holds_its_write() {
+        let sink = HeldSink::new(4096);
+        let pipe = LogPipe::new(sink.write, 1 << 20).expect("the pipe");
+        assert!(pipe.spawn_writer());
+        let text = lines(1000);
+        write_all(pipe.write, &text);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pipe
+            .reading
+            .writing
+            .held()
+            .is_none_or(|held| held < Duration::from_millis(100))
+        {
+            assert!(Instant::now() < deadline, "the writer's clock did not run");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let got = sink.read_all(text.len(), Duration::from_secs(10));
+        assert!(got == text, "{} of {} bytes arrived, or out of order", got.len(), text.len());
+        assert!(pipe.drain(Duration::from_secs(2)));
+        assert_eq!(pipe.reading.writing.held(), None, "the clock stops with the write");
     }
 
     /// The second look of `idle`: the pipe can be empty while the writer still holds bytes in

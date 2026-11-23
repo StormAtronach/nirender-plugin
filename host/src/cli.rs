@@ -45,6 +45,17 @@ pub fn run(args: Vec<String>) {
     run_with(args, || None)
 }
 
+/// The end of the live mode, after the stream: the pictures in the picture writer's queue, the
+/// count of wgpu's dropped lines, then the drain of the log pipe. The program ends after it,
+/// and its end (`ExitProcess`) drops the lines that are still in the pipe.
+pub(crate) fn end_of_live() {
+    crate::picture::wait_for_pictures();
+    if let Some(line) = crate::wgpu_log::dropped_line() {
+        println!("{line}");
+    }
+    crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
+}
+
 /// `run` with a program that draws more than the game does: in the live mode, and for a
 /// capture file. `make_extension` makes that program's part after the log is set up, so that
 /// the lines it prints at its start are in the log.
@@ -71,11 +82,11 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         if let Some(file) = log_file {
             crate::log_pipe::start(file);
         }
+        // The picture files go to a thread of their own for the same reason (`picture`); the
+        // end waits for the pictures in its queue, then drains the log with their lines.
+        crate::picture::start_writer();
         live::run(&name, backends, &args, extension);
-        if let Some(line) = crate::wgpu_log::dropped_line() {
-            println!("{line}");
-        }
-        crate::log_pipe::drain(crate::log_pipe::DRAIN_LIMIT);
+        end_of_live();
         return;
     }
     if args.len() < 3 {

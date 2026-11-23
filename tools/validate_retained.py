@@ -702,7 +702,7 @@ def self_test():
     # W523: a replay that ended with the fault of the stage shaders fails with replay.py's line of it, in each
     # stage that replays; the null: the code 0 passes, and another code has the plain line.
     import common
-    fault_output = ("frames 60\n" + common.STAGE_FAULT_START + "1 rewrites failed (stage key 1: the end mark of the stage loop: 0 in the text, 1 wanted); 0 pipelines failed; "
+    fault_output = ("frames 60\n" + common.STAGE_FAULT_START + "1 rewrites failed (stage key 1: the end mark of the stage facts: 0 in the text, 1 wanted); 0 pipelines failed; "
                     "the uber-shader drew 9 draws that have a stage key (9 after a failed rewrite, 0 after a failed pipeline, 0 with a pipeline not made); 0 draws past the cap of 256 keys\n")
     fault_line = common.stage_fault_line("seyda.nircap", EXIT_REPLAY_STAGE_SHADERS, fault_output)
     assert fault_line.startswith("STAGE SHADERS: the replay of seyda.nircap failed with exit code 40: 1 rewrites failed (the first: stage key 1: the end mark"), fault_line

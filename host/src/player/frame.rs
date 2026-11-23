@@ -101,6 +101,7 @@ impl Player {
             world_space_scene: None,
             frame_instances: Vec::new(),
             parameters: None,
+            particle_answers_last: Default::default(),
             plan: plan::Plan::default(),
             frame_sorted: Vec::new(),
             replaced: 0,

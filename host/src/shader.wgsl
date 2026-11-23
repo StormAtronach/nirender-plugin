@@ -73,11 +73,13 @@ struct Draw {
     // bit 4, the draw is the sky dome and the extension gives its shape and its colour; bit
     // 8, the extension gives the colour and the draw keeps its alpha (the shadow of a moon);
     // bit 128, the extension makes the light for each pixel: the vertex stage makes no light
-    // and the colour is not kept between 0 and 1 between the stages; bit 16384, this crate's
-    // CORNER_LIGHT_BIT: a particle takes its lights at its corners (`extension_corner_shade`
-    // in the vertex stage); bit 32768, this crate's NO_LIGHTS_BIT: a draw lit for each pixel
-    // with no lights; bit 2 and the bits from 16 (but 128, 16384 and 32768) are for the
-    // extension.
+    // and the colour is not kept between 0 and 1 between the stages; bit 1024, this crate's
+    // CLOUDS_HOOK_BIT: the clouds with the extension's colour; bit 2048, this crate's
+    // PARTICLE_HOOK_BIT: a particle whose colour after the stages goes through
+    // `extension_particle_color`; bit 16384, this crate's CORNER_LIGHT_BIT: a particle takes its
+    // lights at its corners (`extension_corner_shade` in the vertex stage); bit 32768, this
+    // crate's NO_LIGHTS_BIT: a draw lit for each pixel with no lights; bit 2 and the bits from
+    // 16 (but 128, 1024, 2048, 16384 and 32768) are for the extension.
     counts: vec4u,
     // The lights of the draw in `lights`: the first and the number.
     light_range: vec4u,
@@ -175,8 +177,9 @@ struct Scene {
 // function below reads the fact from the draw's record. It is the general shader and the vertex
 // module of every pipeline. The fragment module of a stage pipeline is made from this text with
 // each `const` of the block as an `override` (`stage_shaders::stage_facts_as_overrides`), and the
-// pipeline gives FIXED true and its key's facts (`stage_shaders::StageKey::constants`). The
-// compiler drops the branch that FIXED cannot take.
+// pipeline gives FIXED true and its key's facts and stage codes (`stage_shaders::StageKey::constants`).
+// No other part of the text changes, so every stage key has the same module. The compiler drops the
+// branch that FIXED cannot take.
 // STAGE FACTS BEGIN: one declaration on each line between the marks.
 const FIXED: bool = false;
 // The bits of SHADE_BITS of the record's `counts.w`.
@@ -192,10 +195,27 @@ const FIXED_ADDS: bool = false;
 const FIXED_PLANE: bool = false;
 // The alpha test's function, 0 for none (`more.z`).
 const FIXED_ALPHA_TEST: u32 = 0u;
+// The number of texture stages (`counts.y`), and the codes of each stage (W530 step 2): in the
+// bytes of FIXED_COLOR_<i> from the lowest, the colour operation and its arguments 1, 2 and 0
+// (`stage.color`); in the bytes of FIXED_ALPHA_<i>, the alpha operation and its arguments 1 and
+// 2 (`stage.alpha`).
+const FIXED_COUNT: u32 = 0u;
+const FIXED_COLOR_0: u32 = 0u;
+const FIXED_COLOR_1: u32 = 0u;
+const FIXED_COLOR_2: u32 = 0u;
+const FIXED_COLOR_3: u32 = 0u;
+const FIXED_COLOR_4: u32 = 0u;
+const FIXED_COLOR_5: u32 = 0u;
+const FIXED_ALPHA_0: u32 = 0u;
+const FIXED_ALPHA_1: u32 = 0u;
+const FIXED_ALPHA_2: u32 = 0u;
+const FIXED_ALPHA_3: u32 = 0u;
+const FIXED_ALPHA_4: u32 = 0u;
+const FIXED_ALPHA_5: u32 = 0u;
 // STAGE FACTS END
 // The bits of `counts.w` that a stage key holds (`stage_shaders::SHADE_BITS`), and the sky's bits
 // among them, which the scene's part never has (`stage_shaders::SKY_BITS`).
-const SHADE_BITS: u32 = 50879u;
+const SHADE_BITS: u32 = 52927u;
 const SKY_BITS: u32 = 12u;
 // The bits of `light_range.w` that a stage key holds: 4, 16 and 64.
 const LIGHT_FACT_BITS: u32 = 84u;
@@ -223,6 +243,42 @@ fn draw_normal() -> u32 {
 fn draw_alpha_test() -> u32 {
     if FIXED { return FIXED_ALPHA_TEST; }
     return draws[record].more.z;
+}
+fn stage_count() -> u32 {
+    if FIXED { return FIXED_COUNT; }
+    return draws[record].counts.y;
+}
+// The four bytes of a word of the stage codes, from the lowest.
+fn stage_codes(word: u32) -> vec4u {
+    return vec4u(word & 255u, (word >> 8u) & 255u, (word >> 16u) & 255u, word >> 24u);
+}
+// The colour operation and its arguments 1, 2 and 0 of stage `index` (`stage.color`).
+fn stage_color(index: u32) -> vec4u {
+    if FIXED {
+        switch index {
+            case 0u: { return stage_codes(FIXED_COLOR_0); }
+            case 1u: { return stage_codes(FIXED_COLOR_1); }
+            case 2u: { return stage_codes(FIXED_COLOR_2); }
+            case 3u: { return stage_codes(FIXED_COLOR_3); }
+            case 4u: { return stage_codes(FIXED_COLOR_4); }
+            default: { return stage_codes(FIXED_COLOR_5); }
+        }
+    }
+    return draws[record].stages[index].color;
+}
+// The alpha operation and its arguments 1 and 2 of stage `index` (`stage.alpha`).
+fn stage_alpha(index: u32) -> vec3u {
+    if FIXED {
+        switch index {
+            case 0u: { return stage_codes(FIXED_ALPHA_0).xyz; }
+            case 1u: { return stage_codes(FIXED_ALPHA_1).xyz; }
+            case 2u: { return stage_codes(FIXED_ALPHA_2).xyz; }
+            case 3u: { return stage_codes(FIXED_ALPHA_3).xyz; }
+            case 4u: { return stage_codes(FIXED_ALPHA_4).xyz; }
+            default: { return stage_codes(FIXED_ALPHA_5).xyz; }
+        }
+    }
+    return draws[record].stages[index].alpha.xyz;
 }
 // Whether the plane `plane` of the draw can clip: a key without a plane has none.
 fn draw_has_plane(plane: vec4f) -> bool {
@@ -369,6 +425,10 @@ fn world_light(at: u32) -> Light {
 // variable made the GPU three times slower (2026-10-16).
 @group(0) @binding(8) var<storage, read> draws: array<Draw>;
 var<private> record: u32;
+// The two gradients of the first stage's coordinate on the screen, made in `fs` before any
+// branch: `particle_texture` reads at the level of the stage's own read with them.
+var<private> first_stage_dx: vec2f;
+var<private> first_stage_dy: vec2f;
 // The textures and the samplers of the frame in binding arrays: a stage names its slots
 // in its record (x the texture, y the sampler; the slot 0 is white and plain).
 @group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;
@@ -440,6 +500,18 @@ struct CloudPixel {
     color: vec4f,
     direction: vec3f,
     pixel: vec2f,
+}
+
+// A pixel of a particle for `extension_particle_color` (PARTICLE_HOOK_BIT, 2048): the colour
+// after the texture stages, the particle's own colour and alpha from the game, the coordinate
+// of the first texture stage, the screen pixel, and the depth along the view in units of the
+// world.
+struct ParticlePixel {
+    color: vec4f,
+    vertex_color: vec4f,
+    texcoords: vec2f,
+    pixel: vec2f,
+    distance: f32,
 }
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
@@ -763,13 +835,25 @@ fn cloud_texture(uv: vec2f) -> vec4f {
     return textureSampleLevel(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], uv, 0.0);
 }
 
+// The first texture of the draw with its sampler, at the level of the first stage's own read:
+// for `extension_particle_color`, which may read it in a branch and at moved coordinates.
+fn particle_texture(uv: vec2f) -> vec4f {
+    return textureSampleGrad(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], uv, first_stage_dx, first_stage_dy);
+}
+
+// The particle's draw adds to the picture: its fade goes to black, not to alpha 0.
+fn particle_adds() -> bool {
+    return draw_adds();
+}
+
 // D3DTOP_BUMPENVMAP is 22 and D3DTOP_BUMPENVMAPLUMINANCE is 23. The move that the bump stage
 // `index` gives to the coordinate of the next stage, from its texel.
 fn bump_move(index: u32, texel: vec4f) -> vec2f {
-    let stage = draws[record].stages[index];
-    if index >= draws[record].counts.y || (stage.color.x != 22u && stage.color.x != 23u) {
+    let op = stage_color(index).x;
+    if index >= stage_count() || (op != 22u && op != 23u) {
         return vec2f(0.0);
     }
+    let stage = draws[record].stages[index];
     return vec2f(texel.r * stage.bump.x + texel.g * stage.bump.z, texel.r * stage.bump.y + texel.g * stage.bump.w);
 }
 
@@ -779,12 +863,48 @@ fn bump_move(index: u32, texel: vec4f) -> vec2f {
 // same in the case seen: a DXT5 map on the water of the test level. In a format without the
 // channel, the blue channel reads 1 (`d3d::gpu_pixels`), so the scale and the offset still apply.
 fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
-    let stage = draws[record].stages[index];
-    if index >= draws[record].counts.y || stage.color.x != 23u {
+    if index >= stage_count() || stage_color(index).x != 23u {
         return texel;
     }
+    let stage = draws[record].stages[index];
     let light = clamp(bump_texel.b * stage.luminance.x + stage.luminance.y, 0.0, 1.0);
     return vec4f(texel.rgb * light, texel.a);
+}
+
+// The texel of stage `index` (1 to 5) for a stage pipeline: white at and past the key's count,
+// where no stage reads it, so that the compiler drops the read. The general shader keeps the
+// read.
+fn stage_texel(index: u32, texel: vec4f) -> vec4f {
+    if FIXED && index >= FIXED_COUNT {
+        return vec4f(1.0);
+    }
+    return texel;
+}
+
+// One texture stage: its colour and alpha operations (`color`, `alpha`: the codes of
+// `stage_color` and `stage_alpha`) on its texel, the diffuse colour and the current colour; the
+// result is the new current colour. Both paths of `fs` call it: the loop of the general shader
+// and the written steps of a stage pipeline.
+fn stage_step(color: vec4u, alpha: vec3u, texel: vec4f, diffuse: vec4f, current: vec4f) -> vec4f {
+    let rgb = operation(color.x, argument(color.y, diffuse, current, texel),
+        argument(color.z, diffuse, current, texel), argument(color.w, diffuse, current, texel), diffuse, current, texel);
+    var a = current;
+    // A bump stage (22 and 23) moves the coordinate of the next stage, and its output is the
+    // current colour and alpha. The engine's table has SELECTARG1 for its alpha, and plain
+    // DXVK follows the table. The per-pixel path of MGE XE keeps the shape's alpha
+    // (`ffeshader.cpp`), and so does the running engine on Direct3D 8 in the cases seen: the
+    // particles of the test level and the quads of a mod. Not read in a driver.
+    if alpha.x != 1u && color.x != 22u && color.x != 23u {
+        a = operation(alpha.x, argument(alpha.y, diffuse, current, texel),
+            argument(alpha.z, diffuse, current, texel), vec4f(0.0), diffuse, current, texel);
+    }
+    var next = vec4f(rgb.rgb, a.a);
+    // The fixed-function pipeline keeps a colour between 0 and 1. A draw with the light
+    // for each pixel has no such limit.
+    if (draw_counts_w() & 128u) == 0u {
+        next = clamp(next, vec4f(0.0), vec4f(1.0));
+    }
+    return next;
 }
 
 @fragment
@@ -795,15 +915,18 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         inp.color = inp.color_flat;
         inp.world_normal = inp.world_normal_flat;
     }
-    // A texture read must not be in a branch, so each stage reads its texture first.
+    // A texture read must not be in a branch, so each stage reads its texture first. The
+    // gradients of the first stage's coordinate are made here for the same reason.
+    first_stage_dx = dpdx(final_coordinate(0u, inp.coordinate0));
+    first_stage_dy = dpdy(final_coordinate(0u, inp.coordinate0));
     var texels: array<vec4f, 6>;
     // A bump stage moves the coordinate of the stage after it.
     texels[0] = textureSample(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], final_coordinate(0u, inp.coordinate0));
-    texels[1] = bump_light(0u, texels[0], textureSample(textures[draws[record].stages[1].slots.x], samplers[draws[record].stages[1].slots.y], final_coordinate(1u, inp.coordinate1) + bump_move(0u, texels[0])));
-    texels[2] = bump_light(1u, texels[1], textureSample(textures[draws[record].stages[2].slots.x], samplers[draws[record].stages[2].slots.y], final_coordinate(2u, inp.coordinate2) + bump_move(1u, texels[1])));
-    texels[3] = bump_light(2u, texels[2], textureSample(textures[draws[record].stages[3].slots.x], samplers[draws[record].stages[3].slots.y], final_coordinate(3u, inp.coordinate3) + bump_move(2u, texels[2])));
-    texels[4] = bump_light(3u, texels[3], textureSample(textures[draws[record].stages[4].slots.x], samplers[draws[record].stages[4].slots.y], final_coordinate(4u, inp.coordinate4) + bump_move(3u, texels[3])));
-    texels[5] = bump_light(4u, texels[4], textureSample(textures[draws[record].stages[5].slots.x], samplers[draws[record].stages[5].slots.y], final_coordinate(5u, inp.coordinate5) + bump_move(4u, texels[4])));
+    texels[1] = stage_texel(1u, bump_light(0u, texels[0], textureSample(textures[draws[record].stages[1].slots.x], samplers[draws[record].stages[1].slots.y], final_coordinate(1u, inp.coordinate1) + bump_move(0u, texels[0]))));
+    texels[2] = stage_texel(2u, bump_light(1u, texels[1], textureSample(textures[draws[record].stages[2].slots.x], samplers[draws[record].stages[2].slots.y], final_coordinate(2u, inp.coordinate2) + bump_move(1u, texels[1]))));
+    texels[3] = stage_texel(3u, bump_light(2u, texels[2], textureSample(textures[draws[record].stages[3].slots.x], samplers[draws[record].stages[3].slots.y], final_coordinate(3u, inp.coordinate3) + bump_move(2u, texels[2]))));
+    texels[4] = stage_texel(4u, bump_light(3u, texels[3], textureSample(textures[draws[record].stages[4].slots.x], samplers[draws[record].stages[4].slots.y], final_coordinate(4u, inp.coordinate4) + bump_move(3u, texels[3]))));
+    texels[5] = stage_texel(5u, bump_light(4u, texels[4], textureSample(textures[draws[record].stages[5].slots.x], samplers[draws[record].stages[5].slots.y], final_coordinate(5u, inp.coordinate5) + bump_move(4u, texels[4]))));
 
     if (draw_counts_w() & 4u) != 0u {
         return vec4f(extension_sky_color(normalize(inp.world_position), inp.clip.xy), 1.0);
@@ -829,32 +952,30 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         diffuse = extension_shade(inp);
     }
     var current = diffuse;
-    // STAGE LOOP BEGIN: the rewrite of a stage key (stage_shaders.rs) finds the loop between this
-    // line and the line of its end. Keep both lines, one time each, with only the loop between.
-    for (var i = 0u; i < draws[record].counts.y; i++) {
-        let stage = draws[record].stages[i];
-        let texel = texels[i];
-        let color = operation(stage.color.x, argument(stage.color.y, diffuse, current, texel),
-            argument(stage.color.z, diffuse, current, texel), argument(stage.color.w, diffuse, current, texel), diffuse, current, texel);
-        var alpha = current;
-        // A bump stage (22 and 23) moves the coordinate of the next stage, and its output is the
-        // current colour and alpha. The engine's table has SELECTARG1 for its alpha, and plain
-        // DXVK follows the table. The per-pixel path of MGE XE keeps the shape's alpha
-        // (`ffeshader.cpp`), and so does the running engine on Direct3D 8 in the cases seen: the
-        // particles of the test level and the quads of a mod. Not read in a driver.
-        if stage.alpha.x != 1u && stage.color.x != 22u && stage.color.x != 23u {
-            alpha = operation(stage.alpha.x, argument(stage.alpha.y, diffuse, current, texel),
-                argument(stage.alpha.z, diffuse, current, texel), vec4f(0.0), diffuse, current, texel);
+    if FIXED {
+        // A stage pipeline: one step for each stage of its key, with the key's codes (W530 step 2).
+        // The general shader keeps its loop: written steps there were slower (W279).
+        if FIXED_COUNT > 0u { current = stage_step(stage_color(0u), stage_alpha(0u), texels[0], diffuse, current); }
+        if FIXED_COUNT > 1u { current = stage_step(stage_color(1u), stage_alpha(1u), texels[1], diffuse, current); }
+        if FIXED_COUNT > 2u { current = stage_step(stage_color(2u), stage_alpha(2u), texels[2], diffuse, current); }
+        if FIXED_COUNT > 3u { current = stage_step(stage_color(3u), stage_alpha(3u), texels[3], diffuse, current); }
+        if FIXED_COUNT > 4u { current = stage_step(stage_color(4u), stage_alpha(4u), texels[4], diffuse, current); }
+        if FIXED_COUNT > 5u { current = stage_step(stage_color(5u), stage_alpha(5u), texels[5], diffuse, current); }
+    } else {
+        for (var i = 0u; i < stage_count(); i++) {
+            current = stage_step(stage_color(i), stage_alpha(i), texels[i], diffuse, current);
         }
-        current = vec4f(color.rgb, alpha.a);
-        // The fixed-function pipeline keeps a colour between 0 and 1. A draw with the light
-        // for each pixel has no such limit.
-        if (draw_counts_w() & 128u) == 0u {
+    }
+
+    if (draw_counts_w() & 2048u) != 0u {
+        // A particle with the extension's colour (PARTICLE_HOOK_BIT): the function takes the
+        // result of the stages, and its result takes the stages' limit under their condition.
+        let distance = abs((draw_view() * vec4f(inp.world_position, 1.0)).z);
+        current = extension_particle_color(ParticlePixel(current, inp.vertex_color, final_coordinate(0u, inp.coordinate0), inp.clip.xy, distance));
+        if stage_count() != 0u && (draw_counts_w() & 128u) == 0u {
             current = clamp(current, vec4f(0.0), vec4f(1.0));
         }
     }
-    // STAGE LOOP END
-
     if draw_alpha_test() != 0u && !compare(draw_alpha_test(), floor(current.a * 255.0 + 0.5), f32(draws[record].more.w)) {
         discard;
     }

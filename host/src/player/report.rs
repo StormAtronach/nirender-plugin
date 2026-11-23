@@ -152,6 +152,10 @@ impl Player {
             "particle light: {} particle draws took their lights at their corners",
             c.corner_light_draws
         );
+        println!(
+            "particle hook: {} particle draws took the extension's colour function",
+            c.particle_hook_draws
+        );
         println!("instances: {} records and {} moves ({} checked against a full record, {} different), {} draws from them, {} draws of an instance not known, {} blends of the engine merged into the sorted list", c.instance_records, c.instance_moves, c.moves_checked, c.moves_different, c.instance_draws, c.instance_missing, c.merged_blends);
         println!(
             "sorted queue: {} places of the table's blends drawn in the engine's order, {} of an instance not known, {} outside the world scene, {} of an instance the table does not sort; {} sorted blends of the table without a place, not displayed by the engine ({} of them in frames with no place at all); {} places after the frame's first sorted blends; {} items of the table's blends before a depth clear after the world (the queue still open); {} instances whose sort mark differs from the rule of their material",

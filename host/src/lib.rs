@@ -51,6 +51,8 @@ mod cli;
 use cli::*;
 mod crash;
 pub use crash::{hold_next_dump, rotate_log};
+#[cfg(test)]
+mod exit_drain_tests;
 mod log_pipe;
 mod watchdog;
 mod wgpu_log;
@@ -409,6 +411,14 @@ pub const CORNER_LIGHT_BIT: u32 = 1 << 14;
 /// stage gives it the direction from the camera, as for the sky dome. A fact of the stage key:
 /// no other draw's shader has the function's code.
 pub const CLOUDS_HOOK_BIT: u32 = 1 << 10;
+
+/// Bit 2048 of `counts.w`, set by this crate: a draw of the quads of a particle system whose
+/// colour goes through `extension_particle_color`, when the extension says for the frame that it
+/// has the function ([`FrameParameters::particles`]; before the frame's answers, the last
+/// frame's). The fragment stage calls the function after
+/// the texture stages and before the draw's alpha test; the fog, the finish and the draw's state
+/// stay as they are. A fact of the stage key: no other draw's shader has the function's code.
+pub const PARTICLE_HOOK_BIT: u32 = 1 << 11;
 
 /// A line of WGSL that an extension puts into its text only for W317's test of a core mod that
 /// fails in the driver: each world pipeline of a text with it names a fragment entry point that
@@ -1116,6 +1126,9 @@ struct Player {
     /// that the game draws into ([`None`] for the back buffer), and whether the game named a
     /// rendered texture as its target.
     parameters: Option<FrameParameters>,
+    /// The particle answers of the last frame that had answers: what a particle takes before the
+    /// answers of this frame come (a save's picture at the head of a frame).
+    particle_answers_last: player::ParticleAnswers,
     plan: plan::Plan,
     /// The blended world draws of the frame that the engine sorts, and the places of the
     /// table's blends in the engine's queue: they wait for the item `SortedBlends` and keep

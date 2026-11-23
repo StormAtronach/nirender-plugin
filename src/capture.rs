@@ -3242,6 +3242,7 @@ unsafe fn frame_end(lock: &DeviceLock) {
         }
         Phase::Record(left) => {
             overlay_tick(&lock);
+            crate::overlay::memory_tick(ticks(), ticks_per_second());
             // The frame ends on the main thread, where the ports present; the proof says so.
             let (shown, retired) = match MainThread::here() {
                 Some(t) => {

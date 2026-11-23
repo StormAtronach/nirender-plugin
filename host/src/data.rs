@@ -220,10 +220,10 @@ pub struct DrawData {
     /// The number of lights, the number of stages, the ambient source, and bits: 1 the
     /// extension shades the draw, 4 the sky dome, 8 the shadow of a moon, 128 the colour is
     /// not kept between 0 and 1 between the texture stages, 1024 a draw of the clouds with the
-    /// extension's colour ([`crate::CLOUDS_HOOK_BIT`]), 16384 a particle takes its lights at
-    /// its corners ([`crate::CORNER_LIGHT_BIT`]), 32768 the draw has no lights
-    /// ([`crate::NO_LIGHTS_BIT`]); 2 and from 16 (but 128, 1024, 16384 and 32768) are the
-    /// extension's own.
+    /// extension's colour ([`crate::CLOUDS_HOOK_BIT`]), 2048 a particle with the extension's
+    /// colour ([`crate::PARTICLE_HOOK_BIT`]), 16384 a particle takes its lights at its corners
+    /// ([`crate::CORNER_LIGHT_BIT`]), 32768 the draw has no lights ([`crate::NO_LIGHTS_BIT`]);
+    /// 2 and from 16 (but 128, 1024, 2048, 16384 and 32768) are the extension's own.
     pub counts: [u32; 4],
     /// The lights of the draw in the light buffer of the frame: the first and the number.
     /// z: the first bone of a skinned draw in the palette buffer of the frame. w: bit 1
@@ -570,6 +570,8 @@ pub(crate) struct Counts {
     pub(crate) caster_own_not_world: u32,
     /// The particle draws that took their lights at their corners ([`crate::CORNER_LIGHT_BIT`]).
     pub(crate) corner_light_draws: u32,
+    /// The particle draws with the extension's colour function ([`crate::PARTICLE_HOOK_BIT`]).
+    pub(crate) particle_hook_draws: u32,
     /// The shapes with a rule of the engine that this program does not follow: a material
     /// without the smooth flag (the game sets `D3DSHADE_FLAT` for it), and a material with
     /// the specular flag (the game sets `D3DRS_SPECULARENABLE`).
