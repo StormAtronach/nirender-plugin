@@ -98,14 +98,21 @@ pub fn write(line: &str) {
 /// The log of a line written before any `open`: `nirender.log` in the folder of the game. A
 /// test build writes it into a folder of its own under the temporary folder, so that
 /// `cargo test` leaves the checkout clean (before, every test that logs left `nirender.log`
-/// and its rotated `nirender.log.1` in the repository's root).
+/// and its rotated `nirender.log.1` in the repository's root). The file has the process id in
+/// its name: the test runs of two sessions at once must not share one file, which each run
+/// empties at its first line.
 fn default_path() -> String {
     if cfg!(test) {
-        let folder = std::env::temp_dir().join("nirender-test-log");
-        let _ = std::fs::create_dir_all(&folder);
-        return folder.join("nirender.log").to_string_lossy().into_owned();
+        return test_log_path().to_string_lossy().into_owned();
     }
     "nirender.log".to_string()
+}
+
+/// The log file of a test build of this process.
+pub(crate) fn test_log_path() -> std::path::PathBuf {
+    let folder = std::env::temp_dir().join("nirender-test-log");
+    let _ = std::fs::create_dir_all(&folder);
+    folder.join(format!("nirender-{}.log", std::process::id()))
 }
 
 /// A new, empty log at `path`; the log of the run before goes to `<path>.1`.

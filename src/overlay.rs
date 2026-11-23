@@ -104,8 +104,10 @@ pub fn memory_tick(now: i64, per_second: i64) {
     }
     MEMORY_LAST.store(now, Ordering::Relaxed);
     let seconds = (now - MEMORY_FIRST.load(Ordering::Relaxed)) / per_second.max(1);
+    // A small stack: the default reserves 2 MB of the address space that the line reports.
     let _ = std::thread::Builder::new()
         .name("nirender memory line".into())
+        .stack_size(64 * 1024)
         .spawn(move || crate::log!("{}", memory_line(seconds, &memory_now())));
 }
 
@@ -261,7 +263,7 @@ mod tests {
         // The first line, at 0 s; a call before the minute writes none.
         memory_tick(1, per_second);
         memory_tick(2, per_second);
-        let log = std::env::temp_dir().join("nirender-test-log").join("nirender.log");
+        let log = crate::log::test_log_path();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let lines = loop {
             let text = std::fs::read_to_string(&log).unwrap_or_default();
