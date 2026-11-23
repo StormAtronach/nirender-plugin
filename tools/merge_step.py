@@ -1,6 +1,6 @@
 """The checks of a merge, for the Coordinator, on the merged tree: one PASS or FAIL line for each stage.
 
-    python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--gate-list <file>] [--no-wait] [--dry-run]
+    python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--gate-list <file>] [--no-wait] [--dry-run] [--no-pair-check]
     python -I tools/merge_step.py --quick [<tree>] [--sibling <tree>] [--base <commit>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --self-test    # the tests of the pure parts: no build, no game
     python -I tools/merge_step.py --open-deploys # the WITHHELD deploys that no deploy closed
@@ -135,6 +135,14 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   stages did not run. A
   round of one repo does not run the fixed stages of the other (its tests and its checks), so a pair merge gets one
   check for each repo;
+- the pair check (W531), before any slot and in --dry-run: for each merge on base..commit, the local branches at its
+  other parents are the merged branches. A sibling branch of the same name is the other half of a paired change. When
+  its tip is not in the sibling's HEAD, the round stops with "FAIL the pair:": the first round of a paired change
+  needs the other half merged in its sibling first, locally and not pushed (records 2864). A later commit on that
+  sibling branch, or a name shared by chance, gives a false stop; --no-pair-check makes it a line. A sibling branch
+  not in HEAD whose name holds the merge's W number gives a note line only. Each way past the check prints a line
+  with "not checked": no merge on the path, no local branch at a merged parent, no sibling tree. The lines go into
+  the round's log too;
 - each ref line of a round (its own ref moves from <old> to <new>, or stays at <old> with the reason; the pair, which
   starts "this round's pair:"; the line of the sibling, which starts "the sibling <name>:") goes to the console and,
   after the summary, into the round's log (W532);
@@ -1069,6 +1077,78 @@ def closing_merges(repo, base, commit):
     return closing_commits(entries, commit), fast_forward_warning(entries, commit)
 
 
+# A paired change (W531): a round of one half needs the other half merged in its sibling tree first. W530 step 2's first
+# nirender round failed late on that: render-link's test of the helper's text ran against a sibling without its half
+# (records 2864).
+NO_PAIR_CHECK = "--no-pair-check"
+
+
+def local_branches(repo, points_at=None):
+    """{name: commit} of the local branches of `repo`, or only of those whose tip is `points_at`."""
+    args = ["for-each-ref", "--format=%(refname:short)%09%(objectname)"]
+    if points_at:
+        args.append("--points-at=%s" % points_at)
+    out = git(repo, *args, "refs/heads")
+    return dict(line.split("\t", 1) for line in out.splitlines() if "\t" in line)
+
+
+def item_word(item):
+    """The W number of an item in lower case, as a branch name writes it ("W530 step 2" is "w530"), or None."""
+    match = re.match(r"W(\d+)\b", item)
+    return "w%s" % match.group(1) if match else None
+
+
+def pair_check(repo, sibling, entries, passed=False):
+    """The pair check of a round (W531): (lines, stop). `entries` are the round's first-parent path (first_parent_path).
+    For each merge on it, the local branches at its other parents are the merged branches. A sibling branch of the same
+    name is the other half: the first lines name it when the sibling's HEAD has its tip; else the round stops before any
+    slot, unless `passed` (--no-pair-check). A sibling branch that is not in HEAD and whose name holds the merge's item
+    gives a note line only. Each way past the check says "not checked", so that a pair cannot slip through silently."""
+    merges = [(commit, parents.split()[1:], subject) for commit, parents, subject in entries if len(parents.split()) > 1]
+    if not merges:
+        return ["the pair: no merge on base..commit; not checked"], False
+    if not os.path.isdir(sibling) or resolve(sibling, "HEAD") is None:
+        return ["the pair: no sibling tree at %s; not checked" % sibling], False
+    head = resolve(sibling, "HEAD")
+    name = os.path.basename(sibling)
+    theirs = local_branches(sibling)
+    lines, stop = [], False
+    for commit, others, subject in merges:
+        named = set()
+        for parent in others:
+            ours = sorted(local_branches(repo, points_at=parent))
+            if not ours:
+                lines.append("the pair: no local branch at %s (the merge %s); not checked" % (parent[:10], commit[:10]))
+            for branch in ours:
+                named.add(branch)
+                tip = theirs.get(branch)
+                if tip is None:
+                    lines.append("the pair: %s has no branch of that name in %s; a change of one repo" % (branch, name))
+                elif is_ancestor(sibling, tip, head):
+                    lines.append("the pair: %s of %s at %s, in the sibling's HEAD %s" % (branch, name, tip[:10], head[:10]))
+                else:
+                    why = ("%s of %s (tip %s) is not in the sibling's HEAD %s. A paired change merges the other half in the "
+                           "sibling first (locally, not pushed), then this round (W531; records 2864). A later commit on the "
+                           "sibling's branch of that name, or a name shared by chance, gives a false stop: %s passes it."
+                           % (branch, name, tip[:10], head[:10], NO_PAIR_CHECK))
+                    if passed:
+                        lines.append("the pair check is passed by %s: %s" % (NO_PAIR_CHECK, why))
+                    else:
+                        lines.append("FAIL the pair: " + why)
+                        stop = True
+        for item in items_of(subject):
+            word = item_word(item)
+            if not word:
+                continue
+            for branch, tip in sorted(theirs.items()):
+                if branch in named or not re.search(r"(^|[^a-z0-9])%s([^0-9]|$)" % word, branch.lower()):
+                    continue
+                if not is_ancestor(sibling, tip, head):
+                    lines.append("note: the sibling's branch %s (tip %s) names %s and is not in its HEAD: if it is the other half "
+                                 "of this change, merge it in the sibling first" % (branch, tip[:10], item))
+    return lines, stop
+
+
 def close_lines(existing, when, repo_name, merges, stages, log_path):
     """The closing lines of a pass: one for each (commit, subject) of `merges` whose subject names an item that the lines
     `existing` of the closes file do not have for that commit. A rerun of a commit adds nothing; a later commit of the same
@@ -1981,6 +2061,79 @@ def self_test_equal_parts(root):
         del BASE_SET_NOTE[:]
 
 
+def self_test_pair(root):
+    """W531, verdict 650: the pair check on scratch repos. A merge of feat/x in one repo; the sibling's feat/x not in its
+    HEAD stops the round, and in HEAD names the pair (the null: the check is not always a stop). No sibling branch of
+    the name, a merged branch that is gone, no merge on the path and no sibling tree each give a line and no stop; the
+    flag makes the stop a line; a sibling branch that holds the item only gives a note."""
+    author = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+
+    def run(tree, *args):
+        return subprocess.run(["git", "-C", tree, *args], check=True, env=git_env(), capture_output=True, text=True).stdout.strip()
+
+    def new_repo(name, *branches):
+        tree = os.path.join(root, "pair", name)
+        os.makedirs(tree)
+        run(tree, "init", "-q", "-b", "master")
+        run(tree, *author, "commit", "-q", "--allow-empty", "-m", "one")
+        for branch in branches:
+            run(tree, "checkout", "-q", "-b", branch)
+            run(tree, *author, "commit", "-q", "--allow-empty", "-m", branch)
+            run(tree, "checkout", "-q", "master")
+        return tree
+
+    ours = new_repo("ours", "feat/x")
+    run(ours, *author, "commit", "-q", "--allow-empty", "-m", "two")
+    base = run(ours, "rev-parse", "HEAD")
+    run(ours, *author, "merge", "-q", "--no-ff", "feat/x", "-m", "Merge: the change x (W9)")
+    entries = first_parent_path(ours, base, run(ours, "rev-parse", "HEAD"))
+
+    # 1: the other half is not merged in the sibling: a stop, with both commits and the false-stop sentence.
+    theirs = new_repo("theirs", "feat/x")
+    tip, head = run(theirs, "rev-parse", "feat/x"), run(theirs, "rev-parse", "HEAD")
+    lines, stop = pair_check(ours, theirs, entries)
+    assert stop and lines == ["FAIL the pair: feat/x of theirs (tip %s) is not in the sibling's HEAD %s. A paired change merges the other "
+                              "half in the sibling first (locally, not pushed), then this round (W531; records 2864). A later commit on "
+                              "the sibling's branch of that name, or a name shared by chance, gives a false stop: --no-pair-check "
+                              "passes it." % (tip[:10], head[:10])], lines
+    # 4: the flag makes it a line.
+    lines, stop = pair_check(ours, theirs, entries, passed=True)
+    assert not stop and len(lines) == 1 and lines[0].startswith("the pair check is passed by --no-pair-check: feat/x of theirs"), lines
+    # 2: the null: with the half merged in the sibling, no stop, and the line names the pair.
+    run(theirs, *author, "merge", "-q", "--no-ff", "feat/x", "-m", "Merge: the other half (W9)")
+    lines, stop = pair_check(ours, theirs, entries)
+    assert not stop and lines == ["the pair: feat/x of theirs at %s, in the sibling's HEAD %s" % (tip[:10], run(theirs, "rev-parse", "HEAD")[:10])], lines
+
+    # 3: no sibling branch of the name: a change of one repo, said.
+    alone = new_repo("alone")
+    lines, stop = pair_check(ours, alone, entries)
+    assert not stop and lines == ["the pair: feat/x has no branch of that name in alone; a change of one repo"], lines
+    # 3b (verdict 650, 1): the merged branch is gone from this repo: not checked, said, even beside an open sibling half.
+    gone = new_repo("gone", "feat/x")
+    parent = run(ours, "rev-parse", "feat/x")
+    run(ours, "update-ref", "-d", "refs/heads/feat/x")
+    lines, stop = pair_check(ours, gone, entries)
+    assert not stop and lines == ["the pair: no local branch at %s (the merge %s); not checked" % (parent[:10], entries[-1][0][:10])], lines
+    run(ours, "update-ref", "refs/heads/feat/x", parent)
+
+    # 5: the item only: a note for an open sibling branch that names W9; none for w90 (the word's bound); none once merged.
+    items = new_repo("items", "test/w9-probe", "test/w90-other")
+    lines, stop = pair_check(ours, items, entries)
+    assert not stop and lines[0] == "the pair: feat/x has no branch of that name in items; a change of one repo", lines
+    assert lines[1:] == ["note: the sibling's branch test/w9-probe (tip %s) names W9 and is not in its HEAD: if it is the other half of "
+                         "this change, merge it in the sibling first" % run(items, "rev-parse", "test/w9-probe")[:10]], lines
+    run(items, *author, "merge", "-q", "--no-ff", "test/w9-probe", "-m", "Merge: probe")
+    lines, stop = pair_check(ours, items, entries)
+    assert not stop and lines == ["the pair: feat/x has no branch of that name in items; a change of one repo"], lines
+
+    # 6 (verdict 650, 2): no merge on the path; and no sibling tree.
+    run(ours, *author, "commit", "-q", "--allow-empty", "-m", "three")
+    linear = first_parent_path(ours, entries[-1][0], run(ours, "rev-parse", "HEAD"))
+    assert pair_check(ours, theirs, linear) == (["the pair: no merge on base..commit; not checked"], False)
+    nowhere = os.path.join(root, "pair", "nowhere")
+    assert pair_check(ours, nowhere, entries) == (["the pair: no sibling tree at %s; not checked" % nowhere], False)
+
+
 def self_test_gate_list(root, plugin):
     """The tests of --gate-list (W567 part D): the option, the gate's argument, the accept as the round's last stage, the
     close line, and the stop that keeps the accept from a round that failed."""
@@ -2193,6 +2346,7 @@ def self_test():
         self_test_quick(root, plugin, mge, base)
         self_test_gate_list(root, plugin)
         self_test_equal_parts(root)
+        self_test_pair(root)
         # The set of the commits under test and the round's MWSE commit: the maker in the round's take (--in-hold, C2), in
         # the plugin's tree; the deploy and the gate name its folder (C3).
         full = under_test("plugin", "a" * 40, "b" * 40)
@@ -3664,6 +3818,9 @@ def main():
                         "plugin that needs an MWSE feature that the installs' MWSE lacks)")
     parser.add_argument("--no-wait", action="store_true", help="stop with exit code 3 where this would wait for the slot")
     parser.add_argument("--dry-run", action="store_true", help="print the stages: no slot, no build")
+    parser.add_argument(NO_PAIR_CHECK, dest="no_pair_check", action="store_true",
+                        help="a sibling branch of the merged branch's name that is not in the sibling's HEAD is a line, not a stop (W531): "
+                             "for a later commit on that branch or a name shared by chance")
     parser.add_argument("--evidence", action="append", metavar="STAGE=FILE", help="the evidence file of the stage '%s': with it a FORMAT CHANGE (exit 6) passes, "
                         "and a difference of the build under test (exit 7) passes as JUDGED, a planned change that the Coordinator judged (W574); the round's "
                         "close line names the file's md5" % INSTANCE_STAGE)
@@ -3734,6 +3891,12 @@ def main():
     if problem:
         say("FAIL the tree: %s" % problem)
         return 1
+    # W531: the other half of a paired change in the sibling, before any slot; --dry-run shows it too.
+    pair, pair_stop = pair_check(repo, sibling, first_parent_path(repo, base, commit), passed=args.no_pair_check) if kind else ([], False)
+    for line in pair:
+        say(line)
+    if pair_stop:
+        return 1
     problem = baseline_problem(stages, baseline)
     if problem:
         say("FAIL the baseline: %s" % problem)
@@ -3792,7 +3955,7 @@ def main():
             say(line)
             log.write(line + "\n")
         # Said before the round; in the log too, beside the close that it explains.
-        for line in unread + base_set_lines(stages):
+        for line in unread + base_set_lines(stages) + pair:
             log.write(line + "\n")
     # close_after is the one gate of the closing lines: a failed stage or a pass against another folder writes none. A batch
     # of merges with one check closes the item of each merge on the first-parent path (D183).
