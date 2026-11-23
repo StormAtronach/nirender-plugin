@@ -53,6 +53,22 @@ impl Player {
         }
     }
 
+    /// The kinds of slot that the table lights for each pixel in the mode `world` (with
+    /// [`crate::PER_PIXEL_BIT`] in the last frame's shade) while the last frame's world had point
+    /// lights with no end (`Clusters::world_no_end`, W587): their slots take a world run, and the
+    /// shader takes only the lights with no end from it. 0 otherwise.
+    fn pixel_kinds(&self) -> u8 {
+        if !self.renderer.clusters.world || self.renderer.clusters.world_no_end == 0 {
+            return 0;
+        }
+        match &self.shade_last {
+            Some(Some(shade)) => (0..8)
+                .filter(|&kind| shade.flags[kind] & crate::PER_PIXEL_BIT != 0)
+                .fold(0, |kinds, kind| kinds | 1 << kind),
+            _ => 0,
+        }
+    }
+
     /// The world's start: the origin of the instances follows its camera, and the texture
     /// effects under a turning billboard turn for that camera.
     pub(crate) fn prepare_world(&mut self, facts: &WorldFacts) {
@@ -93,10 +109,11 @@ impl Player {
         }
         let began = std::time::Instant::now();
         let segment = self.renderer.retained_records;
-        // The world runs of the slots lit for each vertex go up with the records. The shade of
-        // this frame comes after the upload, so the kinds come from the last frame's.
-        let vertex_kinds = self.vertex_kinds();
-        self.retained.refresh_world_runs(vertex_kinds, &self.renderer.lights_known);
+        // The world runs of the slots go up with the records. The shade of this frame and its
+        // clusters come after the upload, so the kinds come from the last frame's.
+        let (vertex_kinds, pixel_kinds) = (self.vertex_kinds(), self.pixel_kinds());
+        self.retained
+            .refresh_world_runs(vertex_kinds, pixel_kinds, &self.renderer.lights_known);
         self.renderer.retained_upload(&mut self.retained);
         // A new shape can make the segment grow in any frame. The uploads below write the frame's
         // records and instances again, at the new place.
