@@ -529,6 +529,7 @@ unsafe extern "system" fn d3d_create_device(
         crate::log!("own device: made again, {width} x {height} (the game made its renderer again); the device, the stream and the helper stay");
         drop(s);
         place(placement);
+        crate::own_host::resize_targets(width, height);
         crate::capture::resize(width, height, game_window);
         d3d_add_reference(existing as *mut Object);
         d3d_add_reference(this);
@@ -900,10 +901,13 @@ pub unsafe fn answer(slot: usize, a: &[u32]) -> Option<u32> {
                 return Some(INVALID_CALL);
             }
             let placement = accept_parameters(&mut s, a[0] as usize as *mut u32);
-            crate::log!("own device: reset, {} x {}", s.parameters[0], s.parameters[1]);
+            let (width, height, window) = (s.parameters[0], s.parameters[1], device_window(&s));
+            crate::log!("own device: reset, {width} x {height}");
             // Outside the state's guard (`Placement`).
             drop(s);
             place(placement);
+            crate::own_host::resize_targets(width, height);
+            crate::capture::resize(width, height, window);
             OK
         }
         15 => call(CALL_PRESENT, a),
