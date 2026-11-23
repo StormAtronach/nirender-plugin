@@ -712,7 +712,7 @@ def self_test_exports(temp, now):
         write_export(os.path.join(temp, "wiztree-1", "folders.csv"), place, [("runs\\", 7, 0, 16)], age_hours=2, files=5)
         common.EXPORTS = None
         assert common.export_of(os.path.join(place, "runs")) is None and common.exports()[0].folders_only
-        folders_line = [problem for problem in common.export_problems(now) if "only one of its folders" in problem]
+        folders_line = [problem for problem in common.export_problems(now) if "only an export of its folders" in problem]
         # Verdict 664: the line says what to make, a files export, not the export of folders only that it refuses.
         assert folders_line and "export of files and folders" in folders_line[0] and "/admin=0" in folders_line[0], folders_line
 
