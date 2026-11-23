@@ -1,6 +1,7 @@
 //! The items of a frame: their run, the steps of the plan, the world's start and end,
 //! the parts the extension draws (the replaced classes, the held draws, the post).
 
+use crate::lights::LightHandles;
 use crate::objects::CreateView;
 use crate::pass_report::Skip;
 use crate::stamps::{Stamp, StampKind, Stamps};
@@ -1130,23 +1131,8 @@ impl Player {
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
         self.build_extension_lights(facts);
-        let own = &self.renderer.extension_lights;
-        let lights = own.built.then(|| {
-            (
-                own.lights.clone(),
-                own.uniform.clone(),
-                own.table.clone(),
-                own.indexes.clone(),
-                own.origin,
-            )
-        });
-        scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights {
-            lights,
-            clusters,
-            table,
-            indexes,
-            origin: *origin,
-        });
+        let lights = self.renderer.extension_lights.handles();
+        scene.lights = lights.as_ref().map(LightHandles::frame_lights);
         let part = self.part_begin("held draws (extension: caustics, water volumes, far water)");
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
@@ -1192,23 +1178,8 @@ impl Player {
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
         self.build_extension_lights(facts);
-        let own = &self.renderer.extension_lights;
-        let lights = own.built.then(|| {
-            (
-                own.lights.clone(),
-                own.uniform.clone(),
-                own.table.clone(),
-                own.indexes.clone(),
-                own.origin,
-            )
-        });
-        scene.lights = lights.as_ref().map(|(lights, clusters, table, indexes, origin)| FrameLights {
-            lights,
-            clusters,
-            table,
-            indexes,
-            origin: *origin,
-        });
+        let lights = self.renderer.extension_lights.handles();
+        scene.lights = lights.as_ref().map(LightHandles::frame_lights);
         self.begin_pass();
         if let Some(pass) = self.pass.as_mut() {
             let world = std::mem::take(&mut self.world_draws);
@@ -1514,6 +1485,9 @@ impl Player {
         scene.picture = picture.as_ref();
         scene.depth = depth.as_ref();
         scene.before_depth = before_depth.as_ref();
+        self.build_extension_lights(facts);
+        let lights = self.renderer.extension_lights.handles();
+        scene.lights = lights.as_ref().map(LightHandles::frame_lights);
         // The extension writes the picture with one sample: the back buffer, which the pass
         // resolved into, with more than one sample; `color` is it with one.
         let picture_target = self.back_view.clone().or_else(|| self.color.clone());

@@ -121,8 +121,9 @@ pub struct SceneView<'a> {
     /// then clears the depth for the game). It has the projection of the extension, not that
     /// of the game.
     pub before_depth: Option<&'a wgpu::TextureView>,
-    /// For [`Extension::draw_held`]: the lights of the frame, when the extension asked for them
-    /// ([`FrameParameters::lights`]) and the frame has a view of the world with lights.
+    /// For [`Extension::draw_held`], [`Extension::draw_held_in_place`] and [`Extension::post`]:
+    /// the lights of the frame, when the extension asked for them ([`FrameParameters::lights`])
+    /// and the frame has a view of the world with lights.
     pub lights: Option<FrameLights<'a>>,
 }
 
@@ -215,8 +216,8 @@ pub struct FrameParameters {
     /// True when the extension takes draws of the world: the renderer calls [`Extension::hold`]
     /// for each shape of the world, and gives the shapes it took to [`Extension::draw_held`].
     pub hold: bool,
-    /// True when the extension lights what it draws with the lights of the frame, for each
-    /// pixel: [`SceneView::lights`] in [`Extension::draw_held`].
+    /// True when the extension uses the lights of the frame: [`SceneView::lights`] in
+    /// [`Extension::draw_held`], [`Extension::draw_held_in_place`] and [`Extension::post`].
     pub lights: bool,
     /// True when a pixel of a draw that the extension shades takes its lights from the
     /// clusters of the frame (`cluster_lights` in the shader), with the mask of the lights
@@ -278,6 +279,8 @@ pub struct FrameLights<'a> {
     pub indexes: &'a wgpu::Buffer,
     /// The point of the world that the positions of the lights are relative to.
     pub origin: [f64; 3],
+    /// The number of lights in `lights` (the buffer can be larger).
+    pub count: u32,
 }
 
 /// A call of the extension that can read the picture of the frame and the depth of the game
