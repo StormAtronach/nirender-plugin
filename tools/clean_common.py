@@ -82,6 +82,14 @@ STAMP = re.compile(r"\d{8}-\d{6}")
 # The short form of a run's name, `-HHMMSS-`, with no word character before it. The label may differ.
 SHORT_CITATION = re.compile(r"(?<!\w)-\d{6}(?=-)")
 DUMP_NUMBER = re.compile(r"(?i)(?:dump|pid)\W{0,3}(\d+)")
+# A run of word characters, and the size of the parts of the text that word_parts reads at a time.
+WORD_PART = re.compile(r"\w+")
+WORD_PARTS_CHUNK = 1 << 24
+
+
+def is_word_char(char):
+    """True for a character of \\w in a str pattern of re: a letter or a digit in Unicode's sense, or _."""
+    return char.isalnum() or char == "_"
 EVIDENCE_TEXT = (".md", ".tsv", ".txt", ".py", ".sh", ".lua", ".json", ".csv", ".log", ".toml", ".cdb", ".ps1")
 # The docs and the commit messages alone hold more. Less says that a part was not read.
 LEAST_EVIDENCE = 10_000_000
@@ -374,7 +382,7 @@ def export_problems(now=None):
         files = [export for export in holding if not export.folders_only]
         if not files:
             problems.append("no WizTree export of the files of %s in %s%s (D587: it is not walked); %s" % (
-                place, EXPORT_GLOB, ", only one of its folders" if holding else "", EXPORT_HELP))
+                place, EXPORT_GLOB, ", only an export of its folders" if holding else "", EXPORT_HELP))
         for export in files:
             if export.hours_old(now) > EXPORT_HOURS:
                 problems.append("the WizTree export %s is %.0f hours old, more than %d; %s" % (
@@ -784,6 +792,8 @@ class Evidence:
 
     def __init__(self, text, problems=(), kept=()):
         self.text = text
+        # The \w+ runs of the text, made at the first need (word_parts).
+        self.parts = None
         # Why the text may lack a citation, or the keep list a run. A removal must not run on it: every run
         # would read as uncited, or a kept run as not kept.
         self.problems = list(problems)
@@ -848,9 +858,37 @@ class Evidence:
         citation counts by its time alone: a false keep costs little, and a false removal loses evidence."""
         return name[:15] in self.stamps or name[8:15] in self.shorts
 
+    def word_parts(self):
+        """The set of the \\w+ runs of the text, made once. A word that the text holds as a word of its own has each of
+        its \\w+ runs among them (each is bounded in the text by its own non-word characters or by the word's bounds),
+        so a word with a run that the set lacks is no citation, with no search of the text (W565 part speed)."""
+        if self.parts is None:
+            parts, text, start = set(), self.text, 0
+            while start < len(text):
+                end = min(len(text), start + WORD_PARTS_CHUNK)
+                # A cut never falls inside a run.
+                while end < len(text) and is_word_char(text[end]):
+                    end += 1
+                parts.update(WORD_PART.findall(text, start, end))
+                start = end
+            self.parts = parts
+        return self.parts
+
     def cites_word(self, word):
-        """True when the text holds this name as a word of its own: f94 is not in f945 or xf94."""
-        return word in self.text and re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", self.text) is not None
+        """True when the text holds this name as a word of its own: f94 is not in f945 or xf94. The same answer as the
+        regex (?<!\\w)word(?!\\w): each hit of str.find is checked at its two ends, behind word_parts. A regex search of
+        the 737 MB of text took about 1.3 s for each word (W565 part speed, cProfile)."""
+        if not word:
+            return re.search(r"(?<!\w)(?!\w)", self.text) is not None
+        parts = self.word_parts()
+        if not all(part in parts for part in WORD_PART.findall(word)):
+            return False
+        text, size, at = self.text, len(word), self.text.find(word)
+        while at >= 0:
+            if (at == 0 or not is_word_char(text[at - 1])) and (at + size == len(text) or not is_word_char(text[at + size])):
+                return True
+            at = text.find(word, at + 1)
+        return False
 
     def cites_dump(self, path):
         """True when the text names a dump by its file, its name with no extension, or the number
@@ -1132,8 +1170,38 @@ def self_test_game_kept_free(harness=None):
                     os.environ[name] = value
 
 
+def self_test_cites_word():
+    """W565 part speed: cites_word gives the regex's answer, (?<!\\w)word(?!\\w), on the edges of a word and of the text,
+    and on random texts and words of few characters; a cut of word_parts never splits a run."""
+    import random
+
+    def regex(text, word):
+        return word in text and re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", text) is not None
+
+    text = "see f94 and s-ab-cd, x_f95 f96x, -f97-, word_é f98² end f99"
+    words = ["f94", "f9", "s-ab-cd", "ab", "s-ab", "f95", "x_f95", "f96", "f97", "-f97-", "f98", "word_é", "é", "end", "f99", "see", "zz"]
+    evidence = Evidence(text)
+    assert [evidence.cites_word(word) for word in words] == [regex(text, word) for word in words], words
+    assert evidence.cites_word("") == (re.search(r"(?<!\w)(?!\w)", text) is not None)
+    draw = random.Random(565)
+    letters = "ab1_-. é²"
+    for _ in range(3000):
+        text = "".join(draw.choice(letters) for _ in range(draw.randint(0, 30)))
+        word = "".join(draw.choice(letters) for _ in range(draw.randint(1, 4)))
+        assert Evidence(text).cites_word(word) == regex(text, word), (text, word)
+    # A cut every 4 characters: the runs stay whole, and a word found at the cut is found.
+    saved = globals()["WORD_PARTS_CHUNK"]
+    globals()["WORD_PARTS_CHUNK"] = 4
+    try:
+        evidence = Evidence("abcdefgh ij-klmnop qr")
+        assert evidence.word_parts() == {"abcdefgh", "ij", "klmnop", "qr"} and evidence.cites_word("ij-klmnop") and not evidence.cites_word("defg")
+    finally:
+        globals()["WORD_PARTS_CHUNK"] = saved
+
+
 def self_test_common():
     self_test_game_kept_free()
+    self_test_cites_word()
     assert same_or_under("C:\\a\\b\\c", "C:\\a\\b") and not same_or_under("C:\\a\\bc", "C:\\a\\b")
     assert set_number("f195") == 195 and set_number("play185") == 185 and set_number("f91-null") is None and set_number("playset") is None
     assert kept_set_numbers("f195", ["f27", "f104p", "f193", "f195", "vd-a28"]) == {195, 193}
