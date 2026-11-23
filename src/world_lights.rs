@@ -47,6 +47,10 @@ const CELL_INTERIOR: u32 = 1;
 /// (`DataHandler::cellChangeToInterior` 0x489050 resets only the lights of an interior it
 /// leaves), so in an interior only the lights placed in it count. A light placed only on other
 /// references (`game_updateLightHelper2`, no cell) counts in an exterior.
+///
+/// The read of a kept cell is safe (lifetime rule 3, W589): the engine frees a cell only in
+/// `RecordsHandler::clearAllRecords`, at the game's start and at its exit [IDA 0x4B8741], so a
+/// cell lives through the play.
 unsafe fn in_active_cells(cell: usize, interior: usize) -> bool {
     if interior != 0 {
         return cell == interior;

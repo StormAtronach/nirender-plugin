@@ -397,6 +397,8 @@ unsafe fn eye_path(t: &MainThread, eye: &EyePair, camera: usize) -> EyePath {
     let Some(root) = copied_root_above(eye, camera) else {
         return EyePath::Chain;
     };
+    // The kept root is read only here, after `copied_root_above` found it in the live camera's
+    // parent chain in this call: the proof of its life (lifetime rule 3, W589).
     let root_now: [f32; 3] = rd(eye.roots[root], AV_LOCAL_TRANSLATE);
     // The comparison with the hooks of MGE XE stays a port of their steps.
     pair_path(eye.frame == *FRAME.get(t), !compare(), eye.root_stored[root], root_now)

@@ -1,0 +1,17 @@
+# The module statics of the plugin that hold engine or object addresses in a map, a set or a list
+# (lifetime rule 3, W589): one line each, "file NAME: key only" or the proof of life of each read
+# through a kept address. The test `worker_events::tests::every_store_of_an_address_is_known` finds
+# the statics at the start of a line whose type has HashMap<usize, HashSet<usize or Vec<usize, and
+# fails for a store without its line and for a line without its store. It does not see an address
+# in a field of a stored struct or an address kept as a u32: those stay the Reviewer's read.
+effect_chain.rs CHAINS: key only; the effect is read at a draw that has it live (note), and the scene's end reads the noted values
+effect_chain.rs TURNED: key only; the billboards whose display a draw of this frame saw
+geometry_stream.rs MORPH_BEFORE: key only; the check mode's weights by the geometry data's address
+instance_stream.rs PENDING_TARGETS: key only; the targets whose view slots wait for their keys to go
+instance_stream.rs SKY_SEEN: key only; the sky shapes that the census logged
+instance_stream.rs OFF_THREAD_CHANGES: key only; the change notes of another thread for the next frame_tick
+map_fog.rs GIVEN: the plugin's own locks (D3DLOCKED_RECT boxes), not engine objects; key only
+own_host.rs LIVE: the plugin's own device objects; an object is alive until its release takes it out, under the device lock
+ports/textures.rs UNREADABLE: key only; the source textures' renderer data that has no readable pixels
+ports/texture_link.rs IN_PROGRESS: key only; the source textures whose create runs on the main thread in this call
+shape_stream.rs POINTS_LOGGED: key only; the shapes whose engine records the particle count logged

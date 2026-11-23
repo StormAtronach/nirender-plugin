@@ -12,13 +12,20 @@
 //! in place of the projection: a move of the camera makes no new material.
 //!
 //! `NIRENDER_EFFECT_TURN_CHECK=1` sends the engine's words after the billboard's display at the
-//! end of each world scene (`send_checks`), and the helper compares them with its own.
+//! end of each world scene (`send_checks`), and the helper compares them with its own. A draw of
+//! the effect notes those words as values (`note_check`): the end of the scene reads no effect
+//! and no node (lifetime rule 3, W589).
 
 use crate::checked::Open;
 use crate::gen::layouts::{NiAVObject as AV, NiNode as NODE, NiRTTI, NiSwitchNode as SWITCH, NiTextureEffect as TE};
 use crate::main_thread::{MainCell, MainThread};
 use crate::mem::{rd, wr};
-use crate::ptr_hash::HashMap;
+use crate::ptr_hash::{HashMap, HashSet};
+
+/// The words of the check record (`capture::effect_turn_check`).
+const CHECK_WORDS: usize = crate::capture::tag::EFFECT_TURN_CHECK_WORDS;
+/// The words of the camera's place in the check record: the end of the scene writes them.
+const CHECK_CAMERA: core::ops::Range<usize> = 13..16;
 
 /// The run-time type of `NiBillboardNode`.
 pub(crate) const RTTI_BILLBOARD_NODE: usize = 0x7DE0A0;
@@ -42,14 +49,21 @@ struct Chain {
     frame: u32,
     /// The words of the record; empty for an effect with no turning billboard above it.
     words: Vec<u32>,
-    /// The turning billboards above the effect, for the check.
+    /// The turning billboards above the effect, for the check: keys, read only through the live
+    /// effect of a draw (`note_check`).
     billboards: Vec<usize>,
     /// The helper has the record of these words.
     sent: bool,
+    /// The check's words of a draw after all the billboards turned, with the frame of the draw;
+    /// the camera's words are zeros.
+    check: Option<(u32, [u32; CHECK_WORDS])>,
 }
 
 static CHAINS: MainCell<Option<HashMap<usize, Chain>>> = MainCell::new(None);
 static FRAME: MainCell<u32> = MainCell::new(1);
+/// The billboards whose display a draw of this frame saw (their flag cleared): a billboard above
+/// two effects counts as turned for both.
+static TURNED: MainCell<Option<HashSet<usize>>> = MainCell::new(None);
 
 #[track_caller]
 fn chains<'a>(t: &'a MainThread) -> Open<'a, HashMap<usize, Chain>> {
@@ -209,7 +223,70 @@ pub unsafe fn note(t: &MainThread, effect: usize) -> bool {
         chain.sent = true;
         crate::capture::effect_chain(&chain.words);
     }
+    if !chain.words.is_empty() && check_on() {
+        let mut turned = TURNED.get(t);
+        note_check(effect, chain, frame, turned.get_or_insert_with(HashSet::default), || {
+            check_words(effect)
+        });
+    }
     !chain.words.is_empty()
+}
+
+/// The engine's words of the effect for the check, the camera's words zeros: its projection
+/// after the turns, and the stage that the engine's callbacks make from it for the camera of the
+/// frame (the texture matrix of `texture_pass_b::effect_stage_words`, which the draw has). The
+/// check compares the turned projection only: no effect state, so no stage count of a pass. The
+/// stage's words are zeros when the effect has no device texture.
+///
+/// # Safety
+///
+/// `effect` points at a live `NiTextureEffect`; the renderer's pipeline holds the camera of the
+/// world scene.
+unsafe fn check_words(effect: usize) -> [u32; CHECK_WORDS] {
+    // The parts below fill the record's words exactly: a change of either length fails the
+    // build, not the copy in the game.
+    const _: () = assert!(1 + 9 + 3 + 3 + crate::ports::texture_pass_b::EFFECT_STAGE_WORDS - 2 == CHECK_WORDS);
+    let mut words = [0u32; CHECK_WORDS];
+    words[0] = effect as u32;
+    words[1..10].copy_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
+    words[10..13].copy_from_slice(&rd::<[u32; 3]>(effect, TE::worldProjTrans));
+    words[16..]
+        .copy_from_slice(&crate::ports::texture_pass_b::effect_stage_words(crate::engine::renderer(), effect, 0)[2..]);
+    words
+}
+
+/// The check at a draw of the effect: a billboard of the chain that displayed since its last
+/// draw goes into `turned`, and its flag is cleared, as only a display sets it again (a
+/// billboard out of the view keeps an older turn). At the first draw of the frame after all the
+/// billboards turned, the chain keeps the words of `read` for the end of the scene. The
+/// billboards are read only when the walk from the live effect in this call reaches them; a
+/// chain that changed since its read this frame has no check at this draw.
+///
+/// # Safety
+///
+/// `effect` points at a live `NiTextureEffect` with live nodes above it.
+unsafe fn note_check(
+    effect: usize,
+    chain: &mut Chain,
+    frame: u32,
+    turned: &mut HashSet<usize>,
+    read: impl FnOnce() -> [u32; CHECK_WORDS],
+) {
+    let Ok(nodes) = nodes_up(effect) else { return };
+    if !chain.billboards.iter().all(|node| nodes.contains(node)) {
+        return;
+    }
+    for &node in &chain.billboards {
+        let flags: u16 = rd(node, AV::flags);
+        if flags & DISPLAYED != 0 {
+            turned.insert(node);
+            wr(node, AV::flags, flags & !DISPLAYED);
+        }
+    }
+    let noted = chain.check.as_ref().is_some_and(|(at, _)| *at == frame);
+    if !noted && chain.billboards.iter().all(|node| turned.contains(node)) {
+        chain.check = Some((frame, read()));
+    }
 }
 
 /// Forgets the records that were sent: for a capture file from the stream.
@@ -226,6 +303,9 @@ pub fn frame_tick(t: &MainThread) {
         *frame = frame.wrapping_add(1).max(1);
         *frame
     };
+    if let Some(turned) = TURNED.get(t).as_mut() {
+        turned.clear();
+    }
     if frame.is_multiple_of(KEEP_FRAMES) {
         chains(t).retain(|&effect, chain| {
             let keep = frame.wrapping_sub(chain.frame) < KEEP_FRAMES;
@@ -243,58 +323,31 @@ fn check_on() -> bool {
     *ON.get_or_init(|| crate::switches::on("NIRENDER_EFFECT_TURN_CHECK").unwrap_or(false))
 }
 
-/// The test switch, at the end of a world scene: the engine's projection of each effect read in
-/// this frame whose billboards have all turned in this frame, the place of the camera as the
-/// engine stores it, and the stage that the engine's callbacks make from them for this camera (the
-/// texture matrix of `texture_pass_b::effect_stage_words`, which a draw at its place in the walk
-/// has). A billboard out of the view keeps an older turn, and the flag tells the two
-/// apart: it is cleared here, and only a display sets it again. \[I\] The check is for a place with
-/// no other walk before the world's in a frame (the test level): the local map's walk would set
-/// the flag with another camera.
+/// The test switch, at the end of a world scene: for each effect whose draw in this frame noted
+/// its check (`note_check`), the noted words with the place of the camera as the engine stores it.
+/// \[I\] The check is for a place with no other walk before the world's in a frame (the test
+/// level): the local map's walk would set the billboards' flag with another camera.
 ///
 /// # Safety
 ///
-/// The effects and the billboards read in this frame are live, `camera` is the live camera of the
-/// world scene, and the renderer's pipeline holds that camera.
+/// `camera` is the live camera of the world scene. No effect and no node is read.
 pub unsafe fn send_checks(t: &MainThread, camera: usize) {
     if !check_on() {
         return;
     }
+    send_noted_checks(t, rd(camera, AV::worldTransform_translation));
+}
+
+/// The check records of this frame's noted words, with the camera's words.
+fn send_noted_checks(t: &MainThread, camera: [u32; 3]) {
     let frame = *FRAME.get(t);
-    let table = chains(t);
-    let turning = || {
-        table
-            .iter()
-            .filter(|(_, chain)| chain.frame == frame && !chain.words.is_empty())
-    };
-    for (&effect, chain) in turning() {
-        if chain
-            .billboards
-            .iter()
-            .all(|&node| rd::<u16>(node, AV::flags) & DISPLAYED != 0)
-        {
-            // The parts below fill the record's words exactly: a change of either length fails
-            // the build, not the copy in the game.
-            const _: () = assert!(
-                1 + 9 + 3 + 3 + crate::ports::texture_pass_b::EFFECT_STAGE_WORDS - 2
-                    == crate::capture::tag::EFFECT_TURN_CHECK_WORDS
-            );
-            let mut words = [0u32; crate::capture::tag::EFFECT_TURN_CHECK_WORDS];
-            words[0] = effect as u32;
-            words[1..10].copy_from_slice(&rd::<[u32; 9]>(effect, TE::worldProjMat));
-            words[10..13].copy_from_slice(&rd::<[u32; 3]>(effect, TE::worldProjTrans));
-            words[13..16].copy_from_slice(&rd::<[u32; 3]>(camera, AV::worldTransform_translation));
-            // The check compares the turned projection only: no effect state, so no stage count
-            // of a pass. The words are zeros when the effect has no device texture.
-            words[16..].copy_from_slice(
-                &crate::ports::texture_pass_b::effect_stage_words(crate::engine::renderer(), effect, 0)[2..],
-            );
-            crate::capture::effect_turn_check(&words);
-        }
-    }
-    for (_, chain) in turning() {
-        for &node in &chain.billboards {
-            wr(node, AV::flags, rd::<u16>(node, AV::flags) & !DISPLAYED);
+    for chain in chains(t).values() {
+        if let Some((at, mut words)) = chain.check {
+            if at == frame {
+                words[CHECK_CAMERA].copy_from_slice(&camera);
+                // SAFETY: the record is the words; no engine memory is read.
+                unsafe { crate::capture::effect_turn_check(&words) };
+            }
         }
     }
 }
@@ -361,6 +414,84 @@ mod tests {
             unsafe { nodes_up(nodes[0].as_ptr() as usize) },
             Err(crate::parent_chain::ChainTooLong)
         );
+    }
+
+    /// The draw notes the check (W589): the first draw of a frame after the billboard displayed
+    /// keeps the words, clears the flag, and a later draw of the frame keeps the first words.
+    /// The next frame has no check until the billboard displays again.
+    #[test]
+    fn a_draw_notes_the_check_after_the_turn() {
+        let mut nodes = nodes_with_parents(&[Some(1), Some(2), None]);
+        let flags_at = AV::flags..AV::flags + 2;
+        nodes[1][flags_at.clone()].copy_from_slice(&(DISPLAYED | 0x0A).to_le_bytes());
+        let addresses: Vec<usize> = nodes.iter().map(|node| node.as_ptr() as usize).collect();
+        let mut chain = Chain {
+            billboards: vec![addresses[1]],
+            ..Chain::default()
+        };
+        let mut turned = HashSet::default();
+        // SAFETY: each node is a block of the size of a NiAVObject whose parent is in the list.
+        unsafe {
+            note_check(addresses[0], &mut chain, 5, &mut turned, || [7; CHECK_WORDS]);
+            assert_eq!(chain.check, Some((5, [7; CHECK_WORDS])));
+            assert_eq!(
+                u16::from_le_bytes([nodes[1][flags_at.start], nodes[1][flags_at.start + 1]]),
+                0x0A
+            );
+            note_check(addresses[0], &mut chain, 5, &mut turned, || [8; CHECK_WORDS]);
+            assert_eq!(
+                chain.check,
+                Some((5, [7; CHECK_WORDS])),
+                "a later draw of the frame took the check"
+            );
+            turned.clear();
+            note_check(addresses[0], &mut chain, 6, &mut turned, || [9; CHECK_WORDS]);
+            assert_eq!(
+                chain.check,
+                Some((5, [7; CHECK_WORDS])),
+                "a billboard with no display counts as turned"
+            );
+        }
+    }
+
+    /// A billboard that the walk from the live effect does not reach is not read (W589): the
+    /// chain changed since its read, and the address can be freed.
+    #[test]
+    fn a_billboard_off_the_walk_is_not_read() {
+        let nodes = nodes_with_parents(&[None]);
+        let effect = nodes[0].as_ptr() as usize;
+        let mut chain = Chain {
+            billboards: vec![0x30],
+            ..Chain::default()
+        };
+        let mut turned = HashSet::default();
+        // SAFETY: the effect is a block of the size of a NiAVObject with no parent; the billboard's
+        // address is not read.
+        unsafe {
+            note_check(effect, &mut chain, 5, &mut turned, || {
+                unreachable!("no check without the turn")
+            })
+        };
+        assert!(chain.check.is_none() && turned.is_empty());
+    }
+
+    /// The end of the scene sends the noted words and reads no effect and no node (W589): the
+    /// effect's and the billboard's addresses here are not readable.
+    #[test]
+    fn the_end_of_the_scene_reads_only_the_noted_words() {
+        let t = MainThread::for_test();
+        let frame = *FRAME.get(&t);
+        let mut words = [3u32; CHECK_WORDS];
+        words[0] = 0x10;
+        let chain = Chain {
+            frame,
+            billboards: vec![0x20],
+            check: Some((frame, words)),
+            ..Chain::default()
+        };
+        chains(&t).insert(0x10, chain);
+        send_noted_checks(&t, [1, 2, 3]);
+        chains(&t).remove(&0x10);
     }
 
     /// A switch displays its selected child with no geometry under it: `turns_down` gives it no

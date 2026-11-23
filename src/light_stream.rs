@@ -196,6 +196,9 @@ pub unsafe fn forget(t: &MainThread, key: u32) {
 /// No condition of its own: the function reads no engine memory. `t` is the proof of the main
 /// thread.
 pub unsafe fn note_values(t: &MainThread, key: u32, values: &[u32; 26], radius: f32) -> bool {
+    // The engine gives a freed index to its next light: a destroy of this index that waits for
+    // the drain goes first, so the light here goes as new and the drain does not forget it (W589).
+    crate::worker_events::settle(t, crate::worker_events::Key::Light(key));
     if key as usize >= MOST_INDEX {
         return false;
     }
@@ -260,7 +263,7 @@ pub unsafe fn note<'a>(t: &'a MainThread, renderer: usize) -> Open<'a, [u32]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dropped_text, forget, note_dropped, versions, Cap, DROPPED, GONE, MOST_INDEX, TOLD};
+    use super::{dropped_text, forget, note_dropped, note_values, versions, Cap, DROPPED, GONE, MOST_INDEX, TOLD};
     use crate::main_thread::MainThread;
     use core::sync::atomic::Ordering;
 
@@ -310,6 +313,31 @@ mod tests {
             // An index above the lights of the game was never sent.
             forget(&t, MOST_INDEX as u32);
             assert_eq!(*GONE.get(&t), before + 2);
+        }
+    }
+
+    /// The worker destroyed a light, and the engine gave its index to a new light before the
+    /// drain (W589). The new light's note applies the destroy first: the new light goes as new,
+    /// once, and the drain finds no event of the index that would forget it.
+    #[test]
+    fn a_new_light_at_a_freed_index_is_sent_as_new_once() {
+        use crate::worker_events::{queue_for_test, waits_for_test, Key};
+        let t = MainThread::for_test();
+        // SAFETY: `note_values` and `forget` read no engine memory, and no stream is open in a test.
+        unsafe {
+            versions(&t).clear();
+            let key = 9;
+            let (old, new) = ([1u32; 26], [2u32; 26]);
+            assert!(note_values(&t, key, &old, 100.0));
+            let before = *GONE.get(&t);
+            queue_for_test(Key::Light(key));
+
+            assert!(note_values(&t, key, &new, 200.0), "the new light did not go");
+            assert_eq!(*GONE.get(&t), before + 1, "the destroy of the old light did not go first");
+            assert!(!waits_for_test(Key::Light(key)), "the drain would forget the new light");
+            assert!(!note_values(&t, key, &new, 200.0), "the new light went twice");
+            assert_eq!(versions(&t)[key as usize], Some((new, 200.0f32.to_bits())));
+            versions(&t).clear();
         }
     }
 }
