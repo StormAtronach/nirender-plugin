@@ -52,6 +52,7 @@ pub mod d3d;
 pub mod device;
 #[cfg(feature = "rig")]
 pub mod dump;
+pub mod effect_cache_count;
 pub mod effect_chain;
 pub mod engine;
 pub mod entry_trace;

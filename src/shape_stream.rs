@@ -687,6 +687,7 @@ unsafe fn record(
     if !on() {
         return false;
     }
+    crate::effect_cache_count::note_draw(t, renderer);
     if material == 0 {
         without(t, 1);
         return false;

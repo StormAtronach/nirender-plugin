@@ -1934,6 +1934,9 @@ pub unsafe fn stop() {
         crate::log!("{}", crate::light_stream::report(t));
         crate::log!("{}", crate::world_lights::report());
         crate::log!("{}", crate::shape_stream::report(t));
+        if let Some(line) = crate::effect_cache_count::report(t) {
+            crate::log!("{line}");
+        }
         crate::log!("{}", crate::scene_kinds::line(t));
         crate::log!("{}", crate::instance_stream::report(t));
     }
