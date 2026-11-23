@@ -229,6 +229,15 @@ pub unsafe fn install() {
 mod tests {
     use super::*;
 
+    /// The parts sent for each slot are one array of the process ([`STORE`]), and [`reset`] clears
+    /// all of it. A test that reads or writes the slots holds this lock, so that the reset of
+    /// another test cannot fall between two of its steps (W572: 125 of 500 runs of these tests in
+    /// parallel failed at their `scene` steps, 0 of 500 on one thread).
+    fn slots_of_this_test() -> std::sync::MutexGuard<'static, ()> {
+        static SLOTS: Mutex<()> = Mutex::new(());
+        SLOTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn click(target: Option<usize>, camera: usize, world_camera: bool) -> Click {
         Click {
             kind: crate::link::SCENE_OTHER,
@@ -271,6 +280,7 @@ mod tests {
     /// any; a retired slot starts again.
     #[test]
     fn a_scene_reports_the_parts_at_the_change_only() {
+        let _slots = slots_of_this_test();
         set(KIND_RENDERED_TEXTURE, 0x7200_0000, Some(0b11));
         let texture = click(Some(0x7200_0000), 0x7200_0100, false);
         assert_eq!(scene(20, &texture), Some(0b11));
@@ -299,6 +309,7 @@ mod tests {
     /// are empty. The default does not reach the camera's view into the back buffer.
     #[test]
     fn a_texture_view_takes_its_own_options_then_its_cameras_default() {
+        let _slots = slots_of_this_test();
         let camera = 0x7400_0000;
         let texture = click(Some(0x7400_0100), camera, false);
         let other = click(Some(0x7400_0200), camera, false);
@@ -351,6 +362,7 @@ mod tests {
     /// of a stream or a capture forgets what was sent to the helper.
     #[test]
     fn a_new_take_and_a_new_stream_send_the_parts_again() {
+        let _slots = slots_of_this_test();
         set(KIND_RENDERED_TEXTURE, 0x7300_0000, Some(0b11));
         let texture = click(Some(0x7300_0000), 0x7300_0100, false);
         assert_eq!(scene(24, &texture), Some(0b11));
