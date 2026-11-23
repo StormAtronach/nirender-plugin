@@ -266,7 +266,8 @@ pub const EXIT_GPU_HANG: u32 = 21;
 /// [`EXIT_GPU_HANG`]: the limit of a long step, under the plugin's own limit.
 pub const REQUEST_SECONDS: u64 = LOADING_SECONDS;
 
-/// The watchdog of the helper found its frame thread stalled and ended the program.
+/// The watchdog of the helper found its frame thread stalled and ended the program. With a
+/// write to the disk that waited, the code is [`EXIT_STALLED_DISK`].
 pub const EXIT_STALLED: u32 = 30;
 /// A panic of the helper: the fast fail of the abort after the panic hook (`int 29h`, the
 /// status STATUS_STACK_BUFFER_OVERRUN). The hook announces it before its dump.
@@ -276,6 +277,17 @@ pub const EXIT_NOT_ANSWERING: u32 = 31;
 /// The plugin ended the helper, which is older than the words of the ring head
 /// ([`helper_too_old`]).
 pub const EXIT_HELPER_TOO_OLD: u32 = 32;
+/// The watchdog of the helper found its frame thread stalled, as for [`EXIT_STALLED`], while a
+/// write to the disk of its log writer or its picture writer had waited for at least
+/// [`DISK_HELD_SECONDS`]: a disk that holds the writes, the cause of the stall in all
+/// likelihood. The helper's log can lack its last lines then, and its minidump can be empty:
+/// the same disk holds their writes. The plugin's box and log name the disk with this code
+/// (`failure::Cause::StalledOnDisk`); a runner reads it in the plugin's line "own device: the
+/// host program ended with the exit code 0x21".
+pub const EXIT_STALLED_DISK: u32 = 33;
+/// The seconds that a write to the disk has waited at a stall when the watchdog ends the
+/// helper with [`EXIT_STALLED_DISK`] in place of [`EXIT_STALLED`].
+pub const DISK_HELD_SECONDS: u64 = 2;
 /// A replay drew with the uber-shader where a stage shader was due, or passed the cap of the
 /// stage keys (the helper's `stage shaders: a fault of the replay` line names each key and each
 /// count). The pictures are right; the speed that the stage shaders give is lost, which no
@@ -577,6 +589,7 @@ mod tests {
         // The IPC host mode's codes, a stall and the codes of Windows for a crash are not.
         assert!(!helper_said_why(0) && !helper_said_why(3) && !helper_said_why(30) && !helper_said_why(EXIT_PANIC));
         assert!(!helper_said_why(EXIT_STALLED) && !helper_said_why(EXIT_NOT_ANSWERING));
+        assert!(!helper_said_why(EXIT_STALLED_DISK));
         // The plugin shows the box of a helper too old to refuse.
         assert!(!helper_said_why(EXIT_HELPER_TOO_OLD));
     }
@@ -667,6 +680,7 @@ mod tests {
         assert_eq!(limit(EXIT_EXTENSION_FORMAT, 30), Limit::None);
         assert_eq!(limit(EXIT_GPU, 0), Limit::None);
         assert_eq!(limit(EXIT_STALLED, 30), Limit::Ending(10));
+        assert_eq!(limit(EXIT_STALLED_DISK, 5), Limit::Ending(10));
         assert_eq!(limit(EXIT_PANIC, 5), Limit::Ending(10));
         assert_eq!(limit(0xC000_0005, 30), Limit::Ending(10));
     }
@@ -684,6 +698,7 @@ mod tests {
             EXIT_PANIC,
             EXIT_NOT_ANSWERING,
             EXIT_HELPER_TOO_OLD,
+            EXIT_STALLED_DISK,
             0xC000_0005,
         ] {
             assert!(!refusal_frees_the_game(ending), "{ending}");

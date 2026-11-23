@@ -3,7 +3,10 @@
 //! finish in [`STALL_SECONDS`] is a stall: a call of the driver that does not return, a wait
 //! that nothing ends. The watchdog thread then says so in the log, writes numidium.dmp with
 //! the context of the frame thread and ends the program with the exit code [`EXIT_STALLED`]
-//! (`crash::stall_dump_and_end`); the plugin finds the code at the end of its frame and runs
+//! (`crash::stall_dump_and_end`), or [`EXIT_STALLED_DISK`] when a write of the log writer or
+//! of the picture writer has waited for the disk for [`DISK_HELD_SECONDS`] or more (a disk
+//! that holds the writes holds the log's last lines and the dump too); the plugin finds the
+//! code at the end of its frame and runs
 //! the failure path. While the extension loads ([`crate::Extension::loading`]) a step may take
 //! [`LOADING_SECONDS`]: a load of the distant land can hold a frame for seconds. The helper
 //! writes its allowance of the moment into the ring head ([`allowance`],
@@ -37,7 +40,9 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::crash::{StallEvidence, SAMPLES_KEPT};
-use crate::stream_format::{EXIT_STALLED, LOADING_SECONDS, REQUEST_SECONDS, STALL_SECONDS};
+use crate::stream_format::{
+    DISK_HELD_SECONDS, EXIT_STALLED, EXIT_STALLED_DISK, LOADING_SECONDS, REQUEST_SECONDS, STALL_SECONDS,
+};
 
 /// The time between two looks of the watchdog thread.
 const LOOK_MS: u64 = 250;
@@ -488,16 +493,47 @@ fn distinct(samples: &[usize]) -> usize {
 /// ([`crate::log_pipe::write_direct`]): a frame thread held inside a print holds that lock,
 /// and a print of the watchdog would wait for it, with no dump and no end.
 fn stalled(frame_thread: u32, seconds: u64) -> ! {
-    // First the exit for the plugin: a dump that hangs is then ended with the code 30, not 31.
-    crate::live::announce_exit(EXIT_STALLED);
+    let disk = disk_held();
+    let code = stall_code(disk);
+    // First the exit for the plugin: a dump that hangs is then ended with the code of the
+    // stall, not 31. The dump is tried also with a disk that holds the writes: the code
+    // names the cause when the dump stays empty.
+    crate::live::announce_exit(code);
     let evidence = RING.evidence(PHASE.load(Ordering::Relaxed));
-    write_stall_lines(seconds, &evidence);
-    crate::crash::stall_dump_and_end(frame_thread, EXIT_STALLED, evidence)
+    write_stall_lines(seconds, code, disk, &evidence);
+    crate::crash::stall_dump_and_end(frame_thread, code, evidence)
+}
+
+/// The longest write to the disk that runs now, of the log writer or of the picture writer.
+fn disk_held() -> Option<Duration> {
+    [crate::log_pipe::write_held(), crate::picture::write_held()]
+        .into_iter()
+        .flatten()
+        .max()
+}
+
+/// The exit code of a stall: [`EXIT_STALLED_DISK`] when a write to the disk has waited for
+/// [`DISK_HELD_SECONDS`] or more, else [`EXIT_STALLED`].
+fn stall_code(disk: Option<Duration>) -> u32 {
+    if disk.is_some_and(|held| held >= Duration::from_secs(DISK_HELD_SECONDS)) {
+        EXIT_STALLED_DISK
+    } else {
+        EXIT_STALLED
+    }
+}
+
+/// The first line of a stall, with the wait of a write to the disk that runs.
+fn stall_line(seconds: u64, code: u32, disk: Option<Duration>) -> String {
+    let disk = match disk {
+        Some(held) => format!("; a write to the disk has waited {} ms", held.as_millis()),
+        None => String::new(),
+    };
+    format!("stalled for {seconds} s: the frame thread made no progress in a step{disk}; a minidump, then the program ends with the exit code {code}\n")
 }
 
 /// The two lines of a stall: the stall, then the evidence of the samples.
-fn write_stall_lines(seconds: u64, evidence: &StallEvidence) {
-    let stall = format!("stalled for {seconds} s: the frame thread made no progress in a step; a minidump, then the program ends with the exit code {EXIT_STALLED}\n");
+fn write_stall_lines(seconds: u64, code: u32, disk: Option<Duration>, evidence: &StallEvidence) {
+    let stall = stall_line(seconds, code, disk);
     crate::log_pipe::write_direct(stall.as_bytes());
     let began = RING.look_began_ms.load(Ordering::Acquire);
     let waiting = (began != NO_LOOK).then(|| now_ms().saturating_sub(began));
@@ -521,6 +557,23 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stall_while_a_disk_write_waits_names_the_disk() {
+        let limit = Duration::from_secs(DISK_HELD_SECONDS);
+        assert_eq!(stall_code(None), EXIT_STALLED);
+        assert_eq!(stall_code(Some(limit - Duration::from_millis(1))), EXIT_STALLED);
+        assert_eq!(stall_code(Some(limit)), EXIT_STALLED_DISK);
+        assert_eq!(stall_code(Some(Duration::from_secs(28))), EXIT_STALLED_DISK);
+        assert_eq!(
+            stall_line(5, EXIT_STALLED, None),
+            "stalled for 5 s: the frame thread made no progress in a step; a minidump, then the program ends with the exit code 30\n"
+        );
+        assert_eq!(
+            stall_line(5, EXIT_STALLED_DISK, Some(Duration::from_millis(4750))),
+            "stalled for 5 s: the frame thread made no progress in a step; a write to the disk has waited 4750 ms; a minidump, then the program ends with the exit code 33\n"
+        );
+    }
 
     #[test]
     fn a_request_that_is_not_done_after_its_limit_is_a_hang() {
@@ -558,7 +611,7 @@ mod tests {
         let held = std::io::stdout().lock();
         let (done, waiter) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            write_stall_lines(5, &StallEvidence::default());
+            write_stall_lines(5, EXIT_STALLED_DISK, Some(Duration::from_secs(3)), &StallEvidence::default());
             let _ = done.send(());
         });
         let returned = waiter.recv_timeout(Duration::from_secs(2)).is_ok();
