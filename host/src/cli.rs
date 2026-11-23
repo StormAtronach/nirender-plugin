@@ -182,6 +182,9 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         .and_then(|text| text.parse().ok())
         .or(extension.as_ref().map(|extension| extension.anisotropy()))
         .unwrap_or(1);
+    // The order of the extension's settings (the mgeXE.toml beside this program), as in the
+    // live mode; `MGE_XE_TABLE_ORDER` goes over it.
+    player.take_table_order(extension.as_ref().and_then(|extension| extension.table_order()));
     if let Some(mut extension) = extension {
         extension.offline();
         player.extension = Some(extension);

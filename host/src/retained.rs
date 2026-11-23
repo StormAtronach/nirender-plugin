@@ -542,6 +542,9 @@ pub struct RetainedSet {
     order: Vec<(u64, u32, u32, u32)>,
     /// The lists of the keys of `order` ([`table_order::keys`]), kept between the views.
     order_buffers: table_order::Buffers,
+    /// The order of the table's unsorted draws, taken one time when the renderer is made
+    /// ([`Player::take_table_order`]); the default until then.
+    pub(crate) table_order: table_order::TableOrder,
     /// A replay asks for the digest of the order of the frame in progress
     /// ([`RetainedSet::digest_frame`]): the main view adds its unsorted draws.
     frame_digest: Option<table_order::Digest>,
@@ -614,6 +617,7 @@ impl RetainedSet {
             bucket_of: HashMap::new(),
             order: Vec::new(),
             order_buffers: Default::default(),
+            table_order: Default::default(),
             frame_digest: None,
             sorted_order: Vec::new(),
             kept_sorted: Vec::new(),
@@ -1741,6 +1745,20 @@ pub struct PinnedTexture {
     pub uses: u32,
 }
 
+impl Player {
+    /// Takes the order of the table's unsorted draws one time, when the renderer is made
+    /// (W563): the switch `MGE_XE_TABLE_ORDER`, else the extension's setting
+    /// `render.table_order` (`setting`), else the default ([`table_order::TableOrder::pick`]).
+    /// Prints the route line, which the merge step's stage "table order" reads, and the line
+    /// of its source.
+    pub(crate) fn take_table_order(&mut self, setting: Option<table_order::TableOrder>) {
+        let (order, source) = table_order::TableOrder::pick(crate::switches::switches().table_order, setting);
+        self.retained.table_order = order;
+        println!("{}", order.route_line());
+        println!("table order from: {source}");
+    }
+}
+
 impl Renderer {
     /// A slot of the arrays of the frame that a texture keeps from frame to frame, for the
     /// records of the retained instances: one more use of it. 0 for no texture or no room.
@@ -2400,7 +2418,8 @@ impl RetainedSet {
     /// 1. The draws that the engine does not sort, in the engine's order: the order of the
     ///    list, which holds each instance at its first display. The draws whose order cannot
     ///    show are grouped, and a shape with more than one pass draws its passes in their
-    ///    order ([`table_order`], the switch `MGE_XE_TABLE_ORDER`). A blend that the engine
+    ///    order ([`table_order`]: the setting `render.table_order` or the switch
+    ///    `MGE_XE_TABLE_ORDER`, in `table_order` of this set). A blend that the engine
     ///    does not sort draws at its place in the list, among the other draws.
     /// 2. The blends the engine would sort, into `sorted_order`: back to front by the depth
     ///    of the bound centre along the view, ties by the order of the slots. This is not
@@ -2475,7 +2494,7 @@ impl RetainedSet {
     /// `within`. An instance is judged on ALL its slots, in view or not. `main_view`: the
     /// counts of the order go to the report.
     fn order_keys(&mut self, main_view: bool) {
-        let order = crate::switches::switches().table_order;
+        let order = self.table_order;
         let (slots, buckets, by_id, entries) = (&self.slots, &self.buckets, &self.by_id, &self.order);
         let buffers = &mut self.order_buffers;
         buffers.entries.clear();

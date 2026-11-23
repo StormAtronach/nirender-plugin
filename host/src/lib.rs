@@ -102,6 +102,7 @@ mod retained;
 mod table_order;
 /// The cull planes of a view, relative to its camera (for the views of an extension too).
 pub use retained::view_planes;
+pub use table_order::TableOrder;
 mod request;
 mod stage_groups;
 mod stage_shaders;

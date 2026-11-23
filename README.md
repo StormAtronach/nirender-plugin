@@ -265,8 +265,11 @@ The A/B:
   (`host/src/table_order.rs`). Both values are the engine's order, from the list of the shapes
   that the engine displayed. `grouped` (the default, also for a value that is not known) joins
   the draws whose order cannot show into groups, and draws a shape with texture layers as one
-  unit of a group. `engine` draws every shape at its place, with no group. The helper's log
-  line `table order:` names the value in use. A replay prints the line `table order digest:
+  unit of a group. `engine` draws every shape at its place, with no group. The switch goes
+  over the player's setting `render.table_order` of mgeXE.toml (W563; a replay reads the
+  mgeXE.toml beside the helper). The helper's log line `table order:` names the value in use,
+  and the line `table order from:` its source: the switch, the setting or the default. A
+  replay prints the line `table order digest:
   frame <N> <hash> <count> draws` for each frame of which it writes a picture: two replays of
   one capture with the two values have equal counts, and equal hashes when the grouping moved
   no draw of that frame.

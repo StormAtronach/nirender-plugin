@@ -165,7 +165,7 @@ impl Player {
             "sorted queue: {} places of the table's blends drawn in the engine's order, {} of an instance not known, {} outside the world scene, {} of an instance the table does not sort; {} sorted blends of the table without a place, not displayed by the engine ({} of them in frames with no place at all); {} places after the frame's first sorted blends; {} items of the table's blends before a depth clear after the world (the queue still open); {} instances whose sort mark differs from the rule of their material",
             c.queued_places, c.queued_unknown, c.queued_outside, c.queued_not_sorted, c.sorted_without_place, c.sorted_without_place_no_places, c.queued_late_places, c.blends_before_clear, c.sort_mark_differs
         );
-        println!("{}", self.retained.counts.order.line(crate::switches().table_order));
+        println!("{}", self.retained.counts.order.line(self.retained.table_order));
         println!(
             "main view's walk places not used: {} places of the table's blends in the engine's walk (the main view draws such a blend at its place in the shown list)",
             c.walk_places_unused
