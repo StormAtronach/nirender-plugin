@@ -920,6 +920,32 @@ pub unsafe fn select_and_link_pass(
     )
 }
 
+/// The pass that [`select_and_link_pass`] takes for a draw with `property_state`, with no
+/// write: the pass of the renderer-specific property, or the fixed-function pass. Not an
+/// engine function: the count of the effect stage cache uses it (W255).
+///
+/// # Safety
+///
+/// As [`select_and_link_pass`]: `this` points at a live `NiDX8ConfigurableTexturePipeline`,
+/// `property_state` at a live `NiPropertyState`. The main thread only: the function calls
+/// the type of the property's render data.
+pub(crate) unsafe fn pass_for_draw(this: usize, property_state: usize) -> usize {
+    let specific = property_state_renderer_specific(property_state);
+    if specific != 0 {
+        let data: usize = rd(specific, NiRendererSpecificProperty::renderData);
+        if data != 0 {
+            let type_id = transmute::<usize, unsafe extern "thiscall" fn(usize) -> u32>(virtual_at(data, 4))(data);
+            if type_id == RENDERER_TYPE_DX8 {
+                let pass: usize = rd(data, RENDER_DATA_TEXTURE_PASS);
+                if pass != 0 {
+                    return pass;
+                }
+            }
+        }
+    }
+    rd(this, CTP::combiners)
+}
+
 /// 0x6B9D30 `NiDX8ConfigurableTexturePipeline::ensureAndRegisterStreamables`. Takes the
 /// fixed-function pass when there is no pass. Then it jumps to slot 0x14 of the pass.
 ///
