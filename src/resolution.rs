@@ -24,6 +24,7 @@ extern "system" {
     fn SetWindowLongA(window: usize, index: i32, value: u32) -> u32;
     fn GetWindowLongA(window: usize, index: i32) -> u32;
     fn CallWindowProcA(previous: usize, window: usize, message: u32, wparam: usize, lparam: isize) -> isize;
+    fn DefWindowProcA(window: usize, message: u32, wparam: usize, lparam: isize) -> isize;
     fn GetClientRect(window: usize, rect: *mut i32) -> i32;
     fn AdjustWindowRect(rect: *mut i32, style: u32, menu: i32) -> i32;
     fn SetWindowPos(window: usize, after: usize, x: i32, y: i32, width: i32, height: i32, flags: u32) -> i32;
@@ -109,9 +110,22 @@ unsafe fn note_place(window: usize) {
     wr::<i32>(game, TES3Game::windowPositionY, rect[1]);
 }
 
+/// True when the window procedure before the plugin's gets `message`. WM_SIZE does not: the
+/// game's procedure (`mainWndProc` 0x416B50) uses it only for `TES3Game::restartRenderer` in
+/// fullscreen after a lost activation (a WM_NCACTIVATE with wParam 0 sets 0x7C6ED8), the
+/// recovery of a lost Direct3D 8 device. The own device is never lost (its
+/// `TestCooperativeLevel` gives D3D_OK), and its fullscreen placement (`own_device::place`)
+/// sends a WM_SIZE inside `CreateDevice`, where that restart runs before the world exists and
+/// crashes in `NiAVObject::UpdateEffects` (W626). Otherwise the game's procedure gives WM_SIZE
+/// to `DefWindowProcA`, which the plugin calls itself.
+fn goes_to_the_game(message: u32) -> bool {
+    message != WM_SIZE
+}
+
 /// The plugin's window procedure on the game's top window, before the game's: the end of a
 /// drag, and a maximise or a restore outside a drag (no WM_EXITSIZEMOVE comes then), ask for
-/// a restart at the window's new size; a move notes the window's place.
+/// a restart at the window's new size; a move notes the window's place. A WM_SIZE goes to
+/// `DefWindowProcA` after its note, not to the game ([`goes_to_the_game`]).
 unsafe extern "system" fn window_procedure(window: usize, message: u32, wparam: usize, lparam: isize) -> isize {
     match message {
         WM_ENTERSIZEMOVE => DRAGGING.store(true, Ordering::Relaxed),
@@ -128,6 +142,9 @@ unsafe extern "system" fn window_procedure(window: usize, message: u32, wparam: 
             ask(((lparam as usize & 0xFFFF) as u32, ((lparam as usize >> 16) & 0xFFFF) as u32));
         }
         _ => {}
+    }
+    if !goes_to_the_game(message) {
+        return DefWindowProcA(window, message, wparam, lparam);
     }
     CallWindowProcA(PREVIOUS.load(Ordering::Relaxed), window, message, wparam, lparam)
 }
@@ -249,5 +266,15 @@ mod tests {
         assert!(!asks_restart((1600, 900), (1920, 1080), false));
         // A minimised window has no inside.
         assert!(!asks_restart((0, 0), (1920, 1080), true));
+    }
+
+    #[test]
+    fn a_size_message_does_not_go_to_the_game() {
+        // W626: the game's restart on WM_SIZE after a lost activation crashed a fullscreen start.
+        assert!(!goes_to_the_game(WM_SIZE));
+        // The other messages of the plugin's procedure go on to the game's.
+        for message in [WM_MOVE, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, 0x0006, 0x0086, 0x0100] {
+            assert!(goes_to_the_game(message), "{message:#x}");
+        }
     }
 }

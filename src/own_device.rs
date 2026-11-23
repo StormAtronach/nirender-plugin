@@ -547,9 +547,9 @@ unsafe extern "system" fn d3d_create_device(
     );
     // The window's messages come out of the state (`Placement`); the helper then starts on
     // the placed window. A windowed game's window gets a sizing frame, and its size is watched
-    // (`resolution`).
+    // (`resolution`). The watch comes before the placement, so that the WM_SIZE of the
+    // placement goes through the plugin's window procedure and not to the game's (W626).
     drop(s);
-    place(placement);
     // GA_ROOT: the game's top window; the device window can be its child.
     let top = GetAncestor(game_window as usize, 2);
     if top != 0 {
@@ -558,6 +558,7 @@ unsafe extern "system" fn d3d_create_device(
         }
         crate::resolution::watch(top);
     }
+    place(placement);
     let s = state(&lock);
     start_stream(&s);
     *out = device;
@@ -625,9 +626,9 @@ unsafe fn place(placement: Option<Placement>) {
 /// The window of a fullscreen game over the adapter's monitor, without a border ([`place`]).
 /// The engine leaves its fullscreen window as `WinMain` made it (320 x 240, with a caption;
 /// `NiDX8Application::initMainWindow` 0x42991F), for Direct3D 8 to size; the wgpu path has
-/// no fullscreen of its own and changes no display mode, so the plugin sizes it. A back buffer
-/// of another size than the monitor is drawn into it by the helper (scaled when the helper
-/// scales, else at the top left) and is logged once.
+/// no fullscreen of its own and changes no display mode, so the plugin sizes it. The helper
+/// scales a back buffer of another size than the monitor to the monitor, with its aspect kept
+/// (black bars where the aspects differ; `window_pass` of the helper). The size is logged once.
 unsafe fn placement(s: &State, window: usize, size: [u32; 2]) -> Option<Placement> {
     let monitor = monitor(s, s.adapter)?;
     // GA_ROOT: the top window of the game; the device window can be its child.
@@ -647,7 +648,7 @@ unsafe fn placement(s: &State, window: usize, size: [u32; 2]) -> Option<Placemen
     );
     if size != monitor.size() && !FULLSCREEN_SIZE_LOGGED.swap(true, Ordering::Relaxed) {
         crate::log!(
-            "own device: the fullscreen size {} x {} is not the size of the monitor, {} x {} (its mode {} x {}): the picture does not cover the monitor",
+            "own device: the fullscreen size {} x {} is not the size of the monitor, {} x {} (its mode {} x {}): the helper scales the picture to the monitor",
             size[0],
             size[1],
             monitor.size()[0],
