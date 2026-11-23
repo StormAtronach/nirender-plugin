@@ -342,6 +342,23 @@ def build_id_faults(files, commits, patches):
     return faults
 
 
+# The line of a d3d8.dll of the player's form (render-link d3d8/cpp/main.cpp, W326): it has no Direct3D 9. A part key
+# does not name the form, so a render-link part that a build without --direct3d9 made is found here, in a reused part
+# too.
+PLAYER_FORM_LINE = b"build: player form"
+
+
+def player_form_fault(files):
+    """Why the set is not the developer form (W326, verdict 731), or None: its d3d8.dll holds the player form's line."""
+    source = next((files[name] for name in files if name.lower() == "d3d8.dll"), None)
+    if source is None:
+        return None
+    with open(source, "rb") as file:
+        if PLAYER_FORM_LINE in file.read():
+            return "d3d8.dll is the player's form, without Direct3D 9: a set is the developer form (xtask dist --direct3d9)"
+    return None
+
+
 def plugin_copy_name(plugin_file):
     """akulakhan-<commit>.dll, with the commit of the plugin's build id (W520's name)."""
     commit = next(iter(ids_of(plugin_file).get("nirender", {"unknown"})))
@@ -630,7 +647,9 @@ class Trees:
     def build_cargo(self):
         """The plugin and the dist: returns the dist stage folder."""
         self.step(["cargo", "build", "--release"], self.trees["nirender"])
-        self.step(["cargo", "xtask", "dist"], self.trees["render-link"])
+        # A set is the developer form, with Direct3D 9 for the runner's --reference (W326, verdict 731). An xtask from
+        # before W326 ignores the argument, and its build has Direct3D 9 always.
+        self.step(["cargo", "xtask", "dist", "--direct3d9"], self.trees["render-link"])
         stage = os.path.join(self.trees["render-link"], "target", "dist-staging")
         built = os.path.join(self.trees["nirender"], PLUGIN_TARGET)
         staged = os.path.join(stage, *sets.PLUGIN_STAGED.split("/"))
@@ -1030,6 +1049,9 @@ def make_locked(commits, patches, kind, builder, root, gate, slot_hold, keep, se
             faults = build_id_faults(files, commits, patches)
             if faults:
                 raise SetFault("the binaries are not builds of the set's commits: %s" % "; ".join(faults))
+            fault = player_form_fault(files)
+            if fault:
+                raise SetFault(fault)
             code, output = builder.probe(files["MWSE.dll"])
             for line in output.splitlines():
                 if line.startswith(("feature: ", MISSING, "d3d8: ")):
@@ -1092,8 +1114,10 @@ class FakeBuilder:
     """Builds of fake files with the build ids of the commits and new random bytes at each build, so that two builds of
     one commit differ (as real builds do), and the reuse test can fail."""
 
-    def __init__(self, scratch, probe_code=0, wrong_render_link=False):
+    def __init__(self, scratch, probe_code=0, wrong_render_link=False, player_form=False):
         self.scratch = scratch
+        # A d3d8.dll of the player's form (W326): no set.
+        self.player_form = player_form
         self.trees = {}
         self.applied = []
         self.cargo_builds = 0
@@ -1139,7 +1163,8 @@ class FakeBuilder:
         files = {
             sets.PLUGIN_STAGED: b"nirender v0.3.8 %s." % nirender.encode(),
             "numidium.exe": b"nirender-host v0.3.8 %s. numidium v1.0 %s." % (nirender.encode(), render_link.encode()),
-            "d3d8.dll": b"MGE-XE G7 Fork v1.0 %s." % render_link.encode(),
+            "d3d8.dll": b"MGE-XE G7 Fork v1.0 %s. %s" % (render_link.encode(), PLAYER_FORM_LINE if self.player_form
+                                                       else b"build: developer form, with Direct3D 9"),
             "dinput8.dll": b"dinput8",
             "Data Files/mwse/mods/nirender/main.lua": b"-- main",
             "Data Files/shaders/core/XE Main.fx": b"// fx",
@@ -1430,6 +1455,9 @@ def self_test():
         # A build of another commit than the set's: no set.
         code, lines = run(dict(commits, mwse="aaaa1111" + "0" * 32), FakeBuilder(scratch, wrong_render_link=True), reuse=False)
         assert code == 1 and "not builds of the set's commits" in lines[-1], lines
+        # A d3d8.dll of the player's form (W326): no set.
+        code, lines = run(dict(commits, mwse="cccc3333" + "0" * 32), FakeBuilder(scratch, player_form=True), reuse=False)
+        assert code == 1 and "d3d8.dll is the player's form" in lines[-1], lines
         # The E: gate: nothing written.
         before = sorted(os.listdir(root))
         code, lines = run(dict(commits, mwse="bbbb2222" + "0" * 32), gate=lambda: (False, "a timing run holds the game"))
