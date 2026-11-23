@@ -179,7 +179,9 @@ struct Scene {
 // each `const` of the block as an `override` (`stage_shaders::stage_facts_as_overrides`), and the
 // pipeline gives FIXED true and its key's facts and stage codes (`stage_shaders::StageKey::constants`).
 // No other part of the text changes, so every stage key has the same module. The compiler drops the
-// branch that FIXED cannot take.
+// branch that FIXED cannot take only after it inlines the callees. So on Direct3D 12 each stage
+// pipeline costs about 10 ms more to make in DXC than with a text written for its key (W584,
+// option 3).
 // STAGE FACTS BEGIN: one declaration on each line between the marks.
 const FIXED: bool = false;
 // The bits of SHADE_BITS of the record's `counts.w`.
