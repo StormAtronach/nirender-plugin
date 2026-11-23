@@ -1265,6 +1265,24 @@ unsafe fn target_surface(slot: &AtomicU32, format: u32) -> u32 {
     surface
 }
 
+/// The device took the size `width` x `height` (a second `CreateDevice`, or `Reset`): the surfaces
+/// that stand for the back buffer and its depth buffer take it, as the game reads the size of its
+/// picture from them (`GetDesc`). A surface that is not made yet takes the size when it is made.
+///
+/// # Safety
+///
+/// Each kept surface is an object of this host that is alive: a slot holds its own reference.
+pub unsafe fn resize_targets(width: u32, height: u32) {
+    let _lock = crate::sync::device_lock();
+    for slot in [&BACK_BUFFER, &DEPTH_BUFFER] {
+        let surface = slot.load(Ordering::Relaxed) as usize as *mut Object;
+        if !surface.is_null() {
+            (*surface).width = width;
+            (*surface).height = height;
+        }
+    }
+}
+
 unsafe fn put(out: u32, value: u32) -> u32 {
     if out == 0 {
         return FAIL;
@@ -1560,8 +1578,9 @@ pub unsafe fn report() -> String {
 mod tests {
     use super::{
         copy_pixels, in_snapshot, level_bit, lock_level, lock_offset, new_object, note_lock, nothing_to_do, read_within,
-        release, surface_lock, texture_lock, texture_surface_level, unlock_level_into, Kind, LevelCopies, Object,
-        BACK_BUFFER, CUTSCENE_SHADER_CALLS, LEVEL_FREES, OK, REMOVE_LIGHT_CALL, SURFACE_TABLE, TEXTURE_TABLE,
+        release, resize_targets, surface_description, surface_lock, target_surface, texture_lock, texture_surface_level,
+        unlock_level_into, Kind, LevelCopies, Object, BACK_BUFFER, CUTSCENE_SHADER_CALLS, DEPTH_BUFFER, LEVEL_FREES, OK,
+        REMOVE_LIGHT_CALL, SURFACE_TABLE, TEXTURE_TABLE,
     };
     use crate::d3d::{D3DLOCK_READONLY, DEVICE_LIGHT_ENABLE, DEVICE_SET_LIGHT, DEVICE_SET_PIXEL_SHADER};
     use crate::instance_stream::{test_list_one, test_shown_state};
@@ -1651,6 +1670,35 @@ mod tests {
         (*surface).height = 4;
         (*surface).format = 21;
         surface
+    }
+
+    /// After the device takes a new size (W625: a second `CreateDevice`, or `Reset`), the kept
+    /// back buffer and depth buffer that `target_surface` gives have that size, and `GetDesc`
+    /// reports it.
+    #[test]
+    fn the_kept_targets_take_the_new_size_of_the_device() {
+        unsafe {
+            let _turn = crate::main_thread::TestTurn::take();
+            let (back, depth) = (test_surface(), test_surface());
+            let kept_back = BACK_BUFFER.swap(back as u32, Ordering::Relaxed);
+            let kept_depth = DEPTH_BUFFER.swap(depth as u32, Ordering::Relaxed);
+            resize_targets(1600, 900);
+            for (slot, format, kept) in [(&BACK_BUFFER, 22, back), (&DEPTH_BUFFER, 75, depth)] {
+                let surface = target_surface(slot, format);
+                assert_eq!(surface, kept as u32, "the kept surface, not a new one");
+                let mut description = [0u32; 8];
+                assert_eq!(
+                    surface_description(surface as usize as *mut Object, description.as_mut_ptr()),
+                    OK
+                );
+                assert_eq!((description[6], description[7]), (1600, 900));
+                release(surface as usize as *mut Object);
+            }
+            BACK_BUFFER.store(kept_back, Ordering::Relaxed);
+            DEPTH_BUFFER.store(kept_depth, Ordering::Relaxed);
+            release(back);
+            release(depth);
+        }
     }
 
     /// A read of the back buffer (`read`, with the back buffer and another surface) sends the main
