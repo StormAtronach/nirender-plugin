@@ -353,7 +353,7 @@ LIGHT_PATHS = {"plugin": ("host/src/lights.rs", "host/src/light_keys.rs", "host/
 LIGHT_SHARED = {"plugin": ("host/src/",), "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "mge-config/src/")}
 LIGHT_NAMES = ("per_pixel_light_fade", "per_pixel_light_fade_radius", "per_pixel",
                "shade_lights", "light_terms", "light_end_fade", "extension_shade", "poll_lights", "lamp_fade", "end_of",
-               "cluster_reach", "attenuation_reach", "build_world", "world_lights_in_reach", "cluster_lights", "PlacedLight", "LightData",
+               "cluster_reach", "attenuation_reach", "world_bin_reach", "build_world", "world_lights_in_reach", "cluster_lights", "PlacedLight", "LightData",
                "MGE_XE_CLUSTERS",
                "LIGHT", "LIGHT_GONE", "WORLD_LIGHTS", "light_at", "world_light", "struct Light")
 LIGHT_WORD = re.compile(r"\b(?:%s)\b" % "|".join(re.escape(name) for name in LIGHT_NAMES))
