@@ -119,6 +119,9 @@ struct Clusters {
     // The lights of the world (w of `grid` 3): the translation from the space of the retained
     // set to the space of a draw of the stream.
     offset: vec4f,
+    // The lights of the world: the origin of the retained set, the translation to the space of
+    // a draw in the world's own space (bit 128 of `light_range.w`).
+    origin: vec4f,
 }
 @group(0) @binding(3) var<uniform> clusters: Clusters;
 @group(0) @binding(4) var<storage, read> cluster_table: array<vec2u>;
@@ -404,11 +407,14 @@ fn world_cluster(pixel: vec2f, view_z: f32) -> vec2u {
     return cluster_at(pixel, view_z);
 }
 // A light of the world, an entry of `cluster_indexes`, in the space of the draw: the positions
-// are those of the retained set; a draw of the stream is relative to the camera.
+// are those of the retained set; a draw of the stream is relative to the camera, or in the
+// world's own space with bit 128 (the shadow casters' scene).
 fn world_light(at: u32) -> Light {
     var light = lights_retained[cluster_indexes[at]];
-    if (draws[record].light_range.w & 8u) == 0u {
-        light.position = vec4f(light.position.xyz + clusters.offset.xyz, light.position.w);
+    let bits = draws[record].light_range.w;
+    if (bits & 8u) == 0u {
+        let to_draw = select(clusters.offset.xyz, clusters.origin.xyz, (bits & 128u) != 0u);
+        light.position = vec4f(light.position.xyz + to_draw, light.position.w);
     }
     return light;
 }

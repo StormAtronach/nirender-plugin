@@ -566,9 +566,7 @@ mod tests {
     /// in that view. A water scene of another camera does not join it.
     #[test]
     fn a_later_world_scene_in_a_target_continues_the_world_group() {
-        use crate::engine::scene::SCENE_WATER;
-        // The plugin's `link::SCENE_SHADOW_CASTERS`.
-        const SCENE_SHADOW_CASTERS: u32 = 5;
+        use crate::engine::scene::{SCENE_SHADOW_CASTERS, SCENE_WATER};
         let (camera, target) = (0x10, 0x20);
         let mut views = Views::default();
         views.note_scene(Some(1), camera, 0x30, target);

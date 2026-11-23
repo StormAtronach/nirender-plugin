@@ -24,9 +24,12 @@ pub(crate) struct Switches {
     pub(crate) cores_to_scheduler: bool,
     /// `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting.
     pub(crate) clusters: Option<bool>,
-    /// `MGE_XE_LIGHTS=world`: a lit draw of the world takes the point lights of the world
-    /// that reach its pixel (the clusters of `WORLD_LIGHTS`), not the lights the engine chose
-    /// for it. `engine` (the default until the A/B reaches parity): the lights the engine chose.
+    /// `MGE_XE_LIGHTS=world` (the default, the owner's D612): a lit draw of the world takes the
+    /// point lights of the world that reach it. A draw lit for each pixel takes them for each
+    /// pixel, through the clusters of `WORLD_LIGHTS`. A draw lit for each vertex
+    /// (`per_pixel_lighting = false`) takes them as its own list, by its bound. A frame with
+    /// no set of the world's lights (no light events of MWSE) keeps the draws' own lights.
+    /// `engine`: the lights the engine chose for the draw's node, for the A/B.
     pub(crate) world_lights: bool,
     /// `NIRENDER_BLIND_LIGHT_KEY=0`: a lit draw whose colour cannot take light keeps its lights
     /// ([`crate::light_keys`]). On by default; the switch is for a diagnostic.
@@ -129,7 +132,7 @@ impl Switches {
             replay_debug: read.on("MGE_XE_REPLAY_DEBUG") == Some(true),
             cores_to_scheduler: read.on("MGE_XE_CORES") == Some(false),
             clusters: read.on("MGE_XE_CLUSTERS"),
-            world_lights: read.choice("MGE_XE_LIGHTS", &["world", "engine"]) == Some("world"),
+            world_lights: read.choice("MGE_XE_LIGHTS", &["world", "engine"]) != Some("engine"),
             blind_light_key: read.on("NIRENDER_BLIND_LIGHT_KEY") != Some(false),
             zero_light_key: read.on("NIRENDER_ZERO_LIGHT_KEY") != Some(false),
             draw_dump: read

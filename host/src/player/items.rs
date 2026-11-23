@@ -36,6 +36,23 @@ impl Player {
         self.renderer.counts.times[TIME_ITEMS] += clock.elapsed().saturating_sub(inside_after - inside_before);
     }
 
+    /// The kinds of slot ([`crate::retained::slot_kind`]) that the table lights for each vertex
+    /// in the mode `world`, a bit each, by the last frame's shade: a kind without
+    /// [`crate::PER_PIXEL_BIT`]; every kind when the frame had no shade. 0 in the mode `engine`
+    /// and before any frame with a world.
+    fn vertex_kinds(&self) -> u8 {
+        if !self.renderer.clusters.world {
+            return 0;
+        }
+        match &self.shade_last {
+            Some(Some(shade)) => (0..8)
+                .filter(|&kind| shade.flags[kind] & crate::PER_PIXEL_BIT == 0)
+                .fold(0, |kinds, kind| kinds | 1 << kind),
+            Some(None) => 0xFF,
+            None => 0,
+        }
+    }
+
     /// The world's start: the origin of the instances follows its camera, and the texture
     /// effects under a turning billboard turn for that camera.
     pub(crate) fn prepare_world(&mut self, facts: &WorldFacts) {
@@ -76,6 +93,10 @@ impl Player {
         }
         let began = std::time::Instant::now();
         let segment = self.renderer.retained_records;
+        // The world runs of the slots lit for each vertex go up with the records. The shade of
+        // this frame comes after the upload, so the kinds come from the last frame's.
+        let vertex_kinds = self.vertex_kinds();
+        self.retained.refresh_world_runs(vertex_kinds, &self.renderer.lights_known);
         self.renderer.retained_upload(&mut self.retained);
         // A new shape can make the segment grow in any frame. The uploads below write the frame's
         // records and instances again, at the new place.
@@ -134,17 +155,26 @@ impl Player {
             }
         });
         self.table_shaded = None;
+        // A frame with no set of the world's lights (no light events of MWSE) keeps the draws'
+        // own lights: the clusters are not built for the world, so no draw takes them.
         let world = match world_start.filter(|_| self.renderer.clusters.world) {
             Some(facts) => {
-                let shaded = self.shade_table_main(&facts.view);
-                self.renderer.upload_retained_lights(&shaded.0);
-                self.shade_frame = Some(shaded.1);
-                self.table_shaded = Some(shaded);
-                Some((
-                    self.retained.world_light_slots(),
-                    self.retained.set_to_scene(facts.origin),
-                    facts.origin,
-                ))
+                let slots = self.retained.world_light_slots();
+                if slots.is_empty() {
+                    self.renderer.counts.world_without_set += 1;
+                    None
+                } else {
+                    let shaded = self.shade_table_main(&facts.view);
+                    self.renderer.upload_retained_lights(&shaded.0);
+                    self.shade_frame = Some(shaded.1);
+                    self.table_shaded = Some(shaded);
+                    Some((
+                        slots,
+                        self.retained.set_to_scene(facts.origin),
+                        self.retained.set_to_scene(None),
+                        facts.origin,
+                    ))
+                }
             }
             None => None,
         };
@@ -153,7 +183,7 @@ impl Player {
         // lights of the extension have them.
         let scene = world_start.map(|facts| (facts.view, facts.projection, facts.depth_range()));
         match (world, self.table_shaded.as_ref()) {
-            (Some((slots, to_scene, camera)), Some((lights, _))) => {
+            (Some((slots, to_scene, to_world, camera)), Some((lights, _))) => {
                 renderer.clusters.build_world(
                     &renderer.device,
                     &renderer.queue,
@@ -162,6 +192,7 @@ impl Player {
                     scene,
                     camera,
                     to_scene,
+                    to_world,
                     self.frame_size,
                     &mut renderer.counts,
                 );
@@ -415,6 +446,7 @@ impl Player {
                 let mut facts = self.world_facts(true);
                 facts.own_root = self.plan_now().main_other_root();
                 self.note_early_world_draws("the main view's world start");
+                self.world_start_view = Some((facts.view, facts.projection));
                 self.items.push(Item::WorldStart(Box::new(facts)));
             }
             plan::Step::MainView => {

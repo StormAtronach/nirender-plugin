@@ -132,6 +132,27 @@ impl Player {
         println!("shapes: {} records, {} draws from them, {} without a geometry or a material, {} that cannot change the picture (not drawn)", c.shape_records, c.shape_draws, c.shape_missing, c.shape_keeping);
         println!("light keys: {} draws whose colour cannot take light dropped their lights; {} draws with no lights had no light loop", c.blind_light_draws, c.zero_light_draws);
         println!(
+            "shadow casters: {} draws shaded by the extension, {} of them with the world's lights; {} of their own point lights not among the world's",
+            c.caster_shaded, c.caster_world_lights, c.caster_own_not_world
+        );
+        println!(
+            "world lights: {} frames of the mode world had no set of the world's lights (no light events of MWSE) and kept the draws' own lights",
+            c.world_without_set
+        );
+        println!(
+            "world space: {} draws in the world's own space took the world's lights; scenes whose draws in that space kept their own: {} not lit as the world, {} with no world view, {} for the view, {} for the projection, {} with a camera origin",
+            c.world_space_lights, c.world_space_refused[0], c.world_space_refused[1], c.world_space_refused[2], c.world_space_refused[3], c.world_space_refused[4]
+        );
+        println!(
+            "vertex world: {} draws lit for each vertex took the world's lights ({} lights, {} left out by the cap); {} kept their own for want of a bound, {} for want of a space of the world's lights",
+            c.vertex_world_lists, c.vertex_world_lights, c.vertex_world_dropped, c.vertex_world_no_bound, c.vertex_world_no_space
+        );
+        let own = c.vertex_world_own;
+        println!(
+            "vertex world own lights: {} own point lights kept in the draws' lists, {} of them within the reach of the draw, {} beyond it (the largest gap {:.2} of the reach), {} not among the world's lights",
+            own.lights, own.in_reach, own.beyond, own.largest_gap, own.not_in_set
+        );
+        println!(
             "particle light: {} particle draws took their lights at their corners",
             c.corner_light_draws
         );
@@ -183,6 +204,10 @@ impl Player {
         println!(
             "retained: {} instances in {} slots and {} buckets; {} drawn ({} sorted blends), {} culled, {} skipped waiting for their bones, {} calls in {} views; {} moved in place, {} made again for a geometry sent again; {} without a geometry, {} without a material; the origin moved {} times to the camera's place and {} times with a change of the scene's kind",
             r.instances, r.slots, r.buckets, r.drawn, r.sorted, r.culled, r.without_bones, r.calls, r.views, r.moves, r.refreshed, r.no_geometry, r.no_material, r.rebases, r.kind_changes
+        );
+        println!(
+            "retained vertex world: {} world runs made, {} world lights moved, came or went, {} tests of them against a slot, {} lights left out by the cap, {} compactions, {} times every slot pointed again",
+            r.vertex_world_rebuilds, r.vertex_world_changed_lights, r.vertex_world_tests, r.vertex_world_dropped, r.vertex_world_compactions, r.vertex_world_repoints
         );
         let j = &r.joins;
         let (views, pairs) = (r.views.max(1) as f64, j.pairs.max(1) as f64);

@@ -87,6 +87,7 @@ use d3d::{
     texture_format, INPUT_FORMATS,
 };
 pub use d3d::{d3d_compare, d3d_stencil_operation};
+mod bound;
 mod light_keys;
 mod lights;
 use influences::FVF_INFLUENCES;
@@ -377,6 +378,17 @@ struct Retained {
 /// cluster of its pixel (`MGE_XE_LIGHTS=world`, `world_lights_here` in the shader). A lit
 /// draw of the world of the stream and a retained slot with lights have it.
 pub(crate) const WORLD_LIGHTS_BIT: u32 = 32;
+
+/// Bit 128 of `light_range[3]`, with [`WORLD_LIGHTS_BIT`]: the draw is in the world's own space
+/// ([`lights::DrawSpace::World`]), so the world's lights take the origin of the retained set
+/// (`clusters.origin`, `world_light` in the shader) in place of the translation to the camera.
+pub(crate) const WORLD_SPACE_LIGHTS_BIT: u32 = 128;
+
+/// Bit 128 of `counts.w`, set by the extension in its shade: it lights the draw for each pixel.
+/// Without it the vertex stage lights the draw with the draw's own list (shader.wgsl, the
+/// vertex stage), and a draw of the world keeps its own lights in that list and adds the
+/// world's point lights that reach it ([`lights::world_lights_in_reach`]).
+pub(crate) const PER_PIXEL_BIT: u32 = 128;
 
 /// Bit 32768 of `counts.w`, set by this crate: a lit draw with no lights, none of its own, none
 /// from the clusters and none of the world (the module `light_keys`). A fact of the stage key
@@ -1099,6 +1111,12 @@ struct Player {
     frame_lights: Vec<LightData>,
     /// The bones of the skinned draws of the frame, for the bone buffer.
     frame_bones: Vec<[f32; 16]>,
+    /// The world's point lights by place for the draws lit for each vertex, made again after a
+    /// light record (`player::draws`, W554).
+    vertex_world: lights::VertexWorld,
+    /// Whether the draws in the world's own space of the scene in progress take the world's
+    /// lights ([`engine::scene::world_space_lights`]): found at the first such draw of the scene.
+    world_space_scene: Option<Result<(), engine::scene::WorldSpaceRefusal>>,
     /// The world matrices of the instances of the frame; the first is an identity, for
     /// the draws of their own.
     frame_instances: Vec<Instance>,
@@ -1152,6 +1170,10 @@ struct Player {
     /// the world for a call after the world views, when the stream has those of the user
     /// interface.
     world_matrices: Option<([f32; 16], [f32; 16])>,
+    /// The view and the projection of the frame's world start: those the clusters of the
+    /// world's lights are binned with ([`engine::scene::world_space_lights`] compares a scene
+    /// with them).
+    world_start_view: Option<([f32; 16], [f32; 16])>,
     world_sun: Option<([f32; 3], [f32; 3], [f32; 3])>,
     /// The sun of the frame from the `RETAINED_SCENE` record (flag 64): the 26 words of the
     /// weather's sky light as the engine gives them to the device (`world_facts`).

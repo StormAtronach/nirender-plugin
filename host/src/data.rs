@@ -45,6 +45,27 @@ pub(crate) struct Geometry {
     /// particle shapes and of the table's `INSTANCE_PARTICLES`): a draw of it may take its
     /// lights at its corners ([`crate::CORNER_LIGHT_BIT`]).
     pub(crate) particles: bool,
+    /// The model bound of the vertices of the record, or of the particles of the frame
+    /// ([`crate::bound`]); [`None`] when its weights break the rule there.
+    pub(crate) bound: Option<crate::bound::ModelBound>,
+    /// The sphere of the last morph of the geometry since its record ([`crate::bound::morphed`]):
+    /// a draw takes the sphere around both.
+    pub(crate) morph_sphere: Option<crate::bound::Sphere>,
+}
+
+impl Geometry {
+    /// The model bound that holds the vertices as the frame's draws see them: the record's,
+    /// widened to hold its morph too.
+    pub(crate) fn model_bound(&self) -> Option<crate::bound::ModelBound> {
+        let bound = self.bound?;
+        Some(match self.morph_sphere {
+            Some(morph) => crate::bound::ModelBound {
+                sphere: crate::bound::union(&bound.sphere, &morph),
+                ..bound
+            },
+            None => bound,
+        })
+    }
 }
 
 pub(crate) const COMMAND_TRANSFORM: u32 = 3;
@@ -521,6 +542,36 @@ pub(crate) struct Counts {
     /// lights ([`crate::NO_LIGHTS_BIT`]): the keys of [`crate::light_keys`].
     pub(crate) blind_light_draws: u32,
     pub(crate) zero_light_draws: u32,
+    /// The draws of the shadow casters' scene that the extension shaded, and those of them
+    /// that took the world's lights ([`crate::WORLD_LIGHTS_BIT`]) in a frame with a set of the
+    /// world's lights.
+    pub(crate) caster_shaded: u32,
+    pub(crate) caster_world_lights: u32,
+    /// The draws of the world lit for each vertex in the mode `world` that took a list of their
+    /// own lights and the world's point lights, the world's lights added to those lists, and
+    /// those the cap of 64 left out ([`crate::lights::world_lights_in_reach`]). Such draws with
+    /// no bound, and those in no space of the world's lights ([`crate::lights::DrawSpace`]),
+    /// keep the engine's lights only.
+    pub(crate) vertex_world_lists: u32,
+    pub(crate) vertex_world_lights: u64,
+    pub(crate) vertex_world_dropped: u32,
+    pub(crate) vertex_world_no_bound: u32,
+    pub(crate) vertex_world_no_space: u32,
+    /// The engine's own point lights of the draws with a world list, against their bounds.
+    pub(crate) vertex_world_own: crate::lights::OwnLights,
+    /// The draws in the world's own space that took the world's lights for each pixel
+    /// ([`crate::WORLD_SPACE_LIGHTS_BIT`]), and the scenes whose draws in that space kept their
+    /// own, by [`crate::engine::scene::WorldSpaceRefusal`]: not lit, no world view, the view,
+    /// the projection, a scene with a camera origin.
+    pub(crate) world_space_lights: u32,
+    pub(crate) world_space_refused: [u32; 5],
+    /// The own point lights of the shadow casters' draws that took the world's lights and
+    /// that are not among the world's lights: each a light the draw lost (W554, the
+    /// Architect's counter).
+    pub(crate) caster_own_not_world: u32,
+    /// The frames of the mode `world` with no set of the world's lights (no light events of
+    /// MWSE): their draws kept their own lights.
+    pub(crate) world_without_set: u32,
     /// The particle draws that took their lights at their corners ([`crate::CORNER_LIGHT_BIT`]).
     pub(crate) corner_light_draws: u32,
     /// The particle draws with the extension's colour function ([`crate::PARTICLE_HOOK_BIT`]).

@@ -54,6 +54,9 @@ struct Targets {
     vertices: u32,
     /// The first float in `data` and in the buffer.
     first: u32,
+    /// The sphere of each target's positions ([`crate::bound::target_sphere`]); empty when a
+    /// target has a position that is not finite.
+    spheres: Vec<crate::bound::Sphere>,
 }
 
 /// A morph of a frame: the targets, the weights, and the vertices to write.
@@ -214,6 +217,17 @@ impl Morphs {
         let first = self.data.len();
         self.data.extend_from_slice(floats);
         queue.write_buffer(&self.buffer, first as u64 * 4, bytemuck::cast_slice(floats));
+        // Target `t` is `vertices` positions from float `t * vertices * 3`, as the shader
+        // reads them.
+        let spheres: Option<Vec<crate::bound::Sphere>> = (vertices != 0)
+            .then(|| {
+                floats
+                    .chunks_exact(vertices as usize * 3)
+                    .take(count as usize)
+                    .map(crate::bound::target_sphere)
+                    .collect()
+            })
+            .flatten();
         self.targets.insert(
             handle,
             Targets {
@@ -221,8 +235,17 @@ impl Morphs {
                 count,
                 vertices,
                 first: first as u32,
+                spheres: spheres.unwrap_or_default(),
             },
         );
+    }
+
+    /// The sphere of the sum of `handle`'s targets with these weights ([`crate::bound::morphed`]);
+    /// [`None`] when the targets have no spheres.
+    pub(crate) fn sphere(&self, handle: u32, weights: &[f32]) -> Option<crate::bound::Sphere> {
+        let targets = self.targets.get(&handle)?;
+        (targets.spheres.len() == weights.len() && !weights.is_empty())
+            .then(|| crate::bound::morphed(&targets.spheres, weights))
     }
 
     /// The floats of the geometries that are held, from the start; the others go.
