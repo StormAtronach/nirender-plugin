@@ -267,22 +267,43 @@ unsafe fn barred_by(camera: &Camera, parent: usize, child: usize) -> Option<With
 /// `NiFltAnimationNode`, which `NiFltAnimationNode::Display` 0x6D90B0 sets from the time, is old
 /// in the same way, and it is read as it is.
 unsafe fn selected_child(camera: &Camera, switch: usize) -> usize {
+    if !crate::ports::ni::is_kind_of(switch, RTTI_LOD_NODE) {
+        return indexed_child(switch);
+    }
     let count = rd::<u32>(switch, NODE::kChildren_endIndex) as usize;
-    let index = if crate::ports::ni::is_kind_of(switch, RTTI_LOD_NODE) {
-        let levels: usize = rd(switch, LOD::lodData);
-        if levels == 0 {
-            return 0;
-        }
-        let centre: [f32; 3] = rd(switch, LOD::worldCentre);
-        let d: [f32; 3] = core::array::from_fn(|i| centre[i] - camera.position[i]);
-        let distance_squared = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * (camera.lod_adjust * camera.lod_adjust);
-        lod_index(count, distance_squared, |level| {
-            let at = levels + level * LEVEL::SIZE;
-            (rd(at, LEVEL::worldNearSquared), rd(at, LEVEL::worldFarSquared))
-        })
-    } else {
-        rd::<i32>(switch, SWITCH::switchIndex)
-    };
+    let levels: usize = rd(switch, LOD::lodData);
+    if levels == 0 {
+        return 0;
+    }
+    let centre: [f32; 3] = rd(switch, LOD::worldCentre);
+    let d: [f32; 3] = core::array::from_fn(|i| centre[i] - camera.position[i]);
+    let distance_squared = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * (camera.lod_adjust * camera.lod_adjust);
+    let index = lod_index(count, distance_squared, |level| {
+        let at = levels + level * LEVEL::SIZE;
+        (rd(at, LEVEL::worldNearSquared), rd(at, LEVEL::worldFarSquared))
+    });
+    child_at(switch, count, index)
+}
+
+/// The child at the switch's own index, read at each call. `NiSwitchNode::Display` 0x6D8320 reads
+/// it at each display, and a mod's Lua can write it between two (MWSE's `setSwitchIndex`; the
+/// engine's other writers are the NIF's load, a clone, and the displays of a level of detail and
+/// of an animation node: W114).
+///
+/// # Safety
+///
+/// `switch` points at a live `NiSwitchNode` with its children.
+unsafe fn indexed_child(switch: usize) -> usize {
+    let count = rd::<u32>(switch, NODE::kChildren_endIndex) as usize;
+    child_at(switch, count, rd(switch, SWITCH::switchIndex))
+}
+
+/// The child at `index` of `switch`, which has `count` slots; 0 out of range.
+///
+/// # Safety
+///
+/// `switch` points at a live `NiNode` whose child array holds `count` slots.
+unsafe fn child_at(switch: usize, count: usize, index: i32) -> usize {
     if index < 0 || index as usize >= count {
         return 0;
     }
@@ -323,7 +344,9 @@ pub fn report() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::lod_index;
+    use super::{child_at, indexed_child, lod_index};
+    use crate::gen::layouts::{NiNode as NODE, NiSwitchNode as SWITCH};
+    use crate::mem::rd;
 
     const SQUARE: fn(f32) -> f32 = |value| value * value;
 
@@ -350,5 +373,48 @@ mod tests {
     #[test]
     fn no_level_selects_nothing() {
         assert_eq!(lod_index(0, 0.0, |_| (0.0, 1.0)), -1);
+    }
+
+    /// The fake children of the fake switch: addresses that are compared, never read.
+    const CHILDREN: [u32; 3] = [0x1000, 0x2000, 0x3000];
+
+    /// The writes of the index between two calls, as a mod's `setSwitchIndex` makes them, and the child that each
+    /// must give: index 1 gives child 1, a write of 2 gives child 2, -1 gives none, the count of children gives none.
+    const SEQUENCE: [(i32, usize); 4] = [(1, 0x2000), (2, 0x3000), (-1, 0), (3, 0)];
+
+    fn put(block: &mut [u8], offset: usize, value: u32) {
+        block[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// Runs `SEQUENCE` on a fake plain switch through `select`, and tells whether each call gave its child.
+    fn follows_each_write(mut select: impl FnMut(usize) -> usize) -> bool {
+        let mut children = Vec::new();
+        for child in CHILDREN {
+            children.extend_from_slice(&child.to_le_bytes());
+        }
+        let mut switch = vec![0u8; SWITCH::SIZE];
+        put(&mut switch, NODE::kChildren_storage, children.as_ptr() as u32);
+        put(&mut switch, NODE::kChildren_endIndex, CHILDREN.len() as u32);
+        SEQUENCE.iter().all(|&(index, child)| {
+            put(&mut switch, SWITCH::switchIndex, index as u32);
+            select(switch.as_ptr() as usize) == child
+        })
+    }
+
+    /// A plain switch's child follows each write of its index (W114).
+    #[test]
+    fn a_plain_switch_follows_each_write_of_its_index() {
+        assert!(follows_each_write(|switch| unsafe { indexed_child(switch) }));
+    }
+
+    /// The null of the test above: a plant that keeps a copy of the first index it reads fails the sequence.
+    #[test]
+    fn a_kept_copy_of_the_index_fails_the_sequence() {
+        let mut kept: Option<i32> = None;
+        let plant = |switch: usize| unsafe {
+            let index = *kept.get_or_insert_with(|| rd(switch, SWITCH::switchIndex));
+            child_at(switch, CHILDREN.len(), index)
+        };
+        assert!(!follows_each_write(plant));
     }
 }
