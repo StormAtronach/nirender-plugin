@@ -57,7 +57,7 @@ ALLOWED_POSITIONS = {
     ("renderer/post.rs", "vec4f(f32(i32(index & 1u) * 4 - 1), f32(i32(index >> 1u) * 4 - 1), 0.0, 1.0)"): (1, "the full screen triangle in clip space"),
     ("shaders/core/XE Shadowmap.wgsl", "vec4f(x, y, 0.0, 1.0)"): (1, "a screen triangle in clip space (the blur of the shadow atlas)"),
     ("renderer/shadow.rs", "vec4f(-1.0 + corner.x * 0.5, -1.0 + corner.y * 0.25, 0.0, 1.0)"): (1, "the corner of the atlas picture in clip space"),
-    ("renderer/statics.rs", "vec4f(0.0, 0.0, -10000.0, 0.0)"): (1, "a vertex of a place before the band: a point outside the clip volume"),
+    ("shaders/core/XE Mod Statics.wgsl", "vec4f(0.0, 0.0, -10000.0, 0.0)"): (1, "a vertex of a place before the band: a point outside the clip volume"),
 }
 POSITION_ASSIGNMENT = re.compile(r"\bout\.position\s*=\s*(?P<value>[^;]+);")
 CLIP_CALL = re.compile(r"clip_(?:of|with)\(")
