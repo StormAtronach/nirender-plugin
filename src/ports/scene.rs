@@ -129,10 +129,15 @@ unsafe fn shape_display_start(this: usize, camera: usize) -> Option<usize> {
 /// the stream (`INSTANCE_WALK`). A shape under another accumulator keeps the helper's own
 /// order; in a scene with a view of its own (`instance_stream::Route::Places`) it draws at its
 /// display, as the helper has no order of that accumulator.
+///
+/// The count of the effect cache (`effect_cache_count`, off by default) takes the draw at each
+/// place where the engine would draw the shape: not where the engine only puts it in the queue.
 unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32) -> bool {
+    use crate::effect_cache_count::note_retained_draw;
     let flush = crate::ports::base::in_main_flush(t);
     if flush && crate::instance_stream::queued_now(t, this) {
         crate::instance_stream::flush_place(t, this, true);
+        note_retained_draw(t, this, true);
         return true;
     }
     if !crate::instance_stream::skipped_display(t, this, kind) {
@@ -140,12 +145,14 @@ unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32
     }
     if !crate::instance_stream::may_queue(t) {
         crate::instance_stream::walk_place(t, this);
+        note_retained_draw(t, this, true);
         return true;
     }
     if flush {
         // A shape under a node the queue took (a sort adjust node in mode 64): the node
         // displays its subtree in the flush.
         crate::instance_stream::flush_place(t, this, false);
+        note_retained_draw(t, this, true);
         return true;
     }
     let renderer = rd::<usize>(camera, C::spRenderer);
@@ -156,15 +163,20 @@ unsafe fn retained_display(t: &MainThread, this: usize, camera: usize, kind: u32
     };
     if accumulator == 0 {
         crate::instance_stream::walk_place(t, this);
+        note_retained_draw(t, this, true);
     } else if crate::ports::base::is_main_accumulator(t, accumulator) {
         thiscall1(PUSH_STATE, this, renderer as u32);
         if thiscall1(RENDERER_REGISTER_OBJECT, renderer, this as u32) & 0xFF != 0 {
             crate::instance_stream::note_queued(t, this);
         } else {
             crate::instance_stream::walk_place(t, this);
+            note_retained_draw(t, this, true);
         }
-    } else if crate::instance_stream::places_route(t) {
-        crate::instance_stream::walk_place(t, this);
+    } else {
+        if crate::instance_stream::places_route(t) {
+            crate::instance_stream::walk_place(t, this);
+        }
+        note_retained_draw(t, this, false);
     }
     true
 }
