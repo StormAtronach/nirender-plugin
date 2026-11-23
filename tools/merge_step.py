@@ -339,6 +339,34 @@ ORDER_PATHS = {"plugin": ("host/src/table_order.rs", "host/src/switches.rs", "ho
                           "host/src/cli.rs", "host/src/lib.rs", "host/src/extension.rs", "host/src/live.rs"), "mge": ()}
 ORDER_NAMES = ("MGE_XE_TABLE_ORDER", "table_order", "TableOrder", "collect_order", "order_keys", "add_to_digest", "digest_frame", "take_digest")
 ORDER_STAGE = "table order"
+# W611 (the Architect's page w611-light-fade-check, verdict 680 and addendum 1; the owner's D645): a change of the lights
+# is tested with per_pixel_light_fade on and off. The replay gate tests the value of the test installs' config; the
+# stage LIGHT_STAGE (validate_retained.py fade) replays each capture of the baseline folder with the base set and the
+# round's set at the other value, 0 px between them, and measures the cost at both values. It follows the gate and
+# needs the base set. It runs when a file of LIGHT_PATHS changes; when a changed line of the files under LIGHT_SHARED,
+# or the function line of its diff hunk, names a word of LIGHT_NAMES; or with LIGHT_FLAG. The self-test finds each
+# name in a tracked file (`light_drift`), so a rename cannot leave the list stale without notice.
+LIGHT_STAGE = "light fade"
+LIGHT_FLAG = "--light"
+LIGHT_PATHS = {"plugin": ("host/src/lights.rs", "host/src/light_keys.rs", "host/src/spot.rs"),
+               "mge": ("mgeHost64/src/renderer/lamp_grid.rs", "mgeHost64/src/renderer/lamp_values.rs", "mgeHost64/src/renderer/distant_lights.rs")}
+LIGHT_SHARED = {"plugin": ("host/src/",), "mge": ("mgeHost64/src/renderer.rs", "mgeHost64/src/renderer/", "mge-config/src/")}
+LIGHT_NAMES = ("per_pixel_light_fade", "per_pixel_light_fade_radius", "per_pixel",
+               "shade_lights", "light_terms", "light_end_fade", "extension_shade", "poll_lights", "lamp_fade", "end_of",
+               "cluster_reach", "attenuation_reach", "world_bin_reach", "build_world", "world_lights_in_reach", "cluster_lights", "PlacedLight", "LightData",
+               "MGE_XE_CLUSTERS",
+               "LIGHT", "LIGHT_GONE", "WORLD_LIGHTS", "light_at", "world_light", "struct Light")
+LIGHT_WORD = re.compile(r"\b(?:%s)\b" % "|".join(re.escape(name) for name in LIGHT_NAMES))
+# The game side (the page's section 5): what d3d8 and the plugin send. No replay of an old capture sees a change of
+# these; the round prints GAME_LIGHT_LINE, and the worker makes new captures at both values (part 2 makes it a stage).
+GAME_LIGHT_PATHS = {"plugin": ("src/light_stream.rs", "src/world_lights.rs", "src/link_client.rs", "src/ports/light_manager.rs"),
+                    "mge": ("d3d8/cpp/mge/ffeshader.cpp", "d3d8/cpp/mge/mwpatches.cpp", "d3d8/cpp/mge/mwbridge.cpp", "d3d8/cpp/main.cpp")}
+GAME_LIGHT_LINE = ("game side: not seen by the replays: %s change what the game sends; make two captures at narsisnight with each build, "
+                   "with the runner's --set \"[distant_land] per_pixel_light_fade = true\" and = false, and compare them (W611 part 2)")
+# --light of this run: the stage runs whatever the diff.
+LIGHT_FORCED = [False]
+# The base set of the stage's command in a round with no base set: run_stages makes the stage NOT RUN before it starts.
+NO_BASE_SET = "no-base-set"
 D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
 # What a change must touch for a build and a deploy without the gate (W406): the plugin DLL and the mod's Lua, which the
 # replay gate cannot see (it replays old captures with the helper and never runs the plugin), and the contract between
@@ -385,9 +413,65 @@ def order_drift(texts):
     return sorted(path for path, text in texts.items() if not touches([path], ORDER_PATHS["plugin"]) and ORDER_WORD.search(text))
 
 
+def light_words(diff):
+    """The words of LIGHT_NAMES in a diff with no context lines (git diff -U0): in its changed lines, and in the function
+    line that git writes after the second "@@" of a hunk's head. The file heads ("---", "+++") are no changed lines."""
+    found = set()
+    for line in diff.splitlines():
+        if line.startswith(("+++ ", "--- ")):
+            continue
+        if line.startswith("@@"):
+            parts = line.split("@@", 2)
+            text = parts[2] if len(parts) == 3 else ""
+        elif line.startswith(("+", "-")):
+            text = line[1:]
+        else:
+            continue
+        found.update(LIGHT_WORD.findall(text))
+    return found
+
+
+def light_reason(kind, repo, paths, older, newer):
+    """Why the round has the stage LIGHT_STAGE, as a text, or None: --light, the light files among `paths`, or the light
+    names in the diff from `older` to `newer` of the files under LIGHT_SHARED."""
+    if LIGHT_FORCED[0]:
+        return LIGHT_FLAG
+    files = [path for path in paths if touches([path], LIGHT_PATHS[kind])]
+    if files:
+        return "the light files " + ", ".join(files)
+    if not touches(paths, LIGHT_SHARED[kind]):
+        return None
+    words = light_words(git(repo, "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff", older, newer, "--", *LIGHT_SHARED[kind]))
+    return "the light names " + ", ".join(sorted(words)) if words else None
+
+
+def light_drift(texts):
+    """The names of LIGHT_NAMES that no text of `texts` ({path: text}) names as a word: a renamed or removed name."""
+    return [name for name in LIGHT_NAMES if not any(re.search(r"\b%s\b" % re.escape(name), text) for text in texts.values())]
+
+
+def self_test_light_trigger():
+    """W611: the words of a -U0 diff, and every name of LIGHT_NAMES in this tree or in the render-link tree beside it."""
+    diff = ("diff --git a/host/src/extension.rs b/host/src/extension.rs\n--- a/host/src/extension.rs\n+++ b/host/src/extension.rs\n"
+            "@@ -350,2 +350,2 @@ pub(crate) fn cluster_reach(light: &LightData) -> f32 {\n-    let a = 1;\n+    let a = 2;\n"
+            "@@ -10 +10 @@ fn other()\n-    let stable_order = per_pixel_light_fade_x;\n+    LIGHT_GONE.max(per_pixel)\n")
+    assert light_words(diff) == {"cluster_reach", "LightData", "LIGHT_GONE", "per_pixel"}, light_words(diff)
+    assert light_words("--- a/host/src/lights.rs\n+++ b/host/src/lights.rs\n@@ -1 +1 @@\n-a\n+b\n") == set()
+    assert light_words("@@ -1 +1 @@ struct Light {\n+ x\n") == {"struct Light"} and light_words("+struct Lights;\n") == set()
+    assert light_drift({"a.rs": "fn x() {}"}) == list(LIGHT_NAMES) and light_drift({"a.rs": " ".join(LIGHT_NAMES)}) == []
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    texts = {"plugin/" + path: text for path, text in tracked_texts(here, ("host/src/",)).items()}
+    mge = sibling_of("plugin", here) if os.path.isdir(sibling_of("plugin", here)) else main_render_link(here)
+    assert mge is not None, "no render-link tree beside this tree or beside its main checkout: the names of LIGHT_NAMES cannot be checked"
+    texts.update({"mge/" + path: text for path, text in tracked_texts(mge, LIGHT_SHARED["mge"]).items()})
+    drift = light_drift(texts)
+    assert not drift, "LIGHT_NAMES of merge_step.py has names that no tracked file names (%s): a rename; correct the list" % ", ".join(drift)
+
+
 def tracked_texts(repo, parts=("host/", "src/")):
     """{path: text} of the files that git tracks under `parts` of `repo`, as a reader of the code sees them."""
-    listed = subprocess.run(["git", "-C", repo, "ls-files", "-z", "--", *parts], capture_output=True, check=True).stdout
+    # git_env: in a commit hook, GIT_DIR names the hook's repository, and `-C repo` alone would list its files.
+    listed = subprocess.run(["git", "-C", repo, "ls-files", "-z", "--", *parts], capture_output=True, check=True, env=git_env()).stdout
     texts = {}
     for path in listed.decode("utf-8").split("\0"):
         if path:
@@ -546,8 +630,9 @@ def fast_stages(kind, plugin, mge, base=None, main_mge=None):
 
 
 def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None, mwse_dlls=None, commits=None, base=None, helper_paths=(),
-               label=None, base_commits=None):
-    """The stages of a merge, as (name, folder, command). The folder of the other repo is the sibling. `base_commits` (a
+               label=None, base_commits=None, light=None):
+    """The stages of a merge, as (name, folder, command). `light` is the reason of the stage LIGHT_STAGE from the diff
+    (light_reason), or None: a change of a file of LIGHT_PATHS adds it too. The folder of the other repo is the sibling. `base_commits` (a
     round_set) names the base set when it is not the base pair's own (W567 part C, equal_parts_base). `base` is the base
     commit of the round: the checks stage compares with it (checks.py --base), as the tree is at the merge. `commits` are
     the commits under test, {"plugin": sha, "mge": sha}, and `mwse_commit` the MWSE commit of the round: with both, the
@@ -595,12 +680,18 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
                                                       maker_tree("nirender"), maker_tree("render-link"),
                                                       under_test.get("plugin", "unknown"), under_test.get("mge", "unknown"),
                                                       os.path.join(folder, "numidium.exe")]))
+        base_set = None
         if tips:
             # The base pair's set, or the set of an ancestor with equal parts when the pair has none (equal_parts_base).
             base_set = base_commits or round_set(tips, mwse_commit)
             stages.append(set_stage(BASE_STAGE, plugin, base_set, label))
             stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", set_folder_of(base_set),
                                                         "--now-build", folder, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
+        if light or touches(paths, LIGHT_PATHS[kind]):
+            # W611: after the base set and the A/B, before the accept. With no base set the stage is NOT RUN (run_stages).
+            base_folder = set_folder_of(base_set) if tips else NO_BASE_SET
+            stages.append((LIGHT_STAGE, plugin, tool("validate_retained.py", "fade", "--mge-build", folder, "--base-build", base_folder, "--baseline", baseline,
+                                                     "--now", os.path.join(plugin, "target", "merge-step-light"), *on_list)))
         if GATE_LIST:
             # W567 part D: the last stage, so it runs only when every stage before it passed (the stop at the first
             # failure): the listed pictures of the gate's run become the accepted ones, and the next round is equal.
@@ -939,8 +1030,8 @@ def log_path_of(commit, folder=LOG_FOLDER, prefix="merge-step"):
 
 def clear_pictures(folder):
     """Removes the files of the gate's folder of pictures, of its tour folder and of the order stage's folder, one by
-    one."""
-    for part in (folder, os.path.join(folder, "tour"), os.path.join(folder, "order")):
+    one; and the config that the stage LIGHT_STAGE writes (validate_retained.py FADE_OTHER)."""
+    for part in (folder, os.path.join(folder, "tour"), os.path.join(folder, "order"), os.path.join(folder, "fade-other")):
         if os.path.isdir(part):
             for entry in os.scandir(part):
                 if entry.is_file(follow_symlinks=False):
@@ -972,7 +1063,7 @@ def run_stages(stages, log, note_stage=lambda: None):
         if stopped_by is not None:
             results[name] = not_run(name, "%s did not pass, and the round stops at its first failure" % stopped_by)
             continue
-        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE, ACCEPT_LIST_STAGE) and not made.get(SET_STAGE, True):
+        if name in (SITES_SET_STAGE, DEPLOY_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE, INSTANCE_STAGE, LIGHT_STAGE, ACCEPT_LIST_STAGE) and not made.get(SET_STAGE, True):
             results[name] = not_run(name, "the round's set was not made")
             stopped_by = name
             continue
@@ -980,7 +1071,12 @@ def run_stages(stages, log, note_stage=lambda: None):
             results[name] = not_run(name, "the base set was not made")
             stopped_by = name
             continue
-        if name in ("replay gate", ORDER_STAGE):
+        if name == LIGHT_STAGE and not made.get(BASE_STAGE, False):
+            # W611: base against now, so a round with no base set never passes it.
+            results[name] = not_run(name, "the base set was not made" if BASE_STAGE in made else "the round has no base set")
+            stopped_by = name
+            continue
+        if name in ("replay gate", ORDER_STAGE, LIGHT_STAGE):
             clear_pictures(command[command.index("--now") + 1])
         if note_stage() is False:
             results[name] = not_run(name, "the slot hold of this run ended and was not taken again")
@@ -1260,7 +1356,7 @@ def is_ancestor(repo, older, newer):
 # a capture of the game with three builds, and the deploy writes its set f<N> to E: and refuses while a game runs (W406:
 # a round can deploy with no gate). A new stage that starts the game or times the GPU belongs here. A check with
 # none of them leaves the game slot to the game runs; before D183 every check held it (D161), and the workers waited.
-GAME_STAGES = ("replay gate", ORDER_STAGE, INSTANCE_STAGE, DEPLOY_STAGE)
+GAME_STAGES = ("replay gate", ORDER_STAGE, INSTANCE_STAGE, LIGHT_STAGE, DEPLOY_STAGE)
 
 
 def needs_game(stages):
@@ -1835,10 +1931,11 @@ def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None
     helper's sources (helper_gate_paths) plan the gate too. `reuse_base`: the base set may be an equal-parts ancestor's
     (equal_parts_base); its line goes into the list `note` when one is given."""
     helper_paths, _ = helper_gate_paths(kind, repo, base)
+    light = light_reason(kind, repo, paths, base, commits[kind] if commits else "HEAD")
 
     def plan(tips=None, base_commits=None):
         return stages_for(kind, repo, paths, baseline, tips, mwse_commit, commits=commits, base=base, helper_paths=helper_paths, label=label,
-                          base_commits=base_commits)
+                          base_commits=base_commits, light=light)
 
     stages = plan()
     if any(name == SET_STAGE for name, _, _ in stages) and round_set(commits, mwse_commit) is None:
@@ -2049,13 +2146,14 @@ def self_test_equal_parts(root):
     globals()["equal_parts_base"] = lambda *args: (reused, "base set: the stub's")
     try:
         BASE_SET_NOTE[:] = ["base set: the round's own"]
-        stages, _, why = planned_stages("plugin", repo, ["host/src/c.rs"], BASELINE, {"plugin": "1" * 40, "mge": "2" * 40}, first, mwse_commit=mwse,
+        # The commit under test is a real one of the scratch repo: the plan reads its diff for the light names (W611).
+        stages, _, why = planned_stages("plugin", repo, ["host/src/c.rs"], BASELINE, {"plugin": host_change, "mge": "2" * 40}, first, mwse_commit=mwse,
                                         reuse_base=True)
         assert why is None and BASE_SET_NOTE == ["base set: the round's own"], (why, BASE_SET_NOTE)
         commands = {name: command for name, _, command in stages}
         assert commands[BASE_STAGE][commands[BASE_STAGE].index("--nirender") + 1] == second, "the sibling's plan takes the reused set too"
         note = ["old"]
-        planned_stages("plugin", repo, ["host/src/c.rs"], BASELINE, {"plugin": "1" * 40, "mge": "2" * 40}, first, mwse_commit=mwse, reuse_base=True,
+        planned_stages("plugin", repo, ["host/src/c.rs"], BASELINE, {"plugin": host_change, "mge": "2" * 40}, first, mwse_commit=mwse, reuse_base=True,
                        note=note)
         assert note == ["base set: the stub's"] and BASE_SET_NOTE == ["base set: the round's own"], (note, BASE_SET_NOTE)
     finally:
@@ -2173,6 +2271,88 @@ def self_test_gate_list(root, plugin):
     finally:
         del GATE_LIST[:]
     assert ACCEPT_LIST_STAGE not in [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE, tips)], "a round with no list accepts"
+
+
+def self_test_light(root, plugin, mge):
+    """W611: the place of the stage LIGHT_STAGE (after the base set and the A/B, before the accept), its command, its
+    NOT RUN rules (no round set, no base set, a base set that was not made), and its trigger on a scratch repo (a light
+    file, a light name in a changed line or a hunk's function line, --light, and a change that names no light)."""
+    tips = {"plugin": "1" * 40, "mge": "2" * 40}
+    mwse = "e" * 40
+    full = {"plugin": "3" * 40, "mge": "4" * 40}
+    names = lambda *args, **kw: [name for name, _, _ in stages_for(*args, **kw)]  # noqa: E731
+    for kind, tree, path in (("plugin", plugin, "host/src/lights.rs"), ("mge", mge, "mgeHost64/src/renderer/lamp_grid.rs")):
+        planned = names(kind, tree, [path], BASELINE, tips, mwse, commits=full)
+        assert planned[-3:] == [BASE_STAGE, INSTANCE_STAGE, LIGHT_STAGE], planned
+    plain = names("plugin", plugin, ["host/src/material.rs"], BASELINE, tips, mwse, commits=full)
+    assert LIGHT_STAGE not in plain, "a change with no light ran the light stage"
+    assert names("plugin", plugin, ["host/src/material.rs"], BASELINE, tips, mwse, commits=full, light="the light names cluster_reach")[-1] == LIGHT_STAGE
+    assert LIGHT_STAGE not in names("plugin", plugin, ["tools/x.py"], light=LIGHT_FLAG), "a round with no gate ran the light stage"
+    assert LIGHT_STAGE in GAME_STAGES
+    commands = {name: command for name, _, command in stages_for("plugin", plugin, ["host/src/lights.rs"], BASELINE, tips, mwse, commits=full)}
+    light, instance = commands[LIGHT_STAGE], commands[INSTANCE_STAGE]
+    assert light[3:5] == ["fade", "--mge-build"] and light[light.index("--mge-build") + 1] == set_folder_of(round_set(full, mwse)), light
+    assert light[light.index("--base-build") + 1] == instance[instance.index("--base-build") + 1] == set_folder_of(round_set(tips, mwse)), light
+    assert light[light.index("--now") + 1] == os.path.join(plugin, "target", "merge-step-light") and "--gate-list" not in light, light
+    # No tips: the stage is planned, and run_stages makes it NOT RUN.
+    assert stages_for("plugin", plugin, ["host/src/lights.rs"])[-1][2][7] == NO_BASE_SET
+    listed = os.path.join(root, "light-list.txt")
+    with open(listed, "w", encoding="utf-8") as file:
+        file.write("narsis fade-off\n")
+    try:
+        GATE_LIST[:] = gate_list_of(listed, BASELINE)
+        planned = stages_for("plugin", plugin, ["host/src/lights.rs"], BASELINE, tips, mwse, commits=full)
+        assert [name for name, _, _ in planned][-2:] == [LIGHT_STAGE, ACCEPT_LIST_STAGE], planned
+        assert planned[-2][2][-2:] == ["--gate-list", os.path.abspath(listed)], planned[-2][2]
+    finally:
+        del GATE_LIST[:]
+    good, never = [sys.executable, "-c", "pass"], [sys.executable, "-c", "raise SystemExit(9)"]
+    maker_missing = [sys.executable, "-c", "print('MISSING FEATURE: the MWSE.dll of the set lacks what the plugin needs; no set is made'); "
+                     "raise SystemExit(%d)" % MISSING_FEATURE_EXIT, "--mwse", mwse]
+    now = os.path.join(root, "light-now")
+    os.makedirs(os.path.join(now, "fade-other"), exist_ok=True)
+    stale = os.path.join(now, "fade-other", "mgeXE.toml")
+    with open(os.path.join(root, "log-light.txt"), "w", encoding="utf-8") as log:
+        light_stage = (LIGHT_STAGE, root, never + ["--now", now])
+        assert run_stages([(SET_STAGE, root, good), light_stage], log) == [True, False]
+        assert STAGE_WORDS[-1] == (LIGHT_STAGE, NOT_RUN_WORD, "the round has no base set"), STAGE_WORDS
+        assert run_stages([(SET_STAGE, root, good), (BASE_STAGE, root, maker_missing), light_stage], log) == [True, True, False]
+        assert STAGE_WORDS[-1] == (LIGHT_STAGE, NOT_RUN_WORD, "the base set was not made"), STAGE_WORDS
+        assert run_stages([(SET_STAGE, root, [sys.executable, "-c", "raise SystemExit(1)"]), (BASE_STAGE, root, never), light_stage], log) == [False, False, False]
+        assert run_stages([(SET_STAGE, root, maker_missing), (BASE_STAGE, root, good), light_stage], log)[-1] is False
+        assert STAGE_WORDS[-1] == (LIGHT_STAGE, NOT_RUN_WORD, "the round's set was not made"), STAGE_WORDS
+        # With both sets, the stage runs, after its old config is removed.
+        with open(stale, "w", encoding="utf-8") as file:
+            file.write("old")
+        assert run_stages([(SET_STAGE, root, good), (BASE_STAGE, root, good), (LIGHT_STAGE, root, good + ["--now", now])], log) == [True, True, True]
+        assert not os.path.exists(stale), "the stage's old config stayed"
+    # The trigger, on a scratch repo: the diff's words.
+    repo = os.path.join(root, "light-repo")
+    os.makedirs(os.path.join(repo, "host", "src"))
+    author = ("-c", "user.name=self-test", "-c", "user.email=self-test@invalid", "-c", "commit.gpgsign=false")
+
+    def commit(path, text, message):
+        with open(os.path.join(repo, path), "w", encoding="utf-8", newline="\n") as file:
+            file.write(text)
+        git(repo, "add", "--", path)
+        git(repo, *author, "commit", "-q", "-m", message)
+        return git(repo, "rev-parse", "HEAD")
+
+    git(repo, "init", "-q")
+    body = "pub(crate) fn cluster_reach(light: &Data) -> f32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n"
+    first = commit("host/src/extension.rs", body, "one")
+    second = commit("host/src/extension.rs", body.replace("let c = 3;", "let c = 4;"), "two")
+    third = commit("host/src/retained.rs", "fn keep() {}\n", "three")
+    assert light_reason("plugin", repo, ["host/src/extension.rs"], first, second) == "the light names cluster_reach"
+    assert light_reason("plugin", repo, ["host/src/retained.rs"], second, third) is None
+    assert light_reason("plugin", repo, ["tools/x.py"], second, third) is None
+    assert light_reason("plugin", repo, ["host/src/lights.rs"], second, third) == "the light files host/src/lights.rs"
+    try:
+        LIGHT_FORCED[0] = True
+        assert light_reason("plugin", repo, ["host/src/retained.rs"], second, third) == LIGHT_FLAG
+    finally:
+        LIGHT_FORCED[0] = False
+    self_test_light_trigger()
 
 
 def self_test_quick(root, plugin, mge, base):
@@ -2347,6 +2527,7 @@ def self_test():
         assert names("plugin", plugin, "contract/mge_render_link.h") == base + ["d3d8 build", "contract"] + deploy_tail
         self_test_quick(root, plugin, mge, base)
         self_test_gate_list(root, plugin)
+        self_test_light(root, plugin, mge)
         self_test_equal_parts(root)
         self_test_pair(root)
         # The set of the commits under test and the round's MWSE commit: the maker in the round's take (--in-hold, C2), in
@@ -3830,6 +4011,8 @@ def main():
     parser.add_argument("--open-deploys", action="store_true", help="list the WITHHELD deploys of %s that no deploy closed, and stop" % DEPLOYS_FILE)
     parser.add_argument("--gate-list", metavar="FILE", help="the Reviewer's passed list of the planned picture changes (W567 part D): the replay gate passes only when the "
                         "changed pictures equal it, and the round's last stage accepts them; its md5 goes into the close line")
+    parser.add_argument(LIGHT_FLAG, action="store_true", help="the stage '%s' (W611) whatever the diff: base against now at the fade value that the "
+                        "replay gate does not test, and the cost at both values; it needs the gate and the base set" % LIGHT_STAGE)
     parser.add_argument("--quick", action="store_true", help="the fast stages of a worker's own tree (<repo>, else the current folder) at its HEAD, and one line for the done report (W567)")
     parser.add_argument("--sibling", help="with --quick: the tree of the other repo; without it, the tree beside <repo>")
     args = parser.parse_args()
@@ -3841,8 +4024,9 @@ def main():
         for line in open_deploy_lines(deploys_open(own, sibling_of("plugin", own))):
             say(line)
         return 0
+    LIGHT_FORCED[0] = args.light
     if args.quick:
-        if args.commit or args.baseline != BASELINE or args.sibling_base or args.mwse or args.evidence or args.gate_list:
+        if args.commit or args.baseline != BASELINE or args.sibling_base or args.mwse or args.evidence or args.gate_list or args.light:
             parser.error("--quick takes [<tree>], --sibling, --base, --no-wait and --dry-run: it checks the tree's HEAD, with no set and no gate")
         return run_quick(args)
     if args.sibling:
@@ -3910,6 +4094,13 @@ def main():
     for name in EVIDENCE:
         if name not in [stage for stage, _, _ in stages]:
             say("the evidence file of %s is not used: the round has no such stage" % name)
+    if any(name == LIGHT_STAGE for name, _, _ in stages):
+        say("%s: %s" % (LIGHT_STAGE, light_reason(kind, repo, paths, base, commit) or "the light files of the diff"))
+    elif args.light:
+        say("%s is not used: the round has no replay gate" % LIGHT_FLAG)
+    game_light = [path for path in paths if kind and touches([path], GAME_LIGHT_PATHS[kind])]
+    if game_light:
+        say(GAME_LIGHT_LINE % ", ".join(game_light))
     if GATE_LIST:
         if any(name == ACCEPT_LIST_STAGE for name, _, _ in stages):
             say("the gate list %s (md5 %s): the replay gate passes these planned changes only, and the last stage accepts them" % GATE_LIST[0])

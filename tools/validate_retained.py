@@ -73,6 +73,17 @@ Stages (capture, baseline and only by default, in this order):
            so only after every stage passed. Each listed picture must differ from its accepted one; the
            pictures of a capture need a second replay that gives them again (as --accept-new); then the
            replay logs of those folders are rewritten too, not counted as changes (D557).
+  fade     (W611, the owner's D645) with --base-build <the base set>: the baseline replays with the config of
+           the test installs (--config-root, else replay.py's default), so they test one value of
+           per_pixel_light_fade. This stage tests the other value: it writes <now>/fade-other/mgeXE.toml, the
+           same file with only that key changed, and replays each capture of the baseline folder (not the
+           tour's) with the base set and with --mge-build at that value: 0 pixels may differ in frame 1 and in
+           the last frame. Then the cost: 6 replays of narsis.nircap with each set at each value, in turn, with
+           MGE_XE_GPU_TIME=1 and a mark every 14 frames; the marks after the first give the GPU frame time and
+           the helper's busy time. The median of the round's set may be at most the base's + max(0.1 ms, 5 %).
+           A replay with no gpu line, or a game that runs (Morrowind.exe or numidium.exe), makes the cost NOT RUN. The numbers go into <now>/fade-numbers.txt. The merge step
+           runs it after the base set when the change touches the lights (LIGHT_PATHS and LIGHT_NAMES of
+           merge_step.py, or --light). It accepts nothing.
 
 --gate-list FILE (W567 part D) names the planned changes of the baseline stage: one picture for each line,
 relative to the baseline folder ("narsis.png", "narsis-last.png", "tour/3-03-_nif_052.png",
@@ -80,7 +91,11 @@ relative to the baseline folder ("narsis.png", "narsis-last.png", "tour/3-03-_ni
 list exactly: a change that the list does not name fails, a listed picture that came out equal fails, and a
 name with no accepted picture fails before the replays. Every other check of the stage stays (the counts, a
 stray accepted picture, the objects, the tour's own pairs and their KNOWN_STOPS). The verdict names the file
-and its md5. With --accept or --accept-new it is refused.
+and its md5. With --accept or --accept-new it is refused. Two more line forms are for the stage fade (W611):
+"<capture> fade-on|fade-off" plans a difference between the base set and the round's set in that capture's
+pictures at that value, and "cost <capture> fade-on|fade-off <reason>" plans a rise of the cost at that value.
+The same rules hold: a change or a rise that the list does not name fails, and a listed one that did not come
+fails. The baseline stage and accept-list ignore these lines: the stage fade keeps no pictures.
 
 --disable-mod NAME switches a mod of the profile off for the runs (an A/B of a mod). Both arms have the
 instance's distant land: the runner keeps MGE XE from a rebuild of it in a run that changes what the game loads
@@ -130,6 +145,12 @@ TOUR_PREFIX, HOOKS_PREFIX = "tour/", "hooks/"
 GATE_LIST = set()
 GATE_LIST_NOTE = []
 CHANGED = []
+# W611: the fade lines of the gate list (`read_gate_lines`), for the stage `fade`: GATE_FADE holds (capture, value) of
+# the planned picture changes, GATE_COST {(capture, value): reason} of the planned cost rises. The value is True for
+# the fade on.
+GATE_FADE = set()
+GATE_COST = {}
+FADE_WORDS = {True: "fade-on", False: "fade-off"}
 # A fixture is a file "XE Mod <name>.wgsl" of the folder; the README of the folder is not one.
 HOOK_FIXTURE_NAME = re.compile(r"XE Mod .+\.wgsl")
 # A hook of a fixture: a function at the start of a line whose name does not start with `mod_` (a helper of the file).
@@ -184,7 +205,7 @@ WEATHER = {"pin": 0}
 # for the unpacked release archive of release.py's gate. main sets it.
 BUILD = {"option": "--mge-build"}
 # The stages that only replay. The others start the game, and a run of the game does not take an archive here.
-REPLAY_ONLY_STAGES = ("baseline", "order", "accept-list")
+REPLAY_ONLY_STAGES = ("baseline", "order", "accept-list", "fade")
 
 
 def build_option(mge_build):
@@ -762,7 +783,194 @@ def self_test():
     self_test_scratch_folders()
     self_test_tour_stage()
     self_test_order_stage()
+    self_test_fade_stage()
     print("validate_retained self-test: ok")
+
+
+def self_test_fade_stage():
+    """W611: the stage `fade` on a planted baseline folder (a.nircap, narsis.nircap and a tour capture, which the stage
+    does not replay) with planted replays (no build, no replay, no GPU). The config: one line differs, at either gate
+    value, with the key missing too. The pictures: equal passes; a change fails unless the gate list plans it; a planned
+    change that did not come fails, and so does a fade line of the gate's own value or of no capture. The cost: the
+    medians against the limit; a rise fails unless the gate list plans it; a planned rise that did not come fails; a
+    replay with no gpu line is NOT RUN."""
+    global run_code, build_missing, game_running
+    import picture_diff
+
+    real = run_code, build_missing, game_running
+    games = []
+    game_running = lambda: games.pop(0) if games else None  # noqa: E731
+    grey, other = (10, 20, 30), (250, 0, 250)
+    gate_config =("[render]\nx = 1\n\n[distant_land]\nper_pixel_lighting = true\nper_pixel_light_fade = true  # the install's\n"
+                   "per_pixel_light_fade_radius = 1.75\n\n[water]\ny = 2\n")
+
+    def plant(pictures=None, costs=None):
+        """A run_code whose replays draw frame 1 grey and frame 29 in `pictures(name, arm, value)` (None: grey), and whose
+        cost replays print two marks, the loads (9 ms) and then `costs(arm, value)`: (GPU frame ms, busy ms), or a text
+        that replaces the output. `run.calls` holds (capture, arm, value, a cost replay, env) of each replay."""
+        calls = []
+
+        def run(command, env=None):
+            if not command[1].endswith("replay.py"):
+                return 0, ""
+            arm = "base" if command[command.index("--mge-build") + 1] == "base-set" else "now"
+            with open(os.path.join(command[command.index("--config-root") + 1], "mgeXE.toml"), encoding="utf-8") as file:
+                value = fade_of(file.read())
+            cost = "--marks-every" in command
+            calls.append((os.path.basename(command[2]), arm, value, cost, dict(env or {})))
+            if cost:
+                result = costs(arm, value) if costs else (2.0, 1.0)
+                if isinstance(result, str):
+                    return 0, result
+                return 0, "".join("mark replay frame %d: 14 frames, 100.0 draws in 50.0 pipeline runs for each frame, busy %.3f ms for each frame:\n"
+                                  "   0.100  feed\n  gpu: 1.000 ms in the passes, %.3f ms the frame, for each of 14 timed frames\n" % (
+                                      14 * (index + 1), result[1] if index else 9.0, result[0] if index else 9.0) for index in range(2)) + "gpu: 9.000 ms in the passes, 9.000 ms the frame, for each of 28 timed frames\n"
+            colour = (pictures(os.path.basename(command[2])[:-len(".nircap")], arm, value) if pictures else None) or grey
+            for frame, shade in ((1, grey), (29, colour)):
+                picture_diff.Image.new("RGB", (8, 8), shade).save("%s-%05d.png" % (command[3], frame))
+            return 0, "frame 29\n"
+
+        run.calls = calls
+        return run
+
+    def stage(folder, tool, config=gate_config, fades=(), costs=None):
+        """(passed, printed, exit code of a stage that did not pass)."""
+        global run_code
+        run_code = tool
+        FAILS[0] = 0
+        del NOT_RUN_LINES[:]
+        GATE_FADE.clear()
+        GATE_FADE.update(fades)
+        GATE_COST.clear()
+        GATE_COST.update(costs or {})
+        root = os.path.join(folder, "root")
+        os.makedirs(root, exist_ok=True)
+        with open(os.path.join(root, "mgeXE.toml"), "w", encoding="utf-8", newline="") as file:
+            file.write(config)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            passed = stage_fade(folder, "now-set", "base-set", os.path.join(folder, "now"), root)
+            code = 0 if passed else baseline_failure_code("fade")
+        return passed, printed.getvalue(), code
+
+    def written(folder):
+        with open(os.path.join(folder, "now", FADE_OTHER, "mgeXE.toml"), encoding="utf-8", newline="") as file:
+            return file.read()
+
+    build_missing = lambda _build: []  # noqa: E731
+    try:
+        # The config's edit: one line, the line ends kept; a missing key is the schema's off; the refusals.
+        assert flip_fade(gate_config) == gate_config.replace("per_pixel_light_fade = true  #", "per_pixel_light_fade = false  #")
+        crlf = gate_config.replace("\n", "\r\n")
+        assert flip_fade(crlf) == crlf.replace("per_pixel_light_fade = true  #", "per_pixel_light_fade = false  #")
+        assert flip_fade("[distant_land]\r\nper_pixel_lighting = true\r\n") == "[distant_land]\r\nper_pixel_light_fade = true\r\nper_pixel_lighting = true\r\n"
+        assert fade_of("[render]\n") is False and fade_of("[distant_land]\nper_pixel_light_fade=true\n") is True
+        for config, said in (("[render]\nx = 1\n", "no table [distant_land]"), ("distant_land = { per_pixel_light_fade = true }\n", "no table [distant_land]"),
+                             ("[distant_land]\nper_pixel_light_fade = 'yes'\n", "")):
+            try:
+                flip_fade(config)
+                raise AssertionError("flip_fade took %r" % config)
+            except ValueError as error:
+                assert said in str(error), (config, error)
+        # The cost lines: the first mark (the loads) is left out; no mark after it, or no gpu line, gives None.
+        assert cost_of("mark a: 10 frames, x busy 9.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 9.000 ms the frame, for each of 10 timed frames\n"
+                       "mark b: 10 frames, x busy 1.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 2.000 ms the frame, for each of 10 timed frames\n"
+                       "mark c: 30 frames, x busy 2.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 4.000 ms the frame, for each of 30 timed frames\n") == (3.5, 1.75)
+        assert cost_of("mark a: 10 frames, x busy 9.000 ms for each frame:\n") == (None, None)
+        assert cost_of("mark a: 1 frames, busy 9.000 ms for each frame:\nmark b: 2 frames, busy 1.000 ms for each frame:\n") == (None, 1.0)
+        with tempfile.TemporaryDirectory() as folder:
+            os.makedirs(os.path.join(folder, "tour"))
+            for path in ("a.nircap", "narsis.nircap", os.path.join("tour", "t.nircap")):
+                open(os.path.join(folder, path), "wb").close()
+            # The null: base = now. The gate's config has the fade on, so the pictures are replayed at the fade off; the
+            # written config differs from the gate's in that one line; the cost has 6 rounds of each set at each value, with
+            # the GPU time; the tour's capture is not replayed.
+            tool = plant()
+            passed, said, _code = stage(folder, tool)
+            assert passed and "ok   a at the fade-off: base and now equal (2 pictures)" in said and "ok   narsis at the fade-off: base and now equal" in said, said
+            assert "narsis at the fade-off, GPU frame: base 2.000, now 2.000 ms (+0.000; medians of 6;" in said and "the limit 2.100" in said, said
+            assert "narsis at the fade-on, busy: base 1.000, now 1.000 ms" in said and "the limit 1.100" in said, said
+            assert [line for line in written(folder).splitlines() if line not in gate_config.splitlines()] == ["per_pixel_light_fade = false  # the install's"]
+            assert len(written(folder).splitlines()) == len(gate_config.splitlines())
+            pictures = [call for call in tool.calls if not call[3]]
+            assert sorted((name, arm, value) for name, arm, value, _cost, _env in pictures) == [
+                ("a.nircap", "base", False), ("a.nircap", "now", False), ("narsis.nircap", "base", False), ("narsis.nircap", "now", False)], pictures
+            assert all("MGE_XE_GPU_TIME" not in env for *_rest, env in pictures)
+            costs = [call for call in tool.calls if call[3]]
+            assert len(costs) == 24 and all(name == "narsis.nircap" and env.get("MGE_XE_GPU_TIME") == "1" for name, _arm, _value, _cost, env in costs)
+            assert [(arm, value) for _name, arm, value, _cost, _env in costs[:4]] == [("base", True), ("now", True), ("base", True), ("now", True)], costs[:4]
+            assert os.path.isfile(os.path.join(folder, "now", "fade-numbers.txt")) and not any(name.startswith("cost-") and name.endswith(".png") for name in os.listdir(os.path.join(folder, "now")))
+            # A gate config with the fade off: the stage tests the fade on. A config with no key is the schema's off.
+            for config in (gate_config.replace("fade = true", "fade = false"), gate_config.replace("per_pixel_light_fade = true  # the install's\n", "")):
+                tool = plant()
+                passed, said, _code = stage(folder, tool, config)
+                assert passed and "a at the fade-on: base and now equal" in said and fade_of(written(folder)) is True, said
+                assert {value for _name, _arm, value, cost, _env in tool.calls if not cost} == {True}
+            # A picture change at the fade off: without the list it fails; with a fade line that names it, it passes.
+            change = lambda name, arm, value: other if (name, arm, value) == ("a", "now", False) else None  # noqa: E731
+            passed, said, code = stage(folder, plant(change))
+            assert not passed and code == 1 and "FAIL a at the fade-off: base and now differ (the last frame: " in said and "the gate list plans no change of it" in said, said
+            passed, said, _code = stage(folder, plant(change), fades={("a", False)})
+            assert passed and "ok   a at the fade-off: base and now differ (the last frame: " in said and "listed: a planned change" in said, said
+            # A change that the list does not name still fails, next to a listed one.
+            both = lambda name, arm, value: other if arm == "now" and not value else None  # noqa: E731
+            passed, said, _code = stage(folder, plant(both), fades={("a", False)})
+            assert not passed and "ok   a at the fade-off: base and now differ" in said and "FAIL narsis at the fade-off: base and now differ" in said, said
+            # A planned change that did not come fails.
+            passed, said, _code = stage(folder, plant(change), fades={("a", False), ("narsis", False)})
+            assert not passed and "FAIL narsis at the fade-off: base and now are equal, and the gate list plans a change (narsis fade-off)" in said, said
+            # A fade line of the gate's own value, or of no capture of the folder, fails before any replay.
+            for fades, said_here in (({("a", True)}, "the gate list names a fade-on: the replay gate tests that value"),
+                                     ({("t", False)}, "the gate list names t fade-off, and the baseline folder has no t.nircap")):
+                tool = plant(change)
+                passed, said, _code = stage(folder, tool, fades=fades)
+                assert not passed and said_here in said and tool.calls == [], said
+            # The cost: a rise above the limit at the fade off fails; the gate list's cost line passes it; a rise under the
+            # floor of 0.1 ms passes; a busy rise fails too.
+            dearer = lambda arm, value: (2.5, 1.0) if (arm, value) == ("now", False) else (2.0, 1.0)  # noqa: E731
+            passed, said, code = stage(folder, plant(costs=dearer))
+            assert not passed and code == 1 and "FAIL narsis at the fade-off: a rise above the limit, and the gate list plans none: narsis at the fade-off, GPU frame: base 2.000, now 2.500 ms (+0.500" in said, said
+            assert "ok   narsis at the fade-on: no rise above the limit" in said, said
+            passed, said, _code = stage(folder, plant(costs=dearer), costs={("narsis", False): "the fix binds more lights"})
+            assert passed and "ok   narsis at the fade-off: a rise; listed: a planned rise (the fix binds more lights)" in said, said
+            passed, said, _code = stage(folder, plant(costs=lambda arm, value: (2.09, 1.0) if arm == "now" else (2.0, 1.0)))
+            assert passed, said
+            passed, said, _code = stage(folder, plant(costs=lambda arm, value: (2.0, 1.2) if arm == "now" else (2.0, 1.0)))
+            assert not passed and "narsis at the fade-on, busy: base 1.000, now 1.200 ms" in said and "FAIL narsis at the fade-on: a rise above the limit" in said, said
+            # The medians: one slow round of now does not move the verdict. A lower cost passes (W587's fix at the fade off).
+            rounds = iter(range(1000))
+            slow = lambda arm, value: (9.0, 1.0) if arm == "now" and next(rounds) == 0 else (2.0, 1.0)  # noqa: E731
+            passed, said, _code = stage(folder, plant(costs=slow))
+            assert passed and "spread base 0.000, now 7.000" in said, said
+            passed, said, _code = stage(folder, plant(costs=lambda arm, value: (1.0, 0.9) if arm == "now" and not value else (2.0, 1.0)))
+            assert passed and "narsis at the fade-off, GPU frame: base 2.000, now 1.000 ms (-1.000;" in said, said
+            # A planned rise that did not come fails; a cost line of another capture fails before any replay.
+            passed, said, _code = stage(folder, plant(), costs={("narsis", False): "x"})
+            assert not passed and "FAIL narsis at the fade-off: no rise, and the gate list plans one (x): the planned rise did not come" in said, said
+            tool = plant()
+            passed, said, _code = stage(folder, tool, costs={("a", False): "x"})
+            assert not passed and "this stage measures the cost of narsis only" in said and tool.calls == [], said
+            # A cost replay with no gpu line (no MGE_XE_GPU_TIME in the build) is NOT RUN, never a pass.
+            passed, said, code = stage(folder, plant(costs=lambda arm, value: "mark a: 14 frames, busy 1.0 ms for each frame:\nmark b: 14 frames, busy 1.0 ms for each frame:\n"))
+            assert not passed and code == NOT_RUN_EXIT and "NOT RUN fade: the cost of narsis, the base set at the fade-on, round 1: the replay printed no gpu line" in said, said
+            # A gate config that this stage cannot edit fails before any replay.
+            tool = plant()
+            passed, said, _code = stage(folder, tool, "[render]\nx = 1\n")
+            assert not passed and "has no table [distant_land]" in said and tool.calls == [], said
+            # A game that runs before the cost, or starts during it, makes the cost NOT RUN; the pictures are judged.
+            games[:] = ["Morrowind.exe"]
+            tool = plant()
+            passed, said, code = stage(folder, tool)
+            assert not passed and code == NOT_RUN_EXIT and "NOT RUN fade: the cost of narsis: Morrowind.exe runs" in said, said
+            assert "ok   a at the fade-off: base and now equal" in said and all(not cost for *_rest, cost, _env in tool.calls), said
+            games[:] = [None, "numidium.exe"]
+            passed, said, code = stage(folder, plant())
+            assert not passed and code == NOT_RUN_EXIT and "numidium.exe started during the cost's replays" in said, said
+    finally:
+        run_code, build_missing, game_running = real
+        FAILS[0] = 0
+        del NOT_RUN_LINES[:]
+        GATE_FADE.clear()
+        GATE_COST.clear()
 
 
 def self_test_order_stage():
@@ -1298,8 +1506,9 @@ def self_test_gate_list(stage, plant, grey, other, prefixes):
         passed, said, _code = stage(folder, change)
         assert not passed and "FAIL the gate list names c.png, which has no accepted picture" in said and prefixes == [], said
         # The accept: a gate with the list, then accept-list. A picture that a second replay does not give again copies
-        # nothing.
-        with_list(folder, "a-last.png")
+        # nothing. W611: the list's fade lines are no pictures: the gate and accept-list take only the other lines.
+        path, md5 = with_list(folder, "a-last.png", "a fade-off", "cost narsis fade-off the fix is dearer")
+        assert GATE_LIST == {"a-last.png"}, GATE_LIST
         assert stage(folder, change)[0]
         turns = iter([{1: grey, 29: grey}])
         done, said = accept_list(folder, plant({"a": lambda: next(turns)}))
@@ -1336,7 +1545,13 @@ def self_test_gate_list(stage, plant, grey, other, prefixes):
         listed = os.path.join(folder, "list.txt")
         for text, wanted in (("# planned\nnarsis.png\n\ntour/3-03-x.png # the fog\nhooks/narsis-last.png\n", {"narsis.png", "tour/3-03-x.png", "hooks/narsis-last.png"}),
                              ("narsis.png\nnarsis.png\n", "named twice"), ("tour/a/b.png\n", "is no picture"), ("narsis.txt\n", "is no picture"),
-                             ("../accepted/x.png\n", "is no picture"), ("# nothing\n", "names no picture")):
+                             ("../accepted/x.png\n", "is no picture"), ("# nothing\n", "names no picture"),
+                             # W611: the fade lines are read and are no names; a list of fade lines only is a list.
+                             ("narsis.png\nnarsis fade-off\ncost narsis fade-on a reason\n", {"narsis.png"}), ("narsis fade-off\n", set()),
+                             ("narsis fade-up\n", "is no picture"), ("narsis.nircap fade-off\n", "is no fade line"),
+                             ("cost narsis fade-off\n", "is no cost line"), ("cost narsis off why\n", "is no cost line"),
+                             ("narsis fade-off\nnarsis fade-off\n", "named twice"), ("cost a fade-on x\ncost a fade-on y\n", "named twice"),
+                             ("narsis.png extra\n", "is no picture")):
             with open(listed, "w", encoding="utf-8") as file:
                 file.write(text)
             try:
@@ -1344,6 +1559,10 @@ def self_test_gate_list(stage, plant, grey, other, prefixes):
             except ValueError as error:
                 found = str(error)
             assert found == wanted if isinstance(wanted, set) else wanted in found, (text, found)
+        with open(listed, "w", encoding="utf-8") as file:
+            file.write("a.png\na fade-off # the fix\ncost narsis fade-off the fix binds fewer lights\ncost narsis fade-on two words\n")
+        names, fades, costs, _md5 = read_gate_lines(listed)
+        assert names == {"a.png"} and fades == {("a", False)} and costs == {("narsis", False): "the fix binds fewer lights", ("narsis", True): "two words"}, (names, fades, costs)
         try:
             read_gate_list(os.path.join(folder, "none.txt"))
             raise AssertionError("a missing list was read")
@@ -1498,16 +1717,17 @@ def check_route(what, output, folder, fixtures):
     return problems == [] and check(True, "%s: the route of the hook fixtures: %d files read and in use" % (what, len(fixtures)))
 
 
-def replay_frames(capture, prefix, mge_build, env):
+def replay_frames(capture, prefix, mge_build, env, extra=()):
     """One replay of a capture for the gate: frame 1 into <prefix>.png and the last frame into <prefix>-last.png.
     Returns (code, output, last frame or None). A capture whose last frame is frame 1 or before has no later
-    picture. Pictures of an earlier replay with this prefix are removed first: no stale picture is judged."""
+    picture. Pictures of an earlier replay with this prefix are removed first: no stale picture is judged. `extra` are
+    more arguments of replay.py (the stage `fade`: --config-root)."""
     folder, name = os.path.split(prefix)
     numbered = re.compile(re.escape(name) + r"-(\d{5})\.png")
     for stale in [prefix + ".png", prefix + LAST + ".png"] + [os.path.join(folder, entry) for entry in os.listdir(folder) if numbered.fullmatch(entry)]:
         if os.path.isfile(stale):
             os.remove(stale)
-    code, output = run_code([PY, os.path.join(HERE, "replay.py"), capture, prefix, "--frames-at", GATE_FRAMES] + build_option(mge_build), env)
+    code, output = run_code([PY, os.path.join(HERE, "replay.py"), capture, prefix, "--frames-at", GATE_FRAMES] + build_option(mge_build) + list(extra), env)
     frames = sorted(int(found.group(1)) for found in map(numbered.fullmatch, os.listdir(folder)) if found)
     last = None
     for frame in frames:
@@ -1603,27 +1823,65 @@ def steady_problems(capture, name, pictures, mge_build, env):
 
 
 def read_gate_list(path):
-    """The names of a gate list (W567 part D) and the file's md5, or raises ValueError with the reason. One name for
-    each line; "#" starts a comment, and an empty line is no name. A name is a picture of the baseline folder:
-    "<file>.png", "tour/<file>.png" or "hooks/<file>.png", with no other folder in it."""
+    """The picture names of a gate list (W567 part D) and the file's md5, or raises ValueError with the reason
+    (`read_gate_lines`). The fade lines of W611 are read, and are not names: no stage but `fade` uses them."""
+    names, _fades, _costs, md5 = read_gate_lines(path)
+    return names, md5
+
+
+def capture_word(word):
+    """True for the name of a capture of the baseline folder in a fade line: a file name with no ".nircap", no folder."""
+    return bool(word) and not word.startswith(".") and not word.endswith((".png", ".nircap")) and "/" not in word and "\\" not in word
+
+
+def read_gate_lines(path):
+    """The planned changes of a gate list: (picture names, fade changes, cost rises, the file's md5), or raises ValueError
+    with the reason. One entry for each line; "#" starts a comment, and an empty line is no entry.
+    - A picture of the baseline folder (W567 part D): "<file>.png", "tour/<file>.png" or "hooks/<file>.png", with no
+      other folder in it. The replay gate passes its change, and accept-list accepts it.
+    - "<capture> fade-on" or "<capture> fade-off" (W611): the stage `fade` passes a difference between the base set and
+      the round's set in the pictures of <capture>.nircap at that value. The set holds (capture, True for fade-on).
+    - "cost <capture> fade-on|fade-off <reason>" (W611): the stage `fade` passes a rise of the cost at that value. The
+      dict holds {(capture, True for fade-on): reason}.
+    No stage accepts a fade line: the stage `fade` keeps no pictures."""
     if not os.path.isfile(path):
         raise ValueError("the gate list %s is no file" % path)
     with open(path, "rb") as file:
         data = file.read()
-    names = set()
+    names, fades, costs = set(), set(), {}
     for number, line in enumerate(data.decode("utf-8").splitlines(), 1):
-        name = line.split("#", 1)[0].strip()
-        if not name:
+        entry = line.split("#", 1)[0].strip()
+        if not entry:
             continue
+        words = entry.split()
+        where = "the gate list %s, line %d" % (path, number)
+        if words[0] == "cost" and len(words) >= 2:
+            if len(words) < 4 or not capture_word(words[1]) or words[2] not in FADE_WORDS.values():
+                raise ValueError("%s: %r is no cost line (cost <capture> fade-on|fade-off <reason>)" % (where, entry))
+            key = (words[1], words[2] == FADE_WORDS[True])
+            if key in costs:
+                raise ValueError("%s: the cost of %s %s is named twice" % (where, words[1], words[2]))
+            costs[key] = " ".join(words[3:])
+            continue
+        if len(words) == 2 and words[1] in FADE_WORDS.values():
+            if not capture_word(words[0]):
+                raise ValueError("%s: %r is no fade line (<capture> fade-on|fade-off, the capture's name with no .nircap)" % (where, entry))
+            key = (words[0], words[1] == FADE_WORDS[True])
+            if key in fades:
+                raise ValueError("%s: %s is named twice" % (where, entry))
+            fades.add(key)
+            continue
+        name = entry
         rest = name[len(TOUR_PREFIX):] if name.startswith(TOUR_PREFIX) else name[len(HOOKS_PREFIX):] if name.startswith(HOOKS_PREFIX) else name
-        if not rest.endswith(".png") or "/" in rest or "\\" in rest or rest.startswith("."):
-            raise ValueError("the gate list %s, line %d: %r is no picture of the baseline folder (<file>.png, tour/<file>.png or hooks/<file>.png)" % (path, number, name))
+        if not rest.endswith(".png") or "/" in rest or "\\" in rest or rest.startswith(".") or len(words) != 1:
+            raise ValueError("%s: %r is no picture of the baseline folder (<file>.png, tour/<file>.png or hooks/<file>.png) and no fade "
+                             "line (<capture> fade-on|fade-off, cost <capture> fade-on|fade-off <reason>)" % (where, name))
         if name in names:
-            raise ValueError("the gate list %s, line %d: %s is named twice" % (path, number, name))
+            raise ValueError("%s: %s is named twice" % (where, name))
         names.add(name)
-    if not names:
-        raise ValueError("the gate list %s names no picture" % path)
-    return names, hashlib.md5(data).hexdigest()
+    if not names and not fades and not costs:
+        raise ValueError("the gate list %s names no picture and no fade line" % path)
+    return names, fades, costs, hashlib.md5(data).hexdigest()
 
 
 def accepted_of(baseline, name):
@@ -2206,6 +2464,240 @@ def stage_order(baseline, mge_build, now):
     return check(True, "table order: %d captures, every compared frame equal in both values; the orders differed in %d" % (len(captures), len(shown)))
 
 
+# W611 (the Architect's page w611-light-fade-check, verdict 680 and addendum 1; the owner's D645): the stage `fade`. The
+# replay gate replays with the config of the test installs, so it tests one value of per_pixel_light_fade. This stage
+# tests the other value: each capture of the baseline folder is replayed with the base set and with the round's set at
+# that value, and 0 px may differ between them. Then the cost: FADE_COST_ROUNDS replays of FADE_COST_CAPTURE with each
+# set at each value, base and now in turn, with the GPU time (MGE_XE_GPU_TIME=1) and a mark every FADE_MARKS_EVERY
+# frames; the marks after the first (the first holds the loads) give the GPU frame time and the helper's busy time.
+# The median of now may be at most the median of base + max(FADE_COST_FLOOR_MS, FADE_COST_SHARE of it). The gate list's
+# fade lines pass a planned change (`read_gate_lines`).
+FADE_TABLE = re.compile(r"^\s*\[distant_land\]\s*(?:#.*)?$")
+FADE_LINE = re.compile(r"^(\s*per_pixel_light_fade\s*=\s*)(true|false)(\s*(?:#.*)?)$")
+FADE_OTHER = "fade-other"
+FADE_COST_CAPTURE = "narsis"
+FADE_COST_ROUNDS = 6
+FADE_MARKS_EVERY = 14
+FADE_COST_ENV = {"MGE_XE_GPU_TIME": "1"}
+FADE_COST_FLOOR_MS, FADE_COST_SHARE = 0.1, 0.05
+MARK_LINE = re.compile(r"^mark .+?: (\d+) frames, .*busy ([0-9.]+) ms for each frame:")
+GPU_LINE = re.compile(r"^\s+gpu: [0-9.]+ ms in the passes, ([0-9.]+) ms the frame, for each of (\d+) timed frames")
+
+
+def fade_of(config):
+    """The value of per_pixel_light_fade in the text of an mgeXE.toml: the schema's default (off) when it has no such key."""
+    import tomllib
+    return bool(tomllib.loads(config).get("distant_land", {}).get("per_pixel_light_fade", False))
+
+
+def flip_fade(config):
+    """The text of an mgeXE.toml with the other value of per_pixel_light_fade: its line in the table [distant_land]
+    changed, or a line added at the start of the table. Raises ValueError when the config has no such table, or when the
+    two files differ in more than that key (a key of another form, which this edit does not find)."""
+    import tomllib
+    value = fade_of(config)
+    lines = config.splitlines(keepends=True)
+    table = next((index for index, line in enumerate(lines) if FADE_TABLE.match(line.rstrip("\r\n"))), None)
+    if table is None:
+        raise ValueError("it has no table [distant_land]")
+    end = next((index for index in range(table + 1, len(lines)) if lines[index].lstrip().startswith("[")), len(lines))
+    word = "false" if value else "true"
+    for index in range(table + 1, end):
+        text = lines[index].rstrip("\r\n")
+        found = FADE_LINE.match(text)
+        if found:
+            lines[index] = found.group(1) + word + found.group(3) + lines[index][len(text):]
+            break
+    else:
+        lines.insert(table + 1, "per_pixel_light_fade = %s%s" % (word, lines[table][len(lines[table].rstrip("\r\n")):] or "\n"))
+    flipped = "".join(lines)
+    wanted = tomllib.loads(config)
+    wanted.setdefault("distant_land", {})["per_pixel_light_fade"] = not value
+    if tomllib.loads(flipped) != wanted:
+        raise ValueError("the edit of per_pixel_light_fade changed more than that key")
+    return flipped
+
+
+def cost_of(output):
+    """(GPU frame ms, busy ms) of one cost replay: the marks after the first, the GPU time weighted by the timed frames
+    and the busy time by the frames. None for a part with no line."""
+    marks = []
+    for line in output.splitlines():
+        found = MARK_LINE.match(line)
+        if found:
+            marks.append([int(found.group(1)), float(found.group(2)), None])
+            continue
+        found = GPU_LINE.match(line)
+        if found and marks and marks[-1][2] is None:
+            marks[-1][2] = (float(found.group(1)), int(found.group(2)))
+    later = marks[1:]
+    frames = sum(count for count, _busy, _gpu in later)
+    busy = sum(count * busy for count, busy, _gpu in later) / frames if frames else None
+    timed = [gpu for _count, _busy, gpu in later if gpu is not None]
+    gpu_frames = sum(count for _time, count in timed)
+    gpu = sum(time * count for time, count in timed) / gpu_frames if gpu_frames and len(timed) == len(later) else None
+    return gpu, busy
+
+
+def fade_pictures(capture, out, mge_build, base_build, root, value):
+    """The pictures of one capture at the fade `value` (the config folder `root`) with the base set and the round's set:
+    True when they are equal, or when they differ and the gate list plans it; False else."""
+    name = os.path.basename(capture)[:-len(".nircap")]
+    word = FADE_WORDS[value]
+    made = {}
+    for arm, build in (("base", base_build), ("now", mge_build)):
+        prefix = os.path.join(out, "%s-%s-%s" % (name, word, arm))
+        code, output, _last = replay_frames(capture, prefix, build, dict(GATE_ENV), ["--config-root", root])
+        keep_replay_output(prefix + ".png", code, output)
+        if not ran((code, output), "replay.py of %s with the %s set at the %s" % (name, arm, word)):
+            return False
+        made[arm] = (prefix, sorted(suffix for suffix in ("", LAST) if os.path.isfile(prefix + suffix + ".png")))
+    (base_prefix, base_made), (now_prefix, now_made) = made["base"], made["now"]
+    if base_made != now_made or "" not in base_made:
+        return check(False, "%s at the %s: the pictured frames differ between base and now" % (name, word))
+    differ = []
+    for suffix in base_made:
+        same, said = equal_pictures(base_prefix + suffix + ".png", now_prefix + suffix + ".png")
+        if not same:
+            differ.append("%s: %s" % ("frame 1" if suffix == "" else "the last frame", said))
+    listed = (name, value) in GATE_FADE
+    if not differ:
+        if listed:
+            return check(False, "%s at the %s: base and now are equal, and the gate list plans a change (%s %s): the planned change did "
+                         "not come, or the list is wrong" % (name, word, name, word))
+        return check(True, "%s at the %s: base and now equal (%d pictures)" % (name, word, len(base_made)))
+    if listed:
+        return check(True, "%s at the %s: base and now differ (%s); listed: a planned change" % (name, word, "; ".join(differ)))
+    return check(False, "%s at the %s: base and now differ (%s), and the gate list plans no change of it" % (name, word, "; ".join(differ)))
+
+
+def game_running():
+    """The name of a game program that runs now (Morrowind.exe, or the helper numidium.exe of a game), or None. A game
+    beside the cost replays puts its own GPU and CPU work into their times: with Rob's game running, a null of base = now
+    gave medians 0.9 ms apart and rounds of 1.5 and 3.0 ms (W611, 2026-11-23). The merge step holds the game slot, so
+    this is for a run by hand. Between two replays of the stage, no numidium.exe of its own runs."""
+    for program in ("Morrowind.exe", "numidium.exe"):
+        listed = subprocess.run(["tasklist", "/FI", "IMAGENAME eq %s" % program, "/NH"], capture_output=True, text=True, errors="replace")
+        if program.lower() in listed.stdout.lower():
+            return program
+    return None
+
+
+def fade_cost(capture, out, mge_build, base_build, roots):
+    """The cost of `capture` at both fade values (`roots`: {value: config folder}), base against now: (passed, the table's
+    lines). A replay with no cost lines is NOT RUN, and so is the cost while a game runs (`game_running`), before and
+    after its replays."""
+    import statistics
+    name = os.path.basename(capture)[:-len(".nircap")]
+    passed, table = True, []
+    running = game_running()
+    if running:
+        return not_run("the cost of %s: %s runs, and its GPU and CPU work would be in the times; run the stage with the game slot "
+                       "held (the merge step holds it)" % (name, running)), table
+    for value in (True, False):
+        word = FADE_WORDS[value]
+        times = {"base": [], "now": []}
+        for number in range(1, FADE_COST_ROUNDS + 1):
+            for arm, build in (("base", base_build), ("now", mge_build)):
+                picture = os.path.join(out, "cost-%s-%s-%d.png" % (word, arm, number))
+                code, output = run_code([PY, os.path.join(HERE, "replay.py"), capture, picture, "--marks-every", str(FADE_MARKS_EVERY),
+                                         "--config-root", roots[value]] + build_option(build), dict(GATE_ENV, **FADE_COST_ENV))
+                keep_replay_output(picture, code, output)
+                if os.path.isfile(picture):
+                    os.remove(picture)
+                if not ran((code, output), "replay.py of %s for the cost, the %s set at the %s, round %d" % (name, arm, word, number)):
+                    return False, table
+                gpu, busy = cost_of(output)
+                if gpu is None or busy is None:
+                    return not_run("the cost of %s, the %s set at the %s, round %d: the replay printed no %s after its first mark "
+                                   "(--marks-every %d, MGE_XE_GPU_TIME=1)" % (name, arm, word, number, "gpu line" if busy is not None else "mark",
+                                                                              FADE_MARKS_EVERY)), table
+                times[arm].append((gpu, busy))
+        rises = []
+        for part, index in (("GPU frame", 0), ("busy", 1)):
+            base_values, now_values = ([round_times[index] for round_times in times[arm]] for arm in ("base", "now"))
+            base, now = statistics.median(base_values), statistics.median(now_values)
+            limit = base + max(FADE_COST_FLOOR_MS, FADE_COST_SHARE * base)
+            line = "%s at the %s, %s: base %.3f, now %.3f ms (%+.3f; medians of %d; spread base %.3f, now %.3f); the limit %.3f" % (
+                name, word, part, base, now, now - base, FADE_COST_ROUNDS, max(base_values) - min(base_values), max(now_values) - min(now_values), limit)
+            table.append(line)
+            if now > limit:
+                rises.append(line)
+        reason = GATE_COST.get((name, value))
+        for line in table[-2:]:
+            print("       " + line, flush=True)
+        if rises and reason is not None:
+            check(True, "%s at the %s: a rise; listed: a planned rise (%s)" % (name, word, reason))
+        elif rises:
+            passed &= check(False, "%s at the %s: a rise above the limit, and the gate list plans none: %s" % (name, word, "; ".join(rises)))
+        elif reason is not None:
+            passed &= check(False, "%s at the %s: no rise, and the gate list plans one (%s): the planned rise did not come, or the list is "
+                            "wrong" % (name, word, reason))
+        else:
+            check(True, "%s at the %s: no rise above the limit" % (name, word))
+    running = game_running()
+    if running:
+        return not_run("the cost of %s: %s started during the cost's replays, and its work can be in the times" % (name, running)), table
+    return passed, table
+
+
+def stage_fade(baseline, mge_build, base_build, now, config_root):
+    """W611: the base set (`base_build`) against the round's set (`mge_build`) at the fade value that the replay gate
+    does not test (the gate's config is `config_root`'s mgeXE.toml), and the cost at both values. Its config is written
+    into <now>/FADE_OTHER at each run, the gate's file with only per_pixel_light_fade changed; the pictures, the
+    replays' logs and fade-numbers.txt go into `now`."""
+    print("light fade (W611): base %s against now %s, at the fade value that the replay gate does not test" % (base_build, mge_build), flush=True)
+    for build in (mge_build, base_build):
+        missing = build_missing(build)
+        if missing:
+            return check(False, "the build folder %s has no %s: its replays would draw other pictures" % (build, ", ".join(missing)))
+    source = os.path.join(config_root, "mgeXE.toml")
+    if not os.path.isfile(source):
+        return check(False, "no mgeXE.toml in %s, the config of the replay gate" % config_root)
+    with open(source, encoding="utf-8", newline="") as file:
+        config = file.read()
+    try:
+        gate_value, flipped = fade_of(config), flip_fade(config)
+    except ValueError as error:
+        return check(False, "the config of the replay gate %s: %s" % (source, error))
+    other = not gate_value
+    os.makedirs(now, exist_ok=True)
+    folder = os.path.join(now, FADE_OTHER)
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "mgeXE.toml"), "w", encoding="utf-8", newline="") as file:
+        file.write(flipped)
+    print("       the replay gate's config %s has the %s; this stage replays at the %s with %s, the same file with only "
+          "per_pixel_light_fade changed" % (source, FADE_WORDS[gate_value], FADE_WORDS[other], os.path.join(folder, "mgeXE.toml")), flush=True)
+    captures = [os.path.join(baseline, name) for name in sorted(os.listdir(baseline)) if name.endswith(".nircap")] if os.path.isdir(baseline) else []
+    if not captures:
+        return check(False, "no capture in the baseline folder %s" % baseline)
+    names = {os.path.basename(capture)[:-len(".nircap")] for capture in captures}
+    ok = True
+    for name, value in sorted(GATE_FADE):
+        if name not in names:
+            ok &= check(False, "the gate list names %s %s, and the baseline folder has no %s.nircap" % (name, FADE_WORDS[value], name))
+        elif value != other:
+            ok &= check(False, "the gate list names %s %s: the replay gate tests that value against the accepted pictures; list the changed "
+                        "pictures for the gate" % (name, FADE_WORDS[value]))
+    for name, value in sorted(GATE_COST):
+        if name != FADE_COST_CAPTURE:
+            ok &= check(False, "the gate list names the cost of %s %s: this stage measures the cost of %s only" % (name, FADE_WORDS[value], FADE_COST_CAPTURE))
+    if FADE_COST_CAPTURE not in names:
+        ok &= check(False, "the baseline folder has no %s.nircap, the capture of the cost" % FADE_COST_CAPTURE)
+    if not ok:
+        return False
+    pictures = [fade_pictures(capture, now, mge_build, base_build, folder, other) for capture in captures]
+    cost, table = fade_cost(os.path.join(baseline, FADE_COST_CAPTURE + ".nircap"), now, mge_build, base_build, {gate_value: config_root, other: folder})
+    with open(os.path.join(now, "fade-numbers.txt"), "w", encoding="utf-8", newline="\n") as file:
+        file.write("light fade (W611): base %s, now %s, the gate's config %s (the %s)\n" % (base_build, mge_build, source, FADE_WORDS[gate_value]))
+        file.write("pictures at the %s: %d of %d captures passed\n" % (FADE_WORDS[other], sum(pictures), len(pictures)))
+        file.write("".join(line + "\n" for line in table))
+    if not all(pictures) or not cost:
+        return False
+    return check(True, "light fade: %d captures at the %s, base and now as planned; the cost at both values within the limit or "
+                 "planned" % (len(captures), FADE_WORDS[other]))
+
+
 WEATHERS = ["clear", "cloudy", "foggy", "overcast", "rain", "thunder", "ash", "blight", "snow", "blizzard"]
 
 
@@ -2270,6 +2762,9 @@ def main():
     ap.add_argument("--now", default=None, help="the folder of the baseline stage's pictures, outside the baseline folder; without it, a run folder of its own in results")
     ap.add_argument("--gate-list", default=None, help="the planned changes (W567 part D): a file of the pictures that must differ from the accepted ones; the baseline "
                     "stage passes them and fails on any other change and on a listed picture that stayed equal; the stage accept-list accepts them")
+    ap.add_argument("--base-build", default=None, help="the stage fade (W611): the sealed set of the base, which the stage compares with --mge-build")
+    ap.add_argument("--config-root", default=None, help="the stage fade (W611): the folder of the replay gate's mgeXE.toml; without it, replay.py's default "
+                    "(the test install's)")
     ap.add_argument("--hook-fixtures", default=HOOK_FIXTURES, help="the folder of the hook fixtures of the baseline stage's second pass (tools/hook-fixtures by default)")
     ap.add_argument("--gpu-time", action="store_true", help="the helper writes GPU time stamps in the only stage")
     ap.add_argument("--disable-mod", default=None, help="a mod of the profile switched off for the runs")
@@ -2284,15 +2779,21 @@ def main():
         return 1
     del GATE_LIST_NOTE[:]
     GATE_LIST.clear()
+    GATE_FADE.clear()
+    GATE_COST.clear()
     if args.gate_list:
         try:
-            names, md5 = read_gate_list(args.gate_list)
+            names, fades, costs, md5 = read_gate_lines(args.gate_list)
         except ValueError as error:
             print("  FAIL %s" % error, flush=True)
             return 1
         GATE_LIST.update(names)
+        GATE_FADE.update(fades)
+        GATE_COST.update(costs)
         GATE_LIST_NOTE.append((os.path.abspath(args.gate_list), md5))
-        print("the gate list %s (md5 %s): %s" % (os.path.abspath(args.gate_list), md5, ", ".join(sorted(names))), flush=True)
+        entries = sorted(names) + ["%s %s" % (name, FADE_WORDS[value]) for name, value in sorted(fades)] + [
+            "cost %s %s" % (name, FADE_WORDS[value]) for name, value in sorted(costs)]
+        print("the gate list %s (md5 %s): %s" % (os.path.abspath(args.gate_list), md5, ", ".join(entries)), flush=True)
     elif "accept-list" in args.stages:
         print("  FAIL the stage accept-list needs --gate-list: it accepts only the listed pictures", flush=True)
         return 1
@@ -2312,7 +2813,10 @@ def main():
     if problem:
         print("  FAIL " + problem, flush=True)
         return 1
-    if ("baseline" in args.stages or "order" in args.stages) and not args.accept and not args.now:
+    if "fade" in args.stages and (args.archive or args.accept or args.accept_new or not args.base_build):
+        print("  FAIL the stage fade takes --base-build <the base set> beside --mge-build, and no --archive, --accept or --accept-new", flush=True)
+        return 1
+    if ("baseline" in args.stages or "order" in args.stages or "fade" in args.stages) and not args.accept and not args.now:
         args.now = own_now(os.path.join(REPO, "results"), time.localtime(), os.getpid())
         print("the pictures of this gate: %s" % args.now, flush=True)
     if args.disable_mod:
@@ -2361,6 +2865,13 @@ def main():
         elif stage == "accept-list":
             if not stage_accept_list(args.baseline, mge_build, args.now, os.path.abspath(args.hook_fixtures)):
                 return 1
+        elif stage == "fade":
+            config_root = args.config_root
+            if config_root is None:
+                import replay
+                config_root = replay.defaults()["config_root"]
+            if not stage_fade(args.baseline, mge_build, args.base_build, args.now, config_root):
+                return baseline_failure_code("fade")
         else:
             print("unknown stage " + stage)
             return 2
