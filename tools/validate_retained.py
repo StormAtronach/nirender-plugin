@@ -2698,7 +2698,7 @@ def stage_fade(baseline, mge_build, base_build, now, config_root):
                  "planned" % (len(captures), FADE_WORDS[other]))
 
 
-WEATHERS =["clear", "cloudy", "foggy", "overcast", "rain", "thunder", "ash", "blight", "snow", "blizzard"]
+WEATHERS = ["clear", "cloudy", "foggy", "overcast", "rain", "thunder", "ash", "blight", "snow", "blizzard"]
 
 
 def stage_weathers(place, mge_build):

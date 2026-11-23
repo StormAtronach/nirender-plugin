@@ -367,7 +367,7 @@ GAME_LIGHT_LINE = ("game side: not seen by the replays: %s change what the game 
 LIGHT_FORCED = [False]
 # The base set of the stage's command in a round with no base set: run_stages makes the stage NOT RUN before it starts.
 NO_BASE_SET = "no-base-set"
-D3D8_PATHS ={"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
+D3D8_PATHS = {"plugin": ("contract/",), "mge": ("d3d8/", "mge-config/")}
 # What a change must touch for a build and a deploy without the gate (W406): the plugin DLL and the mod's Lua, which the
 # replay gate cannot see (it replays old captures with the helper and never runs the plugin), and the contract between
 # the plugin and d3d8.dll. A render-link change deploys only with the gate.
