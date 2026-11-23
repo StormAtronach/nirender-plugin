@@ -1268,6 +1268,10 @@ unsafe fn target_surface(slot: &AtomicU32, format: u32) -> u32 {
 /// The device took the size `width` x `height` (a second `CreateDevice`, or `Reset`): the surfaces
 /// that stand for the back buffer and its depth buffer take it, as the game reads the size of its
 /// picture from them (`GetDesc`). A surface that is not made yet takes the size when it is made.
+///
+/// # Safety
+///
+/// Each kept surface is an object of this host that is alive: a slot holds its own reference.
 pub unsafe fn resize_targets(width: u32, height: u32) {
     let _lock = crate::sync::device_lock();
     for slot in [&BACK_BUFFER, &DEPTH_BUFFER] {
