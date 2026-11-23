@@ -46,8 +46,8 @@ MGE = os.path.join(os.path.dirname(os.path.dirname(HERE)), "MGE-XE-G7-render-lin
 # (file below mgeHost64/src, or shaders/... below assets/Data Files, product with its spaces collapsed): how many times, and why it is no absolute clip product.
 ALLOWED = {
     ("renderer/view.rs", "relative * vec4f(world - u.eye.xyz, 1.0)"): (1, "clip_with itself: the position less the eye, with a matrix relative to the eye"),
-    ("renderer/water/volume.rs", "s.world * vec4f(local, 1.0)"): (1, "model to world, with the matrix of the mesh (vs)"),
-    ("renderer/water/volume.rs", "s.world * vec4f(position.xyz, 1.0)"): (1, "model to world, with the matrix of the mesh (vs_far)"),
+    ("shaders/core/XE Mod Water Volume.wgsl", "s.world * vec4f(local, 1.0)"): (1, "model to world, with the matrix of the mesh (vs)"),
+    ("shaders/core/XE Mod Water Volume.wgsl", "s.world * vec4f(position.xyz, 1.0)"): (1, "model to world, with the matrix of the mesh (vs_far)"),
     ("renderer.rs", "draw.view * vec4f(in.world_position, 1.0)"): (3, "world to view for the depth of a draw, with the view of that draw (view_z, view_position)"),
 }
 
@@ -205,7 +205,7 @@ def self_test():
 
     clean = {
         "renderer/view.rs": "fn clip_with(relative: mat4x4f, world: vec3f) -> vec4f { return relative * vec4f(world - u.eye.xyz, 1.0); }\n",
-        "renderer/water/volume.rs": "out.world = (s.world * vec4f(local, 1.0)).xyz;\nout.world = (s.world * vec4f(position.xyz, 1.0)).xyz;\n"
+        "shaders/core/XE Mod Water Volume.wgsl": "out.world = (s.world * vec4f(local, 1.0)).xyz;\nout.world = (s.world * vec4f(position.xyz, 1.0)).xyz;\n"
                                     "out.position = clip_with(s.clip, out.world);\n",
         "renderer.rs": "let a = draw.view * vec4f(in.world_position, 1.0);\nlet b = (draw.view * vec4f(in.world_position, 1.0)).z;\n"
                        "let c = (draw.view * vec4f(in.world_position, 1.0)).z;\n",
@@ -222,12 +222,12 @@ def self_test():
 
         # The planted fault: one site put back to the absolute form fails the check, and the report names the file and the line.
         planted = dict(clean)
-        planted["renderer/water/volume.rs"] = clean["renderer/water/volume.rs"].replace("clip_with(s.clip, out.world)", "s.clip * vec4f(out.world, 1.0)")
+        planted["shaders/core/XE Mod Water Volume.wgsl"] = clean["shaders/core/XE Mod Water Volume.wgsl"].replace("clip_with(s.clip, out.world)", "s.clip * vec4f(out.world, 1.0)")
         bad = os.path.join(temp, "bad")
         tree(bad, planted)
         problems = check_tree(bad)
-        assert len(problems) == 2 and problems[0].startswith("renderer/water/volume.rs:3: s.clip * vec4f(out.world, 1.0)"), problems
-        assert problems[1].startswith("renderer/water/volume.rs:3: out.position = s.clip * vec4f(out.world, 1.0)"), "the stage rule sees it too: %s" % problems
+        assert len(problems) == 2 and problems[0].startswith("shaders/core/XE Mod Water Volume.wgsl:3: s.clip * vec4f(out.world, 1.0)"), problems
+        assert problems[1].startswith("shaders/core/XE Mod Water Volume.wgsl:3: out.position = s.clip * vec4f(out.world, 1.0)"), "the stage rule sees it too: %s" % problems
 
         # The planted fault that the product rule cannot see: the w added on another line, with the absolute matrix of the view group.
         split = dict(clean)
