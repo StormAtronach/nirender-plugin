@@ -2235,7 +2235,7 @@ def self_test_stage_shaders():
 
     report = ("stage shaders: on (made on a thread, with a list), 37 stage keys (cap 256), 52 pipelines made (40 sent from the list, 0 of the list left out past its share of the cap); "
               "%s; %s; draws on the uber-shader with a stage key: %d after a failed rewrite, %d after a failed pipeline, 31 with a pipeline not made; 0 draws past the cap, 12 draws with no key\n")
-    refused = "2 rewrites failed (stage key 1: the end mark of the stage loop: 0 in the text, 1 wanted; stage key 2: the end mark of the stage loop: 0 in the text, 1 wanted)"
+    refused = "2 rewrites failed (stage key 1: the end mark of the stage facts: 0 in the text, 1 wanted; stage key 2: the end mark of the stage facts: 0 in the text, 1 wanted)"
     with tempfile.TemporaryDirectory() as folder:
         host = os.path.join(folder, "host.txt")
 
@@ -2250,7 +2250,7 @@ def self_test_stage_shaders():
                 return stage_shaders_of_run(host), said.getvalue()
 
         problem, said = of(report % (refused, "0 pipelines failed", 900, 0))
-        assert problem and said.endswith("ERROR: the stage shaders failed in the session: 2 rewrites failed (the first: stage key 1: the end mark of the stage loop: "
+        assert problem and said.endswith("ERROR: the stage shaders failed in the session: 2 rewrites failed (the first: stage key 1: the end mark of the stage facts: "
                                          "0 in the text, 1 wanted), 0 pipelines failed. The pictures are right; the speed of the stage shaders is lost\n"), said
         problem, said = of(report % ("0 rewrites failed", "1 pipelines failed (stage keys 4)", 0, 3))
         assert problem and "0 rewrites failed, 1 pipelines failed." in said, said
