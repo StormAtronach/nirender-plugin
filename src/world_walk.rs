@@ -79,6 +79,8 @@ pub fn report() -> String {
 /// The call of `CullShow` for the root of a camera's Click (thiscall: the root, the camera).
 unsafe extern "thiscall" fn click_cull_show(root: usize, camera: usize) {
     if let Some(t) = MainThread::here() {
+        // Each Click's camera, for the setter of a miss of the animation policy (W97).
+        crate::animation::note_click(&t, camera);
         if walk_due(&t, root) {
             walk_world_root(&t, root, camera);
             return;

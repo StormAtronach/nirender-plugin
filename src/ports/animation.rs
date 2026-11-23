@@ -50,7 +50,12 @@ pub unsafe fn animation_manager_update(t: &MainThread, this: usize, time: f32, c
         let storage: usize = rd(this, MANAGED_STORAGE);
         for i in 0..count {
             let node: usize = rd(storage, i * 4);
-            if node != 0 && crate::animation::displayed(t, node) {
+            if node == 0 {
+                continue;
+            }
+            // The flag before the write: the engine's walk's own answer (W97).
+            let walk = rd::<u16>(node, AV::flags) & NODE_DISPLAYED != 0;
+            if crate::animation::displayed_by_walk(t, node, crate::animation::Reader::Manager, walk) {
                 flag_node(node);
             }
         }
@@ -77,8 +82,12 @@ port_thiscall!(
 /// port is installed (the function calls its engine function).
 pub unsafe fn animation_node_update_controllers(t: &MainThread, this: usize, time: f32) {
     crate::shadow::touch(&animation_node_update_controllers_port::STATE);
-    if crate::animation::active(t) && crate::animation::displayed(t, this) {
-        wr::<u8>(this, ANIM_FLAGS, rd::<u8>(this, ANIM_FLAGS) | ANIM_DISPLAYED);
+    if crate::animation::active(t) {
+        let flags = rd::<u8>(this, ANIM_FLAGS);
+        let walk = flags & ANIM_DISPLAYED != 0;
+        if crate::animation::displayed_by_walk(t, this, crate::animation::Reader::Controllers, walk) {
+            wr::<u8>(this, ANIM_FLAGS, flags | ANIM_DISPLAYED);
+        }
     }
     animation_node_update_controllers_port::engine(this, time);
 }
@@ -108,8 +117,12 @@ pub unsafe fn animation_node_update_downward_pass(
     update_children: u8,
 ) {
     crate::shadow::touch(&animation_node_update_downward_pass_port::STATE);
-    if update_controllers != 0 && crate::animation::active(t) && crate::animation::displayed(t, this) {
-        wr::<u8>(this, ANIM_FLAGS, rd::<u8>(this, ANIM_FLAGS) | ANIM_DISPLAYED);
+    if update_controllers != 0 && crate::animation::active(t) {
+        let flags = rd::<u8>(this, ANIM_FLAGS);
+        let walk = flags & ANIM_DISPLAYED != 0;
+        if crate::animation::displayed_by_walk(t, this, crate::animation::Reader::DownwardPass, walk) {
+            wr::<u8>(this, ANIM_FLAGS, flags | ANIM_DISPLAYED);
+        }
     }
     animation_node_update_downward_pass_port::engine(this, time, update_controllers, update_children);
 }
