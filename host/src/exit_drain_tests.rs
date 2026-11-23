@@ -10,6 +10,8 @@
 //! last line reaches the parent only when the end waits for the writer: a drain. The
 //! `ExitProcess` and `TerminateProcess` of an end without a drain drop it.
 
+use std::io::Read;
+use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -60,7 +62,6 @@ extern "system" {
         flags: u32,
         template: isize,
     ) -> isize;
-    fn ReadFile(file: isize, buffer: *mut u8, length: u32, read: *mut u32, overlapped: *mut core::ffi::c_void) -> i32;
     fn CloseHandle(handle: isize) -> i32;
     fn GetCurrentThreadId() -> u32;
     fn GetCurrentProcess() -> isize;
@@ -122,27 +123,12 @@ fn end_in_child(name: &str, hold: Duration) -> Ended {
         // gives ERROR_PIPE_CONNECTED, which is a connect too.
         unsafe { ConnectNamedPipe(server, core::ptr::null_mut()) };
         std::thread::sleep(hold);
+        // SAFETY: the server handle of this test; the file owns it from here and closes it.
+        let mut sink = unsafe { std::fs::File::from_raw_handle(server as RawHandle) };
+        // The read ends at the broken pipe of the child's end, which the standard library
+        // takes as the end of the file; the bytes before an error stay.
         let mut bytes = Vec::new();
-        let mut buffer = vec![0u8; 64 * 1024];
-        loop {
-            let mut got = 0u32;
-            // SAFETY: the buffer has room for its length; the handle is the server's.
-            let read = unsafe {
-                ReadFile(
-                    server,
-                    buffer.as_mut_ptr(),
-                    buffer.len() as u32,
-                    &mut got,
-                    core::ptr::null_mut(),
-                )
-            };
-            if read == 0 || got == 0 {
-                break;
-            }
-            bytes.extend_from_slice(&buffer[..got as usize]);
-        }
-        // SAFETY: the server handle of this test, used no more.
-        unsafe { CloseHandle(server) };
+        let _ = sink.read_to_end(&mut bytes);
         bytes
     });
 
