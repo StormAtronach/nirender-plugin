@@ -1073,9 +1073,15 @@ def self_test():
                 assert git(path, "checkout", "-q", "--detach").returncode == 0
             return path
 
+        # The plant trees are written a moment before their facts. A file's write time can be a hair later than
+        # time.time(), so a plant's age can be a little below 0 hours: the limit of these facts takes any age (W552).
+        any_age = float("-inf")
+        assert decide({**base, "idle_hours": -0.00001, "idle_limit": any_age}) == (True, "merged")
+        assert decide({**base, "idle_hours": -0.00001, "idle_limit": 0.0}) == (False, "written -0.0 hours ago")
+
         def facts(path, branch, records=None, keep=None):
             tree = {"path": path, "main": False, "branch": branch, "head": git(path, "rev-parse", "HEAD").stdout.strip(), "locked": False, "lock_reason": "", "prunable": False}
-            return facts_of(tree, "master", repository, [], {}, [], 0.0, time.time(), frozenset(), records, keep)
+            return facts_of(tree, "master", repository, [], {}, [], any_age, time.time(), frozenset(), records, keep)
 
         # A junction that came after the facts: the removal finds it, and its target stays.
         late = worktree("late")
@@ -1205,7 +1211,7 @@ def self_test():
         assert git(repository, "worktree", "lock", "--reason", "Ryker: a task of D98", dirty).returncode == 0
         locked = next(tree for tree in worktrees_of(repository) if same_path(tree["path"], dirty))
         assert locked["locked"] and locked["lock_reason"] == "Ryker: a task of D98", locked
-        locked_row = facts_of(locked, "master", repository, [], {}, [], 0.0, time.time(), frozenset(), records)
+        locked_row = facts_of(locked, "master", repository, [], {}, [], any_age, time.time(), frozenset(), records)
         assert risk_reasons(locked_row) == []
         at_risk = {**facts(ahead, "ahead"), "unique_commits": 3, "repository": repository}
         text = io.StringIO()
