@@ -1573,12 +1573,18 @@ def gate_game_folder(plugin):
 
 def remove_gate_game(stages):
     """Removes the round's gate game folder (the folder of the stage GAME_FOLDER_STAGE), also after a failed round. A
-    round with no such stage removes nothing."""
+    round with no such stage removes nothing. A fault of the removal is printed and does not end the round: the round
+    keeps its results, and the next make removes the folder first."""
     for name, _, command in stages:
         if name == GAME_FOLDER_STAGE:
             folder = command[command.index("make") + 1]
-            if os.path.lexists(folder):
+            if not os.path.lexists(folder):
+                continue
+            try:
                 gate_game.remove(folder)
+            except (OSError, gate_game.GateGameError) as error:
+                say("FAULT: the gate game folder %s is not removed: %s; the next make removes it first" % (folder, error))
+            else:
                 say("the gate game folder is removed: %s" % folder)
 
 
@@ -3598,6 +3604,16 @@ def self_test():
             seen = [sys.executable, "-c", "import os, sys; sys.exit(0 if os.path.isfile(sys.argv[1]) else 7)", os.path.join(game, "f")]
             assert run_round(slots, [(GAME_FOLDER_STAGE, root, make_game), ("seen", root, seen), ("bad", root, bad)], "merge_step: x abcabcabca", round_log, True)[0] == [True, True, False]
             assert not os.path.lexists(game) and holders() == [], "a failing round kept its gate game folder"
+            # Verdict 721 note 4.2: a removal that fails keeps the round's results and says so. The plant: a folder
+            # name that gate_game refuses; the null: the round above removed its folder with no such line.
+            refused = os.path.join(root, "not-a-gate-folder")
+            make_refused = [sys.executable, "-c", "import os, sys; os.makedirs(sys.argv[2])", "make", refused]
+            said = io.StringIO()
+            with contextlib.redirect_stdout(said):
+                kept = run_round(slots, [(GAME_FOLDER_STAGE, root, make_refused)], "merge_step: x abcabcabcb", round_log, True)
+            assert kept[0] == [True] and "FAULT: the gate game folder %s is not removed" % refused in said.getvalue(), said.getvalue()
+            assert holders() == [], "a fault of the removal kept the slots"
+            os.rmdir(refused)
             # An exception in a stage (no such folder), and a Ctrl-C.
             try:
                 run_round(slots, [("lost", os.path.join(root, "no-such-folder"), good)], "merge_step: x cccccccccc", round_log, True)
