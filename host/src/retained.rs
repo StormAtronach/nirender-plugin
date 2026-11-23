@@ -1268,8 +1268,21 @@ impl RetainedSet {
         self.world_keys
             .iter()
             .filter_map(|key| self.light_slot_of.get(key).copied())
-            .filter(|&slot| self.light_values.get(slot as usize).is_some_and(|l| l.position[3] != 3.0))
+            .filter(|&slot| self.is_point_light_slot(slot))
             .collect()
+    }
+
+    /// Whether the set of the world's lights has a point light: the test of
+    /// `world_light_slots` without the list.
+    pub(crate) fn has_world_lights(&self) -> bool {
+        self.world_keys
+            .iter()
+            .filter_map(|key| self.light_slot_of.get(key).copied())
+            .any(|slot| self.is_point_light_slot(slot))
+    }
+
+    fn is_point_light_slot(&self, slot: u32) -> bool {
+        self.light_values.get(slot as usize).is_some_and(|l| l.position[3] != 3.0)
     }
 
     /// The point lights of the world that are on, with their absolute places and reaches from

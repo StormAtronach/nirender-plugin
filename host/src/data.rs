@@ -543,7 +543,8 @@ pub(crate) struct Counts {
     pub(crate) blind_light_draws: u32,
     pub(crate) zero_light_draws: u32,
     /// The draws of the shadow casters' scene that the extension shaded, and those of them
-    /// that took the world's lights ([`crate::WORLD_LIGHTS_BIT`]).
+    /// that took the world's lights ([`crate::WORLD_LIGHTS_BIT`]) in a frame with a set of the
+    /// world's lights.
     pub(crate) caster_shaded: u32,
     pub(crate) caster_world_lights: u32,
     /// The draws of the world lit for each vertex in the mode `world` that took a list of their

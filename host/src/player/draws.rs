@@ -653,8 +653,12 @@ impl Player {
                 draw_data.light_range[3] |= crate::WORLD_SPACE_LIGHTS_BIT;
                 renderer.counts.world_space_lights += 1;
             }
-            renderer.counts.caster_world_lights += u32::from(caster);
-            if caster {
+            // The casters are counted only in a frame with a set of the world's lights: in a
+            // frame without one, the clusters are not built for the world (`run_items_inner`), and
+            // the draw keeps its own lights.
+            let counted = caster && self.retained.has_world_lights();
+            renderer.counts.caster_world_lights += u32::from(counted);
+            if counted {
                 // The own point lights that the world's lights do not hold: lost to this draw.
                 let (own_first, own_count) = (draw_data.light_range[0] as usize, draw_data.light_range[1] as usize);
                 let own = &self.frame_lights[own_first..own_first + own_count];

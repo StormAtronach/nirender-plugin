@@ -24,7 +24,7 @@ pub(crate) struct Switches {
     pub(crate) cores_to_scheduler: bool,
     /// `MGE_XE_CLUSTERS=1` or `0`: the clusters of the lights on or off, over the setting.
     pub(crate) clusters: Option<bool>,
-    /// `MGE_XE_LIGHTS=world` (the default, the owner's D498): a lit draw of the world takes the
+    /// `MGE_XE_LIGHTS=world` (the default, the owner's D612): a lit draw of the world takes the
     /// point lights of the world that reach it. A draw lit for each pixel takes them for each
     /// pixel, through the clusters of `WORLD_LIGHTS`. A draw lit for each vertex
     /// (`per_pixel_lighting = false`) takes them as its own list, by its bound. A frame with
