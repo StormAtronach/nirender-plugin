@@ -222,9 +222,10 @@ def main(current=None):
     ap.add_argument("--mge-build", default=None, help="the sealed set whose helper replays (W545; without it the current set, found once at the start)")
     ap.add_argument("--archive", default=None, help="the folder of an unpacked release archive whose helper replays: the release check")
     ap.add_argument("--least-stops", type=int, default=0, help="the tour fails with fewer stops than this (the play set: a much shorter tour did not run through)")
+    ap.add_argument("--game-dir", default=None, help="the gate game folder of validate_retained.py (tools/gate_game.py): each replay takes it as --game-dir")
     args = ap.parse_args()
     try:
-        BUILD_ARGS[:] = build_args(args.mge_build, args.archive, current)
+        BUILD_ARGS[:] = build_args(args.mge_build, args.archive, current) + (["--game-dir", args.game_dir] if args.game_dir else [])
     except ValueError as problem:
         ap.error(str(problem))
     if not (args.mge_build or args.archive):

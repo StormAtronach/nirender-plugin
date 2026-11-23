@@ -1,0 +1,7 @@
+# The pinned post files of the replay gate's game folder (tools/gate_game.py; W609, D640 piece 2 addendum 2).
+# One line for each file: the chain name, the path of the pack file in render-link, and its md5, split by tabs.
+# The maker reads each file from the render-link commit of the round's set and refuses another md5. A changed pack
+# file is a new line here and a planned change in the gate list.
+# Only the packs that the gate's captures name (ashfall and skoomaesthesia, W609 step 4).
+ashfall	ports/Ashfall - wgpu shaders/shaders/XEshaders/ashfall.wgsl	d313886b560884600edc047b54d8deea
+skoomaesthesia	ports/Skoomaesthesia - wgpu shaders/shaders/XEshaders/skoomaesthesia.wgsl	db0232894aa781bb64cfd835edd275fc
