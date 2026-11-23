@@ -1393,7 +1393,11 @@ def quick_plan(kind, tree, sibling, base, main_mge=None):
     sibling_kind = repo_kind(sibling) if sibling and os.path.isdir(sibling) else None
     if kind == "plugin":
         if sibling_kind == "mge":
-            return fast_stages(kind, tree, sibling, base), None
+            # Clippy and the checks find a render-link tree beside the plugin tree at their own place. A render-link
+            # tree elsewhere (--sibling) they take as they take main_mge: else clippy stops with "no folder for the
+            # place render-link" (the quick round of 757d43e, with --sibling naming another tree).
+            beside = os.path.normcase(os.path.abspath(sibling)) == os.path.normcase(os.path.abspath(sibling_of(kind, tree)))
+            return fast_stages(kind, tree, sibling, base, main_mge=None if beside else sibling), None
         return fast_stages(kind, tree, None, base, main_mge=main_mge), None
     if sibling_kind != "plugin":
         return None, "the stages of render-link run the tools of a %s tree, and %s is none: give --sibling <a %s tree>" % (
@@ -2039,6 +2043,16 @@ def self_test_quick(root, plugin, mge, base):
     assert "--mge" not in commands["docs"], "the docs still skip the helper"
     beside_commands = dict((name, command) for name, _, command in quick_plan("plugin", plugin, mge, None, main_mge)[0])
     assert "--mge" not in beside_commands["clippy baseline"] and "--mge" not in beside_commands["checks"], "a render-link tree beside the plugin tree serves"
+    # A render-link tree given by --sibling that is not beside the plugin tree: clippy builds its place there against the
+    # plugin tree's host crate, the checks read it, and the docs build its helper. The null of this rule is the round of
+    # 757d43e: with --sibling naming another tree, clippy took no --mge and stopped with "no folder for the place
+    # render-link".
+    away = os.path.join(root, "away", PLUGIN_NAME)
+    assert sibling_of("plugin", away) != mge
+    stages, why = quick_plan("plugin", away, mge, "abc")
+    commands = dict((name, command) for name, _, command in stages)
+    assert why is None and commands["clippy baseline"][-4:] == ["--mge", mge, "--mge-host", os.path.join(away, "host")], commands
+    assert commands["checks"][-4:] == ["--mge", mge, "--base", "abc"] and commands["docs"][-2:] == ["--mge", mge], commands
     # A render-link tree runs its stages with the tools of a plugin tree, and needs one.
     stages, why = quick_plan("mge", mge, plugin, "abc")
     assert why is None and stages == fast_stages("mge", plugin, mge, "abc") and dict((name, folder) for name, folder, _ in stages)["clippy baseline"] == plugin, stages
