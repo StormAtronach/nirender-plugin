@@ -7,7 +7,7 @@
 //! It stays open until [`WINDOW_AFTER`] after the last frame with no world. With
 //! `distant_land.wait_on_load`, MGE XE holds the loading screen until its ARRIVED, so the window
 //! ends about 20 s after ARRIVED. A frame with no world in play (a menu over a kept picture)
-//! opens the window again [I].
+//! opens the window again \[I\].
 //!
 //! The line comes at the end of the frame, after its present:
 //! `load watch: frame N at Q ms, world yes|no, interval A ms, busy B ms, gpu C ms in k frames
