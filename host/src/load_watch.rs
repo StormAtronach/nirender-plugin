@@ -10,13 +10,16 @@
 //! opens the window again [I].
 //!
 //! The line comes at the end of the frame, after its present:
-//! `load watch: frame N, world yes|no, interval A ms, busy B ms, gpu C ms in k frames read;
-//! uber-shader draws with a stage key: ...; pipelines given back: ...; the list: ...`.
+//! `load watch: frame N at Q ms, world yes|no, interval A ms, busy B ms, gpu C ms in k frames
+//! read; uber-shader draws with a stage key: ...; pipelines given back: ...; the list: ...`.
 //!
 //! - N: the renderer's count of the frames with this one. It is the `frame` of the scene that
 //!   [`crate::Extension::after_frame`] gets; a scene in the frame ([`crate::Extension::frame`])
 //!   has N - 1. A line that the extension prints during the frame comes before the frame's line
 //!   in the log.
+//! - Q: the QueryPerformanceCounter at the frame's end, in ms. The game process reads the same
+//!   clock, so a batch that records its frames by QueryPerformanceCounter can join each of its
+//!   frames to the helper's frames.
 //! - interval: from the end of the frame before to the end of this one. busy: the timed parts of
 //!   the helper in the frame (the busy time of the game's pacing).
 //! - gpu: with `MGE_XE_GPU_TIME=1`, the GPU's frame times that the frame read back, and their
@@ -42,6 +45,8 @@ pub(crate) const WINDOW_AFTER: Duration = Duration::from_secs(20);
 pub(crate) struct FrameFacts {
     /// The renderer's count of the frames with this one.
     pub(crate) frame: u64,
+    /// The QueryPerformanceCounter at the frame's end, in ms.
+    pub(crate) qpc_ms: f64,
     /// The frame drew the world.
     pub(crate) world: bool,
     /// The timed parts of the helper in the frame, in ms.
@@ -117,8 +122,9 @@ fn frame_line(facts: &FrameFacts, interval: Option<Duration>, gpu: Option<(f64, 
     });
     let received = &facts.received;
     format!(
-        "load watch: frame {}, world {}, interval {interval}, busy {:.2} ms, {gpu}; uber-shader draws with a stage key: {} not made, {} after a failed pipeline, {} after a failed rewrite, {} past the cap, {} with no key; pipelines given back: {} of the uber set, {} of the list, {} of first use, {} failed, in {:.2} ms of the thread; the list: {} not sent, {} sent and not given back",
+        "load watch: frame {} at {:.3} ms, world {}, interval {interval}, busy {:.2} ms, {gpu}; uber-shader draws with a stage key: {} not made, {} after a failed pipeline, {} after a failed rewrite, {} past the cap, {} with no key; pipelines given back: {} of the uber set, {} of the list, {} of first use, {} failed, in {:.2} ms of the thread; the list: {} not sent, {} sent and not given back",
         facts.frame,
+        facts.qpc_ms,
         if facts.world { "yes" } else { "no" },
         facts.busy_ms,
         draws.not_made,
@@ -143,6 +149,7 @@ mod tests {
     fn facts(frame: u64, world: bool, not_made: u64, gpu: Option<(f64, u32)>) -> FrameFacts {
         FrameFacts {
             frame,
+            qpc_ms: 1000.0,
             world,
             busy_ms: 2.5,
             gpu,
@@ -170,7 +177,7 @@ mod tests {
         let first = watch.frame_end(at(16), &facts(2, false, 0, None));
         assert_eq!(first.len(), 1);
         assert!(
-            first[0].starts_with("load watch: frame 2, world no, interval 16.00 ms, busy 2.50 ms, gpu off;"),
+            first[0].starts_with("load watch: frame 2 at 1000.000 ms, world no, interval 16.00 ms, busy 2.50 ms, gpu off;"),
             "{}",
             first[0]
         );
@@ -197,7 +204,7 @@ mod tests {
         let line = watch.frame_end(zero + Duration::from_millis(20), &facts(2, false, 14, Some((34.5e6, 12))));
         assert_eq!(
             line,
-            ["load watch: frame 2, world no, interval 20.00 ms, busy 2.50 ms, gpu 4.500 ms in 2 frames read; uber-shader draws with a stage key: 4 not made, 0 after a failed pipeline, 0 after a failed rewrite, 0 past the cap, 0 with no key; pipelines given back: 0 of the uber set, 2 of the list, 0 of first use, 0 failed, in 7.00 ms of the thread; the list: 5 not sent, 3 sent and not given back"]
+            ["load watch: frame 2 at 1000.000 ms, world no, interval 20.00 ms, busy 2.50 ms, gpu 4.500 ms in 2 frames read; uber-shader draws with a stage key: 4 not made, 0 after a failed pipeline, 0 after a failed rewrite, 0 past the cap, 0 with no key; pipelines given back: 0 of the uber set, 2 of the list, 0 of first use, 0 failed, in 7.00 ms of the thread; the list: 5 not sent, 3 sent and not given back"]
         );
     }
 
@@ -207,7 +214,7 @@ mod tests {
         let mut watch = LoadWatch::default();
         let line = watch.frame_end(Instant::now(), &facts(1, false, 0, None));
         assert!(
-            line[0].starts_with("load watch: frame 1, world no, interval none, "),
+            line[0].starts_with("load watch: frame 1 at 1000.000 ms, world no, interval none, "),
             "{}",
             line[0]
         );

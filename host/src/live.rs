@@ -1590,6 +1590,7 @@ impl ApplicationHandler for App {
                 let renderer = &mut player.renderer;
                 let facts = crate::load_watch::FrameFacts {
                     frame: renderer.counts.frames as u64,
+                    qpc_ms: super::overlay::ticks() as f64 * 1000.0 / super::overlay::ticks_per_second() as f64,
                     world,
                     busy_ms: frame_us / 1000.0,
                     gpu: renderer
