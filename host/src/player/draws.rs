@@ -47,7 +47,11 @@ impl Player {
         if let Some(data) = copy {
             let (start, n) = (draw.instances.0 as usize, draw.instances.1 as usize);
             match renderer.copy_of_draw(&data, &self.frame_instances[start..start + n]) {
-                Some(first) => instances = (first, draw.instances.1),
+                Some(first) => {
+                    renderer.counts.draw_copies[0] += 1;
+                    renderer.counts.draw_copy_instances += n as u64;
+                    instances = (first, draw.instances.1)
+                }
                 None => {
                     renderer.counts.no_record += 1;
                     // The record of the draw has the slots of the whole arrays.

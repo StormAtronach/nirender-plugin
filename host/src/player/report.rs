@@ -310,6 +310,11 @@ impl Player {
             c.instance_upload_bytes as f64 / 1e6,
             c.instance_gap_bytes as f64 / 1e6
         );
+        let (most_writes, most_seconds) = c.write_frame_most();
+        println!(
+            "draw copies (W125): {} for a plane split, {} for an extension's pass of kept draws, 2 writes each; {} instances; {:.3} s; the most of a frame: {} writes (copies and changed records), {:.3} ms (copies and the case changed)",
+            c.draw_copies[0], c.draw_copies[1], c.draw_copy_instances, c.draw_copy_seconds, most_writes, most_seconds * 1e3
+        );
         println!(
             "rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting",
             c.shape_flat, c.shape_specular

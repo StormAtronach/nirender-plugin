@@ -1319,15 +1319,25 @@ impl Renderer {
     /// the world matrices of the draw's that name it. The first instance, or [`None`] when the
     /// room of the records or of the instances is full.
     pub(crate) fn copy_of_draw(&mut self, data: &DrawData, instances: &[Instance]) -> Option<u32> {
-        let record = self.record_now(data)?;
-        let copies: Vec<Instance> = instances
-            .iter()
-            .map(|instance| Instance {
-                world: instance.world,
-                record: [record, 0, 0, 0],
-            })
-            .collect();
-        self.append_instances(&copies)
+        let began = std::time::Instant::now();
+        let first = self.record_now(data).and_then(|record| {
+            let copies: Vec<Instance> = instances
+                .iter()
+                .map(|instance| Instance {
+                    world: instance.world,
+                    record: [record, 0, 0, 0],
+                })
+                .collect();
+            self.append_instances(&copies)
+        });
+        // W125: the time and the writes of the copies, for the report and the most of a frame.
+        let seconds = began.elapsed().as_secs_f64();
+        self.counts.draw_copy_seconds += seconds;
+        self.counts.frame_write_seconds += seconds;
+        if first.is_some() {
+            self.counts.frame_writes += 2;
+        }
+        first
     }
 
     /// Puts the bones of the skinned draws of the frame into the bone buffer, as
