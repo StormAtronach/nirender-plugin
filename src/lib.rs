@@ -95,6 +95,7 @@ pub mod state_summary;
 pub mod stream_format;
 pub mod switches;
 pub mod sync;
+pub mod texture_paths;
 pub mod view_options;
 pub mod view_slots;
 pub mod win;
