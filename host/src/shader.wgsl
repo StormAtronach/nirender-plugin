@@ -475,31 +475,99 @@ struct VertexIn {
     @location(13) record: vec2u,
 }
 
+// The values of a vertex and of a pixel, as the stages of the shader and the extensions
+// (`extension_shade`) read them. The shader sends them from the vertex stage to the fragment
+// stage packed, in a `StageOut`.
 struct VertexOut {
+    // The position in the clip space; in the fragment stage, the position of the pixel.
+    clip: vec4f,
+    color: vec4f,
+    // The texture coordinate of each stage, before the divide of a projected one.
+    coordinate0: vec4f,
+    coordinate1: vec4f,
+    coordinate2: vec4f,
+    coordinate3: vec4f,
+    coordinate4: vec4f,
+    coordinate5: vec4f,
+    fog: f32,
+    // For the light of a pixel: the position and the normal in the space of the lights, and
+    // the colour of the vertex.
+    world_position: vec3f,
+    world_normal: vec3f,
+    vertex_color: vec4f,
+    record: u32,
+    // Flat shading (bit 16 of `light_range.w`, a material with NiShadeProperty off): the
+    // lit colour and the normal of the first vertex of the triangle, as Direct3D 8 drew it
+    // (D3DSHADE_FLAT). The same values as `color` and `world_normal`, not blended.
+    color_flat: vec4f,
+    world_normal_flat: vec3f,
+    // A particle lit at its corners (CORNER_LIGHT_BIT): the light its corners take, for the
+    // lights view; 0 for any other draw.
+    corner_light: vec3f,
+}
+
+// A `VertexOut` between the stages. Two pairs of values share a location, so that the
+// coordinates of all the stages fit in the locations of the downlevel profile (15):
+// - the fog depth is the w of the world position (both interpolated with the perspective);
+// - the record is the w of the flat normal (both flat, of the first vertex). It is a float:
+//   a float holds each whole number below 2^24 exactly, and the records of one binding are
+//   fewer (`RECORD_SIZE` in data.rs). A record cast bit for bit would be a subnormal float,
+//   which a driver can make 0.
+struct StageOut {
     @builtin(position) clip: vec4f,
     @location(0) color: vec4f,
-    // The texture coordinate of each stage, before the divide of a projected one.
     @location(1) coordinate0: vec4f,
     @location(2) coordinate1: vec4f,
     @location(3) coordinate2: vec4f,
     @location(4) coordinate3: vec4f,
     @location(5) coordinate4: vec4f,
     @location(6) coordinate5: vec4f,
-    @location(7) fog: f32,
-    // For the light of a pixel: the position and the normal in the space of the lights, and
-    // the colour of the vertex.
-    @location(8) world_position: vec3f,
-    @location(9) world_normal: vec3f,
-    @location(10) vertex_color: vec4f,
-    @location(11) @interpolate(flat) record: u32,
-    // Flat shading (bit 16 of `light_range.w`, a material with NiShadeProperty off): the
-    // lit colour and the normal of the first vertex of the triangle, as Direct3D 8 drew it
-    // (D3DSHADE_FLAT). The same values as `color` and `world_normal`, not blended.
-    @location(12) @interpolate(flat, first) color_flat: vec4f,
-    @location(13) @interpolate(flat, first) world_normal_flat: vec3f,
-    // A particle lit at its corners (CORNER_LIGHT_BIT): the light its corners take, for the
-    // lights view; 0 for any other draw.
-    @location(14) corner_light: vec3f,
+    @location(7) world_position_fog: vec4f,
+    @location(8) world_normal: vec3f,
+    @location(9) vertex_color: vec4f,
+    @location(10) @interpolate(flat, first) color_flat: vec4f,
+    @location(11) @interpolate(flat, first) world_normal_flat_record: vec4f,
+    @location(12) corner_light: vec3f,
+}
+
+fn stage_out(v: VertexOut) -> StageOut {
+    var s: StageOut;
+    s.clip = v.clip;
+    s.color = v.color;
+    s.coordinate0 = v.coordinate0;
+    s.coordinate1 = v.coordinate1;
+    s.coordinate2 = v.coordinate2;
+    s.coordinate3 = v.coordinate3;
+    s.coordinate4 = v.coordinate4;
+    s.coordinate5 = v.coordinate5;
+    s.world_position_fog = vec4f(v.world_position, v.fog);
+    s.world_normal = v.world_normal;
+    s.vertex_color = v.vertex_color;
+    s.color_flat = v.color_flat;
+    s.world_normal_flat_record = vec4f(v.world_normal_flat, f32(v.record));
+    s.corner_light = v.corner_light;
+    return s;
+}
+
+fn vertex_out(s: StageOut) -> VertexOut {
+    var v: VertexOut;
+    v.clip = s.clip;
+    v.color = s.color;
+    v.coordinate0 = s.coordinate0;
+    v.coordinate1 = s.coordinate1;
+    v.coordinate2 = s.coordinate2;
+    v.coordinate3 = s.coordinate3;
+    v.coordinate4 = s.coordinate4;
+    v.coordinate5 = s.coordinate5;
+    v.fog = s.world_position_fog.w;
+    v.world_position = s.world_position_fog.xyz;
+    v.world_normal = s.world_normal;
+    v.vertex_color = s.vertex_color;
+    v.record = u32(s.world_normal_flat_record.w);
+    v.color_flat = s.color_flat;
+    v.world_normal_flat = s.world_normal_flat_record.xyz;
+    v.corner_light = s.corner_light;
+    return v;
 }
 
 // The colour of a particle's corner after its lights (`extension_corner_shade` of the
@@ -580,7 +648,7 @@ fn skin_bone(index: u32) -> mat4x4f {
 }
 
 @vertex
-fn vs(in: VertexIn) -> VertexOut {
+fn vs(in: VertexIn) -> StageOut {
     record = in.record.x;
     var local = vec4f(in.position, 1.0);
     if (draw_counts_w() & 4u) != 0u {
@@ -771,7 +839,7 @@ fn vs(in: VertexIn) -> VertexOut {
     if draw_fog().w != 0.0 {
         out.fog = length(view_position.xyz);
     }
-    return out;
+    return stage_out(out);
 }
 
 // An argument of a stage: D3DTA_*.
@@ -925,7 +993,8 @@ fn stage_step(color: vec4u, alpha: vec3u, texel: vec4f, diffuse: vec4f, current:
 }
 
 @fragment
-fn fs(in: VertexOut) -> @location(0) vec4f {
+fn fs(stage_in: StageOut) -> @location(0) vec4f {
+    let in = vertex_out(stage_in);
     record = in.record;
     var inp = in;
     if draw_flat() {

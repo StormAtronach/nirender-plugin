@@ -694,6 +694,7 @@ impl Renderer {
         let record_limit = ((device.limits().max_storage_buffer_binding_size as u64).min(device.limits().max_buffer_size)
             as usize
             / RECORD_SIZE)
+            .min(MOST_RECORDS)
             .min(switches::switches().record_limit.unwrap_or(usize::MAX));
         println!(
             "draw records: room for {record_limit} in one binding ({} MB)",

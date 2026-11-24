@@ -236,10 +236,10 @@ pub struct DrawData {
     /// slot (`Clusters::note`): a pixel of the draw takes a light of its cluster only when
     /// the draw has it, as the engine lights a draw with the lights of its effect state.
     pub light_mask: [[u32; 4]; 2],
-    pub stages: [StageData; 6],
+    pub stages: [StageData; STAGES],
     /// The texture transform of each stage. A stage of the table's texture effect has a
     /// `slots[2]` and takes its matrix from `effect_entries`, one for each effect.
-    pub texture_transforms: [[f32; 16]; 6],
+    pub texture_transforms: [[f32; 16]; STAGES],
     /// 1 / width and -1 / height of the viewport.
     pub pixel: [f32; 4],
     /// The values of [`FrameParameters::sky`].
@@ -797,6 +797,13 @@ pub(crate) const RECORD_SIZE: usize = core::mem::size_of::<DrawData>();
 
 const _: () = assert!(INSTANCE_SIZE == 80 && RECORD_SIZE % 16 == 0);
 
+/// The most draw records in one binding. The index of a record goes from the vertex stage to
+/// the fragment stage as a float (`StageOut` of shader.wgsl), and a float holds each whole
+/// number below 2^24 exactly.
+pub(crate) const MOST_RECORDS: usize = 1 << 24;
+
+const _: () = assert!(MOST_RECORDS <= 1 << f32::MANTISSA_DIGITS);
+
 pub(crate) const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 pub(crate) const RECORDS_AT_FIRST: usize = 4096;
@@ -841,6 +848,35 @@ mod tests {
     #[test]
     fn the_screen_shader_is_valid_wgsl() {
         crate::assert_wgsl("screen draw", &SCREEN_SHADER);
+    }
+
+    /// The world shader's `Draw` is the record that [`DrawData`] writes: the same size, and
+    /// [`STAGES`] stages and texture transforms. A change of the stage count changes both.
+    #[test]
+    fn the_shaders_record_has_the_size_and_the_stages_of_draw_data() {
+        use wgpu::naga::{ArraySize, TypeInner};
+        let source = crate::request::world_shader_source(&crate::extension::extension_shaders(None));
+        let module = crate::parse_wgsl("the world shader", &source);
+        let draw = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("Draw"))
+            .map(|(_, ty)| ty)
+            .expect("the world shader has the struct Draw");
+        let TypeInner::Struct { members, span } = &draw.inner else {
+            panic!("Draw is a struct");
+        };
+        assert_eq!(*span as usize, RECORD_SIZE);
+        for name in ["stages", "texture_transforms"] {
+            let member = members
+                .iter()
+                .find(|member| member.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("Draw has {name}"));
+            let TypeInner::Array { size, .. } = module.types[member.ty].inner else {
+                panic!("{name} is an array");
+            };
+            assert_eq!(size, ArraySize::Constant((STAGES as u32).try_into().unwrap()), "{name}");
+        }
     }
 
     fn instance(record: u32) -> Instance {

@@ -51,11 +51,10 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use crate::data::{DrawData, PipelineKey};
+use crate::data::{DrawData, PipelineKey, STAGES};
 
 /// The most stage keys of a session; a draw of a key past them takes the uber-shader.
 pub(crate) const MAX_KEYS: usize = 256;
-const STAGES: usize = 6;
 /// The first line of the list, then [`LIST_FORMAT`] and the hash of the world shader's text.
 const LIST_HEADER: &str = "numidium stage pipelines";
 /// The format of the list's lines; it is in the list's file name too ([`list_name`]). 3: the
@@ -2426,7 +2425,7 @@ mod tests {
         // the colour of stage 2, and argument 1 of the alpha of stage 4.
         let general = format!(
             "struct Stage {{ color: vec4u, alpha: vec4u }}\n\
-             struct Draw {{ more: vec4u, counts: vec4u, stages: array<Stage, 6> }}\n\
+             struct Draw {{ more: vec4u, counts: vec4u, stages: array<Stage, {STAGES}> }}\n\
              @group(0) @binding(0) var<storage, read> draws: array<Draw>;\n\
              var<private> record: u32;\n\
              {block}{functions}\

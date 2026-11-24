@@ -1373,6 +1373,74 @@ mod tests {
         }
     }
 
+    /// The values that the world shader sends from the vertex stage to the fragment stage fit in
+    /// the locations of the downlevel profile (15), so that a weak adapter makes the pipeline: a
+    /// new value that does not fit fails here, not at the start of the game.
+    #[test]
+    fn the_world_shaders_stages_share_at_most_the_downlevel_locations() {
+        use wgpu::naga::{Binding, ShaderStage, TypeInner};
+        let source = world_shader_source(&crate::extension::extension_shaders(None));
+        let module = crate::parse_wgsl("the world shader", &source);
+        let vertex = module
+            .entry_points
+            .iter()
+            .find(|entry| entry.stage == ShaderStage::Vertex && entry.name == "vs")
+            .expect("the entry vs");
+        let ty = vertex.function.result.as_ref().expect("vs has a result").ty;
+        let TypeInner::Struct { members, .. } = &module.types[ty].inner else {
+            panic!("vs gives a struct");
+        };
+        let locations = members
+            .iter()
+            .filter(|member| matches!(member.binding, Some(Binding::Location { .. })))
+            .count() as u32;
+        let most = wgpu::Limits::downlevel_defaults().max_inter_stage_shader_variables;
+        assert!(locations > STAGES as u32, "{locations} locations counted");
+        assert!(locations <= most, "{locations} locations, the downlevel profile has {most}");
+        // Each stage has its coordinate between the stages.
+        for stage in 0..STAGES {
+            assert!(
+                members
+                    .iter()
+                    .any(|member| member.name.as_deref() == Some(&format!("coordinate{stage}"))),
+                "stage {stage}"
+            );
+        }
+    }
+
+    /// Tier C binds a texture and a sampler for each stage beside the shader's own. The request
+    /// asks every adapter for [`fixed_limits`] and refuses one with less, at the start and with
+    /// the name of the limit: so the world shader of tier C must stay in those limits.
+    #[test]
+    fn tier_c_stays_in_the_samplers_and_textures_that_the_request_asks_for() {
+        use wgpu::naga::{ImageClass, TypeInner};
+        let source = tier_c_shader_source(&world_shader_source(&crate::extension::extension_shaders(None)));
+        let module = crate::parse_wgsl("the world shader of tier C", &source);
+        let (mut samplers, mut textures) = (0, 0);
+        for (_, global) in module.global_variables.iter() {
+            match module.types[global.ty].inner {
+                TypeInner::Sampler { .. } => samplers += 1,
+                TypeInner::Image {
+                    class: ImageClass::Sampled { .. } | ImageClass::Depth { .. },
+                    ..
+                } => textures += 1,
+                _ => {}
+            }
+        }
+        let limits = fixed_limits();
+        assert!(samplers >= STAGES as u32, "{samplers} samplers");
+        assert!(
+            samplers <= limits.max_samplers_per_shader_stage,
+            "{samplers} samplers, the request asks for {}",
+            limits.max_samplers_per_shader_stage
+        );
+        assert!(
+            textures <= limits.max_sampled_textures_per_shader_stage,
+            "{textures} textures, the request asks for {}",
+            limits.max_sampled_textures_per_shader_stage
+        );
+    }
+
     /// The world shader of tier C on a device with only tier C's features (no binding arrays):
     /// the module is made without an error. Needs a GPU:
     /// `cargo test -p nirender-host -- --ignored tier_c_shader`.
