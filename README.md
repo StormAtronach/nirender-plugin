@@ -417,6 +417,9 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
   whatever the world shader's text, a fault that is no core mod's (`world_key_fault` in
   `host/src/lib.rs`). The build of that key with the extension's built-in text fails too, and
   the extension drops no core mod. The other values of the switch are MGE XE's (RENDERER.md).
+- `MGE_XE_STAGE_SLOW_MS=<ms>` (W640 part 3's test): the helper's thread sleeps that long before
+  each stage pipeline of the list, so that the list ends after the distant statics, as with a cold
+  driver (about 30 ms a pipeline). Off by default; the helper prints one line when it is on.
 - `MGE_XE_PIPELINE_LIST=<file>`: the list of the stage pipelines of a live session, in place of
   `%LOCALAPPDATA%\MGE XE\numidium-stage-pipelines-<format>-<install>.txt`. The install part is a
   hash of the helper's working folder (the Morrowind folder): each install has one list, which
