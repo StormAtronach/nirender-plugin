@@ -556,6 +556,20 @@ pub struct HeldDraw {
     pub stencil: [u32; 7],
 }
 
+/// What the renderer still makes for the frames to come, at the end of a live frame
+/// ([`Extension::host_readiness`]), so that the extension can hold the game's loading screen until
+/// it is made (W640 part 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostReadiness {
+    /// The stage pipelines of the list that are not made yet: those not sent to the thread, and
+    /// those sent that it has not given back. The keys of the uber set of a start with no list are
+    /// not in it. 0 when the stage shaders are off and when the list is made.
+    pub list_jobs: usize,
+    /// The jobs of the mip chains of the textures given since the last game load (W632); 0 until
+    /// the renderer has such jobs.
+    pub chain_jobs: usize,
+}
+
 /// A program that draws more than the game does: for example the distant land of MGE XE.
 pub trait Extension {
     /// The name and the version of the extension, for the first line of the log.
@@ -638,6 +652,11 @@ pub trait Extension {
     fn messages(&mut self) -> Vec<(u32, Vec<u8>)> {
         Vec::new()
     }
+
+    /// The renderer calls this at the end of each live frame, also of a frame with no world,
+    /// before `after_frame` and `messages`: what it still makes for the frames to come. A replay
+    /// does not call it. Nothing by default.
+    fn host_readiness(&mut self, _ready: &HostReadiness) {}
 
     /// The renderer calls this at the end of each live frame, also of a frame with no world
     /// (a loading screen), before `messages`: for work that must go on while the game shows

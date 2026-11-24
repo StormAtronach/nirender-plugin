@@ -1557,7 +1557,9 @@ impl ApplicationHandler for App {
                 let facts = player.world_facts(false);
                 let commands = player.renderer.commands.clone();
                 let scene = facts.view(&device, &queue, &commands, player.renderer.target_format);
+                let readiness = player.renderer.stage_shaders.readiness();
                 if let Some(extension) = player.extension.as_mut() {
+                    extension.host_readiness(&readiness);
                     extension.after_frame(&scene);
                     super::watchdog::loading(extension.loading());
                     super::watchdog::publish();
