@@ -186,6 +186,8 @@ impl Replay for Replayer<'_> {
                 self.renderer.counts.no_record += 1;
                 continue;
             };
+            self.renderer.counts.draw_copies[1] += 1;
+            self.renderer.counts.draw_copy_instances += n as u64;
             pass.set_pipeline(&pipeline);
             pass.set_stencil_reference(kept.stencil_reference);
             bound.set(pass, 0, &self.renderer.frame_group);

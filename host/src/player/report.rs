@@ -311,6 +311,10 @@ impl Player {
             c.instance_gap_bytes as f64 / 1e6
         );
         println!(
+            "draw copies (W125): {} for a plane split, {} for an extension's pass of kept draws, 2 writes each; {} instances",
+            c.draw_copies[0], c.draw_copies[1], c.draw_copy_instances
+        );
+        println!(
             "rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting",
             c.shape_flat, c.shape_specular
         );

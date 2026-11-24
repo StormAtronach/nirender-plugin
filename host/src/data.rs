@@ -415,6 +415,12 @@ pub(crate) struct Counts {
     pub(crate) upload_origin_seconds: f64,
     pub(crate) record_writes: u64,
     pub(crate) record_write_bytes: u64,
+    /// The copies of a draw with a record of their own (`Renderer::copy_of_draw`, two writes
+    /// each: the record and the instances), by the origin: 0 a draw split by a plane
+    /// (`Player::draw`), 1 a kept draw that an extension's pass draws again (`Replayer`); and the
+    /// instances that the copies wrote (W125).
+    pub(crate) draw_copies: [u64; 2],
+    pub(crate) draw_copy_instances: u64,
     pub(crate) instance_entries_moved: u64,
     pub(crate) instance_gap_bytes: u64,
     /// The textures that came again for a handle with a slot of the arrays.
