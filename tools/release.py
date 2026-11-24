@@ -685,8 +685,25 @@ def signature_numbers(key, results):
 
 
 def player_command(archive_name):
-    """The command of the notes that checks a download, with the signers file saved beside it as release-signers."""
+    """The command of the notes that checks a download, with the signers file saved beside it as release-signers, for
+    cmd and Git Bash (its input from the file with '<')."""
     return 'ssh-keygen -Y verify -f release-signers -I %s -n %s -s "%s.sig" < "%s"' % (SIGN_PRINCIPAL, SIGN_NAMESPACE, archive_name, archive_name)
+
+
+def player_command_powershell(archive_name):
+    """The same command for Windows PowerShell, which refuses '<' (verdict 757 4.1): cmd runs it."""
+    return "cmd /c '%s'" % player_command(archive_name)
+
+
+def agent_check(ssh_keygen, key, dry_run):
+    """Stops when the Windows agent does not hold `key` (`ssh-add -L`, SSH_AUTH_SOCK out). Before the build, and again
+    right before the signatures: a key that left the agent in between would make ssh-keygen load the private file
+    beside the .pub and ask for its passphrase on the console (verdict 757 4.2)."""
+    listed = subprocess.run([ssh_add_of(ssh_keygen), "-L"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            env=agent_environment(ENVIRONMENT))
+    problem = agent_problem(key, listed.stdout, listed.returncode)
+    if problem:
+        stop(problem, dry_run)
 
 
 def signature_text(key, repo, tag, archive_name, reason=None):
@@ -696,8 +713,9 @@ def signature_text(key, repo, tag, archive_name, reason=None):
         return "not signed (%s)" % (reason or "a test build")
     return ("signed with the release key `%s` (principal `%s`): `<archive>.sig` and `MANIFEST.txt.sig`. To check the "
             "download, save this line as the file `release-signers` beside it: `%s` (the same line is "
-            "https://github.com/%s/blob/%s/tools/release-signers), then run `%s`" % (
-                fingerprint(key), SIGN_PRINCIPAL, signers_line(key), repo, tag, player_command(archive_name)))
+            "https://github.com/%s/blob/%s/tools/release-signers), then run in cmd or Git Bash `%s`, or in "
+            "PowerShell `%s`" % (fingerprint(key), SIGN_PRINCIPAL, signers_line(key), repo, tag, player_command(archive_name),
+                                 player_command_powershell(archive_name)))
 
 
 def sha256_of(path):
@@ -981,7 +999,8 @@ def test_signature_rules():
     # The notes' line and the verify.
     line = signature_text(key, "o/r", "v1.2.3", "a.7z")
     assert signers_line(key) in line and "https://github.com/o/r/blob/v1.2.3/tools/release-signers" in line and fingerprint(key) in line
-    assert line.endswith('run `ssh-keygen -Y verify -f release-signers -I nirender-release -n nirender-release -s "a.7z.sig" < "a.7z"`'), line
+    command = 'ssh-keygen -Y verify -f release-signers -I nirender-release -n nirender-release -s "a.7z.sig" < "a.7z"'
+    assert line.endswith("run in cmd or Git Bash `%s`, or in PowerShell `cmd /c '%s'`" % (command, command)), line
     assert signature_text(None, "o/r", "v1", "a.7z") == "not signed (a test build)"
     assert signature_text(None, "o/r", "v1", "a.7z", "a dry run") == "not signed (a dry run)"
     assert good_signature(0, 'Good "nirender-release" signature for nirender-release with ED25519 key SHA256:x\n')
@@ -1028,7 +1047,11 @@ def test_signature_live():
         line = signature_text(key, "o/r", "v0.1.0", os.path.basename(archive))
         with open(os.path.join(folder, "release-signers"), "w", encoding="utf-8") as out:
             out.write(signers_line(key) + "\n")
-        words = shlex.split(line.rsplit("`", 2)[-2])
+        quoted = line.split("`")[1::2]
+        cmd_form = [text for text in quoted if text.startswith("ssh-keygen -Y verify")]
+        powershell_form = [text for text in quoted if text.startswith("cmd /c ")]
+        assert len(cmd_form) == 1 and len(powershell_form) == 1, quoted
+        words = shlex.split(cmd_form[0])
         assert words[0] == "ssh-keygen" and words[-2] == "<", words
         command = [SSH_KEYGEN] + [os.path.join(folder, word) if word in ("release-signers", os.path.basename(archive) + ".sig") else word for word in words[1:-2]]
         code, text = verify_file(command, os.path.join(folder, words[-1]))
@@ -1042,12 +1065,24 @@ def test_signature_live():
         for wrong in (verify_command(SSH_KEYGEN, signers, archive, principal="someone"), verify_command(SSH_KEYGEN, signers, archive, namespace="file")):
             code, text = verify_file(wrong, archive)
             assert code != 0 and not good_signature(code, text), "a verify with %s passed: %s" % (wrong, text)
-        # One changed byte: no pass.
+        # The notes' PowerShell form, in Windows PowerShell in the download's folder (verdict 757 4.1); the command goes
+        # in as -EncodedCommand, so that no quote of it changes on the way.
+        def in_powershell():
+            encoded = base64.b64encode(powershell_form[0].encode("utf-16-le")).decode("ascii")
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], cwd=folder,
+                                    stdin=subprocess.DEVNULL, capture_output=True)
+            return result.returncode, (result.stdout + result.stderr).decode("utf-8", "replace")
+
+        code, text = in_powershell()
+        assert good_signature(code, text), "the notes' PowerShell command on the signed file (%d): %s" % (code, text)
+        # One changed byte: no pass, in either form.
         with open(archive, "r+b") as out:
             out.seek(1000)
             out.write(b"\xff")
         code, text = verify_file(command, archive)
         assert code != 0 and not good_signature(code, text), "the changed archive passed: %s" % text
+        code, text = in_powershell()
+        assert code != 0 and not good_signature(code, text), "the changed archive passed in PowerShell: %s" % text
     finally:
         for name in os.listdir(folder):
             os.remove(os.path.join(folder, name))
@@ -1161,17 +1196,15 @@ def main():
         stop(problem, args.dry_run)
     sign_key = None
     if args.sign_key:
-        assert os.path.isfile(args.sign_key), "--sign-key names no file"
+        if not os.path.isfile(args.sign_key):
+            # The path stays out of the line (D316).
+            raise SystemExit("--sign-key names no file")
         with open(args.sign_key, encoding="utf-8") as pub, open(SIGNERS, encoding="utf-8") as signers:
             sign_key, problems = sign_key_problems(pub.read(), signers.read())
         for problem in problems:
             stop(problem, args.dry_run)
         if sign_key and not args.dry_run:
-            listed = subprocess.run([ssh_add_of(args.ssh_keygen), "-L"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                    env=agent_environment(ENVIRONMENT))
-            problem = agent_problem(sign_key, listed.stdout, listed.returncode)
-            if problem:
-                stop(problem, args.dry_run)
+            agent_check(args.ssh_keygen, sign_key, args.dry_run)
     sources = []
     for item in args.source:
         name, _, rest = item.partition("=")
@@ -1304,11 +1337,14 @@ def main():
         record.add("the signatures", verify_text, "a dry run signs nothing", "the signature", NOT_RUN)
     elif sign_key:
         results = []
-        for path in signed_files:
+        agent_check(args.ssh_keygen, sign_key, args.dry_run)
+        # The archive itself, and the MANIFEST.txt that went into it; the verify of the manifest reads the copy
+        # unpacked from the archive (verdict 757 4.3).
+        for path, shipped_copy in ((asset, asset), (manifest, shipped_manifest)):
             code, text = sign_file(args.ssh_keygen, args.sign_key, path, agent_environment(ENVIRONMENT))
             if code != 0:
                 stop("ssh-keygen -Y sign of %s failed (%d): %s" % (os.path.basename(path), code, without_path(text, args.sign_key)), args.dry_run)
-            code, text = verify_file(verify_command(args.ssh_keygen, SIGNERS, path), path)
+            code, text = verify_file(verify_command(args.ssh_keygen, SIGNERS, path), shipped_copy)
             results.append((os.path.basename(path), code, text))
             signed.append(path + ".sig")
         numbers, rule, passed = signature_numbers(sign_key, results)
