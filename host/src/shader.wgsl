@@ -996,7 +996,7 @@ fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
         return texel;
     }
     let stage = draws[stage_record(index)].stages[stage_place(index)];
-    let light =clamp(bump_texel.b * stage.luminance.x + stage.luminance.y, 0.0, 1.0);
+    let light = clamp(bump_texel.b * stage.luminance.x + stage.luminance.y, 0.0, 1.0);
     return vec4f(texel.rgb * light, texel.a);
 }
 

@@ -234,10 +234,20 @@ impl Slot {
         !self.no_lights && kinds & (1 << (self.data.light_range[2] & 7)) != 0
     }
 
-    /// The records of the slot at `index`: `put(index, record)`, and for a slot with
-    /// [`Slot::overflow`] its record with the distance to its overflow record, then
-    /// `put(overflow, overflow record)`.
-    fn records(&self, index: u32, mut put: impl FnMut(u32, &[u8])) {
+    /// Whether the slot at `index` and its overflow slot ([`Slot::overflow`]) are below `room`,
+    /// the slots of the segment of the records (`retained_room`). A slot that does not fit has
+    /// no records and is not drawn, as a slot past the device's limit.
+    fn fits(&self, index: u32, room: usize) -> bool {
+        (index as usize) < room && self.overflow.is_none_or(|overflow| (overflow as usize) < room)
+    }
+
+    /// The records of the slot at `index` when it fits in `room` ([`Slot::fits`]):
+    /// `put(index, record)`, and for a slot with [`Slot::overflow`] its record with the
+    /// distance to its overflow record, then `put(overflow, overflow record)`.
+    fn records(&self, index: u32, room: usize, mut put: impl FnMut(u32, &[u8])) {
+        if !self.fits(index, room) {
+            return;
+        }
         match self.overflow {
             None => put(index, self.data.record_bytes()),
             Some(overflow) => {
@@ -2161,11 +2171,9 @@ impl Renderer {
             copy.resize(room, Instance::zeroed());
             for (i, slot) in set.slots.iter().take(room).enumerate() {
                 if let Some(slot) = slot {
-                    slot.records(i as u32, |at, bytes| {
+                    slot.records(i as u32, room, |at, bytes| {
                         let at = at as usize;
-                        if at < room {
-                            records[at * RECORD_SIZE..(at + 1) * RECORD_SIZE].copy_from_slice(bytes);
-                        }
+                        records[at * RECORD_SIZE..(at + 1) * RECORD_SIZE].copy_from_slice(bytes);
                     });
                     copy[i] = slot_instance(i, slot);
                 }
@@ -2187,14 +2195,12 @@ impl Renderer {
             set.dirty.dedup();
             for &i in &set.dirty {
                 if let Some(slot) = set.slots[i as usize].as_ref() {
-                    slot.records(i, |at, bytes| {
-                        if (at as usize) < room {
-                            self.queue
-                                .write_buffer(&self.record_buffer, (at as usize * RECORD_SIZE) as u64, bytes);
-                            self.counts.record_writes += 1;
-                            self.counts.record_write_bytes += RECORD_SIZE as u64;
-                            self.counts.frame_writes += 1;
-                        }
+                    slot.records(i, room, |at, bytes| {
+                        self.queue
+                            .write_buffer(&self.record_buffer, (at as usize * RECORD_SIZE) as u64, bytes);
+                        self.counts.record_writes += 1;
+                        self.counts.record_write_bytes += RECORD_SIZE as u64;
+                        self.counts.frame_writes += 1;
                     });
                 }
             }
@@ -2372,13 +2378,14 @@ pub fn draw_retained(
         while at < order.len() && order[at].1 as usize == b {
             let slot = order[at].3;
             at += 1;
-            // A slot past the device's limit has no record (`retained_room`).
-            if slot as usize >= renderer.retained_records {
-                continue;
-            }
+            // A slot past the device's limit, or with its overflow slot past it, has no record
+            // (`retained_room`, `Slot::fits`).
             let Some(s) = set.slots[slot as usize].as_ref() else {
                 continue;
             };
+            if !s.fits(slot, renderer.retained_records) {
+                continue;
+            }
             for &(first, count) in &s.ranges {
                 args.push(IndirectArgs {
                     index_count: count,
@@ -3888,7 +3895,7 @@ mod list_tests {
         set.slots[1]
             .as_ref()
             .unwrap()
-            .records(1, |at, bytes| written.push((at, read(bytes))));
+            .records(1, 3, |at, bytes| written.push((at, read(bytes))));
         assert_eq!(written.len(), 2);
         let ((main_at, main), (more_at, more)) = (&written[0], &written[1]);
         assert_eq!((*main_at, *more_at), (1, 2));
@@ -3901,6 +3908,16 @@ mod list_tests {
         assert!(set.slots[1].is_none() && set.slots[2].is_none());
         assert_eq!(place(&mut set, 3, STAGES), (1, Some(2)), "the two free slots again");
         assert_eq!((set.slots.len(), set.counts.overflow_slots), (3, 1));
+
+        // The segment has room for 2 slots: slot 1 is below it, its overflow slot 2 is not. The
+        // slot does not fit, writes no record and is not drawn; slot 0 still fits.
+        let mut written = Vec::new();
+        let draw = set.slots[1].as_ref().unwrap();
+        assert!(!draw.fits(1, 2));
+        draw.records(1, 2, |at, _| written.push(at));
+        assert!(written.is_empty(), "{written:?}");
+        assert!(set.slots[0].as_ref().unwrap().fits(0, 2));
+        assert!(draw.fits(1, 3));
     }
 
     /// A set in a relative scene whose camera is at `camera`, with two slots: one that is not
