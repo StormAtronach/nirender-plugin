@@ -609,6 +609,10 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
     ap.add_argument("--backend", default="vulkan")
     ap.add_argument("--core-mods", metavar="FOLDER|off", help="the core mods only from this folder, or off: none")
     ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
+    ap.add_argument("--sky-map-filter", choices=("engine", "trilinear", "bias", "area", "area-tent"), default=None,
+                    help="how the sky's draws read their BILERP maps (W632); without this, the setting of the mgeXE.toml")
+    ap.add_argument("--sky-lod-bias", type=float, default=None,
+                    help="the bias of the level for --sky-map-filter bias, a power of 2 (-1 without this)")
     ap.add_argument("--marks-every", type=int, default=None, help="a mark after every N frames: the helper's time for each frame by part")
     ap.add_argument("--debug-view", nargs="+", metavar=("NAME", "TERM"), help="the shader view of the replay, and its term for water and post")
     ap.add_argument("--debug-lines", metavar="NAME,NAME", help="the line sources of the replay, with commas (no lines are drawn before piece 3 of the debug views)")
@@ -670,6 +674,10 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
         command += ["--frame", str(args.frame)]
     if args.anisotropy is not None:
         command += ["--anisotropy", str(args.anisotropy)]
+    if args.sky_map_filter is not None:
+        command += ["--sky-map-filter", args.sky_map_filter]
+    if args.sky_lod_bias is not None:
+        command += ["--sky-lod-bias", repr(args.sky_lod_bias)]
     if args.marks_every:
         command += ["--marks-every", str(args.marks_every)]
     # The helper checks the names and the term.

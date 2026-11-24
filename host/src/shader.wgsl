@@ -80,10 +80,11 @@ struct Draw {
     // and the colour is not kept between 0 and 1 between the stages; bit 1024, this crate's
     // CLOUDS_HOOK_BIT: the clouds with the extension's colour; bit 2048, this crate's
     // PARTICLE_HOOK_BIT: a particle whose colour after the stages goes through
-    // `extension_particle_color`; bit 16384, this crate's CORNER_LIGHT_BIT: a particle takes its
+    // `extension_particle_color`; bit 8192, this crate's AREA_READ_BIT: stage 0 reads a BILERP map
+    // of the sky with W632's read (`sky_map_read`); bit 16384, this crate's CORNER_LIGHT_BIT: a particle takes its
     // lights at its corners (`extension_corner_shade` in the vertex stage); bit 32768, this
     // crate's NO_LIGHTS_BIT: a draw lit for each pixel with no lights; bit 2 and the bits from
-    // 16 (but 128, 1024, 2048, 16384 and 32768) are for the extension.
+    // 16 (but 128, 1024, 2048, 8192, 16384 and 32768) are for the extension.
     counts: vec4u,
     // The lights of the draw in `lights`: the first and the number.
     light_range: vec4u,
@@ -227,8 +228,10 @@ const FIXED_ALPHA_7: u32 = 0u;
 // STAGE FACTS END
 // The bits of `counts.w` that a stage key holds (`stage_shaders::SHADE_BITS`), and the sky's bits
 // among them, which the scene's part never has (`stage_shaders::SKY_BITS`).
-const SHADE_BITS: u32 = 52927u;
+const SHADE_BITS: u32 = 61119u;
 const SKY_BITS: u32 = 12u;
+// Stage 0 reads a BILERP map of the sky with W632's read (`lib.rs` AREA_READ_BIT, `sky_map_read`).
+const AREA_READ_BIT: u32 = 8192u;
 // The bits of `light_range.w` that a stage key holds: 4, 16 and 64.
 const LIGHT_FACT_BITS: u32 = 84u;
 
@@ -970,6 +973,78 @@ fn particle_texture(uv: vec2f) -> vec4f {
     return textureSampleGrad(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], uv, first_stage_dx, first_stage_dy);
 }
 
+// The first texture of the draw for `sky_map_read`: its size at level 0, its number of levels, a
+// read at an explicit level and a read with explicit gradients, with the stage's sampler.
+fn first_map_size() -> vec2f {
+    return vec2f(textureDimensions(textures[draws[record].stages[0].slots.x], 0));
+}
+fn first_map_levels() -> u32 {
+    return textureNumLevels(textures[draws[record].stages[0].slots.x]);
+}
+fn first_map_level(uv: vec2f, level: f32) -> vec4f {
+    return textureSampleLevel(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], uv, level);
+}
+fn first_map_grad(uv: vec2f, dx: vec2f, dy: vec2f) -> vec4f {
+    return textureSampleGrad(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], uv, dx, dy);
+}
+
+// SKY MAP READ BEGIN: the GPU test of `sky_read.rs` takes the text between the marks.
+// The read of stage 0 for a BILERP map of the sky with W632's `sky_map_filter` (AREA_READ_BIT of
+// `counts.w`; `sky_read::SkyMapFilter`). The engine reads level 0 of such a map: sharp, but a large
+// map drawn small changes at each sub-pixel move. `read` 1: the read between the levels with the level
+// moved by `bias` (a power of 2). 2: the area read, the mean of an n x n grid of reads across the
+// pixel's footprint, from a level still sharper than the pixel. 3: the area read with a tent over two
+// pixels. `dx` and `dy` are the gradients of the coordinate; `normal` is the stage's own read, which
+// a footprint of at most one texel of level 0 (a magnified map, as the sun's glare) keeps.
+fn sky_map_read(uv: vec2f, dx: vec2f, dy: vec2f, read: u32, bias: f32, normal: vec4f) -> vec4f {
+    if read == 1u {
+        let scale = exp2(bias);
+        return first_map_grad(uv, dx * scale, dy * scale);
+    }
+    let size = first_map_size();
+    // The footprint: the longer side of the pixel, in texels of level 0.
+    let f = max(length(dx * size), length(dy * size));
+    if f <= 1.0 {
+        return normal;
+    }
+    // The level s: the footprint is at most 4 of its texels while the map has the levels.
+    let s = clamp(ceil(log2(f / 4.0)), 0.0, f32(first_map_levels() - 1u));
+    var n = clamp(u32(ceil(f / exp2(s))), 2u, 8u);
+    // The box covers one pixel; the tent covers two, with twice the reads.
+    var span = 1.0;
+    if read == 3u {
+        n = min(n * 2u, 8u);
+        span = 2.0;
+    }
+    var sum = vec4f(0.0);
+    var weights = 0.0;
+    for (var j = 0u; j < n; j++) {
+        let y = ((f32(j) + 0.5) / f32(n) - 0.5) * span;
+        for (var i = 0u; i < n; i++) {
+            let x = ((f32(i) + 0.5) / f32(n) - 0.5) * span;
+            var weight = 1.0;
+            if read == 3u {
+                weight = (1.0 - abs(x)) * (1.0 - abs(y));
+            }
+            sum += weight * first_map_level(uv + x * dx + y * dy, s);
+            weights += weight;
+        }
+    }
+    return sum / weights;
+}
+// SKY MAP READ END
+
+// The texel of stage 0: its own read (`texel`), or for a BILERP map of the sky with W632's read
+// (AREA_READ_BIT) `sky_map_read` with the code in stage 0's `alpha.w` and the bias in its
+// `luminance.z`. A stage pipeline without the bit drops the branch.
+fn first_stage_texel(uv: vec2f, texel: vec4f) -> vec4f {
+    if (draw_counts_w() & AREA_READ_BIT) == 0u {
+        return texel;
+    }
+    let first = draws[record].stages[0];
+    return sky_map_read(uv, first_stage_dx, first_stage_dy, first.alpha.w, first.luminance.z, texel);
+}
+
 // The particle's draw adds to the picture: its fade goes to black, not to alpha 0.
 fn particle_adds() -> bool {
     return draw_adds();
@@ -1051,7 +1126,7 @@ fn fs(stage_in: StageOut) -> @location(0) vec4f {
     first_stage_dy = dpdy(final_coordinate(0u, inp.coordinate0));
     var texels: array<vec4f, 8>;
     // A bump stage moves the coordinate of the stage after it.
-    texels[0] = textureSample(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], final_coordinate(0u, inp.coordinate0));
+    texels[0] = first_stage_texel(final_coordinate(0u, inp.coordinate0), textureSample(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], final_coordinate(0u, inp.coordinate0)));
     texels[1] = stage_texel(1u, bump_light(0u, texels[0], textureSample(textures[draws[record].stages[1].slots.x], samplers[draws[record].stages[1].slots.y], final_coordinate(1u, inp.coordinate1) + bump_move(0u, texels[0]))));
     texels[2] = stage_texel(2u, bump_light(1u, texels[1], textureSample(textures[draws[record].stages[2].slots.x], samplers[draws[record].stages[2].slots.y], final_coordinate(2u, inp.coordinate2) + bump_move(1u, texels[1]))));
     texels[3] = stage_texel(3u, bump_light(2u, texels[2], textureSample(textures[draws[record].stages[3].slots.x], samplers[draws[record].stages[3].slots.y], final_coordinate(3u, inp.coordinate3) + bump_move(2u, texels[2]))));

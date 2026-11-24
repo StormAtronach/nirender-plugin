@@ -232,6 +232,13 @@ impl Stream {
         if stages > STAGES {
             counts.more_stages += 1;
         }
+        // Stage 0 with a sky BILERP map and a read of its own (W632's `sky_map_filter`): the bit of
+        // the read, its code in `alpha.w` and its bias in `luminance.z` (`sky_map_read`).
+        if let (Some(read), true) = (pass.first_read, stages > 0) {
+            data.counts[3] |= crate::AREA_READ_BIT;
+            data.stages[0].alpha[3] = read.code();
+            data.stages[0].luminance[2] = read.bias();
+        }
         data.counts[1] = stages.min(STAGES) as u32;
         data.counts[2] = ambient_source;
         data

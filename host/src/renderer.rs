@@ -454,6 +454,12 @@ pub(crate) enum WindowTarget {
 }
 
 impl Renderer {
+    /// The read of the BILERP maps of a draw of this object class (MGE_LINK_CLASS_*): the sky's
+    /// filter for a class of the sky, None for any other ([`crate::sky_read::of_class`]).
+    pub(crate) fn sky_filter(&self, class: u32) -> Option<SkyMapFilter> {
+        crate::sky_read::of_class(self.sky_map_filter, class)
+    }
+
     /// The maps of a material that have a texture, for a shape that the extension holds
     /// ([`HeldDraw::maps`]): `sets` is the number of texture coordinate sets of its geometry.
     pub(crate) fn held_maps(&self, m: &material::Material, sets: u32) -> Vec<HeldMap> {
@@ -842,6 +848,7 @@ impl Renderer {
             target_format,
             present_modes,
             anisotropy: 1,
+            sky_map_filter: SkyMapFilter::Engine,
             samples,
             depth_format,
             multisample,

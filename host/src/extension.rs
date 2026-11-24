@@ -583,6 +583,13 @@ pub trait Extension {
         1
     }
 
+    /// How the draws of the sky read their BILERP maps (W632: the moons' faces and shadow shapes,
+    /// the sun's glare), from the settings of the extension (`graphics.sky_map_filter`):
+    /// [`crate::SkyMapFilter::Engine`] or [`crate::SkyMapFilter::Area`].
+    fn sky_map_filter(&self) -> crate::SkyMapFilter {
+        crate::SkyMapFilter::Engine
+    }
+
     /// The frames that may wait for the GPU before the window shows them, from the settings of
     /// the extension (1 to 3). Fewer frames is less lag of the mouse when the GPU is behind;
     /// more frames keep a slow GPU busier. The window asks one time, when it is made.

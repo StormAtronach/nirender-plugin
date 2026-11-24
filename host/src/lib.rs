@@ -96,8 +96,10 @@ pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod bound;
 mod light_keys;
 mod lights;
+mod sky_read;
 use influences::FVF_INFLUENCES;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
+pub use sky_read::SkyMapFilter;
 pub mod switches;
 use switches::switches;
 mod engine;
@@ -427,6 +429,14 @@ pub const CLOUDS_HOOK_BIT: u32 = 1 << 10;
 /// stay as they are. A fact of the stage key: no other draw's shader has the function's code.
 pub const PARTICLE_HOOK_BIT: u32 = 1 << 11;
 
+/// Bit 8192 of `counts.w`, set by this crate: stage 0 reads a BILERP map of the sky with its own
+/// read of W632's `graphics.sky_map_filter` ([`SkyMapFilter`]): the area read, or a bias of the
+/// level for a replay arm (`sky_map_read` in `shader.wgsl`; the code of the read is in stage 0's
+/// `alpha.w`, the bias in its `luminance.z`). A fact of the stage key: no other draw's shader has
+/// the read's code. A line of the stage pipeline list from before W632 has the bit clear, which
+/// is the same pipeline as before.
+pub const AREA_READ_BIT: u32 = 1 << 13;
+
 /// A line of WGSL that an extension puts into its text only for W317's test of a core mod that
 /// fails in the driver: each world pipeline of a text with it names a fragment entry point that
 /// the module lacks, so the pipeline fails with an error of the device, after naga.
@@ -544,19 +554,24 @@ struct Pass {
     /// alpha 8): for the draws of the Code Patch into the picture of the character.
     alpha_test: Option<[u32; 3]>,
     color_write: u32,
+    /// The read of stage 0 when it has a sky BILERP map with a read of its own (the bias or the
+    /// area read of [`SkyMapFilter`]): the record gets [`AREA_READ_BIT`] (`Stream::draw_data`).
+    first_read: Option<SkyMapFilter>,
 }
 
 impl Pass {
     /// `effects` is the stages of the environment map and of the fog map from the shape
     /// record (the texture pass of the game makes them from the effect and the camera of
     /// the frame); without them a stage of an effect gets the generation of its kind and no
-    /// transform.
+    /// transform. `sky` is the filter of a draw of the sky ([`Renderer::sky_filter`]), None for
+    /// another draw: its BILERP maps read as the filter says ([`sky_read::of_stage`]).
     fn new(
         d: &material::Derived,
         pass: usize,
         m: &material::Material,
         textures: &FxHashMap<u32, Rc<wgpu::TextureView>>,
         effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>,
+        sky: Option<SkyMapFilter>,
     ) -> Pass {
         const NONE: PassStage = PassStage {
             color: [1, 0, 0],
@@ -572,7 +587,8 @@ impl Pass {
         let blend = d.blends.get(pass).copied().unwrap_or([0; 3]);
         let blend = if blend[0] != 0 { [1, blend[1], blend[2]] } else { [0, 2, 1] };
         let mut stages = [NONE; 8];
-        for (stage, st) in stages.iter_mut().zip(&d.passes[pass]) {
+        let mut first_read = None;
+        for (index, (stage, st)) in stages.iter_mut().zip(&d.passes[pass]).enumerate() {
             let effect = effects
                 .and_then(|e| match st.source {
                     8 => Some(&e[0]),
@@ -600,10 +616,12 @@ impl Pass {
                 source => (m.map_of_source(source).clamp, m.map_of_source(source).filter),
             };
             let mut sampler = material::sampler_states(clamp, filter);
-            // A texture with one level gets no mip filter. [I] The engine's filter for a
-            // texture with one level was not read.
-            if textures.get(&st.texture).is_some_and(|t| t.texture().mip_level_count() <= 1) {
-                sampler[4] = 0;
+            let read = sky_read::of_stage(sky, filter, index);
+            if let Some(view) = textures.get(&st.texture) {
+                sky_read::level_filter(&mut sampler, view.texture().mip_level_count(), read);
+            }
+            if index == 0 && st.texture != 0 {
+                first_read = read.filter(|read| read.code() != 0);
             }
             *stage = PassStage {
                 color: st.color,
@@ -628,6 +646,7 @@ impl Pass {
             stages,
             alpha_test,
             color_write: 15,
+            first_read,
         }
     }
 
@@ -780,6 +799,9 @@ struct Renderer {
     /// The anisotropic filter that MGE XE forces, for a comparison with its picture. 1 for the
     /// filters that the game asks for.
     anisotropy: u16,
+    /// How the draws of the sky read their BILERP maps ([`Renderer::sky_filter`]; W632), from the
+    /// extension's settings (`graphics.sky_map_filter`) or the replay's `--sky-map-filter`.
+    sky_map_filter: SkyMapFilter,
     /// The samples for each pixel of the targets of the frame ([`Extension::samples`], cut to
     /// what the adapter has), and the pipelines of the resolves with more than one.
     samples: u32,

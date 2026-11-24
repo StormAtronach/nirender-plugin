@@ -234,9 +234,10 @@ pub struct DrawData {
     /// extension shades the draw, 4 the sky dome, 8 the shadow of a moon, 128 the colour is
     /// not kept between 0 and 1 between the texture stages, 1024 a draw of the clouds with the
     /// extension's colour ([`crate::CLOUDS_HOOK_BIT`]), 2048 a particle with the extension's
-    /// colour ([`crate::PARTICLE_HOOK_BIT`]), 16384 a particle takes its lights at its corners
+    /// colour ([`crate::PARTICLE_HOOK_BIT`]), 8192 stage 0 reads a sky map with W632's read
+    /// ([`crate::AREA_READ_BIT`]), 16384 a particle takes its lights at its corners
     /// ([`crate::CORNER_LIGHT_BIT`]), 32768 the draw has no lights ([`crate::NO_LIGHTS_BIT`]);
-    /// 2 and from 16 (but 128, 1024, 2048, 16384 and 32768) are the extension's own.
+    /// 2 and from 16 (but 128, 1024, 2048, 8192, 16384 and 32768) are the extension's own.
     pub counts: [u32; 4],
     /// The lights of the draw in the light buffer of the frame: the first and the number.
     /// z: the first bone of a skinned draw in the palette buffer of the frame. w: bit 1

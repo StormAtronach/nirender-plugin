@@ -2914,7 +2914,15 @@ impl Player {
             && !scene::sky_class(r.class)
             && r.class != scene::CLASS_WATER_PLANE)
             .then(|| {
-                let p = Pass::new(&derived, 0, &m, &self.renderer.textures, effects.as_ref());
+                let p = Pass::new(
+                    &derived,
+                    0,
+                    &m,
+                    &self.renderer.textures,
+                    effects.as_ref(),
+                    // The claim is never for the sky (above).
+                    None,
+                );
                 DrawFacts {
                     class: r.class,
                     blend_enable: p.blend[0] != 0,
@@ -2927,8 +2935,9 @@ impl Player {
             })
             .filter(|facts| self.extension.as_ref().is_some_and(|extension| extension.claims(facts)));
         let mut slots = Vec::new();
+        let sky = self.renderer.sky_filter(r.class);
         for pass in 0..derived.passes.len() {
-            let p = Pass::new(&derived, pass, &m, &self.renderer.textures, effects.as_ref());
+            let p = Pass::new(&derived, pass, &m, &self.renderer.textures, effects.as_ref(), sky);
             let key = PipelineKey {
                 fvf,
                 stride,

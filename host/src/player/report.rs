@@ -439,6 +439,7 @@ impl Player {
             "texture levels written again {}, not written {}; textures with a block format made as pixels {}",
             c.texture_updates, c.texture_updates_lost, c.textures_decoded
         );
+        println!("sky map filter: {}", self.renderer.sky_map_filter.name());
         for (reason, count) in &c.lost_reasons {
             println!("  not written: {reason}: {count}");
         }

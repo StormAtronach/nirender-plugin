@@ -253,6 +253,9 @@ pub struct Stage {
     pub filter: u32,
 }
 
+/// The filter mode bilinear (NiTexturingProperty FILTER_BILERP): no filter between levels.
+pub const FILTER_BILERP: u32 = 1;
+
 /// The sampler states of a map: address U, address V, the magnify, minify and mip filters,
 /// as Direct3D has them. The clamp modes are clamp-clamp, clamp-wrap, wrap-clamp, wrap-wrap
 /// (`setStageAddressingMode` 0x6B9E20 reads the pairs at 0x7DDBC8 that

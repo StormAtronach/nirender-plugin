@@ -1097,6 +1097,10 @@ impl App {
         player.feed(super::tag::HEADER, &self.header);
         player.extension = self.extension.take();
         player.renderer.anisotropy = player.extension.as_ref().map_or(1, |extension| extension.anisotropy());
+        player.renderer.sky_map_filter = player
+            .extension
+            .as_ref()
+            .map_or(crate::SkyMapFilter::Engine, |extension| extension.sky_map_filter());
         let setting = player.extension.as_ref().and_then(|extension| extension.table_order());
         player.take_table_order(setting);
         player.film_shot = self.shot_film.take();

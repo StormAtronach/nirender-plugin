@@ -150,9 +150,25 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
     if width == 0 || height == 0 {
         (width, height) = (1280, 720);
     }
+    // W632: how the draws of the sky read their BILERP maps; the argument names the arm of a test
+    // (engine, trilinear, bias with `--sky-lod-bias`, area, area-tent). The header line names the
+    // choice.
+    let bias = option(&args, "--sky-lod-bias")
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(-1.0);
+    let sky_map_filter = match option(&args, "--sky-map-filter") {
+        Some(name) => SkyMapFilter::parse(&name, bias).unwrap_or_else(|| {
+            eprintln!("--sky-map-filter {name}: engine, trilinear, bias, area or area-tent");
+            std::process::exit(2);
+        }),
+        None => extension
+            .as_ref()
+            .map_or(SkyMapFilter::Engine, |extension| extension.sky_map_filter()),
+    };
     println!(
-        "{} records, {frames} frames, frame {wanted} into {width} x {height}",
-        records.len()
+        "{} records, {frames} frames, frame {wanted} into {width} x {height}, sky map filter {}",
+        records.len(),
+        sky_map_filter.name()
     );
 
     // The samples of the extension's settings, as in the live mode; `MGE_XE_SAMPLES` is for a test.
@@ -182,6 +198,7 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         .and_then(|text| text.parse().ok())
         .or(extension.as_ref().map(|extension| extension.anisotropy()))
         .unwrap_or(1);
+    player.renderer.sky_map_filter = sky_map_filter;
     // The order of the extension's settings (the mgeXE.toml beside this program), as in the
     // live mode; `MGE_XE_TABLE_ORDER` goes over it.
     player.take_table_order(extension.as_ref().and_then(|extension| extension.table_order()));
