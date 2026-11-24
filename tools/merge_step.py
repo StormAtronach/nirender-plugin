@@ -1,7 +1,7 @@
 """The checks of a merge, for the Coordinator, on the merged tree: one PASS or FAIL line for each stage.
 
     python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--gate-list <file>] [--no-wait] [--dry-run] [--no-pair-check]
-    python -I tools/merge_step.py <repo> <commit> --base <tip> --hand-pass "<who: why>" --sibling-head <commit> [--dry-run]
+    python -I tools/merge_step.py <repo> <commit> --base <tip> --hand-pass "<who: why>" --sibling-head <commit> --round-log <file> [--dry-run]
     python -I tools/merge_step.py --quick [<tree>] [--sibling <tree>] [--base <commit>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --self-test    # the tests of the pure parts: no build, no game
     python -I tools/merge_step.py --open-deploys # the WITHHELD deploys that no deploy closed
@@ -134,10 +134,12 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   that are not on one line, or no pair, stop the tool: --sibling-base <commit> names the sibling's commit. It also
   takes the place of the kept pairs. The sibling's commit must be an ancestor of the sibling's HEAD. The tool prints the
   option in the first line, and the base set's manifest names its commits. A hand pass (--hand-pass "<who: why>"
-  --sibling-head <commit>, with <repo>, <commit> and --base) is the pass that a person gives when a round failed by the
-  tool only (D673): it moves refs/merge-step/<branch> to <commit> (never back), keeps the pair with the sibling's
-  commit that the person states (in the sibling's HEAD), and writes the log hand-pass-<commit>.log and the close lines,
-  which name the hand pass and the sibling's commit. It runs no stage, and the sibling's own ref stays;
+  --sibling-head <commit> --round-log <file>, with <repo>, <commit> and --base) is the pass that a person gives when a
+  round failed by the tool only (D673): the round's log must have a FAIL or NOT RUN line, and the base must be the
+  commit of refs/merge-step/<branch> when it exists. It moves that ref to <commit> (never back), keeps the pair with
+  the sibling's commit that the person states (in the sibling's HEAD), and writes the log hand-pass-<commit>.log and
+  the close lines, which name the hand pass, the round's log and the sibling's commit. It runs no stage, and the
+  sibling's own ref stays;
 - after a pass that moves refs/merge-step/<branch>, the sibling's own refs/merge-step/<branch> moves to the sibling's
   HEAD of the round only when this round ran and passed every stage that the sibling's own check of its diff since
   that ref would run, matched by folder and command (W370). Else it stays, and one line names the stages that did not
@@ -1761,18 +1763,19 @@ def ref_say(log_path, text):
             log.write(text + "\n")
 
 
-def keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head, log_path=None):
+def keep_pass(kind, repo, passed_ref, commit, sibling, sibling_head, log_path=None, why="this round passed"):
     """Moves refs/merge-step/<branch> to the commit, and keeps the pair of the round in the sibling: the base pair of the
-    next check (tips_for). No pair when the sibling's HEAD moved during the round. Each line also goes to `log_path`."""
+    next check (tips_for). No pair when the sibling's HEAD moved during the round. Each line also goes to `log_path`,
+    with `why` (a hand pass gives its own words)."""
     old = resolve(repo, passed_ref)
     git(repo, "update-ref", passed_ref, commit)
     name = os.path.basename(repo)
     if old is None:
-        ref_say(log_path, "%s: %s is set to %s: this round passed" % (name, passed_ref, commit[:10]))
+        ref_say(log_path, "%s: %s is set to %s: %s" % (name, passed_ref, commit[:10], why))
     elif old == commit:
-        ref_say(log_path, "%s: %s is at %s already: this round passed" % (name, passed_ref, commit[:10]))
+        ref_say(log_path, "%s: %s is at %s already: %s" % (name, passed_ref, commit[:10], why))
     else:
-        ref_say(log_path, "%s: %s moves from %s to %s: this round passed" % (name, passed_ref, old[:10], commit[:10]))
+        ref_say(log_path, "%s: %s moves from %s to %s: %s" % (name, passed_ref, old[:10], commit[:10], why))
     if sibling_head and resolve(sibling, "HEAD") == sibling_head:
         keep_pair(kind, sibling, commit, sibling_head)
         ref_say(log_path, "this round's pair: %s in the sibling %s: %s" % (pair_ref(kind, commit), os.path.basename(sibling), sibling_head[:10]))
@@ -1881,12 +1884,18 @@ def tips_for(kind, repo, base, sibling_base=None, lines=None):
 HAND_PASS = "--hand-pass"
 
 
-def hand_pass(repo, commit, base, sibling_named, why, dry_run=False, closes=CLOSES_FILE, log_folder=LOG_FOLDER):
+# A line of a round's log for a stage that did not pass (run_stages): the evidence of a hand pass (verdict 794 4.1).
+ROUND_NOT_PASSED = re.compile(r"^(FAIL|NOT RUN)\b", re.MULTILINE)
+
+
+def hand_pass(repo, commit, base, sibling_named, why, round_log, dry_run=False, closes=CLOSES_FILE, log_folder=LOG_FOLDER):
     """A pass that a person gives by hand (W644), when a round failed by the tool only (D673): refs/merge-step/<branch>
     moves to `commit` (keep_pass), and the pair keeps the sibling's commit that the person states (keep_pair), which must
-    be in the sibling's HEAD. The log hand-pass-<commit>.log and the close lines of base..commit name the hand pass and
-    the sibling's commit. No stage runs, so the sibling's own refs/merge-step/<branch> stays. The ref never moves back.
-    The exit code: 0 done, 1 refused."""
+    be in the sibling's HEAD. `round_log` is the log of the round that failed: a file with a FAIL or NOT RUN line, or the
+    hand pass is refused. The base is the commit of refs/merge-step/<branch> when the ref exists, so that the close
+    lines are those of the merges since the last pass. The log hand-pass-<commit>.log and the close lines of
+    base..commit name the hand pass, the round's log and the sibling's commit. No stage runs, so the sibling's own
+    refs/merge-step/<branch> stays. The ref never moves back. The exit code: 0 done, 1 refused."""
     kind = repo_kind(repo)
     if not kind:
         say("FAIL the hand pass: %s is no tree of nirender or of the render-link" % repo)
@@ -1914,8 +1923,21 @@ def hand_pass(repo, commit, base, sibling_named, why, dry_run=False, closes=CLOS
     if old and not is_ancestor(repo, old, commit):
         say("FAIL the hand pass: %s is at %s, which is not an ancestor of %s: a hand pass never moves it back" % (passed_ref, old[:10], commit[:10]))
         return 1
+    if old and old != base:
+        say("FAIL the hand pass: the base %s is not %s (%s): the base is the last pass" % (base[:10], passed_ref, old[:10]))
+        return 1
+    try:
+        with open(round_log, encoding="utf-8", errors="replace") as log:
+            failed = ROUND_NOT_PASSED.search(log.read())
+    except OSError as error:
+        say("FAIL the hand pass: --round-log %s cannot be read (%s)" % (round_log, error))
+        return 1
+    if not failed:
+        say("FAIL the hand pass: --round-log %s has no FAIL or NOT RUN line: a hand pass is for a round that failed by the tool only" % round_log)
+        return 1
     name, sibling_name = os.path.basename(repo), os.path.basename(sibling)
     lines = ["hand pass of %s %s from %s, with the sibling %s %s: %s" % (name, commit[:10], base[:10], sibling_name, sibling_head[:10], why),
+             "the round's log: %s (its first stage that did not pass: %s)" % (round_log, failed.string[failed.start():].splitlines()[0]),
              "no stage ran; the sibling's own refs/merge-step/%s stays" % branch]
     merges, warning = closing_merges(repo, base, commit)
     for line in lines + ([warning] if warning else []) + unread_item_lines(merges):
@@ -1925,11 +1947,11 @@ def hand_pass(repo, commit, base, sibling_named, why, dry_run=False, closes=CLOS
     log_path = log_path_of(commit, log_folder, prefix="hand-pass")
     with open(log_path, "a", encoding="utf-8") as log:
         log.write("".join(line + "\n" for line in lines))
-    keep_pass(kind, repo, passed_ref, commit, sibling, None, log_path)
+    keep_pass(kind, repo, passed_ref, commit, sibling, None, log_path, why="a hand pass")
     keep_pair(kind, sibling, commit, sibling_head)
     ref_say(log_path, "the hand pass's pair: %s in the sibling %s: %s" % (pair_ref(kind, commit), sibling_name, sibling_head[:10]))
     when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-    column = "hand pass, sibling %s %s: %s" % (sibling_name, sibling_head[:10], " ".join(why.split()))
+    column = "hand pass, sibling %s %s, round log %s: %s" % (sibling_name, sibling_head[:10], round_log, " ".join(why.split()))
     written = write_closes(closes, when, name, merges, column, log_path)
     if written:
         say("closes: %s in %s" % (", ".join(line.split("\t")[1] for line in written), closes))
@@ -2411,10 +2433,15 @@ def self_test_base_pair(root):
 
     # The hand pass: refused cases first, then a dry run that writes nothing, then the pass.
     closes, logs = os.path.join(folder, "closes.tsv"), os.path.join(folder, "logs")
+    round_log, passed_log = os.path.join(folder, "merge-step-x.log"), os.path.join(folder, "merge-step-y.log")
+    with open(round_log, "w", encoding="utf-8") as log:
+        log.write("PASS checks (3 s)\nFAIL fade (90 s): exit code 1\n")
+    with open(passed_log, "w", encoding="utf-8") as log:
+        log.write("PASS checks (3 s)\nPASS fade (90 s)\n")
 
-    def handed(*args, **kwargs):
+    def handed(repo, commit, base, sibling_named, why, log=round_log, **kwargs):
         with contextlib.redirect_stdout(io.StringIO()) as said:
-            code = hand_pass(*args, closes=closes, log_folder=logs, **kwargs)
+            code = hand_pass(repo, commit, base, sibling_named, why, log, closes=closes, log_folder=logs, **kwargs)
         return code, said.getvalue()
 
     code, said = handed(plugin, t2, t1, "no-such-name", "Coordinator: test")
@@ -2423,6 +2450,11 @@ def self_test_base_pair(root):
     assert code == 1 and "is not in the HEAD of the sibling" in said, said
     code, said = handed(plugin, t1, t2, r3, "Coordinator: test")
     assert code == 1 and "is not an ancestor of" in said, said
+    # Verdict 794 4.1: a hand pass needs the log of a round that did not pass.
+    code, said = handed(plugin, t2, t1, r3, "Coordinator: test", log=os.path.join(folder, "no-such.log"))
+    assert code == 1 and "cannot be read" in said, said
+    code, said = handed(plugin, t2, t1, r3, "Coordinator: test", log=passed_log)
+    assert code == 1 and "has no FAIL or NOT RUN line" in said, said
     code, said = handed(plugin, t2, t1, r3[:10], "Coordinator: test", dry_run=True)
     assert code == 0 and "hand pass of %s %s" % (PLUGIN_NAME, t2[:10]) in said, said
     assert resolve(plugin, "refs/merge-step/master") is None and not os.path.exists(closes) and not os.path.exists(logs), "a dry run writes nothing"
@@ -2431,14 +2463,23 @@ def self_test_base_pair(root):
     with open(closes, encoding="ascii") as file:
         rows = [line.split("\t") for line in file.read().splitlines()]
     assert len(rows) == 2 and rows[1][1] == "W9" and rows[1][3] == t2[:10], rows
-    assert rows[1][4] == "hand pass, sibling %s %s: Coordinator: a tool fault" % (MGE_NAME, r3[:10]), rows[1][4]
+    assert rows[1][4] == "hand pass, sibling %s %s, round log %s: Coordinator: a tool fault" % (MGE_NAME, r3[:10], round_log), rows[1][4]
     assert os.path.basename(rows[1][5]) == "hand-pass-%s.log" % t2[:10], rows[1][5]
     with open(rows[1][5], encoding="utf-8") as file:
         log = file.read()
     assert "hand pass of %s %s" % (PLUGIN_NAME, t2[:10]) in log and "the hand pass's pair: %s" % pair_ref("plugin", t2) in log and r3[:10] in log, log
+    assert "the round's log: %s (its first stage that did not pass: FAIL fade (90 s): exit code 1)" % round_log in log, log
+    # Verdict 794 4.3: the ref's line names the hand pass, not a round.
+    assert "is set to %s: a hand pass" % t2[:10] in log and "this round passed" not in log, log
     # The ref never moves back.
     code, said = handed(plugin, t1, t1, r3, "Coordinator: test")
     assert code == 1 and "never moves it back" in said and resolve(plugin, "refs/merge-step/master") == t2, said
+    # Verdict 794 4.2: with the ref at t2, a base older than t2 would close the merges of the last pass again.
+    t3 = commit(plugin, "three (W10)")
+    code, said = handed(plugin, t3, t1, r3, "Coordinator: test")
+    assert code == 1 and "the base is the last pass" in said and resolve(plugin, "refs/merge-step/master") == t2, said
+    code, said = handed(plugin, t3, t2, r3, "Coordinator: test", dry_run=True)
+    assert code == 0, said
     # The next nirender round with the base t2 takes the pair of the hand pass.
     assert tips("plugin", plugin, t2)[:2] == ({"plugin": t2, "mge": r3}, None)
 
@@ -4315,6 +4356,7 @@ def main():
     parser.add_argument(HAND_PASS, dest="hand_pass", metavar="WHO: WHY", help="a pass by hand of <commit> (W644, D673): the ref of the branch moves, the pair keeps "
                         "--sibling-head, and the close lines name it; no stage runs")
     parser.add_argument("--sibling-head", help="with %s: the sibling's commit of the pair, in the sibling's HEAD" % HAND_PASS)
+    parser.add_argument("--round-log", help="with %s: the log of the round that failed by the tool only, with a FAIL or NOT RUN line" % HAND_PASS)
     parser.add_argument("--baseline", default=BASELINE, help="the folder that the gate compares with; without it, the accepted folder")
     parser.add_argument("--mwse", help="the MWSE commit of the round's sets; without it, the commit of the test installs' records (for a "
                         "plugin that needs an MWSE feature that the installs' MWSE lacks)")
@@ -4344,13 +4386,14 @@ def main():
             say(line)
         return 0
     LIGHT_FORCED[0] = args.light
-    if args.hand_pass is not None or args.sibling_head:
-        if args.hand_pass is None or not args.sibling_head or not args.repo or not args.commit or not args.base:
-            parser.error("%s takes <repo>, <commit>, --base and --sibling-head" % HAND_PASS)
+    if args.hand_pass is not None or args.sibling_head or args.round_log:
+        if args.hand_pass is None or not args.sibling_head or not args.round_log or not args.repo or not args.commit or not args.base:
+            parser.error("%s takes <repo>, <commit>, --base, --sibling-head and --round-log" % HAND_PASS)
         if args.quick or args.sibling_base or args.mwse or args.evidence or args.gate_list or args.light or args.baseline != BASELINE:
-            parser.error("%s takes <repo>, <commit>, --base, --sibling-head and --dry-run only" % HAND_PASS)
+            parser.error("%s takes <repo>, <commit>, --base, --sibling-head, --round-log and --dry-run only" % HAND_PASS)
         repo = os.path.abspath(args.repo)
-        return hand_pass(repo, git(repo, "rev-parse", args.commit), git(repo, "rev-parse", args.base), args.sibling_head, args.hand_pass, args.dry_run)
+        return hand_pass(repo, git(repo, "rev-parse", args.commit), git(repo, "rev-parse", args.base), args.sibling_head, args.hand_pass,
+                         os.path.abspath(args.round_log), args.dry_run)
     if args.quick:
         if args.commit or args.baseline != BASELINE or args.sibling_base or args.mwse or args.evidence or args.gate_list or args.light:
             parser.error("--quick takes [<tree>], --sibling, --base, --no-wait and --dry-run: it checks the tree's HEAD, with no set and no gate")
