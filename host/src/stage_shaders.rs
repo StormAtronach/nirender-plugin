@@ -1460,13 +1460,11 @@ impl StageShaders {
     }
 
     /// What the stage shaders still make for the frames to come, for the extension
-    /// ([`crate::Extension::host_readiness`]): the list's pipelines not made yet. The mip chains
-    /// are not the stage shaders': their field is 0 here.
+    /// ([`crate::Extension::host_readiness`]): the list's pipelines not made yet.
     pub(crate) fn readiness(&self) -> crate::HostReadiness {
         let (queued, sent) = self.list_left();
         crate::HostReadiness {
             list_jobs: queued + sent,
-            chain_jobs: 0,
         }
     }
 
@@ -3071,13 +3069,7 @@ mod tests {
                 key(1, 0),
             ));
         }
-        assert_eq!(
-            shaders.readiness(),
-            crate::HostReadiness {
-                list_jobs: 5,
-                chain_jobs: 0
-            }
-        );
+        assert_eq!(shaders.readiness(), crate::HostReadiness { list_jobs: 5 });
         shaders.send_queued();
         assert_eq!(shaders.list_left(), (1, LIST_BATCH));
         assert_eq!(shaders.readiness().list_jobs, 5);
