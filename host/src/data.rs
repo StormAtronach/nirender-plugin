@@ -196,7 +196,7 @@ pub struct StageData {
     pub slots: [u32; 4],
 }
 
-/// The stages of a draw after the [`RECORD_STAGES`] of its record, and their texture
+/// The stages of a draw after the `RECORD_STAGES` of its record, and their texture
 /// transforms. The shader reads them from an overflow record of the draw: a record of its own
 /// in the same array, whose first stages and transforms are these.
 #[repr(C)]
@@ -206,7 +206,7 @@ pub struct LaterStages {
     pub texture_transforms: [[f32; 16]; STAGES - RECORD_STAGES],
 }
 
-/// The data of a draw. Its first [`RECORD_SIZE`] bytes are the record of the draw, `Draw` in
+/// The data of a draw. Its first `RECORD_SIZE` bytes are the record of the draw, `Draw` in
 /// `shader.wgsl`, where each field has its meaning; [`DrawData::later`] is not in the record.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -249,9 +249,9 @@ pub struct DrawData {
     /// slot (`Clusters::note`): a pixel of the draw takes a light of its cluster only when
     /// the draw has it, as the engine lights a draw with the lights of its effect state.
     pub light_mask: [[u32; 4]; 2],
-    /// The first [`RECORD_STAGES`] stages: [`DrawData::stage`] reads every stage.
+    /// The first `RECORD_STAGES` stages: [`DrawData::stage`] reads every stage.
     pub stages: [StageData; RECORD_STAGES],
-    /// The texture transform of each of the first [`RECORD_STAGES`] stages. A stage of the
+    /// The texture transform of each of the first `RECORD_STAGES` stages. A stage of the
     /// table's texture effect has a `slots[2]` and takes its matrix from `effect_entries`, one
     /// for each effect.
     pub texture_transforms: [[f32; 16]; RECORD_STAGES],
@@ -262,12 +262,12 @@ pub struct DrawData {
     /// A plane in the space of the world of the draw: a pixel on its negative side is not
     /// drawn. All 0: no plane.
     pub clip_plane: [f32; 4],
-    /// The stages after the first [`RECORD_STAGES`]: not in the record.
+    /// The stages after the first `RECORD_STAGES`: not in the record.
     pub later: LaterStages,
 }
 
 impl DrawData {
-    /// Stage `index` of the draw (below [`STAGES`]).
+    /// Stage `index` of the draw (below `STAGES`).
     pub fn stage(&self, index: usize) -> &StageData {
         match index.checked_sub(RECORD_STAGES) {
             None => &self.stages[index],
@@ -282,7 +282,7 @@ impl DrawData {
         }
     }
 
-    /// The texture transform of stage `index` (below [`STAGES`]).
+    /// The texture transform of stage `index` (below `STAGES`).
     pub fn texture_transform(&self, index: usize) -> &[f32; 16] {
         match index.checked_sub(RECORD_STAGES) {
             None => &self.texture_transforms[index],
@@ -307,7 +307,7 @@ impl DrawData {
         self.counts[1] as usize > RECORD_STAGES
     }
 
-    /// The record of the draw: the first [`RECORD_SIZE`] bytes.
+    /// The record of the draw: the first `RECORD_SIZE` bytes.
     pub fn record_bytes(&self) -> &[u8] {
         &bytemuck::bytes_of(self)[..RECORD_SIZE]
     }
