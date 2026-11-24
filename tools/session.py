@@ -300,6 +300,25 @@ def fallback_of(lines):
     return None
 
 
+# The guard of a --reference run against a build without Direct3D 9 (W326, verdict 731 5.2). MGE XE's d3d8.dll
+# (render-link d3d8/cpp/main.cpp) writes the form of its build in its first lines; a player-form build ignores
+# `renderer_wgpu = false` and runs wgpu. A build from before W326 writes no form line, and its wgpu start writes
+# WGPU_LINE (below), which shows a reference run that is not on Direct3D 9 too.
+NOT_DIRECT3D9_MARKS = (
+    "build: player form",
+    "runtime.renderer_wgpu = false is ignored in this build",
+    ">> Using the wgpu renderer",
+)
+
+
+def not_direct3d9_of(lines):
+    """The reason for a --reference run to stop when `lines` show that MGE XE does not run Direct3D 9; else None."""
+    for line in lines:
+        if any(mark in line for mark in NOT_DIRECT3D9_MARKS):
+            return "a --reference run that is not on Direct3D 9 (a set of the player's form?): %s" % line.strip()
+    return None
+
+
 def modified_after(path, started):
     """True when the file `path` exists and changed after the time `started`; False when it is absent or gone."""
     try:
@@ -321,6 +340,9 @@ class Run:
         # A wgpu run: MGE XE's fall-back stops it (fallback_of), and the reason is kept here.
         self.wgpu = False
         self.fell_back = None
+        # A --reference run on Direct3D 9: a start that is not on Direct3D 9 stops it (not_direct3d9_of, W326), and
+        # the reason is kept in `fell_back` too.
+        self.direct3d9 = False
         # The size of the live mgeXE.log at its last copy (`keep_live_mge_log`).
         self._live_mge_size = None
 
@@ -429,10 +451,12 @@ class Run:
         or None: from the live mgeXE.log of the game (fresh since the start), the plugin's own log
         and the progress file. For `launch(stop=...)`, every 2 s: each call reads only the whole
         lines that each file got since the call before. In a wgpu run (`self.wgpu`), MGE XE's
-        fall-back stops the run too (`fallback_of`), and `self.fell_back` keeps it."""
+        fall-back stops the run too (`fallback_of`), and `self.fell_back` keeps it. In a --reference
+        run on Direct3D 9 (`self.direct3d9`), a start that is not on Direct3D 9 stops the run
+        (`not_direct3d9_of`), and `self.fell_back` keeps it."""
         if not hasattr(self, "_seen"):
             self._seen = {}
-        marks = REFUSAL_MARKS + CAUSE_MARKS + (FALLBACK_MARKS if self.wgpu else ())
+        marks = REFUSAL_MARKS + CAUSE_MARKS + (FALLBACK_MARKS if self.wgpu else ()) + (NOT_DIRECT3D9_MARKS if self.direct3d9 else ())
         fresh = [path for path in MGE_LOGS if self.started and modified_after(path, self.started)]
         for path in fresh[:1] + [self.log, self.progress]:
             if not os.path.isfile(path):
@@ -455,9 +479,12 @@ class Run:
             self._seen[path] = (offset + len(whole), lines)
         kept = [line for _, lines in self._seen.values() for line in lines]
         refused = refusal_of(kept)
-        if refused or not self.wgpu:
+        if refused:
             return refused
-        self.fell_back = fallback_of(kept)
+        if self.wgpu:
+            self.fell_back = fallback_of(kept)
+        elif self.direct3d9:
+            self.fell_back = not_direct3d9_of(kept)
         return self.fell_back
 
     def plugin_lines(self):
