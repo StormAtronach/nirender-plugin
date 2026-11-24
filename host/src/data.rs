@@ -494,6 +494,11 @@ pub(crate) struct Counts {
     /// storage binding (`record_limit`), and the retained slots past it.
     pub(crate) records_over_limit: u32,
     pub(crate) retained_over_limit: u32,
+    /// The overflow records that the frames wrote for their draws of more than
+    /// [`RECORD_STAGES`] stages, in all frames.
+    pub(crate) overflow_records: u64,
+    /// The draws of the frames by their number of stages (0 to [`STAGES`]), in all frames.
+    pub(crate) draws_by_stages: [u64; STAGES + 1],
     /// The uploads of the retained segment of the instances: whole, and as runs of changed
     /// slots with their bytes (`retained_upload`).
     pub(crate) instance_uploads_whole: u64,

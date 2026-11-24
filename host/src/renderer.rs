@@ -1280,6 +1280,8 @@ impl Renderer {
         let index = self.retained_records + self.record_count;
         data.frame_records(&mut self.record_staging);
         self.record_count += count;
+        self.counts.overflow_records += (count - 1) as u64;
+        self.counts.draws_by_stages[(data.counts[1] as usize).min(STAGES)] += 1;
         Some(index as u32)
     }
 
@@ -1313,6 +1315,7 @@ impl Renderer {
             return None;
         }
         self.record_extras += count;
+        self.counts.overflow_records += (count - 1) as u64;
         let index = self.record_capacity - self.record_extras;
         let mut bytes = Vec::with_capacity(count * RECORD_SIZE);
         data.frame_records(&mut bytes);

@@ -251,6 +251,10 @@ impl Slot {
 #[derive(Default)]
 pub struct RetainedCounts {
     pub instances: u32,
+    /// The slots of the table that hold the overflow record of a slot ([`Slot::overflow`]).
+    pub overflow_slots: u32,
+    /// The slots made for draws, by the draw's number of stages (0 to [`STAGES`]).
+    pub slots_by_stages: [u32; STAGES + 1],
     /// The sorted blends drawn, in all views.
     pub sorted: u64,
     pub slots: u32,
@@ -715,6 +719,16 @@ impl RetainedSet {
         (self.slots.len() - 1) as u32
     }
 
+    /// The slot of a new draw, and the slot of its overflow record ([`Slot::overflow`]) when
+    /// the draw has more stages than a record holds ([`DrawData::overflows`]).
+    fn take_slots(&mut self, data: &DrawData) -> (u32, Option<u32>) {
+        let slot = self.take_slot();
+        let overflow = data.overflows().then(|| self.take_slot());
+        self.counts.overflow_slots += u32::from(overflow.is_some());
+        self.counts.slots_by_stages[(data.counts[1] as usize).min(STAGES)] += 1;
+        (slot, overflow)
+    }
+
     /// The cull's record of a slot after a change of the slot.
     fn refresh_cull(&mut self, slot: u32) {
         self.cull[slot as usize] = CullEntry::of(self.slots[slot as usize].as_ref());
@@ -744,6 +758,7 @@ impl RetainedSet {
                 }
                 if let Some(overflow) = taken.overflow {
                     self.free.push(overflow);
+                    self.counts.overflow_slots -= 1;
                 }
             }
             self.free.push(slot);
@@ -3051,8 +3066,7 @@ impl Player {
                     b
                 }
             };
-            let slot = set.take_slot();
-            let overflow = data.overflows().then(|| set.take_slot());
+            let (slot, overflow) = set.take_slots(&data);
             // A late entry of an earlier instance in this slot has no meaning now.
             set.late.retain(|&(s, _)| s != slot);
             if late {
@@ -3837,6 +3851,53 @@ mod list_tests {
         let index = set.slots.len() - 1;
         set.slots[index].as_mut().unwrap().bound[0] = 100.0;
         set.cull[index] = CullEntry::of(set.slots[index].as_ref());
+    }
+
+    /// A draw of 8 stages takes a second slot for its overflow record, as `retained_insert` does
+    /// (`take_slots`); `records` writes its record with the distance to that slot, and the
+    /// overflow record there; `remove` frees both slots, and the next draw of 8 stages takes
+    /// them again, so the table does not grow (W20). A draw of 6 stages takes one slot.
+    #[test]
+    fn an_overflow_slot_is_freed_with_its_draw_and_taken_again() {
+        let place = |set: &mut RetainedSet, id: u32, stages: usize| {
+            let mut data: DrawData = bytemuck::Zeroable::zeroed();
+            data.counts[1] = stages as u32;
+            data.stage_mut(stages - 1).color = [id, 0, 0, 0];
+            let (index, overflow) = set.take_slots(&data);
+            let mut taken = slot(id);
+            taken.data = data;
+            taken.overflow = overflow;
+            set.slots[index as usize] = Some(taken);
+            set.by_id.entry(id).or_default().push(index);
+            (index, overflow)
+        };
+        let read = |bytes: &[u8]| {
+            let mut data: DrawData = bytemuck::Zeroable::zeroed();
+            bytemuck::bytes_of_mut(&mut data)[..RECORD_SIZE].copy_from_slice(bytes);
+            data
+        };
+        let mut set = RetainedSet::new();
+        assert_eq!(place(&mut set, 1, crate::data::RECORD_STAGES), (0, None));
+        assert_eq!(place(&mut set, 2, STAGES), (1, Some(2)));
+        assert_eq!(set.counts.overflow_slots, 1);
+
+        let mut written = Vec::new();
+        set.slots[1]
+            .as_ref()
+            .unwrap()
+            .records(1, |at, bytes| written.push((at, read(bytes))));
+        assert_eq!(written.len(), 2);
+        let ((main_at, main), (more_at, more)) = (&written[0], &written[1]);
+        assert_eq!((*main_at, *more_at), (1, 2));
+        assert_eq!(main.stages[0].slots[3], 1, "the distance from slot 1 to slot 2");
+        let last = STAGES - 1 - crate::data::RECORD_STAGES;
+        assert_eq!(more.stages[last].color[0], 2, "the last stage of draw 2");
+
+        let _ = set.remove(2);
+        assert_eq!(set.counts.overflow_slots, 0);
+        assert!(set.slots[1].is_none() && set.slots[2].is_none());
+        assert_eq!(place(&mut set, 3, STAGES), (1, Some(2)), "the two free slots again");
+        assert_eq!((set.slots.len(), set.counts.overflow_slots), (3, 1));
     }
 
     /// A set in a relative scene whose camera is at `camera`, with two slots: one that is not
