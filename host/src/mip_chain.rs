@@ -48,6 +48,15 @@ pub(crate) fn level_filter(sampler: &mut [u32; 5], levels: u32, chained: bool, s
     }
 }
 
+/// True when a draw of this object class (MGE_LINK_CLASS_*) filters between the levels of its
+/// textures, with `graphics.sky_mip_filter` as `on`: a class of the sky from the dome (1) to the rest
+/// of the sky (7). The sun's glare (8) is not under the sky root and keeps the engine's filter. The
+/// plugin gives the class from the weather controller's nodes, not from a texture's name.
+pub(crate) fn sky_levels(on: bool, class: u32) -> bool {
+    use crate::engine::scene::{sky_class, CLASS_SUN_GLARE};
+    on && sky_class(class) && class != CLASS_SUN_GLARE
+}
+
 /// True when the levels are blocks: a block format that is not decoded into 4 bytes a pixel.
 fn as_blocks(d3d_format: u32, decoded: bool) -> bool {
     !decoded && matches!(d3d_format, DXT1 | DXT3 | DXT5)
@@ -516,6 +525,21 @@ mod tests {
         assert_eq!(with(bilerp, 1, false), 0);
         assert_eq!(with(trilerp, 1, false), 0);
         assert_eq!(with(trilerp, 7, false), 2);
+    }
+
+    /// The classes of the sky rule: with the setting on, the dome (1) to the rest of the sky (7);
+    /// not the sun's glare (8), no class (0) or the water plane (10). With it off, none.
+    #[test]
+    fn the_sky_rule_takes_the_classes_1_to_7() {
+        for class in 1..=7 {
+            assert!(sky_levels(true, class), "class {class}");
+        }
+        for class in [0, 8, 9, 10, 11] {
+            assert!(!sky_levels(true, class), "class {class}");
+        }
+        for class in 0..=11 {
+            assert!(!sky_levels(false, class), "class {class}");
+        }
     }
 
     /// The null: a texture of one colour gives levels of that colour.

@@ -34,6 +34,8 @@ pub(crate) const CLASS_SKY_CLOUDS: u32 = 3;
 /// The moon shadow: the one shape "Moon Shadow" under the "Shadow Node" of each moon
 /// (`Moon::ctor` 0x4443B0), the disc that keeps the stars out of the moon.
 pub(crate) const CLASS_SKY_MOON_SHADOW: u32 = 6;
+/// The sun's glare: the shapes under the weather's sun glare node, not under the sky root.
+pub(crate) const CLASS_SUN_GLARE: u32 = 8;
 /// The water plane of the game: not a thing of the world (the extension draws its water).
 pub(crate) const CLASS_WATER_PLANE: u32 = 10;
 

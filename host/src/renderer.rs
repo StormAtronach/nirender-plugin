@@ -395,10 +395,9 @@ pub(crate) enum WindowTarget {
 
 impl Renderer {
     /// True when a draw of this object class (MGE_LINK_CLASS_*) filters between the levels of its
-    /// textures: a class of the sky (1 to 7, not the sun's glare) with `graphics.sky_mip_filter` on.
-    /// The plugin gives the class from the weather controller's nodes, not from a texture's name.
+    /// textures ([`crate::mip_chain::sky_levels`]).
     pub(crate) fn sky_levels(&self, class: u32) -> bool {
-        self.sky_mip_filter && crate::engine::scene::sky_class(class)
+        crate::mip_chain::sky_levels(self.sky_mip_filter, class)
     }
 
     /// The maps of a material that have a texture, for a shape that the extension holds
