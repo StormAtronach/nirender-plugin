@@ -261,6 +261,9 @@ pub struct Stage {
 /// 0x6C1FA0 reads the tables at 0x7DDB80 that `initFilteringAndAddressCaps` 0x6BA840 writes).
 /// For a texture without mip levels the engine takes the filters without a mip filter; a
 /// sampler of one level gives the same picture.
+/// The filter mode bilinear (NiTexturingProperty FILTER_BILERP): no filter between levels.
+pub const FILTER_BILERP: u32 = 1;
+
 pub fn sampler_states(clamp: u32, filter: u32) -> [u32; 5] {
     let (u, v) = match clamp {
         0 => (3, 3),

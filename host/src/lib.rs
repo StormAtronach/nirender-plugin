@@ -554,7 +554,8 @@ impl Pass {
     /// record (the texture pass of the game makes them from the effect and the camera of
     /// the frame); without them a stage of an effect gets the generation of its kind and no
     /// transform. `sky` is true for a draw of the sky with `graphics.sky_mip_filter` on
-    /// ([`Renderer::sky_levels`]): its textures with levels filter between them.
+    /// ([`Renderer::sky_levels`]): its BILERP maps with levels filter between them
+    /// ([`mip_chain::sky_map`]).
     fn new(
         d: &material::Derived,
         pass: usize,
@@ -611,7 +612,7 @@ impl Pass {
                     &mut sampler,
                     view.texture().mip_level_count(),
                     chains.contains_key(&st.texture),
-                    sky,
+                    mip_chain::sky_map(sky, filter),
                 );
             }
             *stage = PassStage {

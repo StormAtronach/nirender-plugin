@@ -35,26 +35,33 @@ const MIP_FILTER_LINEAR: u32 = 2;
 ///   filter the material names. Its file has one level, so in the engine a filter between levels has
 ///   nothing to filter: BILERP and TRILERP give the same picture for it. The moons are such a case:
 ///   `NiTexturingProperty::ctor_fromFile` (0x6E1910) gives their map FILTER_BILERP (0x6E19B3).
-/// - A texture of a sky draw (`sky`: a class of the sky, with `graphics.sky_mip_filter` on) that has
-///   levels gets a linear filter between them too: the Architect's W632 re-ruling. The engine gives
-///   the sky's maps no filter between levels, so a large level 0 drawn small reads only level 0.
+/// - A BILERP map of a sky draw (`sky_map`: [`sky_map`]) that has levels gets a linear filter between
+///   them too: the Architect's W632 re-ruling. The engine gives these maps no filter between levels,
+///   so a large level 0 drawn small reads only level 0.
 /// - Any other texture with one level gets none.
 /// - Any other texture with levels of its own keeps the material's filter.
-pub(crate) fn level_filter(sampler: &mut [u32; 5], levels: u32, chained: bool, sky: bool) {
-    if chained || (sky && levels > 1) {
+pub(crate) fn level_filter(sampler: &mut [u32; 5], levels: u32, chained: bool, sky_map: bool) {
+    if chained || (sky_map && levels > 1) {
         sampler[4] = MIP_FILTER_LINEAR;
     } else if levels <= 1 {
         sampler[4] = MIP_FILTER_NONE;
     }
 }
 
-/// True when a draw of this object class (MGE_LINK_CLASS_*) filters between the levels of its
-/// textures, with `graphics.sky_mip_filter` as `on`: a class of the sky from the dome (1) to the rest
-/// of the sky (7). The sun's glare (8) is not under the sky root and keeps the engine's filter. The
-/// plugin gives the class from the weather controller's nodes, not from a texture's name.
+/// True when a draw of this object class (MGE_LINK_CLASS_*) is a draw of the sky for the sky rule,
+/// with `graphics.sky_mip_filter` as `on`: a class of the sky from the dome (1) to the sun's glare
+/// (8). The plugin gives the class from the weather controller's nodes, not from a texture's name.
 pub(crate) fn sky_levels(on: bool, class: u32) -> bool {
-    use crate::engine::scene::{sky_class, CLASS_SUN_GLARE};
-    on && sky_class(class) && class != CLASS_SUN_GLARE
+    on && crate::engine::scene::sky_class(class)
+}
+
+/// True when a map of a draw takes the sky rule: the draw is the sky's ([`sky_levels`]) and the map's
+/// filter is FILTER_BILERP. Those are the maps that `NiTexturingProperty::ctor_fromFile` (0x6E1910)
+/// makes, with BILERP fixed at 0x6E19B3, for the moons (`Moon::ctor`) and the sun's glare
+/// (`WeatherController::initGlare`). The sky's NIF maps (the stars, the clouds) are TRILERP and keep
+/// their filter.
+pub(crate) fn sky_map(sky: bool, filter: u32) -> bool {
+    sky && filter == crate::material::FILTER_BILERP
 }
 
 /// True when the levels are blocks: a block format that is not decoded into 4 bytes a pixel.
@@ -509,11 +516,10 @@ mod tests {
         assert_eq!(with(trilerp, 12, false), 2);
     }
 
-    /// The Architect's W632 re-ruling: a texture of a sky draw with levels (its own or a chain's)
-    /// filters between them, also under BILERP; a sky texture with one level and no chain gets no
-    /// filter between levels.
+    /// The Architect's W632 re-ruling: a sky map with levels (its own or a chain's) filters between
+    /// them, also under BILERP; a sky map with one level and no chain gets no filter between levels.
     #[test]
-    fn a_sky_texture_with_levels_filters_between_them() {
+    fn a_sky_map_with_levels_filters_between_them() {
         let bilerp = crate::material::sampler_states(3, 1);
         let trilerp = crate::material::sampler_states(3, 2);
         let with = |mut sampler: [u32; 5], levels, chained| {
@@ -527,18 +533,33 @@ mod tests {
         assert_eq!(with(trilerp, 7, false), 2);
     }
 
-    /// The classes of the sky rule: with the setting on, the dome (1) to the rest of the sky (7);
-    /// not the sun's glare (8), no class (0) or the water plane (10). With it off, none.
+    /// The classes of the sky rule: with the setting on, the dome (1) to the sun's glare (8); not
+    /// no class (0), the weather's particles (9) or the water plane (10). With it off, none.
     #[test]
-    fn the_sky_rule_takes_the_classes_1_to_7() {
+    fn the_sky_rule_takes_the_classes_1_to_8_with_the_glare() {
         for class in 1..=7 {
             assert!(sky_levels(true, class), "class {class}");
         }
-        for class in [0, 8, 9, 10, 11] {
+        assert!(sky_levels(true, crate::engine::scene::CLASS_SUN_GLARE), "the sun's glare");
+        for class in [0, 9, 10, 11] {
             assert!(!sky_levels(true, class), "class {class}");
         }
         for class in 0..=11 {
             assert!(!sky_levels(false, class), "class {class}");
+        }
+    }
+
+    /// The Architect's refinement: of a sky draw's maps, only a BILERP map takes the rule (the moons'
+    /// and the glare's maps); the TRILERP maps of the sky's NIFs (the stars, the clouds) and every other
+    /// filter keep their own; a draw that is not the sky's takes none.
+    #[test]
+    fn only_a_bilerp_map_of_the_sky_takes_the_rule() {
+        assert!(sky_map(true, crate::material::FILTER_BILERP));
+        for filter in [0, 2, 3, 4, 5] {
+            assert!(!sky_map(true, filter), "filter {filter}");
+        }
+        for filter in 0..=5 {
+            assert!(!sky_map(false, filter), "filter {filter}");
         }
     }
 
