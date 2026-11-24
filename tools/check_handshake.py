@@ -16,8 +16,9 @@ renderer.rs (`const VERSION` of an `impl Name` block) that differs from the one 
 tree needs another EXTENSION_FORMAT than at HEAD: W68 changed the environment's version and
 layout and kept format 1 (2026-11-09). Limits: the check sees a change only in the commit that
 makes it (the tree against its HEAD), and it does not see a layout change with no change of a
-VERSION. The ids of `version_1_only` (renderer.rs, `extension_needed`) keep their version as the
-literal `word(0) != 1`, not as a `const VERSION`: a change of that literal is not seen.
+VERSION. The ids with no `impl` block of their own have their versions in the table
+`RECORD_VERSIONS` of renderer.rs, which the check reads too (W241, W242); before the table they
+had the literal `word(0) != 1` of `version_1_only`, read as version 1.
 `checks.py` runs both.
 The design: handshake-design.md of the Numidium notes (2026-10-27).
 """
@@ -146,6 +147,28 @@ def self_test():
     assert "Settings 2 -> none" in version_problems(before, before.replace("impl Settings {\n    const VERSION: u32 = 2;\n}\n", ""))[0]
     # A VERSION outside an impl, or of a trait impl's block, belongs to no record of this file.
     assert record_versions("const VERSION: u32 = 3;\nimpl Extension for DistantLand {\n    const VERSION: u32 = 4;\n}\n") == {}
+    # W241, W242: the table RECORD_VERSIONS. A number changed, an id added and an id removed, with the same format, are
+    # problems; with a new format they pass. A line of another form stops the check (no entry is skipped).
+    table = before + "const RECORD_VERSIONS: &[(u32, u32)] = &[\n    (SHADER_STATE_ID, 1),\n    (WEATHER_ID, 1),\n];\n"
+    assert record_versions(table) == {"Settings": 2, "Environment": 8, "SHADER_STATE_ID": 1, "WEATHER_ID": 1}
+    assert version_problems(table, table) == []
+    for planted, change in ((table.replace("(WEATHER_ID, 1)", "(WEATHER_ID, 2)"), "WEATHER_ID 1 -> 2"),
+                            (table.replace("];\n", "    (RELOAD_ID, 1),\n];\n"), "RELOAD_ID none -> 1"),
+                            (table.replace("    (SHADER_STATE_ID, 1),\n", ""), "SHADER_STATE_ID 1 -> none")):
+        problems = version_problems(table, planted)
+        assert len(problems) == 1 and change in problems[0], (change, problems)
+        assert version_problems(table, planted.replace("EXTENSION_FORMAT: u32 = 1", "EXTENSION_FORMAT: u32 = 2")) == []
+    # The move from the literal of `version_1_only` into the table is no change; the null: a literal of another form
+    # (not `word(0) != 1`) gives no versions, so the same move is a change.
+    old = before + ("fn extension_needed(id: u32, bytes: &[u8]) -> Option<usize> {\n    let version_1_only = matches!(\n"
+                    "        id,\n        SHADER_STATE_ID\n            | WEATHER_ID\n    );\n    if version_1_only && word(0) != 1 {\n")
+    assert version_problems(old, table) == []
+    assert "WEATHER_ID none -> 1" in version_problems(old.replace("word(0) != 1", "word(0) != 2"), table)[0]
+    try:
+        record_versions(table.replace("(WEATHER_ID, 1),", "(WEATHER_ID, ONE),"))
+        raise AssertionError("a line of another form passed")
+    except SystemExit as stop:
+        assert "is not (NAME_ID, N)" in str(stop), stop
     self_test_base(before, w68)
     print("check_handshake self-test: ok")
 
@@ -186,9 +209,18 @@ FORMAT_PATTERN = r"^const EXTENSION_FORMAT: u32 = (\d+);"
 
 
 def record_versions(text):
-    """The version of each extension record of renderer.rs: `const VERSION: u32 = N;` under the last `impl Name {`."""
+    """The version of each extension record of renderer.rs: `const VERSION: u32 = N;` under the last `impl Name {`, and
+    each line `(NAME_ID, N),` of the table `RECORD_VERSIONS` (W241, W242: the ids with no `impl` block of their own),
+    by the id's name."""
     versions = {}
     owner = None
+    in_table = False
+    # Before the table, these ids had the literal version 1 of `version_1_only` in extension_needed (`word(0) != 1`):
+    # read as version 1, so that the move into the table is no change.
+    literal = re.search(r"let version_1_only = matches!\(\s*id,([^)]*)\);\s*if version_1_only && word\(0\) != 1 \{", text)
+    if literal:
+        for name in re.findall(r"\b([A-Z][A-Z0-9_]*_ID)\b", literal.group(1)):
+            versions[name] = 1
     for line in text.splitlines():
         found = re.match(r"^impl ([A-Za-z_][A-Za-z0-9_]*) \{", line)
         if found:
@@ -196,6 +228,17 @@ def record_versions(text):
         found = re.match(r"^\s+(?:pub )?const VERSION: u32 = (\d+);", line)
         if found and owner:
             versions[owner] = int(found.group(1))
+        if re.match(r"^const RECORD_VERSIONS: &\[\(u32, u32\)\] = &\[", line):
+            in_table = True
+            continue
+        if in_table:
+            if line.startswith("];"):
+                in_table = False
+                continue
+            found = re.match(r"^\s+\(([A-Z][A-Z0-9_]*), (\d+)\),$", line)
+            if not found:
+                raise SystemExit("a line of RECORD_VERSIONS in renderer.rs is not (NAME_ID, N),: %r" % line)
+            versions[found.group(1)] = int(found.group(2))
     return versions
 
 

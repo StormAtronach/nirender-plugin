@@ -2193,6 +2193,7 @@ impl Renderer {
                                 .write_buffer(&self.record_buffer, (at as usize * RECORD_SIZE) as u64, bytes);
                             self.counts.record_writes += 1;
                             self.counts.record_write_bytes += RECORD_SIZE as u64;
+                            self.counts.frame_writes += 1;
                         }
                     });
                 }
@@ -2243,8 +2244,10 @@ impl Renderer {
             }
             // After the case of a new origin the two lists are empty: no run went up here.
             if !instances {
+                let seconds = case_began.elapsed().as_secs_f64();
                 self.counts.upload_changed_cases += 1;
-                self.counts.upload_changed_seconds += case_began.elapsed().as_secs_f64();
+                self.counts.upload_changed_seconds += seconds;
+                self.counts.frame_write_seconds += seconds;
             }
             set.dirty.clear();
             set.moved.clear();

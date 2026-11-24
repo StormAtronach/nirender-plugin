@@ -203,10 +203,35 @@ pub(crate) const TIMING_PASSES: u32 = 126;
 /// The named pairs of a frame (`stamps::Stamps`), after the pair of the frame.
 pub(crate) const TIMING_NAMED: u32 = 96;
 
-pub(crate) const TIMING_QUERIES: u32 = 2 * (TIMING_PASSES + 1 + TIMING_NAMED);
+/// The pairs of the parts of a frame, after the named pairs (W635): a frame goes to the GPU in
+/// parts at a flush (`flush_split`), and the sum of its parts' spans is the GPU time of its
+/// encoders' commands without the GPU's waits between them. A frame with more parts keeps
+/// its last pair open to its end ([`Timing::part_end`]).
+pub(crate) const TIMING_PARTS: u32 = 256;
+
+pub(crate) const TIMING_QUERIES: u32 = 2 * (TIMING_PASSES + 1 + TIMING_NAMED + TIMING_PARTS);
 
 /// The first query of the named pairs.
 const NAMED_FIRST: u32 = 2 * (TIMING_PASSES + 1);
+
+/// The first query of the parts' pairs.
+const PARTS_FIRST: u32 = 2 * (TIMING_PASSES + 1 + TIMING_NAMED);
+
+/// The span of one pair of stamps, in stamp steps: 0 for a pair that the frame did not
+/// write whole (a stamp of 0, or an end not after its begin).
+pub(crate) fn pair_span(begin: u64, end: u64) -> u64 {
+    if begin != 0 && end > begin {
+        end - begin
+    } else {
+        0
+    }
+}
+
+/// The sum of the spans of a frame's parts, in stamp steps (W635): each part from its first
+/// command to its last, so that the GPU's waits between the parts are left out.
+pub(crate) fn parts_sum(parts: impl IntoIterator<Item = (u64, u64)>) -> u64 {
+    parts.into_iter().map(|(begin, end)| pair_span(begin, end)).sum()
+}
 
 /// GPU time stamps: a pair for each render pass of the frame, and a pair for the frame
 /// (when the adapter writes them outside a pass). They are resolved at the end of the
@@ -232,6 +257,11 @@ pub(crate) struct Timing {
     /// of each staging buffer's frame.
     pub(crate) stamps: Rc<crate::stamps::Stamps>,
     pub(crate) slot_names: Vec<Vec<(&'static str, crate::stamps::StampKind)>>,
+    /// The parts of the frame in progress that have a pair, and whether it had more parts
+    /// than pairs; the same for each staging buffer's frame (W635).
+    pub(crate) parts: u32,
+    pub(crate) parts_overflow: bool,
+    pub(crate) slot_parts: Vec<(u32, bool)>,
 }
 
 /// Only with `MGE_XE_GPU_TIME=1`: the stamps cost time at the end of each frame.
@@ -278,6 +308,9 @@ pub(crate) fn make_timing(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<
         frame_stamps: device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
         stamps,
         slot_names: vec![Vec::new(); 3],
+        parts: 0,
+        parts_overflow: false,
+        slot_parts: vec![(0, false); 3],
     })
 }
 
@@ -293,13 +326,40 @@ impl Timing {
         Some(index)
     }
 
-    /// The start of a frame: the stamp of the frame, when the adapter can write it.
+    /// The start of a frame: the stamp of the frame and the begin of its first part, when the
+    /// adapter can write them.
     pub(crate) fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.passes = 0;
+        self.parts = 0;
+        self.parts_overflow = false;
         self.stamps.clear();
         if self.frame_stamps {
             encoder.write_timestamp(&self.set, 2 * TIMING_PASSES);
         }
+        self.part_begin(encoder);
+    }
+
+    /// The end of a part of the frame, in its encoder before the submit at a flush. With all
+    /// pairs used, the last pair stays open to the frame's end: that frame's sum then holds
+    /// the waits after it, and it counts as an overflow.
+    pub(crate) fn part_end(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.frame_stamps || self.parts == 0 {
+            return;
+        }
+        if self.parts < TIMING_PARTS {
+            encoder.write_timestamp(&self.set, PARTS_FIRST + 2 * (self.parts - 1) + 1);
+        } else {
+            self.parts_overflow = true;
+        }
+    }
+
+    /// The begin of the next part of the frame, in its new encoder after a flush.
+    pub(crate) fn part_begin(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.frame_stamps || self.parts >= TIMING_PARTS {
+            return;
+        }
+        encoder.write_timestamp(&self.set, PARTS_FIRST + 2 * self.parts);
+        self.parts += 1;
     }
 
     /// The end of a frame, before the submit: reads the staging buffers that are mapped,
@@ -316,16 +376,21 @@ impl Timing {
             {
                 let mapped = self.staging[slot].slice(..).get_mapped_range().expect("the time stamps");
                 let stamp = |i: u32| u64::from_le_bytes(mapped[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
-                let span = |i: u32| -> f64 {
-                    let (begin, end) = (stamp(2 * i), stamp(2 * i + 1));
-                    if begin != 0 && end > begin {
-                        (end - begin) as f64 * self.period as f64
-                    } else {
-                        0.0
-                    }
-                };
+                let span = |i: u32| -> f64 { pair_span(stamp(2 * i), stamp(2 * i + 1)) as f64 * self.period as f64 };
                 counts.gpu_passes += (0..self.slot_passes[slot]).map(span).sum::<f64>();
-                counts.gpu_frame += span(TIMING_PASSES);
+                // The frame: the sum of its parts (W635), and its span from the first stamp to
+                // the last, which holds the GPU's waits between the parts.
+                let (parts, overflow) = self.slot_parts[slot];
+                let sum = parts_sum((0..parts).map(|p| (stamp(PARTS_FIRST + 2 * p), stamp(PARTS_FIRST + 2 * p + 1)))) as f64
+                    * self.period as f64;
+                let whole = span(TIMING_PASSES);
+                if counts.gpu_frames == 0 {
+                    counts.gpu_first = Some((sum, whole, parts));
+                }
+                counts.gpu_frame += sum;
+                counts.gpu_frame_span += whole;
+                counts.gpu_frame_parts += parts as u64;
+                counts.gpu_part_overflows += overflow as u32;
                 counts.gpu_frames += 1;
                 for (i, &(name, kind)) in self.slot_names[slot].iter().enumerate() {
                     let time = span(NAMED_FIRST / 2 + i as u32);
@@ -342,6 +407,10 @@ impl Timing {
             self.busy[slot] = false;
         }
         if self.frame_stamps {
+            // The end of the last part (with all pairs used, of the pair that stayed open).
+            if self.parts > 0 {
+                encoder.write_timestamp(&self.set, PARTS_FIRST + 2 * (self.parts - 1) + 1);
+            }
             encoder.write_timestamp(&self.set, 2 * TIMING_PASSES + 1);
         }
         let slot = self.busy.iter().position(|busy| !busy)?;
@@ -350,6 +419,7 @@ impl Timing {
         encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.staging[slot], 0, TIMING_QUERIES as u64 * 8);
         self.busy[slot] = true;
         self.slot_passes[slot] = self.passes;
+        self.slot_parts[slot] = (self.parts, self.parts_overflow);
         self.slot_names[slot] = self.stamps.take_names();
         Some(slot)
     }
@@ -1328,15 +1398,25 @@ impl Renderer {
     /// the world matrices of the draw's that name it. The first instance, or [`None`] when the
     /// room of the records or of the instances is full.
     pub(crate) fn copy_of_draw(&mut self, data: &DrawData, instances: &[Instance]) -> Option<u32> {
-        let record = self.record_now(data)?;
-        let copies: Vec<Instance> = instances
-            .iter()
-            .map(|instance| Instance {
-                world: instance.world,
-                record: [record, 0, 0, 0],
-            })
-            .collect();
-        self.append_instances(&copies)
+        let began = std::time::Instant::now();
+        let first = self.record_now(data).and_then(|record| {
+            let copies: Vec<Instance> = instances
+                .iter()
+                .map(|instance| Instance {
+                    world: instance.world,
+                    record: [record, 0, 0, 0],
+                })
+                .collect();
+            self.append_instances(&copies)
+        });
+        // W125: the time and the writes of the copies, for the report and the most of a frame.
+        let seconds = began.elapsed().as_secs_f64();
+        self.counts.draw_copy_seconds += seconds;
+        self.counts.frame_write_seconds += seconds;
+        if first.is_some() {
+            self.counts.frame_writes += 2;
+        }
+        first
     }
 
     /// Puts the bones of the skinned draws of the frame into the bone buffer, as
@@ -2838,6 +2918,51 @@ pub(crate) mod array_change {
     pub(crate) const PINNED_IN: &str = "a pinned texture into the arrays";
     pub(crate) const PINNED_OUT: &str = "a pinned texture out of the arrays";
     pub(crate) const PINNED_SAMPLER_IN: &str = "a pinned sampler state into the arrays";
+}
+
+#[cfg(test)]
+mod frame_parts_tests {
+    use super::{pair_span, parts_sum, TIMING_PARTS, TIMING_QUERIES};
+
+    /// The span from the first stamp to the last, as the frame's own pair gives it.
+    fn span_of(parts: &[(u64, u64)]) -> u64 {
+        pair_span(parts.first().map_or(0, |p| p.0), parts.last().map_or(0, |p| p.1))
+    }
+
+    #[test]
+    fn the_sum_of_the_parts_leaves_out_the_waits_between_them() {
+        // One part: the sum is the old span (a frame before a4cf9fa, or a steady frame now).
+        let one = [(1000, 3000)];
+        assert_eq!(parts_sum(one), 2000);
+        assert_eq!(parts_sum(one), span_of(&one));
+        // Two parts with a wait of 5000 steps between them: the span holds it, the sum not.
+        let two = [(1000, 3000), (8000, 8500)];
+        assert_eq!(parts_sum(two), 2500);
+        assert_eq!(span_of(&two), 7500);
+        // A stamp of 0 (a pair the frame did not write) or an end not after its begin gives 0.
+        let broken = [(0, 500), (1000, 900), (2000, 2600)];
+        assert_eq!(parts_sum(broken), 600);
+        // Many parts, as a replay's start (about 50 submits): the sum is the parts' work.
+        let start: Vec<(u64, u64)> = (0..50u64).map(|i| (10_000 + i * 7000, 10_000 + i * 7000 + 100)).collect();
+        assert_eq!(parts_sum(start.iter().copied()), 5000);
+        assert_eq!(span_of(&start), 343_100);
+        // The overflow case: the last pair stays open to the frame's end, so it holds the waits
+        // after it; still no more than the span.
+        let overflow = [(1000, 2000), (3000, 9000)];
+        assert_eq!(parts_sum(overflow), 7000);
+        // Verdict 759 5.1 (c): the sum is never above the span, in each case.
+        for parts in [&one[..], &two[..], &start[..], &overflow[..]] {
+            assert!(parts_sum(parts.iter().copied()) <= span_of(parts), "{parts:?}");
+        }
+    }
+
+    #[test]
+    fn the_query_set_has_room_for_the_parts() {
+        // 2 * (126 + 1 + 96 + 256) = 958, below wgpu's limit for a set (QUERY_SET_MAX_QUERIES).
+        assert_eq!(TIMING_QUERIES, 958);
+        assert!(TIMING_QUERIES <= wgpu::QUERY_SET_MAX_QUERIES);
+        assert_eq!(TIMING_PARTS, 256);
+    }
 }
 
 #[cfg(test)]

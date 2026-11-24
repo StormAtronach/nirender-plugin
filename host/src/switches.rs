@@ -42,6 +42,9 @@ pub(crate) struct Switches {
     pub(crate) draw_dump: u32,
     /// `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
     pub(crate) gpu_time: bool,
+    /// `MGE_XE_LOAD_WATCH=1`: a log line for each frame around a load ([`crate::load_watch`]),
+    /// for the measurement of the first seconds after a load (W640). Off by default.
+    pub(crate) load_watch: bool,
     /// `MGE_XE_STAGE_SHADERS=0`: no fragment shader for each stage state of the draws
     /// (`crate::stage_shaders`); the world shader's own `fs` draws every draw. On by default.
     pub(crate) stage_shaders: bool,
@@ -142,6 +145,7 @@ impl Switches {
                 })
                 .unwrap_or(0),
             gpu_time: read.on("MGE_XE_GPU_TIME") == Some(true),
+            load_watch: read.on("MGE_XE_LOAD_WATCH") == Some(true),
             stage_shaders: read.on("MGE_XE_STAGE_SHADERS") != Some(false),
             runs_dump: read.on("MGE_XE_RUNS_DUMP") == Some(true),
             indirect: read.on("MGE_XE_INDIRECT") != Some(false),

@@ -481,6 +481,36 @@ impl RenderTexture {
     }
 }
 
+impl Counts {
+    /// The end of a frame for the per-draw writes (W125): its writes and its time go into the
+    /// most of a frame, and the next frame starts at 0.
+    pub(crate) fn close_write_frame(&mut self) {
+        self.frame_writes_most = self.frame_writes_most.max(self.frame_writes);
+        self.frame_write_seconds_most = self.frame_write_seconds_most.max(self.frame_write_seconds);
+        self.frame_writes = 0;
+        self.frame_write_seconds = 0.0;
+    }
+
+    /// The most writes and the most time of a frame, the frame in progress too.
+    pub(crate) fn write_frame_most(&self) -> (u64, f64) {
+        (
+            self.frame_writes_most.max(self.frame_writes),
+            self.frame_write_seconds_most.max(self.frame_write_seconds),
+        )
+    }
+}
+
+/// The GPU totals of [`Counts`] at a mark, for the times between two marks.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct GpuMark {
+    pub(crate) passes: f64,
+    pub(crate) frame: f64,
+    pub(crate) frames: u32,
+    pub(crate) span: f64,
+    pub(crate) parts: u64,
+    pub(crate) overflows: u32,
+}
+
 #[derive(Default)]
 pub(crate) struct Counts {
     pub(crate) draws: u32,
@@ -518,6 +548,22 @@ pub(crate) struct Counts {
     pub(crate) upload_origin_seconds: f64,
     pub(crate) record_writes: u64,
     pub(crate) record_write_bytes: u64,
+    /// The copies of a draw with a record of their own (`Renderer::copy_of_draw`, two writes
+    /// each: the record and the instances), by the origin: 0 a draw split by a plane
+    /// (`Player::draw`), 1 a kept draw that an extension's pass draws again (`Replayer`); and the
+    /// instances that the copies wrote (W125).
+    pub(crate) draw_copies: [u64; 2],
+    pub(crate) draw_copy_instances: u64,
+    /// The time in `Renderer::copy_of_draw` (W125, verdict 753 5.2).
+    pub(crate) draw_copy_seconds: f64,
+    /// The writes of the copies and of the changed slots' records in the frame in progress, and
+    /// the most of a frame; the time of the copies and of the case "changed" of the table upload
+    /// in the frame in progress, and the most of a frame (W125, verdict 753 5.1 and 5.2).
+    /// [`Counts::close_write_frame`] at each frame's start.
+    pub(crate) frame_writes: u64,
+    pub(crate) frame_writes_most: u64,
+    pub(crate) frame_write_seconds: f64,
+    pub(crate) frame_write_seconds_most: f64,
     pub(crate) instance_entries_moved: u64,
     pub(crate) instance_gap_bytes: u64,
     /// The textures that came again for a handle with a slot of the arrays.
@@ -805,18 +851,28 @@ pub(crate) struct Counts {
     /// The lights and the entries of the clusters of the frames.
     pub(crate) cluster_lights: u64,
     pub(crate) cluster_entries: u64,
-    /// The entries that found their cluster full (`lights::CLUSTER_LIGHTS`) and were dropped,
-    /// in the clusters of the draws, of the lights of the world and of the extension.
-    pub(crate) cluster_dropped: u64,
+    /// The full clusters (`lights::CLUSTER_LIGHTS`) of each binning: the draws, the extension's
+    /// lights and the lights of the world (`lights::DRAWS_BINNING` and the others).
+    pub(crate) cluster_drops: [crate::lights::ClusterDrops; 3],
     /// The lights of the frames for the extension ([`FrameLights`]).
     pub(crate) extension_lights: u64,
     /// The frames with more clustered lights than a mask of a draw has bits.
     pub(crate) cluster_frames_many: u32,
-    /// The GPU time of the render passes and of the whole frame, in nanoseconds, and the
-    /// frames that were timed.
+    /// The GPU time of the render passes and of the frame's encoders' commands, in
+    /// nanoseconds, and the frames that were timed. `gpu_frame` is the sum of the spans of the
+    /// frame's parts (a frame goes to the GPU in parts at a flush, `flush_split`), so the
+    /// GPU's waits between the parts are not in it (W635); `gpu_frame_span` is the time from
+    /// the frame's first stamp to its last, with them.
     pub(crate) gpu_passes: f64,
     pub(crate) gpu_frame: f64,
     pub(crate) gpu_frames: u32,
+    pub(crate) gpu_frame_span: f64,
+    /// The parts of the timed frames, and the frames with more parts than pairs
+    /// (`renderer::TIMING_PARTS`): their last pair holds the rest of the frame, waits too.
+    pub(crate) gpu_frame_parts: u64,
+    pub(crate) gpu_part_overflows: u32,
+    /// The first timed frame (a replay's start): its sum, its span and its parts.
+    pub(crate) gpu_first: Option<(f64, f64, u32)>,
     /// The GPU time of each named span of the frame (`stamps::Stamps`), in nanoseconds, and
     /// how many there were.
     pub(crate) gpu_named: Vec<(&'static str, crate::stamps::StampKind, f64, u64)>,
@@ -1034,6 +1090,23 @@ mod tests {
         let mut bytes = Vec::new();
         data.frame_records(&mut bytes);
         assert_eq!(bytes.len(), RECORD_SIZE, "a draw of 6 stages writes one record of 1712 bytes");
+    }
+
+    /// W125: the most of a frame keeps the frame with the most writes and the frame with the most
+    /// time, also when they are not the same frame, and counts the frame in progress.
+    #[test]
+    fn the_most_writes_of_a_frame_are_kept() {
+        let mut counts = Counts::default();
+        counts.frame_writes = 12;
+        counts.frame_write_seconds = 0.001;
+        counts.close_write_frame();
+        counts.frame_writes = 30;
+        counts.frame_write_seconds = 0.0002;
+        counts.close_write_frame();
+        assert_eq!((counts.frame_writes, counts.frame_write_seconds), (0, 0.0));
+        assert_eq!(counts.write_frame_most(), (30, 0.001));
+        counts.frame_writes = 41;
+        assert_eq!(counts.write_frame_most(), (41, 0.001));
     }
 
     fn instance(record: u32) -> Instance {

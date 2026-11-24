@@ -403,6 +403,13 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 - `MGE_XE_RECORD_LIMIT=<n>`: at most n draw records (at least 1024), for the test of the
   guard of the device's limit.
 - `MGE_XE_GPU_TIME=1`: time stamps of the parts of the frame (they cost time).
+- `MGE_XE_LOAD_WATCH=1`: one `load watch: frame N` line for each frame of the helper from a frame
+  with no world (a loading screen) to 20 s after the last such frame: the QueryPerformanceCounter
+  at the frame's end in ms (the clock of a batch's frame recorder), the frame's interval, its busy
+  time, the GPU times read back (with `MGE_XE_GPU_TIME=1`), the uber-shader's draws by cause,
+  the stage pipelines given back with their thread time, and the list's pipelines left
+  (`host/src/load_watch.rs`; W640). MGE XE adds its own `load watch:` lines (RENDERER.md). Off by
+  default.
 - `MGE_XE_STAGE_SHADERS=0`: no fragment shader for each stage state of the draws
   (`host/src/stage_shaders.rs`); the world shader's own `fs` (the uber-shader) draws every
   draw. On by default; the A/B and the look test of W293 compare the two.

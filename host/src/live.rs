@@ -565,6 +565,8 @@ struct App {
     /// mean in microseconds: for the pacing of the game ([`Ring::shown`]).
     busy_before: u64,
     busy_mean_us: f64,
+    /// The load watch, with `MGE_XE_LOAD_WATCH=1` only ([`crate::load_watch`]).
+    load_watch: Option<crate::load_watch::LoadWatch>,
     /// The waits for a record that slept, by the phase of the game ([`GamePhase`]).
     blocks: [u64; 5],
     /// The waits and sleeps over the frames, for the lines of each mark.
@@ -1583,6 +1585,26 @@ impl ApplicationHandler for App {
             } else {
                 self.busy_mean_us + (frame_us - self.busy_mean_us) * 0.1
             };
+            if let Some(watch) = self.load_watch.as_mut() {
+                let world = player.parameters.is_some();
+                let renderer = &mut player.renderer;
+                let facts = crate::load_watch::FrameFacts {
+                    frame: renderer.counts.frames as u64,
+                    qpc_ms: super::overlay::ticks() as f64 * 1000.0 / super::overlay::ticks_per_second() as f64,
+                    world,
+                    busy_ms: frame_us / 1000.0,
+                    gpu: renderer
+                        .timing
+                        .is_some()
+                        .then_some((renderer.counts.gpu_frame, renderer.counts.gpu_frames)),
+                    received: renderer.stage_shaders.take_received(),
+                    draws: renderer.stage_shaders.uber_draws(),
+                    list_left: renderer.stage_shaders.list_left(),
+                };
+                for line in watch.frame_end(Instant::now(), &facts) {
+                    println!("{line}");
+                }
+            }
             self.ring.shown(super::overlay::ticks(), self.busy_mean_us as u32);
             if let Some(overlay) = self.overlay.as_mut() {
                 if let (Some((start, end, read)), true) = (stamps, in_window) {
@@ -1754,6 +1776,9 @@ pub fn run(name: &str, backends: wgpu::Backends, args: &[String], extension: Opt
         finished: false,
         busy_before: 0,
         busy_mean_us: 0.0,
+        load_watch: crate::switches::switches()
+            .load_watch
+            .then(crate::load_watch::LoadWatch::default),
         blocks: [0; 5],
         spread: WaitSpread::new(),
     };
