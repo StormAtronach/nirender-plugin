@@ -402,6 +402,17 @@ impl Counts {
     }
 }
 
+/// The GPU totals of [`Counts`] at a mark, for the times between two marks.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct GpuMark {
+    pub(crate) passes: f64,
+    pub(crate) frame: f64,
+    pub(crate) frames: u32,
+    pub(crate) span: f64,
+    pub(crate) parts: u64,
+    pub(crate) overflows: u32,
+}
+
 #[derive(Default)]
 pub(crate) struct Counts {
     pub(crate) draws: u32,
@@ -744,11 +755,21 @@ pub(crate) struct Counts {
     pub(crate) extension_lights: u64,
     /// The frames with more clustered lights than a mask of a draw has bits.
     pub(crate) cluster_frames_many: u32,
-    /// The GPU time of the render passes and of the whole frame, in nanoseconds, and the
-    /// frames that were timed.
+    /// The GPU time of the render passes and of the frame's encoders' commands, in
+    /// nanoseconds, and the frames that were timed. `gpu_frame` is the sum of the spans of the
+    /// frame's parts (a frame goes to the GPU in parts at a flush, `flush_split`), so the
+    /// GPU's waits between the parts are not in it (W635); `gpu_frame_span` is the time from
+    /// the frame's first stamp to its last, with them.
     pub(crate) gpu_passes: f64,
     pub(crate) gpu_frame: f64,
     pub(crate) gpu_frames: u32,
+    pub(crate) gpu_frame_span: f64,
+    /// The parts of the timed frames, and the frames with more parts than pairs
+    /// (`renderer::TIMING_PARTS`): their last pair holds the rest of the frame, waits too.
+    pub(crate) gpu_frame_parts: u64,
+    pub(crate) gpu_part_overflows: u32,
+    /// The first timed frame (a replay's start): its sum, its span and its parts.
+    pub(crate) gpu_first: Option<(f64, f64, u32)>,
     /// The GPU time of each named span of the frame (`stamps::Stamps`), in nanoseconds, and
     /// how many there were.
     pub(crate) gpu_named: Vec<(&'static str, crate::stamps::StampKind, f64, u64)>,

@@ -44,14 +44,18 @@ impl Player {
         for ((name, now), before) in TIME_NAMES.iter().zip(counts.times).zip(self.mark_times) {
             println!("  {:6.3}  {name}", per_frame(now - before));
         }
-        let timed = counts.gpu_frames - self.mark_gpu.2;
-        if timed != 0 {
-            let per_frame = |now: f64, before: f64| (now - before) / 1e6 / timed as f64;
-            println!(
-                "  gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {timed} timed frames",
-                per_frame(counts.gpu_passes, self.mark_gpu.0),
-                per_frame(counts.gpu_frame, self.mark_gpu.1)
-            );
+        let now = gpu_mark(counts);
+        let before = self.mark_gpu;
+        if now.frames != before.frames {
+            let between = crate::data::GpuMark {
+                passes: now.passes - before.passes,
+                frame: now.frame - before.frame,
+                frames: now.frames - before.frames,
+                span: now.span - before.span,
+                parts: now.parts - before.parts,
+                overflows: now.overflows - before.overflows,
+            };
+            println!("  {}", gpu_line(&between, None));
         }
         let work = gpu::work();
         let delta: Vec<u64> = work.iter().zip(self.mark_work).map(|(now, before)| now - before).collect();
@@ -79,7 +83,7 @@ impl Player {
         }
         self.mark_work = work;
         self.mark_errors = errors;
-        self.mark_gpu = (counts.gpu_passes, counts.gpu_frame, counts.gpu_frames);
+        self.mark_gpu = gpu_mark(counts);
         self.mark_times = counts.times;
         self.mark_frames = counts.frames;
         self.mark_draws = counts.draws;
@@ -377,12 +381,7 @@ impl Player {
         );
         // With `MGE_XE_GPU_TIME=1`: the GPU time of all timed frames (a replay has no marks).
         if c.gpu_frames != 0 {
-            println!(
-                "gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {} timed frames",
-                c.gpu_passes / 1e6 / c.gpu_frames as f64,
-                c.gpu_frame / 1e6 / c.gpu_frames as f64,
-                c.gpu_frames
-            );
+            println!("{}", gpu_line(&gpu_mark(c), c.gpu_first));
             // The named spans (`stamps::Stamps`) by kind, the most time first. The parts do not
             // overlap one another; a part's time holds the copies and the details inside it.
             let frames = c.gpu_frames as f64;
@@ -541,5 +540,104 @@ impl Player {
                 total.name
             );
         }
+    }
+}
+
+/// The GPU totals of [`Counts`] for a mark ([`data::GpuMark`]).
+fn gpu_mark(c: &Counts) -> crate::data::GpuMark {
+    crate::data::GpuMark {
+        passes: c.gpu_passes,
+        frame: c.gpu_frame,
+        frames: c.gpu_frames,
+        span: c.gpu_frame_span,
+        parts: c.gpu_frame_parts,
+        overflows: c.gpu_part_overflows,
+    }
+}
+
+/// The GPU time line of `totals` (nanoseconds), with the first timed frame of the run
+/// apart when `first` is given (its sum, its span and its parts). The line starts as it did
+/// before W635, so its readers (validate_retained.py, the docs scripts) take the same two
+/// numbers: "the frame" is the sum of the frame's parts, the GPU time of the frame's
+/// encoders' commands without the GPU's waits between the parts; the span from the frame's
+/// first stamp to its last, with them, follows.
+pub(crate) fn gpu_line(totals: &crate::data::GpuMark, first: Option<(f64, f64, u32)>) -> String {
+    let frames = totals.frames.max(1) as f64;
+    let ms = |ns: f64| ns / 1e6 / frames;
+    let mut line = format!(
+        "gpu: {:.3} ms in the passes, {:.3} ms the frame, for each of {} timed frames; the frame from its first stamp to its last {:.3} ms, with the GPU's waits between its {:.2} parts for each frame",
+        ms(totals.passes),
+        ms(totals.frame),
+        totals.frames,
+        ms(totals.span),
+        totals.parts as f64 / frames
+    );
+    if totals.overflows != 0 {
+        line += &format!(
+            " ({} frames with more than {} parts: their last part holds their waits)",
+            totals.overflows,
+            crate::renderer::TIMING_PARTS
+        );
+    }
+    if let Some((sum, span, parts)) = first {
+        let rest = (totals.frames > 1).then(|| (totals.frame - sum) / 1e6 / (totals.frames - 1) as f64);
+        line += &format!(
+            "; the first timed frame {:.3} ms in {} parts (its span {:.3} ms), the others {}",
+            sum / 1e6,
+            parts,
+            span / 1e6,
+            rest.map_or("none".to_string(), |rest| format!("{rest:.3} ms for each"))
+        );
+    }
+    line
+}
+
+#[cfg(test)]
+mod gpu_line_tests {
+    use super::gpu_line;
+    use crate::data::GpuMark;
+
+    #[test]
+    fn the_gpu_line_starts_as_before_and_gives_the_first_frame_apart() {
+        // 30 timed frames: the first 380 ms of sum in 50 parts (its span 390 ms), the 29 others 2 ms each in one part.
+        let totals = GpuMark {
+            passes: 30.0e6,
+            frame: 380.0e6 + 29.0 * 2.0e6,
+            frames: 30,
+            span: 390.0e6 + 29.0 * 2.0e6,
+            parts: 50 + 29,
+            overflows: 0,
+        };
+        let line = gpu_line(&totals, Some((380.0e6, 390.0e6, 50)));
+        // The prefix that validate_retained.py and the docs scripts read: X and Y, then the frames.
+        assert!(
+            line.starts_with("gpu: 1.000 ms in the passes, 14.600 ms the frame, for each of 30 timed frames; "),
+            "{line}"
+        );
+        assert!(line.contains("the frame from its first stamp to its last 14.933 ms, with the GPU's waits between its 2.63 parts for each frame"), "{line}");
+        assert!(
+            line.ends_with(
+                "; the first timed frame 380.000 ms in 50 parts (its span 390.000 ms), the others 2.000 ms for each"
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("more than"), "no overflow: {line}");
+        // A mark has no first frame; an overflow is named.
+        let line = gpu_line(&GpuMark { overflows: 2, ..totals }, None);
+        assert!(
+            line.contains("(2 frames with more than 256 parts: their last part holds their waits)"),
+            "{line}"
+        );
+        assert!(!line.contains("first timed frame"), "{line}");
+        // One timed frame: no others.
+        let one = GpuMark {
+            passes: 1.0e6,
+            frame: 2.0e6,
+            frames: 1,
+            span: 2.0e6,
+            parts: 1,
+            overflows: 0,
+        };
+        assert!(gpu_line(&one, Some((2.0e6, 2.0e6, 1))).ends_with("the others none"));
     }
 }
