@@ -751,7 +751,18 @@ def launch_run(run, spec, args, mods, facts=(), land=None):
         disable += off
         enable = [own] + enable
     return run.launch(spec, args.budget, TAG, mods=mods, disable=disable, facts=list(facts), full_dump=args.full_dump,
-                      enable=enable, plugins=args.enable_plugin, stop=stop, before_restore=land.end if land else None)
+                      enable=enable, plugins=args.enable_plugin, stop=stop, before_restore=land.end if land else None,
+                      stall_watch=not getattr(args, "no_stall_watch", False))
+
+
+def stall_note(args):
+    """The line of the run's first lines (and of progress.log) that says what the harness's stall watch does (W63)."""
+    limit = getattr(session.harness, "STALL_SECONDS", None)
+    if limit is None:
+        return "stall watch: none (the harness has none)"
+    if getattr(args, "no_stall_watch", False):
+        return "stall watch: off, it only measures (--no-stall-watch)"
+    return "stall watch: %d s after the first mod line (--no-stall-watch stops it)" % limit
 
 
 class ModuleEntry(ctypes.Structure):
@@ -1958,6 +1969,13 @@ def self_test_live_mge_log():
             run.keep_live_mge_log()
             with open(run.path("mgeXE.log"), encoding="utf-8", newline="") as file:
                 assert file.read() == text, "the call after a failed copy did not copy"
+
+            # The stall watch (W63): run_game gets stall_seconds None only for a launch with stall_watch False.
+            calls = []
+            session.harness.run_game = lambda *arguments, **options: calls.append(options) or True
+            for stall_watch in (True, False):
+                assert session.Run("stall-watch-test-%s" % stall_watch).launch({}, 10, "[t] ", stall_watch=stall_watch)
+            assert "stall_seconds" not in calls[0] and calls[1]["stall_seconds"] is None, calls
         finally:
             (session.harness.Deployment, session.harness.run_game, session.harness.copy_logs, session.ring_problem_of_instance,
              session.RESULTS, session.stage_mwse_config, session.MGE_LOGS) = saved
@@ -2096,8 +2114,15 @@ def self_test_ending():
     assert plugin_refused_line(by_hand) is None and plugin_refused_line({"reason": "exited", "codes": [20]}) is None
     assert run_ending(False, {"reason": "exited", "codes": [None]}, [], "a") == ENDED_OTHER, "a code not read"
     assert run_ending(False, {"reason": "exited", "codes": []}, [], "a") == ENDED_OTHER, "no code"
-    for reason in ("timeout", "stopped", "never started"):
+    for reason in ("timeout", "stopped", "never started", "stalled"):
         assert run_ending(False, {"reason": reason, "codes": []}, [], "a") == ENDED_OTHER, reason
+    # The stall watch's end (W63): its own line, the ending of a timeout; no line for the other ends.
+    assert "after step a: the stall watch ended the run" in stalled_line({"reason": "stalled", "codes": []}, "a")
+    assert stalled_line({"reason": "timeout", "codes": []}, "a") is None and stalled_line({}, "a") is None
+    stall_args = argparse.Namespace(no_stall_watch=False)
+    assert stall_note(stall_args) == "stall watch: %d s after the first mod line (--no-stall-watch stops it)" % session.harness.STALL_SECONDS
+    stall_args.no_stall_watch = True
+    assert stall_note(stall_args) == "stall watch: off, it only measures (--no-stall-watch)"
     assert run_ending(False, {}, [], "a") == ENDED_OTHER, "a harness with no LAST_END"
     assert [run_exit_code(False, False, *pair) for pair in ((True, ENDED_DONE), (False, ENDED_BY_HAND), (False, ENDED_OTHER))] == [0, 3, 1]
     assert run_exit_code(True, True, False, ENDED_BY_HAND) == 2, "a reference run that loaded the plugin"
@@ -2357,6 +2382,12 @@ def self_test_full_dump():
         run = FakeRun()
         launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=full_dump, enable_mod=[], enable_plugin=[]), [])
         assert run.options["full_dump"] is full_dump, run.options
+        # The stall watch is on unless the command says --no-stall-watch (W63).
+        assert run.options["stall_watch"] is True, run.options
+    run = FakeRun()
+    launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=False, enable_mod=[], enable_plugin=[],
+                                           no_stall_watch=True), [])
+    assert run.options["stall_watch"] is False, run.options
     run = FakeRun()
     launch_run(run, {}, argparse.Namespace(budget=10, disable_mod=[], mge_build=None, full_dump=False, enable_mod=["Mirror test"], enable_plugin=["mirrorTest.esp"]), [])
     assert run.options["enable"] == ["Mirror test"] and run.options["plugins"] == ["mirrorTest.esp"], run.options
@@ -2980,6 +3011,9 @@ def main():
     ap.add_argument("--timing", action="store_true", help="the run measures time (a shader batch that times frames): the slot check "
                     "refuses it unless this session holds the game slot with slot.py take game|both ... --timing (D297). The steps rate "
                     "and walk, and a run with no --steps, are timing runs without this")
+    ap.add_argument("--no-stall-watch", action="store_true", help="the harness's stall watch only measures: without this a game window "
+                    "that reads hung for 120 s after the first mod line gets its stacks kept and ends the run (W63). For a debugger "
+                    "at a breakpoint, which also makes the window hung")
     ap.add_argument("--full-dump", action="store_true", help="MWSE writes a full-memory dump at a crash (its setting CreateFullMinidumps, set only in "
                     "the run's copy of MWSE.json): about " + FULL_DUMP_SIZE + " in the run folder, so that the objects and the heap of a crash can be read")
     ap.add_argument("--settle", type=float, default=None, help="the seconds to wait at the interior and at the exterior before the picture (6 without this)")
@@ -3193,7 +3227,7 @@ def main():
     except distant_land.Problem as problem:
         raise SystemExit("run_own_device: %s" % problem)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = launch_run(run, spec, args, mods, facts=[build_line, shadows, videos_note(args)], land=land)
+        done = launch_run(run, spec, args, mods, facts=[build_line, shadows, videos_note(args), stall_note(args)], land=land)
 
     print()
     progress = run.progress_lines(TAG)
@@ -3363,6 +3397,14 @@ def plugin_refused_line(end):
     return None
 
 
+def stalled_line(end, step):
+    """The line for a run that the harness's stall watch ended (W63), or None. The ending stays that of a timeout."""
+    if end.get("reason") == "stalled":
+        return ("the game window stopped answering after step %s: the stall watch ended the run; the stacks are in the "
+                "run folder (stall-<pid>-stacks.txt, and hung-<pid>-stacks.txt when the close needed /F)" % step)
+    return None
+
+
 def report_ending(run, done, progress):
     """The ending of `run` from the harness's LAST_END (absent in a harness from before W372: the crash path, as before)
     and the dumps that the harness moved into the run folder; prints the line of a hand end or of the plugin's refusal
@@ -3373,6 +3415,9 @@ def report_ending(run, done, progress):
     ending = run_ending(done, end, dumps, step)
     if ending == ENDED_BY_HAND:
         print("ended without DONE after step %s, with exit code 0 (a close from outside, or the game's own exit)" % step)
+    stalled = stalled_line(end, step)
+    if stalled:
+        print(stalled)
     refused = plugin_refused_line(end)
     if refused:
         print(refused)
