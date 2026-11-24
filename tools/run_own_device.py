@@ -1999,12 +1999,29 @@ def self_test_live_mge_log():
             with open(run.path("mgeXE.log"), encoding="utf-8", newline="") as file:
                 assert file.read() == text, "the call after a failed copy did not copy"
 
-            # The stall watch (W63): run_game gets stall_seconds None only for a launch with stall_watch False.
+            # The stall watch (W63): run_game gets stall_seconds None only for a launch with stall_watch False, and only
+            # from a harness with the watch; a harness from before it gets no such argument. Both harnesses are planted,
+            # so that the test passes with either one (the round of afbc1b4 ran it with a harness from before the watch).
             calls = []
             session.harness.run_game = lambda *arguments, **options: calls.append(options) or True
-            for stall_watch in (True, False):
-                assert session.Run("stall-watch-test-%s" % stall_watch).launch({}, 10, "[t] ", stall_watch=stall_watch)
-            assert "stall_seconds" not in calls[0] and calls[1]["stall_seconds"] is None, calls
+            had_watch = hasattr(session.harness, "STALL_SECONDS")
+            saved_limit = getattr(session.harness, "STALL_SECONDS", None)
+            try:
+                for with_watch in (True, False):
+                    if with_watch:
+                        session.harness.STALL_SECONDS = 120
+                    elif hasattr(session.harness, "STALL_SECONDS"):
+                        del session.harness.STALL_SECONDS
+                    del calls[:]
+                    for stall_watch in (True, False):
+                        assert session.Run("stall-watch-test-%s-%s" % (with_watch, stall_watch)).launch({}, 10, "[t] ", stall_watch=stall_watch)
+                    expected_off = {"stall_seconds": None} if with_watch else {}
+                    assert "stall_seconds" not in calls[0] and {k: v for k, v in calls[1].items() if k == "stall_seconds"} == expected_off, (with_watch, calls)
+            finally:
+                if had_watch:
+                    session.harness.STALL_SECONDS = saved_limit
+                elif hasattr(session.harness, "STALL_SECONDS"):
+                    del session.harness.STALL_SECONDS
         finally:
             (session.harness.Deployment, session.harness.run_game, session.harness.copy_logs, session.ring_problem_of_instance,
              session.RESULTS, session.stage_mwse_config, session.MGE_LOGS) = saved
@@ -2148,10 +2165,22 @@ def self_test_ending():
     # The stall watch's end (W63): its own line, the ending of a timeout; no line for the other ends.
     assert "after step a: the stall watch ended the run" in stalled_line({"reason": "stalled", "codes": []}, "a")
     assert stalled_line({"reason": "timeout", "codes": []}, "a") is None and stalled_line({}, "a") is None
-    stall_args = argparse.Namespace(no_stall_watch=False)
-    assert stall_note(stall_args) == "stall watch: %d s after the first mod line (--no-stall-watch stops it)" % session.harness.STALL_SECONDS
-    stall_args.no_stall_watch = True
-    assert stall_note(stall_args) == "stall watch: off, it only measures (--no-stall-watch)"
+    # The header line with a harness that has the watch (planted 120 s) and with one from before it.
+    had_watch = hasattr(session.harness, "STALL_SECONDS")
+    saved_limit = getattr(session.harness, "STALL_SECONDS", None)
+    try:
+        session.harness.STALL_SECONDS = 120
+        stall_args = argparse.Namespace(no_stall_watch=False)
+        assert stall_note(stall_args) == "stall watch: 120 s after the first mod line (--no-stall-watch stops it)"
+        stall_args.no_stall_watch = True
+        assert stall_note(stall_args) == "stall watch: off, it only measures (--no-stall-watch)"
+        del session.harness.STALL_SECONDS
+        assert stall_note(stall_args) == "stall watch: none (the harness has none)"
+    finally:
+        if had_watch:
+            session.harness.STALL_SECONDS = saved_limit
+        elif hasattr(session.harness, "STALL_SECONDS"):
+            del session.harness.STALL_SECONDS
     assert run_ending(False, {}, [], "a") == ENDED_OTHER, "a harness with no LAST_END"
     assert [run_exit_code(False, False, *pair) for pair in ((True, ENDED_DONE), (False, ENDED_BY_HAND), (False, ENDED_OTHER))] == [0, 3, 1]
     assert run_exit_code(True, True, False, ENDED_BY_HAND) == 2, "a reference run that loaded the plugin"
