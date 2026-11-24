@@ -34,7 +34,7 @@ const MIP_FILTER_LINEAR: u32 = 2;
 /// - A texture whose levels this program made (`chained`) gets a linear filter between them, whatever
 ///   filter the material names. Its file has one level, so in the engine a filter between levels has
 ///   nothing to filter: BILERP and TRILERP give the same picture for it. The moons are such a case:
-///   `NiTexturingProperty::ctor_fromFile` (0x6E1910) gives their map FILTER_BILERP (0x6E19B3).
+///   `NiTexturingProperty::ctor_fromFile` (0x6E1900) gives their map FILTER_BILERP (0x6E19B3).
 /// - A BILERP map of a sky draw (`sky_map`: [`sky_map`]) that has levels gets a linear filter between
 ///   them too: the Architect's W632 re-ruling. The engine gives these maps no filter between levels,
 ///   so a large level 0 drawn small reads only level 0.
@@ -56,10 +56,11 @@ pub(crate) fn sky_levels(on: bool, class: u32) -> bool {
 }
 
 /// True when a map of a draw takes the sky rule: the draw is the sky's ([`sky_levels`]) and the map's
-/// filter is FILTER_BILERP. Those are the maps that `NiTexturingProperty::ctor_fromFile` (0x6E1910)
-/// makes, with BILERP fixed at 0x6E19B3, for the moons (`Moon::ctor`) and the sun's glare
-/// (`WeatherController::initGlare`). The sky's NIF maps (the stars, the clouds) are TRILERP and keep
-/// their filter.
+/// filter is FILTER_BILERP. Those are the maps that `NiTexturingProperty::ctor_fromFile` (0x6E1900)
+/// makes, with BILERP fixed at 0x6E19B3: the moon's face and its shadow shape ("Moon Shadow
+/// TextureProperty", tx_mooncircle_full_*.tga) in `Moon::ctor` (0x44479f, 0x444829), and the two maps
+/// of the sun's glare in `WeatherController::initGlare` (0x43dc27, 0x43dc9e). The sky's NIF maps (the
+/// stars, the clouds) are TRILERP and keep their filter.
 pub(crate) fn sky_map(sky: bool, filter: u32) -> bool {
     sky && filter == crate::material::FILTER_BILERP
 }
