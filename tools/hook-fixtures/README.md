@@ -13,7 +13,7 @@ library, and each file changes the picture where its home is drawn:
 
 | File | Hooks | The change |
 | --- | --- | --- |
-| `XE Mod Shadow.wgsl` | `shadow_delta`, `shadow_esm` | `shadow_delta` is the built-in text; `shadow_esm` has 1.5 times the exponent (a sharper edge) |
+| `XE Mod Shadow.wgsl` | `shadow_esm` | 1.5 times the exponent (a sharper edge) |
 | `XE Mod Shadow Data.wgsl` | none (values) | `shade = 0.6` (the built-in is 0.4) |
 | `XE Mod Water.wgsl` | `water_normal`, `water_color`, `underwater_color` | half the slope of the waves; a colour of the water of its own, tinted red |
 | `XE Mod Sky.wgsl` | `clouds_color` | the built-in colour of the clouds, tinted red |
