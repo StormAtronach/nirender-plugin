@@ -114,7 +114,9 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   `instance A/B grass` replays a capture of Outlander-test with the base set (--base-build), the round's set
   (--now-build) and the base set again, on the same data, and compares the pictures and the hash lines of the grass
   calls. It gets the round's render-link tree (--render-link) for the pinned pack files of its game folder
-  (tools/instance-packs.txt, W609 step 5). NOT RUN is not a PASS: it counts as a stage that did not pass (exit code 5 of the tool). The base set is made
+  (tools/instance-packs.txt, W609 step 5). Before the set, `capture formats` (tools/capture_formats.py, W241) compares the
+  stream and extension formats of the gate's captures with the round's trees: a round that changes a format with the old
+  captures fails there, before the build. NOT RUN is not a PASS: it counts as a stage that did not pass (exit code 5 of the tool). The base set is made
   at <tip> for the tree's repo and at the sibling's commit that passed with <tip>: the pair as it passed, so the A/B
   shows the change of both repos since that pass. The sibling's HEAD is not the base, as it can hold code that <tip>
   lacks (a render-link that needs a newer nirender fails the base set). When the base pair has no set (the round that
@@ -282,6 +284,10 @@ CLOSE_WAIT_SECONDS = 0.5
 # and the A/B take that set. The maker's MISSING FEATURE (its exit code 4) makes it WITHHELD, and the stages that take
 # the set are NOT RUN: the round fails, and its line names --mwse (Q10).
 SET_STAGE = "build the set"
+# W241: in every round with the gate, before the set, the stream and extension formats of the gate's captures against
+# the round's trees (tools/capture_formats.py, no replay, no build). A round that changes a format with the old captures
+# fails here, not in the gate after the build (D126).
+CAPTURE_FORMATS_STAGE = "capture formats"
 # W609 step 5 part 0 (D640 piece 2 addendum 2): the stage before the replay gate that makes the round's gate game
 # folder (tools/gate_game.py make), the GOG game folder by links with the pinned packs of tools/gate-packs.txt, read from
 # the set's render-link commit. Every validate_retained.py stage of the round takes it as --game-dir, the base build's
@@ -670,6 +676,8 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
         stages.append(("contract", plugin, tool("check_contract.py", "--mge", mge)))
     the_set = round_set(commits, mwse_commit)
     folder = set_folder_of(the_set)
+    if gate:
+        stages.append((CAPTURE_FORMATS_STAGE, plugin, tool("capture_formats.py", "--baseline", baseline, "--mge", mge)))
     if deploys:
         # The commits under test, not the HEADs at the time of the stage: a merge can move a HEAD during the round.
         commit_args = ["--plugin-commit", commits["plugin"], "--mge-commit", commits["mge"]] if commits else []
@@ -2545,7 +2553,7 @@ def self_test():
         base = ["plugin tests", "host tests", HOST_GPU_STAGE, "clippy baseline", "checks", "docs"]
         # W521: every round that deploys makes its set first (the maker probes the set's MWSE.dll before the seal, G1), then
         # deploys it. A round of the plugin DLL or the mod's Lua deploys without the gate.
-        gate_tail = [SET_STAGE, DEPLOY_STAGE, GAME_FOLDER_STAGE, "replay gate", HELPER_SOURCES_STAGE]
+        gate_tail = [CAPTURE_FORMATS_STAGE, SET_STAGE, DEPLOY_STAGE, GAME_FOLDER_STAGE, "replay gate", HELPER_SOURCES_STAGE]
         deploy_tail = [SET_STAGE, DEPLOY_STAGE]
         assert names("plugin", plugin, "tools/x.py") == base and names("plugin", plugin, "README.md") == base, "a change of no deployed part deployed"
         assert names("plugin", plugin, "src/lib.rs") == base + deploy_tail
@@ -2556,7 +2564,7 @@ def self_test():
         assert names("plugin", plugin, "host/src/shader.wgsl") == host_base + gate_tail
         assert names("plugin", plugin, "host/src/material.rs") == host_base + gate_tail
         # W535: a change of a file of the table's order adds the order stage right after the gate; no other change does.
-        order_tail = [SET_STAGE, DEPLOY_STAGE, GAME_FOLDER_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE]
+        order_tail = [CAPTURE_FORMATS_STAGE, SET_STAGE, DEPLOY_STAGE, GAME_FOLDER_STAGE, "replay gate", ORDER_STAGE, HELPER_SOURCES_STAGE]
         for path in ORDER_PATHS["plugin"]:
             assert names("plugin", plugin, path) == host_base + order_tail, path
         assert names("plugin", plugin, "host/src/retained.rs", "src/lib.rs") == host_base + order_tail, "the gate round deploys once"
@@ -2937,6 +2945,10 @@ def self_test():
         assert run[run.index("--baseline") + 1] == BASELINE and not run[run.index("--out") + 1].startswith(BASELINE)
         # W609 step 5: the A/B reads its pinned pack files from the render-link tree of the gate folder's make.
         assert run[run.index("--render-link") + 1] == by_name[GAME_FOLDER_STAGE][1][-1], run
+        # W241: the capture formats of the round's baseline, against the round's trees, before the set.
+        formats = by_name[CAPTURE_FORMATS_STAGE][1]
+        assert formats[-4:] == ["--baseline", BASELINE, "--mge", by_name[GAME_FOLDER_STAGE][1][-1]], formats
+        assert [name for name, _, _ in with_tips].index(CAPTURE_FORMATS_STAGE) + 1 == [name for name, _, _ in with_tips].index(SET_STAGE)
         assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, mwse)] == base + deploy_tail, "no gate, no A/B stage"
         assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE)][-1] == HELPER_SOURCES_STAGE, "no base pair, no A/B stage"
         # deploy rest gets the commits under test (the tree's and the sibling's at the start of the round), not HEADs.

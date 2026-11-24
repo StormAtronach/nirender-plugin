@@ -142,6 +142,7 @@ CHECKS = {
     # The deploy of the resting build into the test installs (scratch installs; the real ones are not touched).
     "the resting deploy": (PLUGIN / "tools" / "deploy_rest.py", PLUGIN, ["--self-test"]),
     "the instance A/B": (PLUGIN / "tools" / "instance_ab.py", PLUGIN, ["--self-test"]),
+    "the capture formats": (PLUGIN / "tools" / "capture_formats.py", PLUGIN, ["--self-test"]),
     "clippy arguments": (PLUGIN / "tools" / "clippy_baseline.py", PLUGIN, ["--self-test"]),
     # The choice of crates of the doc build (W510): the helper skipped with a line without a render-link tree beside.
     "doc crates": (PLUGIN / "tools" / "docs.py", PLUGIN, ["--self-test"]),
@@ -191,7 +192,7 @@ SELF_TESTS_NOT_CHECKED = {
     "symbols.py": "about 11 s and symstore.exe: too slow for the hook of each commit",
 }
 LISTS = {
-    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "replay run folder", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "sharedse layouts parsing", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "clippy arguments", "doc crates", "gate", "gate game folder", "tour", "distant land", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test", "lua checks", "build sets", "sets", "mwse sites parsing", "bc7", "frame census"],
+    "plugin": ["readme", "contract", "contract parsing", "mge contract", "stream tags", "stream tags parsing", "capture A/B parsing", "replay run folder", "handshake", "handshake search", "clip products parsing", "mwse native", "mwse native parsing", "mwse tree", "mwse vtable fills", "mwse vtable fills parsing", "module headers", "skill names", "hand offsets", "offset moves", "sharedse layouts", "sharedse layouts parsing", "notices", "release", "local places", "runner", "the close of a game", "the play set", "the merge step", "the instance A/B", "the capture formats", "clippy arguments", "doc crates", "gate", "gate game folder", "tour", "distant land", "stream rule", "clean worktrees", "clean results", "hooks", "check places", "fuzz", "format", "format self-test", "counted objects", "counted objects self-test", "plain guards self-test", "lua checks", "build sets", "sets", "mwse sites parsing", "bc7", "frame census"],
     "mge": ["mge readme", "mge handshake", "mge contract", "clip products", "mwse native", "module headers", "skill names", "mge format", "mge counted objects", "mge plain guards"],
 }
 LISTS["all"] = list(dict.fromkeys(LISTS["plugin"] + LISTS["mge"]))
