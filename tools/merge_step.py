@@ -135,7 +135,7 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   takes the place of the kept pairs. The sibling's commit must be an ancestor of the sibling's HEAD. The tool prints the
   option in the first line, and the base set's manifest names its commits. A hand pass (--hand-pass "<who: why>"
   --sibling-head <commit> --round-log <file>, with <repo>, <commit> and --base) is the pass that a person gives when a
-  round failed by the tool only (D673): the round's log must have a FAIL or NOT RUN line, and the base must be the
+  round failed by the tool only (D673): the round's log must have a verdict line '== FAIL' or '== NOT RUN', and the base must be the
   commit of refs/merge-step/<branch> when it exists. It moves that ref to <commit> (never back), keeps the pair with
   the sibling's commit that the person states (in the sibling's HEAD), and writes the log hand-pass-<commit>.log and
   the close lines, which name the hand pass, the round's log and the sibling's commit. It runs no stage, and the
@@ -1884,15 +1884,16 @@ def tips_for(kind, repo, base, sibling_base=None, lines=None):
 HAND_PASS = "--hand-pass"
 
 
-# A line of a round's log for a stage that did not pass (run_stages): the evidence of a hand pass (verdict 794 4.1).
-ROUND_NOT_PASSED = re.compile(r"^(FAIL|NOT RUN)\b", re.MULTILINE)
+# The verdict line of a round's log (verdict()) for a stage that did not pass: the evidence of a hand pass (verdict 794
+# 4.1 and 4.5).
+ROUND_NOT_PASSED = re.compile(r"^== (FAIL|NOT RUN) ", re.MULTILINE)
 
 
 def hand_pass(repo, commit, base, sibling_named, why, round_log, dry_run=False, closes=CLOSES_FILE, log_folder=LOG_FOLDER):
     """A pass that a person gives by hand (W644), when a round failed by the tool only (D673): refs/merge-step/<branch>
     moves to `commit` (keep_pass), and the pair keeps the sibling's commit that the person states (keep_pair), which must
-    be in the sibling's HEAD. `round_log` is the log of the round that failed: a file with a FAIL or NOT RUN line, or the
-    hand pass is refused. The base is the commit of refs/merge-step/<branch> when the ref exists, so that the close
+    be in the sibling's HEAD. `round_log` is the log of the round that failed: a file with a verdict line of a stage
+    that did not pass ("== FAIL ..." or "== NOT RUN ..."), or the hand pass is refused. The base is the commit of refs/merge-step/<branch> when the ref exists, so that the close
     lines are those of the merges since the last pass. The log hand-pass-<commit>.log and the close lines of
     base..commit name the hand pass, the round's log and the sibling's commit. No stage runs, so the sibling's own
     refs/merge-step/<branch> stays. The ref never moves back. The exit code: 0 done, 1 refused."""
@@ -1933,7 +1934,7 @@ def hand_pass(repo, commit, base, sibling_named, why, round_log, dry_run=False, 
         say("FAIL the hand pass: --round-log %s cannot be read (%s)" % (round_log, error))
         return 1
     if not failed:
-        say("FAIL the hand pass: --round-log %s has no FAIL or NOT RUN line: a hand pass is for a round that failed by the tool only" % round_log)
+        say("FAIL the hand pass: --round-log %s has no line \"== FAIL\" or \"== NOT RUN\": a hand pass is for a round that failed by the tool only" % round_log)
         return 1
     name, sibling_name = os.path.basename(repo), os.path.basename(sibling)
     lines = ["hand pass of %s %s from %s, with the sibling %s %s: %s" % (name, commit[:10], base[:10], sibling_name, sibling_head[:10], why),
@@ -2433,11 +2434,15 @@ def self_test_base_pair(root):
 
     # The hand pass: refused cases first, then a dry run that writes nothing, then the pass.
     closes, logs = os.path.join(folder, "closes.tsv"), os.path.join(folder, "logs")
+    # The logs are written by the round's own writer (verdict), with the lines of round e4c4cb6's log.
     round_log, passed_log = os.path.join(folder, "merge-step-x.log"), os.path.join(folder, "merge-step-y.log")
-    with open(round_log, "w", encoding="utf-8") as log:
-        log.write("PASS checks (3 s)\nFAIL fade (90 s): exit code 1\n")
-    with open(passed_log, "w", encoding="utf-8") as log:
-        log.write("PASS checks (3 s)\nPASS fade (90 s)\n")
+    with open(round_log, "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
+        verdict(log, "PASS checks (3 s)")
+        verdict(log, "FAIL light fade (78 s): exit code 1")
+    with open(passed_log, "w", encoding="utf-8") as log, contextlib.redirect_stdout(io.StringIO()):
+        verdict(log, "PASS checks (3 s)")
+        verdict(log, "PASS light fade (78 s)")
+        log.write("FAIL at the start of a line of a stage's own output\n")
 
     def handed(repo, commit, base, sibling_named, why, log=round_log, **kwargs):
         with contextlib.redirect_stdout(io.StringIO()) as said:
@@ -2454,7 +2459,7 @@ def self_test_base_pair(root):
     code, said = handed(plugin, t2, t1, r3, "Coordinator: test", log=os.path.join(folder, "no-such.log"))
     assert code == 1 and "cannot be read" in said, said
     code, said = handed(plugin, t2, t1, r3, "Coordinator: test", log=passed_log)
-    assert code == 1 and "has no FAIL or NOT RUN line" in said, said
+    assert code == 1 and 'has no line "== FAIL" or "== NOT RUN"' in said, said
     code, said = handed(plugin, t2, t1, r3[:10], "Coordinator: test", dry_run=True)
     assert code == 0 and "hand pass of %s %s" % (PLUGIN_NAME, t2[:10]) in said, said
     assert resolve(plugin, "refs/merge-step/master") is None and not os.path.exists(closes) and not os.path.exists(logs), "a dry run writes nothing"
@@ -2468,7 +2473,7 @@ def self_test_base_pair(root):
     with open(rows[1][5], encoding="utf-8") as file:
         log = file.read()
     assert "hand pass of %s %s" % (PLUGIN_NAME, t2[:10]) in log and "the hand pass's pair: %s" % pair_ref("plugin", t2) in log and r3[:10] in log, log
-    assert "the round's log: %s (its first stage that did not pass: FAIL fade (90 s): exit code 1)" % round_log in log, log
+    assert "the round's log: %s (its first stage that did not pass: == FAIL light fade (78 s): exit code 1)" % round_log in log, log
     # Verdict 794 4.3: the ref's line names the hand pass, not a round.
     assert "is set to %s: a hand pass" % t2[:10] in log and "this round passed" not in log, log
     # The ref never moves back.
@@ -4356,7 +4361,7 @@ def main():
     parser.add_argument(HAND_PASS, dest="hand_pass", metavar="WHO: WHY", help="a pass by hand of <commit> (W644, D673): the ref of the branch moves, the pair keeps "
                         "--sibling-head, and the close lines name it; no stage runs")
     parser.add_argument("--sibling-head", help="with %s: the sibling's commit of the pair, in the sibling's HEAD" % HAND_PASS)
-    parser.add_argument("--round-log", help="with %s: the log of the round that failed by the tool only, with a FAIL or NOT RUN line" % HAND_PASS)
+    parser.add_argument("--round-log", help="with %s: the log of the round that failed by the tool only, with a verdict line '== FAIL' or '== NOT RUN'" % HAND_PASS)
     parser.add_argument("--baseline", default=BASELINE, help="the folder that the gate compares with; without it, the accepted folder")
     parser.add_argument("--mwse", help="the MWSE commit of the round's sets; without it, the commit of the test installs' records (for a "
                         "plugin that needs an MWSE feature that the installs' MWSE lacks)")
