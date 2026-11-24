@@ -80,7 +80,9 @@ Stages (capture, baseline and only by default, in this order):
            tour's) with the base set and with --mge-build at that value: 0 pixels may differ in frame 1 and in
            the last frame. Then the cost: 6 replays of narsis.nircap with each set at each value, in turn, with
            MGE_XE_GPU_TIME=1 and a mark every 14 frames; the marks after the first give the GPU frame time and
-           the helper's busy time. The median of the round's set may be at most the base's + max(0.1 ms, 5 %);
+           the helper's busy time. The GPU frame time counts the extension's parts before the frame too (the
+           shadow map, the reflection: its line "gpu of the parts before the frame", the mean of the whole
+           replay, over the frames of the line "check gpu errors"; W651). The median of the round's set may be at most the base's + max(0.1 ms, 5 %);
            a median above it is a rise only when the rounds show it too: the rank test of the 6 rounds of
            each set (rank_rise) gives a one-sided p of at most 0.05 (W644). A median above the limit that the
            rounds do not show gets 6 more rounds of each set, up to 18; then it is NOT RUN, for a person.
@@ -841,8 +843,8 @@ def self_test_fade_stage():
     def plant(pictures=None, costs=None, first=None):
         """A run_code whose replays draw frame 1 in `first(name, arm, value)` and frame 29 in `pictures(name, arm, value)`
         (None, or no function: grey), and whose
-        cost replays print two marks, the loads (9 ms) and then `costs(arm, value)`: (GPU frame ms, busy ms), or a text
-        that replaces the output. `run.calls` holds (capture, arm, value, a cost replay, env) of each replay."""
+        cost replays print two marks, the loads (9 ms) and then `costs(arm, value)`: (GPU frame ms, busy ms), with a third
+        value the GPU ms for each frame of the parts before the frame (else none ran), or a text that replaces the output. `run.calls` holds (capture, arm, value, a cost replay, env) of each replay."""
         calls = []
 
         def run(command, env=None):
@@ -859,7 +861,9 @@ def self_test_fade_stage():
                     return 0, result
                 return 0, "".join("mark replay frame %d: 14 frames, 100.0 draws in 50.0 pipeline runs for each frame, busy %.3f ms for each frame:\n"
                                   "   0.100  feed\n  gpu: 1.000 ms in the passes, %.3f ms the frame, for each of 14 timed frames\n" % (
-                                      14 * (index + 1), result[1] if index else 9.0, result[0] if index else 9.0) for index in range(2)) + "gpu: 9.000 ms in the passes, 9.000 ms the frame, for each of 28 timed frames\n"
+                                      14 * (index + 1), result[1] if index else 9.0, result[0] if index else 9.0) for index in range(2)) + "gpu: 9.000 ms in the passes, 9.000 ms the frame, for each of 28 timed frames\n" + (
+                                      "gpu of the parts before the frame: %s\ncheck gpu errors: 28 judged, 0 faults\n" % (
+                                          "shadow map %.3f ms (28 times)" % result[2] if len(result) > 2 else "none"))
             capture = os.path.basename(command[2])[:-len(".nircap")]
             colour = (pictures(capture, arm, value) if pictures else None) or grey
             opening = (first(capture, arm, value) if first else None) or grey
@@ -911,9 +915,18 @@ def self_test_fade_stage():
             except ValueError as error:
                 assert said in str(error), (config, error)
         # The cost lines: the first mark (the loads) is left out; no mark after it, or no gpu line, gives None.
-        assert cost_of("mark a: 10 frames, x busy 9.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 9.000 ms the frame, for each of 10 timed frames\n"
-                       "mark b: 10 frames, x busy 1.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 2.000 ms the frame, for each of 10 timed frames\n"
-                       "mark c: 30 frames, x busy 2.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 4.000 ms the frame, for each of 30 timed frames\n") == (3.5, 1.75)
+        marks = ("mark a: 10 frames, x busy 9.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 9.000 ms the frame, for each of 10 timed frames\n"
+                 "mark b: 10 frames, x busy 1.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 2.000 ms the frame, for each of 10 timed frames\n"
+                 "mark c: 30 frames, x busy 2.000 ms for each frame:\n  gpu: 1.0 ms in the passes, 4.000 ms the frame, for each of 30 timed frames\n")
+        frames = "check gpu errors: 50 judged, 0 faults\n"
+        assert cost_of(marks + "gpu of the parts before the frame: none\n" + frames) == (3.5, 1.75)
+        # W651: the parts before the frame add their mean times the times they ran, over the frames: (1.5 * 50 + 0.5 * 10) / 50.
+        gpu, busy = cost_of(marks + "gpu of the parts before the frame: shadow map 1.500 ms (50 times), reflection 0.500 ms (10 times)\n" + frames)
+        assert round(gpu, 9) == 5.1 and busy == 1.75, (gpu, busy)
+        # With no line of the parts, a part that is not read, or no frame count, the GPU frame is not known.
+        assert cost_of(marks + frames) == (None, 1.75)
+        assert cost_of(marks + "gpu of the parts before the frame: shadow map 1.500 ms (50 times), sky 0.5 ms\n" + frames) == (None, 1.75)
+        assert cost_of(marks + "gpu of the parts before the frame: none\n") == (None, 1.75)
         assert cost_of("mark a: 10 frames, x busy 9.000 ms for each frame:\n") == (None, None)
         assert cost_of("mark a: 1 frames, busy 9.000 ms for each frame:\nmark b: 2 frames, busy 1.000 ms for each frame:\n") == (None, 1.0)
         with tempfile.TemporaryDirectory() as folder:
@@ -997,6 +1010,9 @@ def self_test_fade_stage():
             assert passed and "spread base 0.000, now 7.000" in said, said
             passed, said, _code = stage(folder, plant(costs=lambda arm, value: (1.0, 0.9) if arm == "now" and not value else (2.0, 1.0)))
             assert passed and "narsis at the fade-off, GPU frame: base 2.000, now 1.000 ms (-1.000;" in said, said
+            # W651: a rise of the parts before the frame alone (the shadow map) is a rise of the GPU frame.
+            passed, said, _code = stage(folder, plant(costs=lambda arm, value: (2.0, 1.0, 0.3 if arm == "base" else 1.6)))
+            assert not passed and "FAIL narsis at the fade-on: a rise above the limit, and the gate list plans none: narsis at the fade-on, GPU frame: base 2.300, now 3.600 ms (+1.300" in said, said
             # W644: the rank test. Exact on small arms, ties a half.
             assert rank_rise([1.0, 2.0], [3.0, 4.0]) == (4, 4, 1 / 6) and rank_rise([1.0, 1.0], [1.0, 1.0]) == (2.0, 4, 1.0)
             assert rank_rise([1.0] * 6, [2.0] * 6)[2] == 1 / 924
@@ -2592,6 +2608,12 @@ FADE_COST_MOST = 18
 RANK_EXACT_SPLITS = 5000
 MARK_LINE = re.compile(r"^mark .+?: (\d+) frames, .*busy ([0-9.]+) ms for each frame:")
 GPU_LINE = re.compile(r"^\s+gpu: [0-9.]+ ms in the passes, ([0-9.]+) ms the frame, for each of (\d+) timed frames")
+# W651: the extension's GPU time of its parts before the frame (the shadow map, the reflection: command buffers of their
+# own, out of the frame's stamps), one line at the end of the replay with the mean of each part over the times it ran,
+# and the frames of the replay (the judged count of the check "gpu errors" is the frame count).
+BEFORE_LINE = re.compile(r"^gpu of the parts before the frame: (.+)$")
+BEFORE_PART = re.compile(r"([0-9.]+) ms \((\d+) times\)")
+FRAMES_LINE = re.compile(r"^check gpu errors: (\d+) judged")
 
 
 def fade_of(config):
@@ -2628,9 +2650,35 @@ def flip_fade(config):
     return flipped
 
 
+def before_frame(output):
+    """W651: the GPU ms for each frame of the extension's parts before the frame in one replay: the sum of each part's
+    mean times the times it ran, over the frames of the replay. 0 when no part ran ("none"). None with no such line, with
+    a part that this does not read, or with no frame count: the cost is then not known."""
+    parts = frames = None
+    for line in output.splitlines():
+        found = BEFORE_LINE.match(line)
+        if found:
+            text = found.group(1).strip()
+            times = BEFORE_PART.findall(text)
+            if text == "none":
+                parts = 0.0
+            elif times and len(times) == len(text.split(", ")):
+                parts = sum(float(mean) * int(count) for mean, count in times)
+            else:
+                parts = None
+        found = FRAMES_LINE.match(line)
+        if found:
+            frames = int(found.group(1))
+    if parts is None or not frames:
+        return None
+    return parts / frames
+
+
 def cost_of(output):
     """(GPU frame ms, busy ms) of one cost replay: the marks after the first, the GPU time weighted by the timed frames
-    and the busy time by the frames. None for a part with no line."""
+    and the busy time by the frames. None for a part with no line. W651: the GPU frame counts the extension's parts
+    before the frame (`before_frame`; the mean of the whole replay, as the extension prints one line at its end), so a
+    cost of the shadow map shows as GPU and not only as busy (the busy has the wait for those parts' stamps)."""
     marks = []
     for line in output.splitlines():
         found = MARK_LINE.match(line)
@@ -2646,6 +2694,8 @@ def cost_of(output):
     timed = [gpu for _count, _busy, gpu in later if gpu is not None]
     gpu_frames = sum(count for _time, count in timed)
     gpu = sum(time * count for time, count in timed) / gpu_frames if gpu_frames and len(timed) == len(later) else None
+    before = before_frame(output)
+    gpu = gpu + before if gpu is not None and before is not None else None
     return gpu, busy
 
 
@@ -2791,7 +2841,8 @@ def fade_cost(capture, out, mge_build, base_build, roots):
                     gpu, busy = cost_of(output)
                     if gpu is None or busy is None:
                         return not_run("the cost of %s, the %s set at the %s, round %d: the replay printed no %s after its first mark "
-                                       "(--marks-every %d, MGE_XE_GPU_TIME=1)" % (name, arm, word, number, "gpu line" if busy is not None else "mark",
+                                       "(--marks-every %d, MGE_XE_GPU_TIME=1)" % (name, arm, word, number, "gpu line (of the frame, or of the parts before the "
+                                       "frame with the line 'check gpu errors')" if busy is not None else "mark",
                                                                                   FADE_MARKS_EVERY)), table
                     times[arm].append((gpu, busy))
             lines, rises, unclear = judge_cost(name, word, times)
