@@ -639,6 +639,49 @@ fn constants_slice(constants: &Option<StageConstants>) -> &[(&'static str, f64)]
 struct Done {
     key: PipelineKey,
     pipeline: Option<wgpu::RenderPipeline>,
+    /// The thread's time for the job: the module, when the job carried its text, and the pipeline.
+    thread: std::time::Duration,
+}
+
+/// The pipelines that the thread gave back since the last [`StageShaders::take_received`], by
+/// their origin, and the thread's time for them: for the load watch ([`crate::load_watch`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Received {
+    /// The keys of [`UBER_SET`].
+    pub(crate) uber_set: u32,
+    /// The keys that the list sent ([`StageShaders::send_queued`]).
+    pub(crate) list: u32,
+    /// The keys that a draw sent at its first use.
+    pub(crate) first_use: u32,
+    /// The jobs of any origin whose module or pipeline failed.
+    pub(crate) failed: u32,
+    pub(crate) thread: std::time::Duration,
+}
+
+impl Received {
+    /// Counts a job that the thread gave back: `made` when its pipeline is there, `uber` for a key
+    /// of [`UBER_SET`], `of_list` for a key that the list sent.
+    fn count(&mut self, made: bool, uber: bool, of_list: bool, thread: std::time::Duration) {
+        self.thread += thread;
+        let count = match (made, uber, of_list) {
+            (false, _, _) => &mut self.failed,
+            (true, true, _) => &mut self.uber_set,
+            (true, false, true) => &mut self.list,
+            (true, false, false) => &mut self.first_use,
+        };
+        *count += 1;
+    }
+}
+
+/// The draws with a stage key that the uber-shader drew, since the start of the session, by cause
+/// ([`StageShaders::report`]): for the load watch, which takes the counts of each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct UberDraws {
+    pub(crate) not_made: u64,
+    pub(crate) failed: u64,
+    pub(crate) refused: u64,
+    pub(crate) past_cap: u64,
+    pub(crate) no_key: u64,
 }
 
 /// The stage keys of the session and their pipelines that are not made yet.
@@ -668,6 +711,10 @@ pub(crate) struct StageShaders {
     list: Option<PathBuf>,
     /// The pipelines of the list not yet sent to the thread (`stages` 0), with their stage keys.
     queued: VecDeque<(PipelineKey, StageKey)>,
+    /// The pipelines that the list sent to the thread and that it has not given back yet.
+    list_pending: HashSet<PipelineKey>,
+    /// The pipelines given back since the last [`StageShaders::take_received`].
+    received: Received,
     /// The pipelines made in this session, with their stage keys, for the list.
     made: HashSet<(PipelineKey, StageKey)>,
     changed: bool,
@@ -733,6 +780,8 @@ impl StageShaders {
             done: None,
             list: None,
             queued: VecDeque::new(),
+            list_pending: HashSet::new(),
+            received: Received::default(),
             made: HashSet::new(),
             changed: false,
             frames_since_save: 0,
@@ -898,6 +947,7 @@ impl StageShaders {
         let spawned = std::thread::Builder::new().name(THREAD_NAME.into()).spawn(move || {
             let mut modules: HashMap<ModuleId, Option<wgpu::ShaderModule>> = HashMap::new();
             while let Ok(job) = job_receiver.recv() {
+                let started = std::time::Instant::now();
                 let id = job.module;
                 if let Some(source) = job.source {
                     // The first module of a variant drops the modules of the variant before it.
@@ -911,7 +961,12 @@ impl StageShaders {
                     .get(&id)
                     .and_then(|module| module.as_ref())
                     .and_then(|module| maker.make(job.key, module, constants_slice(&job.constants)));
-                if done_sender.send(Done { key: job.key, pipeline }).is_err() {
+                let done = Done {
+                    key: job.key,
+                    pipeline,
+                    thread: started.elapsed(),
+                };
+                if done_sender.send(done).is_err() {
                     break;
                 }
             }
@@ -1052,6 +1107,7 @@ impl StageShaders {
             let key = PipelineKey { stages: id, ..pipeline };
             if id != 0 && !self.pending.contains(&key) && self.send(key) {
                 self.from_list += 1;
+                self.list_pending.insert(key);
             }
         }
     }
@@ -1097,8 +1153,10 @@ impl StageShaders {
         let Some(done) = &self.done else { return };
         // The failed pipelines are noted after the loop, which holds the channel.
         let mut failed = Vec::new();
-        while let Ok(Done { key, pipeline }) = done.try_recv() {
+        while let Ok(Done { key, pipeline, thread }) = done.try_recv() {
             self.pending.remove(&key);
+            let of_list = self.list_pending.remove(&key);
+            self.received.count(pipeline.is_some(), key.stages == 0, of_list, thread);
             // A key of the uber set waits for its first draw ([`StageShaders::uber_pipeline`]). When the frame thread
             // made it first, the thread's copy is not needed.
             if key.stages == 0 {
@@ -1284,6 +1342,29 @@ impl StageShaders {
             true => "0 pipelines failed".to_string(),
             false => format!("{} pipelines failed (stage keys {})", ids.len(), ids.join(", ")),
         }
+    }
+
+    /// The pipelines that the thread gave back since the last call, for the load watch; the
+    /// counts start again.
+    pub(crate) fn take_received(&mut self) -> Received {
+        std::mem::take(&mut self.received)
+    }
+
+    /// The draws on the uber-shader of the session by cause, for the load watch.
+    pub(crate) fn uber_draws(&self) -> UberDraws {
+        UberDraws {
+            not_made: self.draws_not_made,
+            failed: self.draws_failed,
+            refused: self.draws_refused,
+            past_cap: self.past_cap,
+            no_key: self.no_key,
+        }
+    }
+
+    /// The list's pipelines still to come, for the load watch: those not sent to the thread, and
+    /// those sent that it has not given back.
+    pub(crate) fn list_left(&self) -> (usize, usize) {
+        (self.queued.len(), self.list_pending.len())
     }
 
     /// After a frame: writes the list when it changed, at most every [`SAVE_FRAMES`] frames.
@@ -2185,6 +2266,7 @@ mod tests {
             .send(Done {
                 key: pipeline,
                 pipeline: None,
+                thread: std::time::Duration::ZERO,
             })
             .unwrap();
         let mut pipelines = rustc_hash::FxHashMap::default();
@@ -2241,12 +2323,14 @@ mod tests {
             .send(Done {
                 key: lights,
                 pipeline: None,
+                thread: std::time::Duration::ZERO,
             })
             .unwrap();
         done_sender
             .send(Done {
                 key: layers,
                 pipeline: None,
+                thread: std::time::Duration::ZERO,
             })
             .unwrap();
         let mut pipelines = rustc_hash::FxHashMap::default();
@@ -2343,6 +2427,7 @@ mod tests {
             .send(Done {
                 key: first,
                 pipeline: None,
+                thread: std::time::Duration::ZERO,
             })
             .unwrap();
         let mut pipelines = rustc_hash::FxHashMap::default();
@@ -2570,5 +2655,65 @@ mod tests {
         assert_eq!(pixel(&stage, &key.constants()), of_key, "the constants");
         assert_eq!(pixel(&stage, &[]), of_record, "no constant: the record");
         assert_eq!(pixel(&general, &[]), of_record, "the general text: the record");
+    }
+
+    /// The load watch's counts (W640): each job that the thread gives back counts by its origin
+    /// with its thread time, and a take starts the counts again.
+    #[test]
+    fn received_counts_each_job_by_its_origin() {
+        let ms = std::time::Duration::from_millis;
+        let mut received = Received::default();
+        received.count(true, true, false, ms(1));
+        received.count(true, false, true, ms(2));
+        received.count(true, false, false, ms(3));
+        received.count(false, false, true, ms(4));
+        assert_eq!(
+            received,
+            Received {
+                uber_set: 1,
+                list: 1,
+                first_use: 1,
+                failed: 1,
+                thread: ms(10),
+            }
+        );
+
+        // A job that the list sent is the list's until the thread gives it back.
+        let mut shaders = StageShaders::new(true, &world());
+        let (jobs, _jobs_received) = mpsc::channel();
+        shaders.jobs = Some(jobs);
+        let (done_sender, done) = mpsc::channel();
+        shaders.done = Some(done);
+        shaders.sync = false;
+        shaders.queued.push_back((pipeline_key(0, 0), key(1, 0)));
+        shaders.send_queued();
+        assert_eq!(shaders.list_left(), (0, 1));
+        let sent = *shaders.list_pending.iter().next().expect("the list's job");
+        done_sender
+            .send(Done {
+                key: sent,
+                pipeline: None,
+                thread: ms(5),
+            })
+            .unwrap();
+        shaders.receive(&mut rustc_hash::FxHashMap::default());
+        assert_eq!(shaders.list_left(), (0, 0));
+        assert_eq!(
+            shaders.take_received(),
+            Received {
+                failed: 1,
+                thread: ms(5),
+                ..Received::default()
+            }
+        );
+        assert_eq!(shaders.take_received(), Received::default());
+        shaders.count_uber_draw(&sent);
+        assert_eq!(
+            shaders.uber_draws(),
+            UberDraws {
+                failed: 1,
+                ..UberDraws::default()
+            }
+        );
     }
 }
