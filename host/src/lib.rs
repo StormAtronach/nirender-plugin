@@ -42,6 +42,7 @@ mod gamma;
 mod late_depth;
 mod line_pass;
 mod live;
+mod load_watch;
 mod multisample;
 mod picture;
 pub mod spot;
