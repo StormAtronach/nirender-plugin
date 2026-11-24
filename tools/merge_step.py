@@ -1,6 +1,7 @@
 """The checks of a merge, for the Coordinator, on the merged tree: one PASS or FAIL line for each stage.
 
     python -I tools/merge_step.py <repo> <commit> --base <tip> [--baseline <folder>] [--sibling-base <commit>] [--mwse <commit>] [--gate-list <file>] [--no-wait] [--dry-run] [--no-pair-check]
+    python -I tools/merge_step.py <repo> <commit> --base <tip> --hand-pass "<who: why>" --sibling-head <commit> [--dry-run]
     python -I tools/merge_step.py --quick [<tree>] [--sibling <tree>] [--base <commit>] [--no-wait] [--dry-run]
     python -I tools/merge_step.py --self-test    # the tests of the pure parts: no build, no game
     python -I tools/merge_step.py --open-deploys # the WITHHELD deploys that no deploy closed
@@ -126,9 +127,17 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   the base's but for their build ids, which the A/B does not read. The plan, the log and the close line name the set used,
   its commits and the diff's count, or why the set is built. A pass (against the accepted folder) keeps its
   pair in the sibling's repo, in the ref refs/merge-step-pair/<plugin|mge>/<commit>, when the sibling's HEAD did not
-  move during the round. A base with no kept pair (a pass from before these refs) stops the tool: --sibling-base
-  <commit> names the sibling's commit. It also takes the place of a kept pair. The sibling's commit must be an ancestor
-  of the sibling's HEAD. The tool prints the option in the first line, and the base set's manifest names its commits;
+  move during the round. The base pair is the last pair that passed with <tip>, by either repo's round or a hand pass
+  (W644): of the kept pairs that name <tip> (refs/merge-step-pair/<kind>/<tip> in the sibling, and each
+  refs/merge-step-pair/<the other kind>/<sibling commit> of this repo whose commit is <tip>) that are in the sibling's
+  HEAD, the one that descends from all others. The plan's lines name the ref of that pair and the other pairs. Pairs
+  that are not on one line, or no pair, stop the tool: --sibling-base <commit> names the sibling's commit. It also
+  takes the place of the kept pairs. The sibling's commit must be an ancestor of the sibling's HEAD. The tool prints the
+  option in the first line, and the base set's manifest names its commits. A hand pass (--hand-pass "<who: why>"
+  --sibling-head <commit>, with <repo>, <commit> and --base) is the pass that a person gives when a round failed by the
+  tool only (D673): it moves refs/merge-step/<branch> to <commit> (never back), keeps the pair with the sibling's
+  commit that the person states (in the sibling's HEAD), and writes the log hand-pass-<commit>.log and the close lines,
+  which name the hand pass and the sibling's commit. It runs no stage, and the sibling's own ref stays;
 - after a pass that moves refs/merge-step/<branch>, the sibling's own refs/merge-step/<branch> moves to the sibling's
   HEAD of the round only when this round ran and passed every stage that the sibling's own check of its diff since
   that ref would run, matched by folder and command (W370). Else it stays, and one line names the stages that did not
@@ -1789,33 +1798,144 @@ def settle_refs(kind, repo, passed_ref, commit, sibling, sibling_head, stages, r
     return 0
 
 
-def tips_for(kind, repo, base, sibling_base=None):
-    """The commits of the base set: `base` for the tree's repo, and for the sibling the commit that passed with `base`,
-    which the pass kept in pair_ref(kind, base). The sibling's HEAD is not the base: it can hold code that `base` lacks
-    (2026-11-10, a render-link tip that needs W84 with the plugin's last pass: "no field `like_exterior`"; 2026-11-09,
-    nirender 9f68cd1 with a render-link that calls the spot cone). `sibling_base` names the sibling's commit in place of the
-    kept one, for a base with no kept pair. The sibling's commit must be an ancestor of the sibling's HEAD (or HEAD
-    itself). (tips, None), or (None, why not)."""
+def pair_candidates(kind, repo, sibling, base):
+    """The pairs that passed with `base`, a commit of the repo of `kind` (W644): the ref pair_ref(kind, base) of the sibling,
+    which a pass of this repo kept, and each ref pair_ref(<the other kind>, <sibling commit>) of this repo whose commit is
+    `base`, which a pass of the sibling kept with `base` as its sibling's HEAD. ([(source, sibling commit)], lines): a ref
+    that names no commit of the sibling is left out, with a line."""
     other = "mge" if kind == "plugin" else "plugin"
+    found, lines = [], []
+    own = resolve(sibling, pair_ref(kind, base))
+    if own:
+        found.append(("the kept pair %s" % pair_ref(kind, base), own))
+    full = resolve(repo, base) or base
+    prefix = "%s/%s/" % (PAIR_REFS, other)
+    listed = subprocess.run(["git", "-C", repo, "for-each-ref", "--format=%(objectname) %(refname)", prefix], capture_output=True, text=True, env=git_env())
+    for line in listed.stdout.splitlines() if listed.returncode == 0 else []:
+        value, _, name = line.partition(" ")
+        if value != full:
+            continue
+        source = "the kept pair %s of %s" % (name, os.path.basename(repo))
+        sibling_commit = resolve(sibling, name[len(prefix):])
+        if sibling_commit:
+            found.append((source, sibling_commit))
+        else:
+            lines.append("base pair: %s is not used: it names no commit of the sibling" % source)
+    return found, lines
+
+
+def tips_for(kind, repo, base, sibling_base=None, lines=None):
+    """The commits of the base set: `base` for the tree's repo, and for the sibling the commit that passed with `base`.
+    The sibling's HEAD is not the base: it can hold code that `base` lacks (2026-11-10, a render-link tip that needs W84
+    with the plugin's last pass: "no field `like_exterior`"; 2026-11-09, nirender 9f68cd1 with a render-link that calls
+    the spot cone). The base pair is the last pair that passed with `base`, by either repo's round or a hand pass (W644):
+    of the pairs of pair_candidates that are in the sibling's HEAD (HEAD itself or an ancestor), the one that descends
+    from all others. A pair that is not in the sibling's HEAD is not used. Pairs that are not on one line, or no pair,
+    stop the tool. `sibling_base` names the sibling's commit in place of the kept pairs; it must be in the sibling's
+    HEAD too. The lines that name the ref of the pair and the other pairs go into the list `lines`, when one is given.
+    (tips, None), or (None, why not)."""
+    other = "mge" if kind == "plugin" else "plugin"
+    lines = [] if lines is None else lines
     sibling = sibling_of(kind, repo)
     if not os.path.isdir(sibling):
         return None, "no sibling %s for the base set" % sibling
     sibling_head = resolve(sibling, "HEAD")
     if sibling_head is None:
         return None, "the sibling %s has no HEAD for the base set" % sibling
-    if sibling_base is None:
-        source = "the kept pair %s" % pair_ref(kind, base)
-        sibling_commit = resolve(sibling, pair_ref(kind, base))
-        if sibling_commit is None:
-            return None, "the sibling %s keeps no pair for the base %s (%s): give --sibling-base, the sibling's commit that passed with the base" % (sibling, base[:10], pair_ref(kind, base))
-    else:
+    sibling_name = os.path.basename(sibling)
+    if sibling_base is not None:
         source = "--sibling-base %s" % sibling_base
         sibling_commit = resolve(sibling, sibling_base)
         if sibling_commit is None:
             return None, "--sibling-base %s is no commit of the sibling %s" % (sibling_base, sibling)
-    if not is_ancestor(sibling, sibling_commit, sibling_head):
-        return None, "%s is not an ancestor of the HEAD of the sibling %s (%s)" % (source, sibling, sibling_head[:10])
-    return {kind: base, other: sibling_commit}, None
+        if not is_ancestor(sibling, sibling_commit, sibling_head):
+            return None, "%s is not an ancestor of the HEAD of the sibling %s (%s)" % (source, sibling, sibling_head[:10])
+        lines.append("base pair: %s %s, from %s" % (sibling_name, sibling_commit[:10], source))
+        return {kind: base, other: sibling_commit}, None
+    candidates, skipped = pair_candidates(kind, repo, sibling, base)
+    lines.extend(skipped)
+    if not candidates:
+        return None, "the sibling %s keeps no pair for the base %s (%s), and no pair of %s names it: give --sibling-base, the sibling's commit that passed with the base" % (
+            sibling, base[:10], pair_ref(kind, base), os.path.basename(repo))
+    in_head = []
+    for source, sibling_commit in candidates:
+        if is_ancestor(sibling, sibling_commit, sibling_head):
+            in_head.append((source, sibling_commit))
+        else:
+            lines.append("base pair: %s (%s) is not used: it is not in the HEAD of the sibling (%s)" % (source, sibling_commit[:10], sibling_head[:10]))
+    if not in_head:
+        return None, "%s is not an ancestor of the HEAD of the sibling %s (%s)" % (candidates[0][0], sibling, sibling_head[:10])
+    commits = list(dict.fromkeys(sibling_commit for _, sibling_commit in in_head))
+    newest = [commit for commit in commits if all(is_ancestor(sibling, older, commit) for older in commits)]
+    if not newest:
+        return None, "the pairs that passed with the base %s are not on one line in the sibling %s (%s): give --sibling-base, the sibling's commit for the base set" % (
+            base[:10], sibling, "; ".join("%s: %s" % (source, sibling_commit[:10]) for source, sibling_commit in in_head))
+    chosen = newest[0]
+    lines.append("base pair: %s %s, from %s" % (sibling_name, chosen[:10], " and ".join(source for source, sibling_commit in in_head if sibling_commit == chosen)))
+    for source, sibling_commit in in_head:
+        if sibling_commit != chosen:
+            lines.append("base pair: also %s (%s), an ancestor of it" % (source, sibling_commit[:10]))
+    return {kind: base, other: chosen}, None
+
+
+HAND_PASS = "--hand-pass"
+
+
+def hand_pass(repo, commit, base, sibling_named, why, dry_run=False, closes=CLOSES_FILE, log_folder=LOG_FOLDER):
+    """A pass that a person gives by hand (W644), when a round failed by the tool only (D673): refs/merge-step/<branch>
+    moves to `commit` (keep_pass), and the pair keeps the sibling's commit that the person states (keep_pair), which must
+    be in the sibling's HEAD. The log hand-pass-<commit>.log and the close lines of base..commit name the hand pass and
+    the sibling's commit. No stage runs, so the sibling's own refs/merge-step/<branch> stays. The ref never moves back.
+    The exit code: 0 done, 1 refused."""
+    kind = repo_kind(repo)
+    if not kind:
+        say("FAIL the hand pass: %s is no tree of nirender or of the render-link" % repo)
+        return 1
+    sibling = sibling_of(kind, repo)
+    branch = branch_of(repo)
+    if not branch:
+        say("FAIL the hand pass: %s is on no branch" % repo)
+        return 1
+    if not is_ancestor(repo, commit, "HEAD"):
+        say("FAIL the hand pass: %s is not in the HEAD of %s" % (commit[:10], repo))
+        return 1
+    if not is_ancestor(repo, base, commit):
+        say("FAIL the hand pass: the base %s is not an ancestor of %s" % (base[:10], commit[:10]))
+        return 1
+    sibling_head = resolve(sibling, sibling_named) if os.path.isdir(sibling) else None
+    if sibling_head is None:
+        say("FAIL the hand pass: --sibling-head %s is no commit of the sibling %s" % (sibling_named, sibling))
+        return 1
+    if not is_ancestor(sibling, sibling_head, "HEAD"):
+        say("FAIL the hand pass: --sibling-head %s is not in the HEAD of the sibling %s" % (sibling_head[:10], sibling))
+        return 1
+    passed_ref = "refs/merge-step/%s" % branch
+    old = resolve(repo, passed_ref)
+    if old and not is_ancestor(repo, old, commit):
+        say("FAIL the hand pass: %s is at %s, which is not an ancestor of %s: a hand pass never moves it back" % (passed_ref, old[:10], commit[:10]))
+        return 1
+    name, sibling_name = os.path.basename(repo), os.path.basename(sibling)
+    lines = ["hand pass of %s %s from %s, with the sibling %s %s: %s" % (name, commit[:10], base[:10], sibling_name, sibling_head[:10], why),
+             "no stage ran; the sibling's own refs/merge-step/%s stays" % branch]
+    merges, warning = closing_merges(repo, base, commit)
+    for line in lines + ([warning] if warning else []) + unread_item_lines(merges):
+        say(line)
+    if dry_run:
+        return 0
+    log_path = log_path_of(commit, log_folder, prefix="hand-pass")
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write("".join(line + "\n" for line in lines))
+    keep_pass(kind, repo, passed_ref, commit, sibling, None, log_path)
+    keep_pair(kind, sibling, commit, sibling_head)
+    ref_say(log_path, "the hand pass's pair: %s in the sibling %s: %s" % (pair_ref(kind, commit), sibling_name, sibling_head[:10]))
+    when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    column = "hand pass, sibling %s %s: %s" % (sibling_name, sibling_head[:10], " ".join(why.split()))
+    written = write_closes(closes, when, name, merges, column, log_path)
+    if written:
+        say("closes: %s in %s" % (", ".join(line.split("\t")[1] for line in written), closes))
+    elif written == []:
+        say("closes: nothing to write (no new item in the subjects of %d merge(s))" % len(merges))
+    return 0
 
 
 # The files of a cargo dep-info file: its home is build_set.py, whose drift test of the part inputs reads them too.
@@ -1978,7 +2098,7 @@ def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None
     tips_for and the A/B. (stages, tips, None); (stages, None, why) when the round makes a set whose commits are not known
     (`mwse_why` says why the MWSE commit is not), or when the gate needs a base pair that tips_for cannot give. The
     helper's sources (helper_gate_paths) plan the gate too. `reuse_base`: the base set may be an equal-parts ancestor's
-    (equal_parts_base); its line goes into the list `note` when one is given."""
+    (equal_parts_base); its line, after the lines of the base pair (tips_for), goes into the list `note` when one is given."""
     helper_paths, _ = helper_gate_paths(kind, repo, base)
     light = light_reason(kind, repo, paths, base, commits[kind] if commits else "HEAD")
 
@@ -1992,7 +2112,8 @@ def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None
         return stages, None, "the round makes a set, and %s" % unknown
     if not any(name == "replay gate" for name, _, _ in stages):
         return stages, None, None
-    tips, why = tips_for(kind, repo, base, sibling_base)
+    pair_lines = []
+    tips, why = tips_for(kind, repo, base, sibling_base, pair_lines)
     if why:
         return stages, None, why
     if not reuse_base:
@@ -2002,9 +2123,7 @@ def planned_stages(kind, repo, paths, baseline, commits, base, sibling_base=None
     plugin = repo if kind == "plugin" else sibling_of(kind, repo)
     base_commits, line = equal_parts_base(plugin, tips, mwse_commit)
     if note is not None:
-        del note[:]
-        if line:
-            note.append(line)
+        note[:] = pair_lines + ([line] if line else [])
     return plan(tips, base_commits), tips, None
 
 
@@ -2208,6 +2327,120 @@ def self_test_equal_parts(root):
     finally:
         globals().update(real)
         del BASE_SET_NOTE[:]
+
+
+def self_test_base_pair(root):
+    """W644 point 3: the base pair is the last pair that passed with the base, by either repo's round or a hand pass.
+    Scratch repos: nirender t1, t2 (HEAD; its subject names W9); render-link r1, then r2 and a side commit off r1, the
+    merge r3 of both (HEAD), and r4 after r3 (not in HEAD)."""
+    folder = os.path.join(root, "base-pair")
+    plugin, mge = os.path.join(folder, PLUGIN_NAME), os.path.join(folder, MGE_NAME)
+    author = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+
+    def run(tree, *args):
+        subprocess.run(["git", "-C", tree, *args], check=True, capture_output=True, env=git_env())
+
+    def commit(tree, subject):
+        run(tree, *author, "commit", "-q", "--allow-empty", "-m", subject)
+        return resolve(tree, "HEAD")
+
+    for tree in (plugin, mge):
+        os.makedirs(tree)
+        run(tree, "init", "-q", "-b", "master")
+    os.makedirs(os.path.join(plugin, "host", "src"))
+    with open(os.path.join(plugin, "host", "src", "shader.wgsl"), "w", encoding="ascii"):
+        pass
+    os.makedirs(os.path.join(mge, "mgeHost64"))
+    t1 = commit(plugin, "one")
+    t2 = commit(plugin, "two (W9)")
+    r1 = commit(mge, "r1")
+    run(mge, "checkout", "-q", "-b", "side")
+    side = commit(mge, "side")
+    run(mge, "checkout", "-q", "master")
+    r2 = commit(mge, "r2")
+    run(mge, *author, "merge", "-q", "--no-ff", "-m", "r3", "side")
+    r3 = resolve(mge, "HEAD")
+    r4 = commit(mge, "r4")
+    run(mge, "branch", "ahead", r4)
+    run(mge, "reset", "-q", "--hard", r3)
+
+    def tips(kind, repo, base, sibling_base=None):
+        lines = []
+        found, why = tips_for(kind, repo, base, sibling_base, lines)
+        return found, why, lines
+
+    found, why, _ = tips("mge", mge, r3)
+    assert found is None and "keeps no pair for the base" in why and "--sibling-base" in why, why
+    # Only the pair of a nirender round: plugin/t1 in the render-link names r1.
+    keep_pair("plugin", mge, t1, r1)
+    found, why, lines = tips("plugin", plugin, t1)
+    assert found == {"plugin": t1, "mge": r1} and why is None, why
+    assert lines == ["base pair: %s %s, from the kept pair %s" % (MGE_NAME, r1[:10], pair_ref("plugin", t1))], lines
+    # Only the pair of the other repo's round: a render-link round of r1 kept plugin/t1, so the base r1 has the pair t1.
+    found, why, lines = tips("mge", mge, r1)
+    assert found == {"mge": r1, "plugin": t1} and lines == ["base pair: %s %s, from the kept pair %s of %s" % (PLUGIN_NAME, t1[:10], pair_ref("plugin", t1), MGE_NAME)], (found, why, lines)
+    # A newer pair of a render-link round (mge/r2 in nirender names t1) wins, and the line names the older one.
+    run(plugin, "update-ref", pair_ref("mge", r2), t1)
+    found, why, lines = tips("plugin", plugin, t1)
+    assert found == {"plugin": t1, "mge": r2}, (found, why)
+    assert lines == ["base pair: %s %s, from the kept pair %s of %s" % (MGE_NAME, r2[:10], pair_ref("mge", r2), PLUGIN_NAME),
+                     "base pair: also the kept pair %s (%s), an ancestor of it" % (pair_ref("plugin", t1), r1[:10])], lines
+    # A pair that is not in the sibling's HEAD is not used, and a ref that names no commit of the sibling neither; each
+    # gives a line.
+    run(plugin, "update-ref", pair_ref("mge", r4), t1)
+    run(plugin, "update-ref", pair_ref("mge", "f" * 40), t1)
+    found, why, lines = tips("plugin", plugin, t1)
+    assert found == {"plugin": t1, "mge": r2}, (found, why)
+    assert any("%s of %s (%s) is not used: it is not in the HEAD" % (pair_ref("mge", r4), PLUGIN_NAME, r4[:10]) in line for line in lines), lines
+    assert any(pair_ref("mge", "f" * 40) in line and "names no commit of the sibling" in line for line in lines), lines
+    # Two pairs in HEAD that are not on one line (r2 and side, both parents of r3) stop the tool, with the option.
+    run(plugin, "update-ref", pair_ref("mge", side), t1)
+    found, why, lines = tips("plugin", plugin, t1)
+    assert found is None and "not on one line" in why and "--sibling-base" in why and side[:10] in why and r2[:10] in why, why
+    # --sibling-base takes the place of the kept pairs, with its line.
+    found, why, lines = tips("plugin", plugin, t1, side)
+    assert found == {"plugin": t1, "mge": side} and lines == ["base pair: %s %s, from --sibling-base %s" % (MGE_NAME, side[:10], side)], (found, why, lines)
+    run(plugin, "update-ref", "-d", pair_ref("mge", side))
+    # The mirror, for a render-link round with the base r2: mge/r2 in nirender names t1, and plugin/t2 in the render-link
+    # names r2 (a nirender round of t2 with r2 as its sibling's HEAD). t2 descends from t1: t2 wins.
+    keep_pair("plugin", mge, t2, r2)
+    found, why, lines = tips("mge", mge, r2)
+    assert found == {"mge": r2, "plugin": t2}, (found, why)
+    assert lines == ["base pair: %s %s, from the kept pair %s of %s" % (PLUGIN_NAME, t2[:10], pair_ref("plugin", t2), MGE_NAME),
+                     "base pair: also the kept pair %s (%s), an ancestor of it" % (pair_ref("mge", r2), t1[:10])], lines
+
+    # The hand pass: refused cases first, then a dry run that writes nothing, then the pass.
+    closes, logs = os.path.join(folder, "closes.tsv"), os.path.join(folder, "logs")
+
+    def handed(*args, **kwargs):
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            code = hand_pass(*args, closes=closes, log_folder=logs, **kwargs)
+        return code, said.getvalue()
+
+    code, said = handed(plugin, t2, t1, "no-such-name", "Coordinator: test")
+    assert code == 1 and "is no commit of the sibling" in said, said
+    code, said = handed(plugin, t2, t1, r4, "Coordinator: test")
+    assert code == 1 and "is not in the HEAD of the sibling" in said, said
+    code, said = handed(plugin, t1, t2, r3, "Coordinator: test")
+    assert code == 1 and "is not an ancestor of" in said, said
+    code, said = handed(plugin, t2, t1, r3[:10], "Coordinator: test", dry_run=True)
+    assert code == 0 and "hand pass of %s %s" % (PLUGIN_NAME, t2[:10]) in said, said
+    assert resolve(plugin, "refs/merge-step/master") is None and not os.path.exists(closes) and not os.path.exists(logs), "a dry run writes nothing"
+    code, said = handed(plugin, t2, t1, r3[:10], "Coordinator: a\ttool fault")
+    assert code == 0 and resolve(plugin, "refs/merge-step/master") == t2 and resolve(mge, pair_ref("plugin", t2)) == r3, said
+    with open(closes, encoding="ascii") as file:
+        rows = [line.split("\t") for line in file.read().splitlines()]
+    assert len(rows) == 2 and rows[1][1] == "W9" and rows[1][3] == t2[:10], rows
+    assert rows[1][4] == "hand pass, sibling %s %s: Coordinator: a tool fault" % (MGE_NAME, r3[:10]), rows[1][4]
+    assert os.path.basename(rows[1][5]) == "hand-pass-%s.log" % t2[:10], rows[1][5]
+    with open(rows[1][5], encoding="utf-8") as file:
+        log = file.read()
+    assert "hand pass of %s %s" % (PLUGIN_NAME, t2[:10]) in log and "the hand pass's pair: %s" % pair_ref("plugin", t2) in log and r3[:10] in log, log
+    # The ref never moves back.
+    code, said = handed(plugin, t1, t1, r3, "Coordinator: test")
+    assert code == 1 and "never moves it back" in said and resolve(plugin, "refs/merge-step/master") == t2, said
+    # The next nirender round with the base t2 takes the pair of the hand pass.
+    assert tips("plugin", plugin, t2)[:2] == ({"plugin": t2, "mge": r3}, None)
 
 
 def self_test_pair(root):
@@ -2581,6 +2814,7 @@ def self_test():
         self_test_light(root, plugin, mge)
         self_test_equal_parts(root)
         self_test_pair(root)
+        self_test_base_pair(root)
         # The set of the commits under test and the round's MWSE commit: the maker in the round's take (--in-hold, C2), in
         # the plugin's tree; the deploy and the gate name its folder (C3).
         full = under_test("plugin", "a" * 40, "b" * 40)
@@ -4077,7 +4311,10 @@ def main():
     parser.add_argument("repo", nargs="?")
     parser.add_argument("commit", nargs="?")
     parser.add_argument("--base", help="the tip of the shared branch before the merge: the diff from it decides the stages")
-    parser.add_argument("--sibling-base", help="the commit of the sibling repo for the base set, an ancestor of its HEAD: for a base with no kept pair; without it, the sibling's commit that passed with --base")
+    parser.add_argument("--sibling-base", help="the commit of the sibling repo for the base set, an ancestor of its HEAD: for a base with no kept pair; without it, the last kept pair that passed with --base")
+    parser.add_argument(HAND_PASS, dest="hand_pass", metavar="WHO: WHY", help="a pass by hand of <commit> (W644, D673): the ref of the branch moves, the pair keeps "
+                        "--sibling-head, and the close lines name it; no stage runs")
+    parser.add_argument("--sibling-head", help="with %s: the sibling's commit of the pair, in the sibling's HEAD" % HAND_PASS)
     parser.add_argument("--baseline", default=BASELINE, help="the folder that the gate compares with; without it, the accepted folder")
     parser.add_argument("--mwse", help="the MWSE commit of the round's sets; without it, the commit of the test installs' records (for a "
                         "plugin that needs an MWSE feature that the installs' MWSE lacks)")
@@ -4107,6 +4344,13 @@ def main():
             say(line)
         return 0
     LIGHT_FORCED[0] = args.light
+    if args.hand_pass is not None or args.sibling_head:
+        if args.hand_pass is None or not args.sibling_head or not args.repo or not args.commit or not args.base:
+            parser.error("%s takes <repo>, <commit>, --base and --sibling-head" % HAND_PASS)
+        if args.quick or args.sibling_base or args.mwse or args.evidence or args.gate_list or args.light or args.baseline != BASELINE:
+            parser.error("%s takes <repo>, <commit>, --base, --sibling-head and --dry-run only" % HAND_PASS)
+        repo = os.path.abspath(args.repo)
+        return hand_pass(repo, git(repo, "rev-parse", args.commit), git(repo, "rev-parse", args.base), args.sibling_head, args.hand_pass, args.dry_run)
     if args.quick:
         if args.commit or args.baseline != BASELINE or args.sibling_base or args.mwse or args.evidence or args.gate_list or args.light:
             parser.error("--quick takes [<tree>], --sibling, --base, --no-wait and --dry-run: it checks the tree's HEAD, with no set and no gate")
@@ -4192,7 +4436,7 @@ def main():
     sibling_head = resolve(sibling, "HEAD") if has_sibling else None
     sibling_base_note = ""
     if tips:
-        sibling_base_note = " (base set at %s%s)" % (tips["mge" if kind == "plugin" else "plugin"][:10], ", --sibling-base" if args.sibling_base else ", the kept pair")
+        sibling_base_note = " (base set at %s%s)" % (tips["mge" if kind == "plugin" else "plugin"][:10], ", --sibling-base" if args.sibling_base else ", a kept pair")
     elif args.sibling_base:
         sibling_base_note = " (--sibling-base unused: no base set in these stages)"
     say("%s %s, sibling %s%s, baseline %s: %d changed paths from %s; stages: %s" % (os.path.basename(repo), commit[:10], sibling_hash, sibling_base_note, baseline, len(paths), base[:10], ", ".join(name for name, _, _ in stages)))
