@@ -247,7 +247,7 @@ impl StageKey {
             ..Default::default()
         };
         for stage in 0..count as usize {
-            let s = &data.stages[stage];
+            let s = data.stage(stage);
             for part in 0..4 {
                 key.color[stage][part] = small(s.color[part])?;
             }
@@ -1432,6 +1432,7 @@ fn list_name(world_hash: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::RECORD_STAGES;
     use crate::debug_lines::view_id;
     use bytemuck::Zeroable;
 
@@ -2421,6 +2422,8 @@ mod tests {
             "fn draw_alpha_test() -> u32 {",
             "fn stage_count() -> u32 {",
             "fn stage_codes(word: u32) -> vec4u {",
+            "fn stage_record(index: u32) -> u32 {",
+            "fn stage_place(index: u32) -> u32 {",
             "fn stage_color(index: u32) -> vec4u {",
             "fn stage_alpha(index: u32) -> vec3u {",
         ]
@@ -2428,10 +2431,12 @@ mod tests {
         .concat();
         // The pixel holds four values in the bytes of its red: the alpha test, the stage count,
         // argument 0 of the colour of stage 2, and argument 1 of the alpha of stage 4. Its green
-        // holds argument 0 of the colour and argument 1 of the alpha of the last stage (W20).
+        // holds argument 0 of the colour and argument 1 of the alpha of the last stage (W20),
+        // which is in the overflow record.
         let general = format!(
-            "struct Stage {{ color: vec4u, alpha: vec4u }}\n\
-             struct Draw {{ more: vec4u, counts: vec4u, stages: array<Stage, {STAGES}> }}\n\
+            "struct Stage {{ color: vec4u, alpha: vec4u, slots: vec4u }}\n\
+             struct Draw {{ more: vec4u, counts: vec4u, stages: array<Stage, RECORD_STAGES> }}\n\
+             const RECORD_STAGES: u32 = {RECORD_STAGES}u;\n\
              @group(0) @binding(0) var<storage, read> draws: array<Draw>;\n\
              var<private> record: u32;\n\
              {block}{functions}\
@@ -2452,17 +2457,29 @@ mod tests {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
-        // The record: the alpha test 3, the count 1, argument 0 of the colour of stage 2 is 9, argument
-        // 1 of the alpha of stage 4 is 11. The key's constants say 5, 6, 13 and 17.
-        let mut words = vec![0u32; 8 + 8 * STAGES];
+        // The record and its overflow record after it. A stage is 12 words: the colour, the alpha
+        // and the slots. The record: the alpha test 3, the count 1, argument 0 of the colour of
+        // stage 2 is 9, argument 1 of the alpha of stage 4 is 11. The key's constants say 5, 6, 13
+        // and 17.
+        const RECORD_WORDS: usize = 8 + 12 * RECORD_STAGES;
+        let stage_word = |stage: usize| {
+            if stage < RECORD_STAGES {
+                8 + stage * 12
+            } else {
+                RECORD_WORDS + 8 + (stage - RECORD_STAGES) * 12
+            }
+        };
+        let mut words = vec![0u32; 2 * RECORD_WORDS];
         words[2] = 3;
         words[5] = 1;
-        words[8 + 2 * 8 + 3] = 9;
-        words[8 + 4 * 8 + 4 + 1] = 11;
+        words[stage_word(2) + 3] = 9;
+        words[stage_word(4) + 4 + 1] = 11;
+        // The overflow record is the next: slots.w of stage 0.
+        words[stage_word(0) + 8 + 3] = 1;
         // The last stage: argument 0 of its colour is 29, argument 1 of its alpha 31. The key says
         // 19 and 23.
-        words[8 + (STAGES - 1) * 8 + 3] = 29;
-        words[8 + (STAGES - 1) * 8 + 4 + 1] = 31;
+        words[stage_word(STAGES - 1) + 3] = 29;
+        words[stage_word(STAGES - 1) + 4 + 1] = 31;
         let record = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("the record"),
             contents: bytemuck::cast_slice(&words),

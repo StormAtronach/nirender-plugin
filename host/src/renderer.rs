@@ -1266,7 +1266,8 @@ impl Renderer {
     /// limit of a storage binding: the draw is then not drawn (counted, and said once), and
     /// the rest of the frame draws.
     pub(crate) fn record(&mut self, data: &DrawData) -> Option<u32> {
-        if self.retained_records + self.record_count >= self.record_limit {
+        let count = data.frame_record_count();
+        if self.retained_records + self.record_count + count > self.record_limit {
             if self.counts.records_over_limit == 0 {
                 println!(
                     "draw records: the frame reached the limit of {} records; draws past it are not drawn",
@@ -1276,9 +1277,10 @@ impl Renderer {
             self.counts.records_over_limit += 1;
             return None;
         }
-        self.record_staging.extend_from_slice(bytemuck::bytes_of(data));
-        self.record_count += 1;
-        Some((self.retained_records + self.record_count - 1) as u32)
+        let index = self.retained_records + self.record_count;
+        data.frame_records(&mut self.record_staging);
+        self.record_count += count;
+        Some(index as u32)
     }
 
     /// Puts the records made since the last upload on the GPU, with room after them for
@@ -1306,13 +1308,16 @@ impl Renderer {
     /// A record made while the frame draws, written at once, from the end of the room:
     /// its index, or [`None`] when the room is full.
     pub(crate) fn record_now(&mut self, data: &DrawData) -> Option<u32> {
-        if self.retained_records + self.record_count + self.record_extras >= self.record_capacity {
+        let count = data.frame_record_count();
+        if self.retained_records + self.record_count + self.record_extras + count > self.record_capacity {
             return None;
         }
-        self.record_extras += 1;
+        self.record_extras += count;
         let index = self.record_capacity - self.record_extras;
+        let mut bytes = Vec::with_capacity(count * RECORD_SIZE);
+        data.frame_records(&mut bytes);
         self.queue
-            .write_buffer(&self.record_buffer, (index * RECORD_SIZE) as u64, bytemuck::bytes_of(data));
+            .write_buffer(&self.record_buffer, (index * RECORD_SIZE) as u64, &bytes);
         Some(index as u32)
     }
 

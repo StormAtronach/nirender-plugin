@@ -50,7 +50,8 @@ struct Stage {
     // A bump stage with luminance: the scale and the offset of the luminance.
     luminance: vec4f,
     // The texture and the sampler of the stage among the arrays of the frame (with the
-    // arrays on: see `array_shader`).
+    // arrays on: see `array_shader`), and the entry of its texture effect (0 for none). The w
+    // of stage 0 of a record: the distance to the draw's overflow record (`stage_record`).
     slots: vec4u,
 }
 
@@ -90,9 +91,11 @@ struct Draw {
     // an entry of `cluster_indexes` is the slot in its high half and the index in `lights`
     // in its low half, and a pixel takes the light only when the draw has its bit.
     light_mask: array<vec4u, 2>,
-    stages: array<Stage, 8>,
-    // The texture transform of each stage.
-    texture_transforms: array<mat4x4f, 8>,
+    // The first RECORD_STAGES stages; the later stages are in the overflow record
+    // (`stage_record`).
+    stages: array<Stage, RECORD_STAGES>,
+    // The texture transform of each of these stages.
+    texture_transforms: array<mat4x4f, RECORD_STAGES>,
     // 1 / width and -1 / height of the viewport.
     pixel: vec4f,
     // The values of the extension for its sky functions.
@@ -261,6 +264,27 @@ fn stage_count() -> u32 {
 fn stage_codes(word: u32) -> vec4u {
     return vec4u(word & 255u, (word >> 8u) & 255u, (word >> 16u) & 255u, word >> 24u);
 }
+// The stages of a draw in its record. A draw of more stages has an overflow record with the
+// later stages from its stage 0, at the distance in `slots.w` of the record's stage 0 from the
+// record (0 when the draw has none).
+const RECORD_STAGES: u32 = 6u;
+
+// The record that holds stage `index` of the draw.
+fn stage_record(index: u32) -> u32 {
+    if index < RECORD_STAGES {
+        return record;
+    }
+    return record + draws[record].stages[0].slots.w;
+}
+
+// The place of stage `index` in the stages of its record (`stage_record`).
+fn stage_place(index: u32) -> u32 {
+    if index < RECORD_STAGES {
+        return index;
+    }
+    return index - RECORD_STAGES;
+}
+
 // The colour operation and its arguments 1, 2 and 0 of stage `index` (`stage.color`).
 fn stage_color(index: u32) -> vec4u {
     if FIXED {
@@ -275,7 +299,7 @@ fn stage_color(index: u32) -> vec4u {
             default: { return stage_codes(FIXED_COLOR_7); }
         }
     }
-    return draws[record].stages[index].color;
+    return draws[stage_record(index)].stages[stage_place(index)].color;
 }
 // The alpha operation and its arguments 1 and 2 of stage `index` (`stage.alpha`).
 fn stage_alpha(index: u32) -> vec3u {
@@ -291,7 +315,7 @@ fn stage_alpha(index: u32) -> vec3u {
             default: { return stage_codes(FIXED_ALPHA_7).xyz; }
         }
     }
-    return draws[record].stages[index].alpha.xyz;
+    return draws[stage_record(index)].stages[stage_place(index)].alpha.xyz;
 }
 // Whether the plane `plane` of the draw can clip: a key without a plane has none.
 fn draw_has_plane(plane: vec4f) -> bool {
@@ -617,7 +641,9 @@ struct ParticlePixel {
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
 fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view_normal: vec3f, world_position: vec3f, world_normal: vec3f) -> vec4f {
-    let how = draws[record].stages[index].coordinate;
+    let holder = stage_record(index);
+    let place = stage_place(index);
+    let how = draws[holder].stages[place].coordinate;
     var sets = uvs;
     var value: vec4f;
     switch how.x {
@@ -645,11 +671,11 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
         default: { value = vec4f(sets[how.y & 3u], 1.0, 0.0); }
     }
     if how.z != 0u {
-        let entry = draws[record].stages[index].slots.z;
+        let entry = draws[holder].stages[place].slots.z;
         if entry != 0u {
             value = effect_entries[entry - 1u] * value;
         } else {
-            value = draws[record].texture_transforms[index] * value;
+            value = draws[holder].texture_transforms[place] * value;
         }
     }
     return value;
@@ -924,7 +950,7 @@ fn compare(function: u32, value: f32, reference: f32) -> bool {
 // The two parts of a texture coordinate that the texture read uses. A projected coordinate
 // is divided by the last part that its texture transform gives.
 fn final_coordinate(index: u32, value: vec4f) -> vec2f {
-    let how = draws[record].stages[index].coordinate;
+    let how = draws[stage_record(index)].stages[stage_place(index)].coordinate;
     var divisor = 1.0;
     if how.w != 0u && how.z >= 2u {
         divisor = value[min(how.z, 4u) - 1u];
@@ -956,7 +982,7 @@ fn bump_move(index: u32, texel: vec4f) -> vec2f {
     if index >= stage_count() || (op != 22u && op != 23u) {
         return vec2f(0.0);
     }
-    let stage = draws[record].stages[index];
+    let stage = draws[stage_record(index)].stages[stage_place(index)];
     return vec2f(texel.r * stage.bump.x + texel.g * stage.bump.z, texel.r * stage.bump.y + texel.g * stage.bump.w);
 }
 
@@ -969,8 +995,8 @@ fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
     if index >= stage_count() || stage_color(index).x != 23u {
         return texel;
     }
-    let stage = draws[record].stages[index];
-    let light = clamp(bump_texel.b * stage.luminance.x + stage.luminance.y, 0.0, 1.0);
+    let stage = draws[stage_record(index)].stages[stage_place(index)];
+    let light =clamp(bump_texel.b * stage.luminance.x + stage.luminance.y, 0.0, 1.0);
     return vec4f(texel.rgb * light, texel.a);
 }
 
@@ -1031,8 +1057,10 @@ fn fs(stage_in: StageOut) -> @location(0) vec4f {
     texels[3] = stage_texel(3u, bump_light(2u, texels[2], textureSample(textures[draws[record].stages[3].slots.x], samplers[draws[record].stages[3].slots.y], final_coordinate(3u, inp.coordinate3) + bump_move(2u, texels[2]))));
     texels[4] = stage_texel(4u, bump_light(3u, texels[3], textureSample(textures[draws[record].stages[4].slots.x], samplers[draws[record].stages[4].slots.y], final_coordinate(4u, inp.coordinate4) + bump_move(3u, texels[3]))));
     texels[5] = stage_texel(5u, bump_light(4u, texels[4], textureSample(textures[draws[record].stages[5].slots.x], samplers[draws[record].stages[5].slots.y], final_coordinate(5u, inp.coordinate5) + bump_move(4u, texels[4]))));
-    texels[6] = stage_texel(6u, bump_light(5u, texels[5], textureSample(textures[draws[record].stages[6].slots.x], samplers[draws[record].stages[6].slots.y], final_coordinate(6u, inp.coordinate6) + bump_move(5u, texels[5]))));
-    texels[7] = stage_texel(7u, bump_light(6u, texels[6], textureSample(textures[draws[record].stages[7].slots.x], samplers[draws[record].stages[7].slots.y], final_coordinate(7u, inp.coordinate7) + bump_move(6u, texels[6]))));
+    // Stages 6 and 7 are the first two of the overflow record. A draw without one reads its own
+    // stage 0 there, and no stage uses that texel.
+    texels[6] = stage_texel(6u, bump_light(5u, texels[5], textureSample(textures[draws[stage_record(6u)].stages[0].slots.x], samplers[draws[stage_record(6u)].stages[0].slots.y], final_coordinate(6u, inp.coordinate6) + bump_move(5u, texels[5]))));
+    texels[7] = stage_texel(7u, bump_light(6u, texels[6], textureSample(textures[draws[stage_record(7u)].stages[1].slots.x], samplers[draws[stage_record(7u)].stages[1].slots.y], final_coordinate(7u, inp.coordinate7) + bump_move(6u, texels[6]))));
 
     if (draw_counts_w() & 4u) != 0u {
         if DEBUG_VIEW == VIEW_FOG {

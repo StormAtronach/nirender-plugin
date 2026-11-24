@@ -177,6 +177,10 @@ struct Slot {
     bound: [f32; 4],
     bucket: u32,
     data: DrawData,
+    /// A slot with more stages than a record holds ([`DrawData::overflows`]): the slot whose
+    /// record is its overflow record. That slot stays `None` in the set, so no draw and no
+    /// instance names it; it goes to the free list with this one.
+    overflow: Option<u32>,
     /// The first index and the number of indexes of each draw of the geometry (one for a
     /// triangle list, one for each strip).
     ranges: Vec<(u32, u32)>,
@@ -228,6 +232,19 @@ impl Slot {
     /// and it takes light.
     fn takes_world_run(&self, kinds: u8) -> bool {
         !self.no_lights && kinds & (1 << (self.data.light_range[2] & 7)) != 0
+    }
+
+    /// The records of the slot at `index`: `put(index, record)`, and for a slot with
+    /// [`Slot::overflow`] its record with the distance to its overflow record, then
+    /// `put(overflow, overflow record)`.
+    fn records(&self, index: u32, mut put: impl FnMut(u32, &[u8])) {
+        match self.overflow {
+            None => put(index, self.data.record_bytes()),
+            Some(overflow) => {
+                put(index, self.data.with_overflow_at(overflow.wrapping_sub(index)).record_bytes());
+                put(overflow, self.data.overflow_record().record_bytes());
+            }
+        }
     }
 }
 
@@ -724,6 +741,9 @@ impl RetainedSet {
                 pinned.extend(taken.pinned.iter().copied().filter(|&h| h != 0));
                 for entry in taken.effect_entries {
                     self.release_entry(entry);
+                }
+                if let Some(overflow) = taken.overflow {
+                    self.free.push(overflow);
                 }
             }
             self.free.push(slot);
@@ -2126,7 +2146,12 @@ impl Renderer {
             copy.resize(room, Instance::zeroed());
             for (i, slot) in set.slots.iter().take(room).enumerate() {
                 if let Some(slot) = slot {
-                    records[i * RECORD_SIZE..(i + 1) * RECORD_SIZE].copy_from_slice(bytemuck::bytes_of(&slot.data));
+                    slot.records(i as u32, |at, bytes| {
+                        let at = at as usize;
+                        if at < room {
+                            records[at * RECORD_SIZE..(at + 1) * RECORD_SIZE].copy_from_slice(bytes);
+                        }
+                    });
                     copy[i] = slot_instance(i, slot);
                 }
             }
@@ -2147,13 +2172,14 @@ impl Renderer {
             set.dirty.dedup();
             for &i in &set.dirty {
                 if let Some(slot) = set.slots[i as usize].as_ref() {
-                    self.queue.write_buffer(
-                        &self.record_buffer,
-                        (i as usize * RECORD_SIZE) as u64,
-                        bytemuck::bytes_of(&slot.data),
-                    );
-                    self.counts.record_writes += 1;
-                    self.counts.record_write_bytes += RECORD_SIZE as u64;
+                    slot.records(i, |at, bytes| {
+                        if (at as usize) < room {
+                            self.queue
+                                .write_buffer(&self.record_buffer, (at as usize * RECORD_SIZE) as u64, bytes);
+                            self.counts.record_writes += 1;
+                            self.counts.record_write_bytes += RECORD_SIZE as u64;
+                        }
+                    });
                 }
             }
             // The entries of the changed and the moved slots go into the copy.
@@ -2759,9 +2785,10 @@ impl Player {
             let Some(s) = set.slots.get_mut(slot as usize).and_then(Option::as_mut) else {
                 continue;
             };
-            for stage in 0..STAGES {
-                s.data.stages[stage].slots[0] = pinned_slots[stage][0];
-                s.data.stages[stage].slots[1] = pinned_slots[stage][1];
+            for (stage, [texture, sampler]) in pinned_slots.into_iter().enumerate() {
+                let slots = &mut s.data.stage_mut(stage).slots;
+                slots[0] = texture;
+                slots[1] = sampler;
             }
             set.dirty.push(slot);
         }
@@ -2975,7 +3002,7 @@ impl Player {
                     late = true;
                     self.renderer.counts.pinned_late += 1;
                 }
-                data.stages[stage].slots = [texture, sampler, 0, 0];
+                data.stage_mut(stage).slots = [texture, sampler, 0, 0];
             }
             // The stages of the texture effects name their entries: one value for each effect.
             let mut effect_entries = Vec::new();
@@ -2987,7 +3014,7 @@ impl Player {
                 };
                 let Some(effect) = effect else { continue };
                 let entry = self.retained.acquire_entry(&effect, coordinates);
-                data.stages[stage].slots[2] = entry + 1;
+                data.stage_mut(stage).slots[2] = entry + 1;
                 effect_entries.push(entry);
             }
             // The stage key of the slot's record: the fragment shader made for its stages.
@@ -3025,6 +3052,7 @@ impl Player {
                 }
             };
             let slot = set.take_slot();
+            let overflow = data.overflows().then(|| set.take_slot());
             // A late entry of an earlier instance in this slot has no meaning now.
             set.late.retain(|&(s, _)| s != slot);
             if late {
@@ -3056,6 +3084,7 @@ impl Player {
                 bound: r.bound,
                 bucket,
                 data,
+                overflow,
                 ranges: ranges.clone(),
                 base_vertex,
                 sorted,
@@ -3775,6 +3804,7 @@ mod list_tests {
             bound: [0.0, 0.0, 0.0, 1.0],
             bucket: 0,
             data: bytemuck::Zeroable::zeroed(),
+            overflow: None,
             ranges: Vec::new(),
             base_vertex: 0,
             sorted: false,

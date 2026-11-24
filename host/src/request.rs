@@ -11,7 +11,7 @@
 //! backend first, then the other, with a line. The exit code of a refusal in the live mode
 //! is `EXIT_GPU` of `stream_format.rs` (the failure-path page of the project, section 4).
 
-use crate::data::{AUTO_TEXTURE_SLOTS, DEPTH_FORMAT, MIN_TEXTURE_SLOTS, SAMPLER_CAP, STAGES};
+use crate::data::{AUTO_TEXTURE_SLOTS, DEPTH_FORMAT, MIN_TEXTURE_SLOTS, RECORD_STAGES, SAMPLER_CAP, STAGES};
 use crate::switches::switches;
 use crate::{depth, gpu, retained, WindowTarget};
 
@@ -142,8 +142,7 @@ pub fn tier_c_shader_source(source: &str) -> String {
     }
     out = out.replacen(arrays, &fixed, 1);
     for stage in 0..STAGES {
-        let indexed =
-            format!("textures[draws[record].stages[{stage}].slots.x], samplers[draws[record].stages[{stage}].slots.y]");
+        let indexed = array_pair_text(stage);
         assert!(out.contains(&indexed), "stage {stage} does not sample the arrays");
         out = out.replace(&indexed, &format!("t{stage}, s{stage}"));
     }
@@ -152,6 +151,18 @@ pub fn tier_c_shader_source(source: &str) -> String {
         "the world shader reads the arrays in another place"
     );
     out
+}
+
+/// The text of the world shader that reads the texture and the sampler of stage `stage` from the
+/// binding arrays: a stage of the record by its index, a later stage from the overflow record
+/// (`stage_record` of the shader).
+fn array_pair_text(stage: usize) -> String {
+    let (holder, place) = if stage < RECORD_STAGES {
+        ("record".to_string(), stage)
+    } else {
+        (format!("stage_record({stage}u)"), stage - RECORD_STAGES)
+    };
+    format!("textures[draws[{holder}].stages[{place}].slots.x], samplers[draws[{holder}].stages[{place}].slots.y]")
 }
 
 /// The source of the world shader with the text of an extension (its sky and draw parts):
@@ -1464,6 +1475,300 @@ mod tests {
         });
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
+    }
+
+    /// The last record stage and the two stages after it read their textures through the
+    /// shader's own `Stage`, `Draw`, `stage_record`, `stage_place` and the reads of tier A
+    /// ([`array_pair_text`]), on the bytes that [`DrawData::frame_records`] writes (W20):
+    /// - a draw of 8 stages reads stages 7 and 8 from its overflow record, the next record;
+    /// - a draw of 6 stages has no overflow record, and its stage 6 is in its own record;
+    /// - a draw of 8 stages whose overflow record is before it, as a retained slot can have it
+    ///   (the distance wraps).
+    ///
+    /// Each texture has its own red, and each pixel holds the reds of the three stages. Needs a
+    /// GPU with the binding arrays (an adapter without them has tier C, which binds the
+    /// textures of each stage and reads no slot):
+    /// `cargo test -p nirender-host -- --ignored overflow_record`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn the_later_stages_read_their_textures_from_the_overflow_record() {
+        use crate::data::{DrawData, RECORD_SIZE};
+        use crate::objects::CreateView;
+        use bytemuck::Zeroable;
+
+        let shader = include_str!("shader.wgsl");
+        let item = |head: &str| {
+            let item = &shader[shader.find(head).unwrap_or_else(|| panic!("{head}"))..];
+            item[..item.find("\n}\n").unwrap() + 3].to_string()
+        };
+        let constant = {
+            let line = &shader[shader.find("const RECORD_STAGES").expect("the constant")..];
+            &line[..line.find('\n').unwrap() + 1]
+        };
+        let reads: Vec<String> = (RECORD_STAGES - 1..STAGES)
+            .map(|stage| format!("textureSampleLevel({}, vec2f(0.5), 0.0).r", array_pair_text(stage)))
+            .collect();
+        let source = format!(
+            "enable wgpu_binding_array;\n{constant}{stage}{draw}{holder}{place}\
+             @group(0) @binding(0) var<storage, read> draws: array<Draw>;\n\
+             @group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;\n\
+             @group(1) @binding(1) var samplers: binding_array<sampler>;\n\
+             var<private> record: u32;\n\
+             struct Out {{ @builtin(position) position: vec4f, @location(0) @interpolate(flat) record: u32 }}\n\
+             @vertex fn vs(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> Out {{\n\
+             \x20   let corner = vec2f(f32((index << 1u) & 2u), f32(index & 2u)) * 2.0 - 1.0;\n\
+             \x20   return Out(vec4f(corner, 0.0, 1.0), instance);\n\
+             }}\n\
+             @fragment fn fs(in: Out) -> @location(0) vec4f {{\n\
+             \x20   record = in.record;\n\
+             \x20   return vec4f({}, {}, {}, 1.0);\n\
+             }}\n",
+            reads[0],
+            reads[1],
+            reads[2],
+            stage = item("struct Stage {"),
+            draw = item("struct Draw {"),
+            holder = item("fn stage_record(index: u32) -> u32 {"),
+            place = item("fn stage_place(index: u32) -> u32 {"),
+        );
+
+        // The records: draw A (records 0 and 1), stage s reads texture s; draw B (record 2), 6
+        // stages, stage s reads texture 7 - s; draw C (its overflow record 3, its record 4), stage
+        // s reads texture (s + 3) mod 8.
+        let draw = |count: usize, texture: &dyn Fn(usize) -> u32| {
+            let mut data = DrawData::zeroed();
+            data.counts[1] = count as u32;
+            for stage in 0..count {
+                data.stage_mut(stage).slots = [texture(stage), 0, 0, 0];
+            }
+            data
+        };
+        let a = draw(STAGES, &|stage| stage as u32);
+        let b = draw(RECORD_STAGES, &|stage| 7 - stage as u32);
+        let c = draw(STAGES, &|stage| ((stage + 3) % 8) as u32);
+        let mut bytes = Vec::new();
+        a.frame_records(&mut bytes);
+        b.frame_records(&mut bytes);
+        bytes.extend_from_slice(c.overflow_record().record_bytes());
+        bytes.extend_from_slice(c.with_overflow_at(3u32.wrapping_sub(4)).record_bytes());
+        assert_eq!(bytes.len(), 5 * RECORD_SIZE);
+        let records = [0u32, 2, 4];
+        // Texture t has the red (t + 1) * 25.
+        let red = |texture: u32| ((texture + 1) * 25) as u8;
+        let expected = [[red(5), red(6), red(7)], [red(2), red(7), red(6)], [red(0), red(1), red(2)]];
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
+        if !adapter.features().contains(array_features()) {
+            eprintln!("the adapter has no binding arrays: tier C reads no slot");
+            return;
+        }
+        let descriptor = wgpu::DeviceDescriptor {
+            required_features: array_features(),
+            required_limits: wgpu::Limits {
+                max_binding_array_elements_per_shader_stage: 9,
+                max_binding_array_sampler_elements_per_shader_stage: 1,
+                ..wgpu::Limits::default()
+            },
+            ..Default::default()
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).expect("a device");
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("the overflow record"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let record_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("the records"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let array_layout = device.counted_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("the arrays"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: std::num::NonZeroU32::new(8),
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: std::num::NonZeroU32::new(1),
+                },
+            ],
+        });
+        let layout = device.counted_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("the overflow record"),
+            bind_group_layouts: &[Some(&record_layout), Some(&array_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.counted_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("the overflow record"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let record_buffer = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("the records"),
+            contents: &bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let textures: Vec<wgpu::Texture> = (0..8)
+            .map(|texture| {
+                device.counted_texture_with_data(
+                    &queue,
+                    &wgpu::TextureDescriptor {
+                        label: Some("a texture of one red"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    },
+                    wgpu::util::TextureDataOrder::LayerMajor,
+                    &[red(texture), 0, 0, 255],
+                )
+            })
+            .collect();
+        let views: Vec<wgpu::TextureView> = textures
+            .iter()
+            .map(|texture| texture.counted_view(&Default::default()))
+            .collect();
+        let view_refs: Vec<&wgpu::TextureView> = views.iter().collect();
+        let sampler = device.counted_sampler(&wgpu::SamplerDescriptor::default());
+        let record_group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("the records"),
+            layout: &record_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: record_buffer.as_entire_binding(),
+            }],
+        });
+        let array_group = device.counted_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("the arrays"),
+            layout: &array_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(&view_refs),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::SamplerArray(&[&sampler]),
+                },
+            ],
+        });
+
+        // One pixel for each draw.
+        let target = device.counted_texture(&wgpu::TextureDescriptor {
+            label: Some("a pixel for each draw"),
+            size: wgpu::Extent3d {
+                width: records.len() as u32,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let read = device.counted_buffer(&wgpu::BufferDescriptor {
+            label: Some("the pixels"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let target_view = target.counted_view(&Default::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("the overflow record"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &record_group, &[]);
+            pass.set_bind_group(1, &array_group, &[]);
+            for (pixel, &record) in records.iter().enumerate() {
+                pass.set_viewport(pixel as f32, 0.0, 1.0, 1.0, 0.0, 1.0);
+                pass.draw(0..3, record..record + 1);
+            }
+        }
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: records.len() as u32,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "{error:?}");
+        read.slice(..).map_async(wgpu::MapMode::Read, |result| result.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let mapped = read.slice(..).get_mapped_range().expect("the pixels");
+        let (pixels, _) = mapped[..4 * records.len()].as_chunks::<4>();
+        let pixels: Vec<[u8; 3]> = pixels.iter().map(|pixel| [pixel[0], pixel[1], pixel[2]]).collect();
+        drop(mapped);
+        read.unmap();
+        assert_eq!(pixels, expected, "the reds of stages 6, 7 and 8 of draws A, B and C");
     }
 
     #[test]

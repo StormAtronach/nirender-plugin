@@ -63,16 +63,16 @@ pub(crate) struct StageBase {
 impl StageBase {
     pub(crate) fn of(data: &DrawData) -> StageBase {
         StageBase {
-            coordinates: data.stages.map(|stage| stage.coordinate),
-            transforms: data.texture_transforms,
+            coordinates: std::array::from_fn(|stage| data.stage(stage).coordinate),
+            transforms: std::array::from_fn(|stage| *data.texture_transform(stage)),
         }
     }
 
     pub(crate) fn restore(&self, data: &mut DrawData) {
-        for (stage, coordinate) in data.stages.iter_mut().zip(self.coordinates) {
-            stage.coordinate = coordinate;
+        for stage in 0..STAGES {
+            data.stage_mut(stage).coordinate = self.coordinates[stage];
+            *data.texture_transform_mut(stage) = self.transforms[stage];
         }
-        data.texture_transforms = self.transforms;
     }
 }
 
@@ -85,18 +85,19 @@ pub(crate) fn compose(data: &mut DrawData, uv: &UvAnimation) {
 }
 
 pub(crate) fn compose_matrix(data: &mut DrawData, set: u32, m: &[f32; 16]) {
-    let stages = (data.counts[1] as usize).min(data.stages.len());
+    let stages = (data.counts[1] as usize).min(STAGES);
     for i in 0..stages {
-        let coordinate = data.stages[i].coordinate;
+        let coordinate = data.stage(i).coordinate;
         // From the vertex (0), from this set.
         if coordinate[0] != 0 || coordinate[1] != set {
             continue;
         }
         if coordinate[2] == 0 {
-            data.texture_transforms[i] = *m;
-            data.stages[i].coordinate[2] = 2;
+            *data.texture_transform_mut(i) = *m;
+            data.stage_mut(i).coordinate[2] = 2;
         } else {
-            data.texture_transforms[i] = multiply(m, &data.texture_transforms[i]);
+            let composed = multiply(m, data.texture_transform(i));
+            *data.texture_transform_mut(i) = composed;
         }
     }
 }
