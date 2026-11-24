@@ -2,7 +2,7 @@
 
     python tools/release.py --notes <file.md> [--max-perf] [--mge DIR] [--repo OWNER/NAME]
         [--keep-old] [--no-build] [--dry-run] [--add SOURCE=PATH ...] [--add-dir SOURCE=PATH ...]
-        [--source NAME=URL@COMMIT ...]
+        [--source NAME=URL@COMMIT ...] (--sign-key <the release key's .pub> | --no-sign) [--ssh-keygen EXE]
     python -I tools/release.py --self-test    # the tests of the pure parts, no git, no cargo
 
 The steps:
@@ -87,6 +87,18 @@ The steps:
    the archive itself goes beside it as `<archive>.sha256` (the format of `sha256sum`), up
    with the release as a second asset, and into the notes in place of the token `{sha256}`,
    so that a player can check a download.
+   Then the signatures (W604 part D, the owner's D662): with `--sign-key <the release key's
+   .pub>`, the Windows ssh-agent signs the archive and MANIFEST.txt (`ssh-keygen -Y sign -n
+   nirender-release`, Windows' own OpenSSH by its path, `--ssh-keygen`; SSH_AUTH_SOCK out of
+   its environment, so that it asks the Windows agent), and each signature is checked against
+   `tools/release-signers` (the check "the signatures"). `<archive>.sig` and `MANIFEST.txt.sig`
+   go up as assets, and the token `{signature}` of the notes gets the key's fingerprint, its line
+   of release-signers and the command that checks a download. The tool reads no private key.
+   Before the build it stops when the .pub is not one ed25519 key, when release-signers does not
+   name that key for the principal nirender-release, or when the agent does not hold it
+   (`ssh-add -L`): so ssh-keygen never asks for a passphrase. A release names `--sign-key` or
+   `--no-sign` (a test build; the notes say "not signed"). A dry run signs nothing and asks no
+   agent. What is published names the key by its fingerprint only (D316).
 4. All other releases of the repository are deleted, so that a tester finds one build only.
    Their tags stay. `--keep-old` leaves the releases.
 
@@ -96,6 +108,8 @@ checks of step 1 then only print what would stop a release. A test of the archiv
 The tool starts no game.
 """
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -515,15 +529,196 @@ def fill_tokens(notes, values):
 
 def notes_problems(notes, gated):
     """What is missing from the notes: the Tested block's parts, the token `{sha256}` for the
-    archive's checksum, and the token `{checks}` for the line of the release checks."""
+    archive's checksum, the token `{checks}` for the line of the release checks, and the token
+    `{signature}` for the line of the signature."""
     problems = tested_block_problems(notes, gated)
     if SHA_TOKEN not in notes:
         problems.append("no %s token for the archive's SHA-256" % SHA_TOKEN)
     if CHECKS_TOKEN not in notes:
         problems.append("no %s token for the line of the release checks" % CHECKS_TOKEN)
+    if SIGNATURE_TOKEN not in notes:
+        problems.append("no %s token for the line of the signature" % SIGNATURE_TOKEN)
     if not gated and GATE_TOKEN in notes:
         problems.append("the token %s with --no-gate: write the gate's result by hand" % GATE_TOKEN)
     return problems
+
+
+# The signature of a release (W604 part D, the owner's D662): the owner's ed25519 key, held by the Windows ssh-agent,
+# signs the archive and its MANIFEST.txt with `ssh-keygen -Y sign`; tools/release-signers (the allowed signers format
+# of ssh-keygen) names that key for `ssh-keygen -Y verify`. The tool never reads a private key: it names the key by
+# its public file, and the agent signs. What is published names the key by its fingerprint only (D316).
+SIGN_PRINCIPAL = "nirender-release"
+SIGN_NAMESPACE = "nirender-release"
+SIGNERS = os.path.join(HERE, "release-signers")
+# The fingerprint of the release key in release-signers, as `ssh-keygen -l` gives it (the owner's key of D662): a change
+# of the file's key fails the self-test until this changes too.
+RELEASE_KEY_FINGERPRINT = "SHA256:hVqY/r/0Tq0Ww7czvry8g8FpYUnMSyt60+HLlwE9Qpc"
+SIGNATURE_TOKEN = "{signature}"
+# The programs of Windows' OpenSSH, by their paths: Git's ssh-keygen is first on PATH and does not use the Windows
+# agent [I]. Without SSH_AUTH_SOCK they ask the Windows agent's own pipe (`agent_environment`).
+SSH_KEYGEN = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH", "ssh-keygen.exe")
+WINDOWS_AGENT = r"\\.\pipe\openssh-ssh-agent"
+
+
+def agent_environment(environment):
+    """The environment of the calls that use the agent (ssh-add -L, ssh-keygen -Y sign): `environment` without
+    SSH_AUTH_SOCK, so that Windows' OpenSSH asks the Windows agent (WINDOWS_AGENT), not a socket that a Git Bash shell
+    set (verdict 756 5.1)."""
+    return {key: value for key, value in environment.items() if key != "SSH_AUTH_SOCK"}
+
+
+def public_key(text):
+    """The one ed25519 public key of the text of a .pub file, as (type, blob), or None."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) != 1:
+        return None
+    fields = lines[0].split()
+    if len(fields) < 2 or fields[0] != "ssh-ed25519":
+        return None
+    try:
+        base64.b64decode(fields[1], validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return fields[0], fields[1]
+
+
+def fingerprint(key):
+    """The SHA256 fingerprint of a (type, blob) key, as `ssh-keygen -l` prints it."""
+    return "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(key[1])).digest()).decode("ascii").rstrip("=")
+
+
+def signer_keys(text, principal=SIGN_PRINCIPAL):
+    """The keys (type, blob) of `principal` in the text of an allowed signers file: each line is "<principals>
+    [options] <type> <blob> [comment]", the principals split by commas; a line that starts with '#' is a comment."""
+    keys = []
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields or fields[0].startswith("#") or principal not in fields[0].split(","):
+            continue
+        for index in range(1, len(fields) - 1):
+            if fields[index].startswith("ssh-"):
+                keys.append((fields[index], fields[index + 1]))
+                break
+    return keys
+
+
+def signers_line(key):
+    """The line of an allowed signers file that names `key` for the release's principal and namespace."""
+    return '%s namespaces="%s" %s %s' % (SIGN_PRINCIPAL, SIGN_NAMESPACE, key[0], key[1])
+
+
+def sign_options_problem(sign_key, no_sign):
+    """The stop line for the signing options, or None: a release names its key or says it is not signed."""
+    if sign_key and no_sign:
+        return "--sign-key and --no-sign together: name one"
+    if not sign_key and not no_sign:
+        return "no --sign-key (the public file of the release key) and no --no-sign: a release is signed, or says that it is not"
+    return None
+
+
+def sign_key_problems(pub_text, signers_text):
+    """The key of the public file's text and what stops a signed release before its build: the file is not one ed25519
+    key, or release-signers does not name that key for the principal. The lines name keys by fingerprint only."""
+    key = public_key(pub_text)
+    if key is None:
+        return None, ["--sign-key does not name one ed25519 public key (a .pub file)"]
+    allowed = signer_keys(signers_text)
+    if key not in allowed:
+        return key, ["tools/release-signers does not name the release key %s for %s (it names %s)" % (
+            fingerprint(key), SIGN_PRINCIPAL, ", ".join(fingerprint(other) for other in allowed) or "no key")]
+    return key, []
+
+
+def agent_problem(key, listing, code):
+    """The stop line when the Windows agent does not hold `key`, or None. `listing` and `code` are the output and the
+    exit code of `ssh-add -L` (exit 1: no keys; exit 2: no agent). The line names the agent and the fingerprint."""
+    held = code == 0 and any(line.split()[1:2] == [key[1]] for line in listing.splitlines())
+    if held:
+        return None
+    return "the Windows ssh-agent (%s) does not hold the release key %s; load it: ssh-add <the private key file>" % (
+        WINDOWS_AGENT, fingerprint(key))
+
+
+def ssh_add_of(ssh_keygen):
+    """The ssh-add.exe beside an ssh-keygen.exe."""
+    return os.path.join(os.path.dirname(ssh_keygen), "ssh-add.exe")
+
+
+def sign_file(ssh_keygen, key_file, path, environment):
+    """Signs `path` into `<path>.sig` with `ssh-keygen -Y sign`, its input closed so that it can ask for nothing. With
+    a public key file the agent signs; the self-test passes a private key file. Returns the exit code and the text."""
+    if os.path.exists(path + ".sig"):
+        os.remove(path + ".sig")
+    result = subprocess.run([ssh_keygen, "-Y", "sign", "-n", SIGN_NAMESPACE, "-f", key_file, path], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, env=environment)
+    return result.returncode, result.stdout + result.stderr
+
+
+def without_path(text, key_file):
+    """ssh-keygen's text on one line, with the key file's path (in either slash form) as "<the key file>" (D316)."""
+    for form in {key_file, key_file.replace("\\", "/"), key_file.replace("/", "\\"), os.path.abspath(key_file)}:
+        text = text.replace(form, "<the key file>")
+    return " ".join(text.split())
+
+
+def verify_command(ssh_keygen, signers, path, principal=SIGN_PRINCIPAL, namespace=SIGN_NAMESPACE):
+    """The command that checks `<path>.sig` against `signers`; `path` itself is its input."""
+    return [ssh_keygen, "-Y", "verify", "-f", signers, "-I", principal, "-n", namespace, "-s", path + ".sig"]
+
+
+def verify_file(command, path):
+    """Runs a verify command with `path` as its input. Returns the exit code and the text."""
+    with open(path, "rb") as source:
+        result = subprocess.run(command, stdin=source, capture_output=True, env=ENVIRONMENT)
+    return result.returncode, (result.stdout + result.stderr).decode("utf-8", "replace")
+
+
+def good_signature(code, text):
+    """Whether a verify passed: exit 0 and ssh-keygen's line for the namespace and the principal."""
+    return code == 0 and ('Good "%s" signature for %s' % (SIGN_NAMESPACE, SIGN_PRINCIPAL)) in text
+
+
+def signature_numbers(key, results):
+    """The numbers, the rule and the pass of the check "the signatures": `results` are (file name, exit code, text)."""
+    numbers = "the key %s; %s" % (fingerprint(key), "; ".join(
+        "%s: %s" % (name, "good" if good_signature(code, text) else "NOT GOOD (exit %d: %s)" % (code, " ".join(text.split())[:200]))
+        for name, code, text in results))
+    rule = 'each file: exit 0 and "Good "%s" signature for %s" against tools/release-signers' % (SIGN_NAMESPACE, SIGN_PRINCIPAL)
+    return numbers, rule, bool(results) and all(good_signature(code, text) for _, code, text in results)
+
+
+def player_command(archive_name):
+    """The command of the notes that checks a download, with the signers file saved beside it as release-signers, for
+    cmd and Git Bash (its input from the file with '<')."""
+    return 'ssh-keygen -Y verify -f release-signers -I %s -n %s -s "%s.sig" < "%s"' % (SIGN_PRINCIPAL, SIGN_NAMESPACE, archive_name, archive_name)
+
+
+def player_command_powershell(archive_name):
+    """The same command for Windows PowerShell, which refuses '<' (verdict 757 4.1): cmd runs it."""
+    return "cmd /c '%s'" % player_command(archive_name)
+
+
+def agent_check(ssh_keygen, key, dry_run):
+    """Stops when the Windows agent does not hold `key` (`ssh-add -L`, SSH_AUTH_SOCK out). Before the build, and again
+    right before the signatures: a key that left the agent in between would make ssh-keygen load the private file
+    beside the .pub and ask for its passphrase on the console (verdict 757 4.2)."""
+    listed = subprocess.run([ssh_add_of(ssh_keygen), "-L"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            env=agent_environment(ENVIRONMENT))
+    problem = agent_problem(key, listed.stdout, listed.returncode)
+    if problem:
+        stop(problem, dry_run)
+
+
+def signature_text(key, repo, tag, archive_name, reason=None):
+    """The line of the notes (`{signature}`): the key by its fingerprint, its line of release-signers, where that file
+    is at the tag, and the command that checks the download; or `reason` for a release that is not signed."""
+    if key is None:
+        return "not signed (%s)" % (reason or "a test build")
+    return ("signed with the release key `%s` (principal `%s`): `<archive>.sig` and `MANIFEST.txt.sig`. To check the "
+            "download, save this line as the file `release-signers` beside it: `%s` (the same line is "
+            "https://github.com/%s/blob/%s/tools/release-signers), then run in cmd or Git Bash `%s`, or in "
+            "PowerShell `%s`" % (fingerprint(key), SIGN_PRINCIPAL, signers_line(key), repo, tag, player_command(archive_name),
+                                 player_command_powershell(archive_name)))
 
 
 def sha256_of(path):
@@ -775,8 +970,139 @@ def release_checks_self_test(gate_output, nvidia, amd):
         assert "d3d8.dll is not in the build" in build_id_numbers(root, "79c752d", "c610f3b")[0]
 
 
+def test_signature_rules():
+    """The pure parts of the signature (W604 part D): no program, no agent, no key file."""
+    blob = base64.b64encode(b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))).decode("ascii")
+    other = base64.b64encode(b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(1, 33))).decode("ascii")
+    key = ("ssh-ed25519", blob)
+    assert public_key("ssh-ed25519 %s nirender-release\n" % blob) == key
+    assert public_key("ssh-rsa %s x\n" % blob) is None and public_key("") is None and public_key("ssh-ed25519 !!\n") is None
+    assert public_key("ssh-ed25519 %s a\nssh-ed25519 %s b\n" % (blob, other)) is None, "two keys in one .pub"
+    assert fingerprint(key) == "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(blob)).digest()).decode().rstrip("=")
+    # release-signers: the key of the principal; comments, another principal and the repository's file with no key.
+    signers = "# a comment\n%s\nsomeone ssh-ed25519 %s\n" % (signers_line(key), other)
+    assert signer_keys(signers) == [key] and signer_keys("a,nirender-release ssh-ed25519 %s\n" % blob) == [key]
+    # The repository's file names one key, the release key of the owner (D662), and it parses as a public key.
+    released = signer_keys(open(SIGNERS, encoding="utf-8").read())
+    assert len(released) == 1 and public_key("%s %s\n" % released[0]) == released[0], released
+    assert fingerprint(released[0]) == RELEASE_KEY_FINGERPRINT, fingerprint(released[0])
+    assert base64.b64decode(released[0][1])[:15] == b"\0\0\0\x0bssh-ed25519" and len(base64.b64decode(released[0][1])) == 51
+    assert sign_key_problems("ssh-ed25519 %s\n" % blob, signers) == (key, [])
+    found, problems = sign_key_problems("ssh-ed25519 %s\n" % other, signers)
+    assert found and problems == ["tools/release-signers does not name the release key %s for nirender-release (it names %s)" % (
+        fingerprint(found), fingerprint(key))], problems
+    assert sign_key_problems("ssh-ed25519 %s\n" % blob, "# comments only\n")[1][0].endswith("(it names no key)")
+    assert sign_key_problems("ssh-ed25519 %s\n" % blob, open(SIGNERS, encoding="utf-8").read())[1][0].endswith(
+        "(it names %s)" % RELEASE_KEY_FINGERPRINT), "a key that is not the release key passes the repository's file"
+    assert sign_key_problems("not a key", signers) == (None, ["--sign-key does not name one ed25519 public key (a .pub file)"])
+    # The options: one of the two.
+    assert sign_options_problem("k.pub", False) is None and sign_options_problem(None, True) is None
+    assert sign_options_problem("k.pub", True).startswith("--sign-key and --no-sign") and sign_options_problem(None, False).startswith("no --sign-key")
+    # The agent's keys (ssh-add -L): held; another key only; no keys (exit 1); no agent (exit 2).
+    assert agent_problem(key, "ssh-ed25519 %s nirender-release\n" % blob, 0) is None
+    for listing, code in (("ssh-ed25519 %s x\n" % other, 0), ("The agent has no identities.\n", 1), ("Error connecting to agent: No such file\n", 2)):
+        assert agent_problem(key, listing, code) == ("the Windows ssh-agent (\\\\.\\pipe\\openssh-ssh-agent) does not hold the release key %s; "
+                                                     "load it: ssh-add <the private key file>" % fingerprint(key)), (listing, code)
+    # The agent calls ask the Windows agent: SSH_AUTH_SOCK out, the rest kept (verdict 756 5.1).
+    assert agent_environment({"SSH_AUTH_SOCK": "/tmp/ssh-x/agent.1", "PATH": "p"}) == {"PATH": "p"}
+    # The notes' line and the verify.
+    line = signature_text(key, "o/r", "v1.2.3", "a.7z")
+    assert signers_line(key) in line and "https://github.com/o/r/blob/v1.2.3/tools/release-signers" in line and fingerprint(key) in line
+    command = 'ssh-keygen -Y verify -f release-signers -I nirender-release -n nirender-release -s "a.7z.sig" < "a.7z"'
+    assert line.endswith("run in cmd or Git Bash `%s`, or in PowerShell `cmd /c '%s'`" % (command, command)), line
+    assert signature_text(None, "o/r", "v1", "a.7z") == "not signed (a test build)"
+    assert signature_text(None, "o/r", "v1", "a.7z", "a dry run") == "not signed (a dry run)"
+    assert good_signature(0, 'Good "nirender-release" signature for nirender-release with ED25519 key SHA256:x\n')
+    assert not good_signature(0, "") and not good_signature(255, 'Good "nirender-release" signature for nirender-release')
+    numbers, _, passed = signature_numbers(key, [("a.7z", 0, 'Good "nirender-release" signature for nirender-release'), ("MANIFEST.txt", 255, "Could not verify signature.")])
+    assert not passed and "a.7z: good; MANIFEST.txt: NOT GOOD (exit 255: Could not verify signature.)" in numbers, numbers
+    assert not signature_numbers(key, [])[2], "no file signed is no pass"
+    # No user folder or drive letter in what is published or stopped on (verdict 756 5.3): a key file under a planted
+    # user folder, and the text of the checks file's row.
+    planted = "C:\\Users\\someone\\.ssh\\release.pub"
+    local = re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/]|\\Users\\|/Users/|\.ssh")
+    roots = {"nirender-plugin": PLUGIN, "render-link": MGE}
+    row = command_text(verify_command(SSH_KEYGEN, SIGNERS, os.path.join(MGE, "dist", "a.7z")), roots)
+    assert row == 'ssh-keygen -Y verify -f tools/release-signers -I nirender-release -n nirender-release -s dist/a.7z.sig', row
+    texts = [line, row, agent_problem(key, "", 1), sign_key_problems("ssh-ed25519 %s\n" % other, signers)[1][0],
+             without_path("Load key \"%s\": invalid format" % planted, planted), without_path("couldn't load C:/Users/someone/.ssh/release.pub", planted)]
+    assert not [text for text in texts if local.search(text)], [text for text in texts if local.search(text)]
+
+
+def test_signature_live():
+    """A signature made and checked by Windows' ssh-keygen (W604 part D) with a throwaway key in a temp folder,
+    signed with the private key file directly: no agent and no ~/.ssh (verdict 737 5.1), and SSH_AUTH_SOCK names a pipe
+    that is not there, so no agent can answer. The notes' command must pass (the null) and fail for a changed byte, for
+    another principal and for another namespace. A failed call shows ssh-keygen's text (verdict 756 5.5)."""
+    import shlex
+    import tempfile
+    assert os.path.isfile(SSH_KEYGEN), "no ssh-keygen of Windows' OpenSSH at %s" % SSH_KEYGEN
+    folder = tempfile.mkdtemp(prefix="release-sign-test-")
+    try:
+        key_file = os.path.join(folder, "key")
+        made = subprocess.run([SSH_KEYGEN, "-q", "-t", "ed25519", "-N", "", "-C", SIGN_PRINCIPAL, "-f", key_file], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True)
+        assert made.returncode == 0, "ssh-keygen made no key (%d): %s" % (made.returncode, made.stdout + made.stderr)
+        with open(key_file + ".pub", encoding="utf-8") as pub:
+            key = public_key(pub.read())
+        assert key, "the throwaway .pub is not one ed25519 key"
+        archive = os.path.join(folder, "MGE-XE-G7-v1.0-nirender-v0.1.0.7z")
+        with open(archive, "wb") as out:
+            out.write(bytes(range(256)) * 64)
+        no_agent = dict(agent_environment(ENVIRONMENT), SSH_AUTH_SOCK=r"\\.\pipe\release-sign-test-no-agent-%d" % os.getpid())
+        code, text = sign_file(SSH_KEYGEN, key_file, archive, no_agent)
+        assert code == 0 and os.path.isfile(archive + ".sig"), "ssh-keygen -Y sign (%d): %s" % (code, text)
+        # The notes' key line as the file release-signers, and the notes' command as the notes give it.
+        line = signature_text(key, "o/r", "v0.1.0", os.path.basename(archive))
+        with open(os.path.join(folder, "release-signers"), "w", encoding="utf-8") as out:
+            out.write(signers_line(key) + "\n")
+        quoted = line.split("`")[1::2]
+        cmd_form = [text for text in quoted if text.startswith("ssh-keygen -Y verify")]
+        powershell_form = [text for text in quoted if text.startswith("cmd /c ")]
+        assert len(cmd_form) == 1 and len(powershell_form) == 1, quoted
+        words = shlex.split(cmd_form[0])
+        assert words[0] == "ssh-keygen" and words[-2] == "<", words
+        command = [SSH_KEYGEN] + [os.path.join(folder, word) if word in ("release-signers", os.path.basename(archive) + ".sig") else word for word in words[1:-2]]
+        code, text = verify_file(command, os.path.join(folder, words[-1]))
+        assert good_signature(code, text), "the notes' command on the signed file (%d): %s" % (code, text)
+        # The fingerprint of the notes and the checks file is the one ssh-keygen gives.
+        assert fingerprint(key) in text, (fingerprint(key), text)
+        # The release's own verify against a signers file: the same pass.
+        assert good_signature(*verify_file(verify_command(SSH_KEYGEN, os.path.join(folder, "release-signers"), archive), archive))
+        # Another principal, another namespace: no pass.
+        signers = os.path.join(folder, "release-signers")
+        for wrong in (verify_command(SSH_KEYGEN, signers, archive, principal="someone"), verify_command(SSH_KEYGEN, signers, archive, namespace="file")):
+            code, text = verify_file(wrong, archive)
+            assert code != 0 and not good_signature(code, text), "a verify with %s passed: %s" % (wrong, text)
+        # The notes' PowerShell form, in Windows PowerShell in the download's folder (verdict 757 4.1); the command goes
+        # in as -EncodedCommand, so that no quote of it changes on the way.
+        def in_powershell():
+            encoded = base64.b64encode(powershell_form[0].encode("utf-16-le")).decode("ascii")
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], cwd=folder,
+                                    stdin=subprocess.DEVNULL, capture_output=True)
+            return result.returncode, (result.stdout + result.stderr).decode("utf-8", "replace")
+
+        code, text = in_powershell()
+        assert good_signature(code, text), "the notes' PowerShell command on the signed file (%d): %s" % (code, text)
+        # One changed byte: no pass, in either form.
+        with open(archive, "r+b") as out:
+            out.seek(1000)
+            out.write(b"\xff")
+        code, text = verify_file(command, archive)
+        assert code != 0 and not good_signature(code, text), "the changed archive passed: %s" % text
+        code, text = in_powershell()
+        assert code != 0 and not good_signature(code, text), "the changed archive passed in PowerShell: %s" % text
+    finally:
+        for name in os.listdir(folder):
+            os.remove(os.path.join(folder, name))
+        os.rmdir(folder)
+
+
 def self_test():
-    """The tests of the pure parts: no git, no cargo, no GitHub."""
+    """The tests of the pure parts: no git, no cargo, no GitHub. The signature's live test runs Windows' ssh-keygen
+    on a throwaway key in a temp folder."""
+    test_signature_rules()
+    test_signature_live()
     # W545: the gate names the unpacked archive with --archive, never with --mge-build, which replay.py refuses for a
     # folder with no manifest.
     command = gate_command("C:/tmp/unpacked")
@@ -801,11 +1127,13 @@ def self_test():
     manifest = manifest_text("x.7z", "MGE XE G7 at 1; nirender at 2.", [("Data Files/a.dds", 12, "cd" * 32), ("d3d8.dll", 3, "ef" * 32)])
     assert manifest.startswith("THE FILES OF x.7z\n\nMGE XE G7 at 1; nirender at 2.\n\n")
     assert manifest.endswith("\n%s  12  Data Files/a.dds\n%s  3  d3d8.dll\n" % ("cd" * 32, "ef" * 32)), manifest
-    assert notes_problems("## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=True) == ["no {sha256} token for the archive's SHA-256"]
-    assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=True) == []
-    assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == ["no {checks} token for the line of the release checks"]
+    assert notes_problems("{signature}\n## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=True) == ["no {sha256} token for the archive's SHA-256"]
+    assert notes_problems("SHA-256 {sha256} {signature}\n\n## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=True) == []
+    assert notes_problems("SHA-256 {sha256} {signature}\n\n## Tested\n\n- {gate}\n- run 20261027-120302-x\n", gated=True) == ["no {checks} token for the line of the release checks"]
+    # W604 part D: the notes carry the signature's line.
+    assert notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=True) == ["no {signature} token for the line of the signature"]
     # With --no-gate a leftover token is found at the start, not after the build.
-    leftover = notes_problems("SHA-256 {sha256}\n\n## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=False)
+    leftover = notes_problems("SHA-256 {sha256} {signature}\n\n## Tested\n\n- {gate}\n- {checks}\n- run 20261027-120302-x\n", gated=False)
     assert leftover[-1] == "the token {gate} with --no-gate: write the gate's result by hand", leftover
     assert GATE_RESULT.findall("  ok   " + lines[0] + "\n  FAIL  1 of 2 pictures equal to the accepted ones in c\n") == [lines[0], "1 of 2 pictures equal to the accepted ones in c"]
     assert render_link_tag("v0.3.3") == "nirender-v0.3.3"
@@ -854,6 +1182,10 @@ def main():
     ap.add_argument("--source", action="append", default=[], metavar="NAME=URL@COMMIT", help="the source of a part added with --add or --add-dir, for SOURCES.txt")
     ap.add_argument("--dry-run", action="store_true", help="pack the archive, publish and delete nothing")
     ap.add_argument("--no-gate", action="store_true", help="skip the replay gate on the packed helper; the notes must then hold its result by hand")
+    ap.add_argument("--sign-key", metavar="PUB", help="the PUBLIC file (.pub) of the release key: the Windows ssh-agent, which holds the key, "
+                    "signs the archive and MANIFEST.txt; tools/release-signers must name the key")
+    ap.add_argument("--no-sign", action="store_true", help="a test build with no signature: the notes say that it is not signed")
+    ap.add_argument("--ssh-keygen", default=SSH_KEYGEN, help="the ssh-keygen.exe of Windows' OpenSSH (its ssh-add.exe beside it)")
     args = ap.parse_args()
     if args.self_test:
         self_test()
@@ -866,6 +1198,22 @@ def main():
     problems = notes_problems(notes, gated=not args.no_gate)
     if problems:
         stop("the notes (tools/notes-template.md): %s" % "; ".join(problems), args.dry_run)
+    # The signature, before the build: the options, the key against release-signers, and (not in a dry run, which
+    # signs nothing and asks no agent) the agent's keys. No private key is read here.
+    problem = sign_options_problem(args.sign_key, args.no_sign)
+    if problem:
+        stop(problem, args.dry_run)
+    sign_key = None
+    if args.sign_key:
+        if not os.path.isfile(args.sign_key):
+            # The path stays out of the line (D316).
+            raise SystemExit("--sign-key names no file")
+        with open(args.sign_key, encoding="utf-8") as pub, open(SIGNERS, encoding="utf-8") as signers:
+            sign_key, problems = sign_key_problems(pub.read(), signers.read())
+        for problem in problems:
+            stop(problem, args.dry_run)
+        if sign_key and not args.dry_run:
+            agent_check(args.ssh_keygen, sign_key, args.dry_run)
     sources = []
     for item in args.source:
         name, _, rest = item.partition("=")
@@ -986,8 +1334,35 @@ def main():
     record.add("the archive", os.path.basename(asset), "SHA-256 %s, %d bytes, %d files" % (digest, os.path.getsize(asset), len(shipped)),
                "a record of what goes up", RECORD)
 
+    # The signatures of the archive and of its MANIFEST.txt, by the agent, each checked against the repository's
+    # release-signers; the checks file names the key by its fingerprint (D316).
+    signed = []
+    signed_files = [asset, manifest]
+    verify_text = " and ".join(command_text(verify_command(args.ssh_keygen, SIGNERS, path), record.roots) + " < " + os.path.basename(path)
+                               for path in signed_files)
+    if args.no_sign:
+        record.add("the signatures", verify_text, "--no-sign: a test build", "the signature", NOT_RUN)
+    elif args.dry_run:
+        record.add("the signatures", verify_text, "a dry run signs nothing", "the signature", NOT_RUN)
+    elif sign_key:
+        results = []
+        agent_check(args.ssh_keygen, sign_key, args.dry_run)
+        # The archive itself, and the MANIFEST.txt that went into it; the verify of the manifest reads the copy
+        # unpacked from the archive (verdict 757 4.3).
+        for path, shipped_copy in ((asset, asset), (manifest, shipped_manifest)):
+            code, text = sign_file(args.ssh_keygen, args.sign_key, path, agent_environment(ENVIRONMENT))
+            if code != 0:
+                stop("ssh-keygen -Y sign of %s failed (%d): %s" % (os.path.basename(path), code, without_path(text, args.sign_key)), args.dry_run)
+            code, text = verify_file(verify_command(args.ssh_keygen, SIGNERS, path), shipped_copy)
+            results.append((os.path.basename(path), code, text))
+            signed.append(path + ".sig")
+        numbers, rule, passed = signature_numbers(sign_key, results)
+        record.add("the signatures", verify_text, numbers, rule, PASS if passed else FAIL)
+
     # The gate on the helper that ships, and its result into the notes.
     values = {SHA_TOKEN: digest}
+    values[SIGNATURE_TOKEN] = signature_text(sign_key if signed else None, args.repo, tag, os.path.basename(asset),
+                                             None if args.no_sign else "a dry run")
     if args.no_gate:
         record.add("the capture gate", command_text(gate_command(unpacked), record.roots), "--no-gate: the notes hold its line by hand", "the gate", NOT_RUN)
     else:
@@ -1007,7 +1382,7 @@ def main():
     if args.dry_run:
         print("dry run: the archive %s; not published (%s); no release deleted; the MGE XE tag %s not made" % (asset, title, mge_tag))
         return 0
-    print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", notes_path, asset, checksum, record.path], capture=True).strip())
+    print(run(["gh", "release", "create", tag, "--repo", args.repo, "--prerelease", "--title", title, "--notes-file", notes_path, asset, checksum, record.path] + signed, capture=True).strip())
     # The commit of MGE XE that the archive was built from gets the release's tag too; it
     # goes up with the release, never before it.
     run(["git", "-C", args.mge, "tag", mge_tag])
