@@ -483,20 +483,34 @@ impl RenderTexture {
 
 impl Counts {
     /// The end of a frame for the per-draw writes (W125): its writes and its time go into the
-    /// most of a frame, and the next frame starts at 0.
+    /// most of a frame with the frame's number, and the next frame starts at 0. The frame that
+    /// ended is number `frames - 1`: the end of a frame counts it before the next frame starts.
     pub(crate) fn close_write_frame(&mut self) {
-        self.frame_writes_most = self.frame_writes_most.max(self.frame_writes);
-        self.frame_write_seconds_most = self.frame_write_seconds_most.max(self.frame_write_seconds);
+        let ended = self.frames.saturating_sub(1);
+        if self.frame_writes > self.frame_writes_most.0 {
+            self.frame_writes_most = (self.frame_writes, ended);
+        }
+        if self.frame_write_seconds > self.frame_write_seconds_most.0 {
+            self.frame_write_seconds_most = (self.frame_write_seconds, ended);
+        }
         self.frame_writes = 0;
         self.frame_write_seconds = 0.0;
     }
 
-    /// The most writes and the most time of a frame, the frame in progress too.
-    pub(crate) fn write_frame_most(&self) -> (u64, f64) {
-        (
-            self.frame_writes_most.max(self.frame_writes),
-            self.frame_write_seconds_most.max(self.frame_write_seconds),
-        )
+    /// The most writes and the most time of a frame, each with its frame's number, the frame in
+    /// progress (number `frames`) too.
+    pub(crate) fn write_frame_most(&self) -> ((u64, u32), (f64, u32)) {
+        let writes = if self.frame_writes > self.frame_writes_most.0 {
+            (self.frame_writes, self.frames)
+        } else {
+            self.frame_writes_most
+        };
+        let seconds = if self.frame_write_seconds > self.frame_write_seconds_most.0 {
+            (self.frame_write_seconds, self.frames)
+        } else {
+            self.frame_write_seconds_most
+        };
+        (writes, seconds)
     }
 }
 
@@ -558,12 +572,12 @@ pub(crate) struct Counts {
     pub(crate) draw_copy_seconds: f64,
     /// The writes of the copies and of the changed slots' records in the frame in progress, and
     /// the most of a frame; the time of the copies and of the case "changed" of the table upload
-    /// in the frame in progress, and the most of a frame (W125, verdict 753 5.1 and 5.2).
-    /// [`Counts::close_write_frame`] at each frame's start.
+    /// in the frame in progress, and the most of a frame with that frame's number (W125, verdict
+    /// 753 5.1 and 5.2, and A1.1). [`Counts::close_write_frame`] at each frame's start.
     pub(crate) frame_writes: u64,
-    pub(crate) frame_writes_most: u64,
+    pub(crate) frame_writes_most: (u64, u32),
     pub(crate) frame_write_seconds: f64,
-    pub(crate) frame_write_seconds_most: f64,
+    pub(crate) frame_write_seconds_most: (f64, u32),
     pub(crate) instance_entries_moved: u64,
     pub(crate) instance_gap_bytes: u64,
     /// The textures that came again for a handle with a slot of the arrays.
@@ -1096,17 +1110,27 @@ mod tests {
     /// time, also when they are not the same frame, and counts the frame in progress.
     #[test]
     fn the_most_writes_of_a_frame_are_kept() {
+        // As the player does it: the end of frame N counts it (`frames` N + 1), then the start of
+        // the next frame closes frame N.
         let mut counts = Counts::default();
         counts.frame_writes = 12;
         counts.frame_write_seconds = 0.001;
+        counts.frames = 1;
         counts.close_write_frame();
         counts.frame_writes = 30;
         counts.frame_write_seconds = 0.0002;
+        counts.frames = 2;
         counts.close_write_frame();
         assert_eq!((counts.frame_writes, counts.frame_write_seconds), (0, 0.0));
-        assert_eq!(counts.write_frame_most(), (30, 0.001));
+        assert_eq!(counts.write_frame_most(), ((30, 1), (0.001, 0)));
+        // A tie keeps the first frame.
+        counts.frame_writes = 30;
+        counts.frames = 3;
+        counts.close_write_frame();
+        assert_eq!(counts.write_frame_most(), ((30, 1), (0.001, 0)));
+        // The frame in progress is number `frames`.
         counts.frame_writes = 41;
-        assert_eq!(counts.write_frame_most(), (41, 0.001));
+        assert_eq!(counts.write_frame_most(), ((41, 3), (0.001, 0)));
     }
 
     fn instance(record: u32) -> Instance {
