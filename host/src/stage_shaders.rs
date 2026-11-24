@@ -59,8 +59,9 @@ pub(crate) const MAX_KEYS: usize = 256;
 const LIST_HEADER: &str = "numidium stage pipelines";
 /// The format of the list's lines; it is in the list's file name too ([`list_name`]). 3: the
 /// key's shade bits have [`crate::NO_LIGHTS_BIT`]. 4: the key has the add bit (`adds`). 5: the
-/// key has the flat and the plane bits, and its shade bits have the sky bits 4 and 8 (W300).
-const LIST_FORMAT: u32 = 5;
+/// key has the flat and the plane bits, and its shade bits have the sky bits 4 and 8 (W300). 6:
+/// the key has 8 stages (W20).
+const LIST_FORMAT: u32 = 6;
 /// The frames between two writes of a changed list.
 const SAVE_FRAMES: u32 = 600;
 /// The list's pipelines go to the thread while it has fewer jobs than this, so that a key of
@@ -365,12 +366,16 @@ const FACT_NAMES: [&str; 10 + 2 * STAGES] = [
     "FIXED_COLOR_3",
     "FIXED_COLOR_4",
     "FIXED_COLOR_5",
+    "FIXED_COLOR_6",
+    "FIXED_COLOR_7",
     "FIXED_ALPHA_0",
     "FIXED_ALPHA_1",
     "FIXED_ALPHA_2",
     "FIXED_ALPHA_3",
     "FIXED_ALPHA_4",
     "FIXED_ALPHA_5",
+    "FIXED_ALPHA_6",
+    "FIXED_ALPHA_7",
 ];
 
 /// The constants of a stage pipeline's fragment stage ([`StageKey::constants`]).
@@ -1522,7 +1527,7 @@ mod tests {
         high.alpha = [[255; 3]; STAGES];
         let constants = high.constants();
         assert_eq!(constants[10], ("FIXED_COLOR_0", f64::from(u32::MAX)));
-        assert_eq!(constants[16], ("FIXED_ALPHA_0", f64::from(0x00ff_ffffu32)));
+        assert_eq!(constants[10 + STAGES], ("FIXED_ALPHA_0", f64::from(0x00ff_ffffu32)));
         with_constants(&source, &constants).unwrap();
         let error = with_constants(&world, &key(1, 0).constants()).unwrap_err();
         assert!(error.contains("not found in the shader"), "{error}");
@@ -2421,8 +2426,9 @@ mod tests {
         ]
         .map(function)
         .concat();
-        // The pixel holds four values in its bytes: the alpha test, the stage count, argument 0 of
-        // the colour of stage 2, and argument 1 of the alpha of stage 4.
+        // The pixel holds four values in the bytes of its red: the alpha test, the stage count,
+        // argument 0 of the colour of stage 2, and argument 1 of the alpha of stage 4. Its green
+        // holds argument 0 of the colour and argument 1 of the alpha of the last stage (W20).
         let general = format!(
             "struct Stage {{ color: vec4u, alpha: vec4u }}\n\
              struct Draw {{ more: vec4u, counts: vec4u, stages: array<Stage, {STAGES}> }}\n\
@@ -2434,8 +2440,10 @@ mod tests {
              \x20   return vec4f(corner, 0.0, 1.0);\n\
              }}\n\
              @fragment fn fs() -> @location(0) vec4u {{\n\
-             \x20   return vec4u(draw_alpha_test() | (stage_count() << 8u) | (stage_color(2u).w << 16u) | (stage_alpha(4u).y << 24u), 0u, 0u, 1u);\n\
-             }}\n"
+             \x20   let last = {last}u;\n\
+             \x20   return vec4u(draw_alpha_test() | (stage_count() << 8u) | (stage_color(2u).w << 16u) | (stage_alpha(4u).y << 24u), stage_color(last).w | (stage_alpha(last).y << 8u), 0u, 1u);\n\
+             }}\n",
+            last = STAGES - 1
         );
         let stage = stage_facts_as_overrides(&general).unwrap();
 
@@ -2451,6 +2459,10 @@ mod tests {
         words[5] = 1;
         words[8 + 2 * 8 + 3] = 9;
         words[8 + 4 * 8 + 4 + 1] = 11;
+        // The last stage: argument 0 of its colour is 29, argument 1 of its alpha 31. The key says
+        // 19 and 23.
+        words[8 + (STAGES - 1) * 8 + 3] = 29;
+        words[8 + (STAGES - 1) * 8 + 4 + 1] = 31;
         let record = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("the record"),
             contents: bytemuck::cast_slice(&words),
@@ -2466,7 +2478,7 @@ mod tests {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
+            format: wgpu::TextureFormat::Rg32Uint,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -2476,7 +2488,7 @@ mod tests {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let pixel = |source: &str, constants: &[(&str, f64)]| -> u32 {
+        let pixel = |source: &str, constants: &[(&str, f64)]| -> [u32; 2] {
             let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("the null"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -2500,7 +2512,7 @@ mod tests {
                         constants,
                         ..Default::default()
                     },
-                    targets: &[Some(wgpu::TextureFormat::R32Uint.into())],
+                    targets: &[Some(wgpu::TextureFormat::Rg32Uint.into())],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -2552,20 +2564,25 @@ mod tests {
             queue.submit([encoder.finish()]);
             read.slice(..).map_async(wgpu::MapMode::Read, |result| result.unwrap());
             device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            let value = bytemuck::cast_slice::<u8, u32>(&read.slice(..).get_mapped_range().expect("the pixel")[..4])[0];
+            let mapped = read.slice(..).get_mapped_range().expect("the pixel");
+            let words = bytemuck::cast_slice::<u8, u32>(&mapped[..8]);
+            let value = [words[0], words[1]];
+            drop(mapped);
             read.unmap();
             value
         };
 
         let mut key = StageKey {
             alpha_test: 5,
-            count: 6,
+            count: STAGES as u8,
             ..key(1, 0)
         };
         key.color[2][3] = 13;
         key.alpha[4][1] = 17;
-        let of_key = 5 | (6 << 8) | (13 << 16) | (17 << 24);
-        let of_record = 3 | (1 << 8) | (9 << 16) | (11 << 24);
+        key.color[STAGES - 1][3] = 19;
+        key.alpha[STAGES - 1][1] = 23;
+        let of_key = [5 | ((STAGES as u32) << 8) | (13 << 16) | (17 << 24), 19 | (23 << 8)];
+        let of_record = [3 | (1 << 8) | (9 << 16) | (11 << 24), 29 | (31 << 8)];
         assert_eq!(pixel(&stage, &key.constants()), of_key, "the constants");
         assert_eq!(pixel(&stage, &[]), of_record, "no constant: the record");
         assert_eq!(pixel(&general, &[]), of_record, "the general text: the record");

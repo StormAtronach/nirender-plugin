@@ -9,7 +9,7 @@
 //! draws of the geometry take the step from `base` to `now` as a texture transform of the
 //! stages that read the set.
 
-use crate::data::DrawData;
+use crate::data::{DrawData, STAGES};
 
 /// The UV state of a geometry: the texture set of its controller, the state of the
 /// vertices the helper holds, and the controller's last state. A state is the U offset, the
@@ -56,8 +56,8 @@ fn multiply(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 /// transform, to compose a later step on.
 #[derive(Clone)]
 pub(crate) struct StageBase {
-    coordinates: [[u32; 4]; 6],
-    transforms: [[f32; 16]; 6],
+    coordinates: [[u32; 4]; STAGES],
+    transforms: [[f32; 16]; STAGES],
 }
 
 impl StageBase {

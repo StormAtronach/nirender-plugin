@@ -460,7 +460,7 @@ impl Renderer {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count,
         };
-        // Group 1: the binding arrays of tier A, or the 6 textures and 6 samplers of tier C.
+        // Group 1: the binding arrays of tier A, or the 8 textures and 8 samplers of tier C.
         let array_entries: Vec<wgpu::BindGroupLayoutEntry> = match tier {
             request::TextureTier::A => vec![
                 texture_entry(0, std::num::NonZeroU32::new(array_cap)),

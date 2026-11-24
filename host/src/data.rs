@@ -756,7 +756,9 @@ pub(crate) struct Counts {
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
-pub(crate) const STAGES: usize = 6;
+/// The texture stages of a draw: the most that the engine puts in one pass (Direct3D 8's limit;
+/// the engine packs up to the adapter's `MaxSimultaneousTextures`).
+pub(crate) const STAGES: usize = 8;
 
 /// The lights that the light buffer of a frame holds at first.
 pub(crate) const LIGHTS_AT_FIRST: usize = 4096;

@@ -106,7 +106,7 @@ pub enum TextureTier {
     /// the slot of each stage's texture and sampler. The adapter needs `array_features` and
     /// the room of [`ARRAY_TEXTURES`] and [`ARRAY_SAMPLERS`].
     A,
-    /// No binding arrays: a group of the 6 textures and the 6 samplers of the stages for each
+    /// No binding arrays: a group of the 8 textures and the 8 samplers of the stages for each
     /// set (`Renderer::stage_group`), bound before each draw or call of the table that takes
     /// another set. For an adapter without the arrays.
     C,
@@ -122,8 +122,8 @@ impl TextureTier {
 }
 
 /// The world shader of tier C: the source of tier A with the two binding arrays of group 1
-/// replaced by 6 textures (`t0` to `t5`, bindings 0 to 5) and 6 samplers (`s0` to `s5`,
-/// bindings 6 to 11), and each stage sampling its own pair. Every stage of a draw samples
+/// replaced by 8 textures (`t0` to `t7`, bindings 0 to 7) and 8 samplers (`s0` to `s7`,
+/// bindings 8 to 15), and each stage sampling its own pair. Every stage of a draw samples
 /// its pair: an unused stage has the white texture and a plain sampler in its group. A
 /// stage's pair may be read in more than one place (`cloud_texture` reads the first).
 pub fn tier_c_shader_source(source: &str) -> String {
