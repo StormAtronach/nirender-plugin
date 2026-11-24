@@ -24,13 +24,20 @@ function hover.ground(x, y)
     return hit and hit.intersection.z
 end
 
+-- The water level of the player's cell, 0 for a cell with none. The ray does not hit water, so over
+-- the sea it finds the sea floor.
+function hover.water()
+    return tes3.player.cell.waterLevel or 0
+end
+
 -- The place of the next frame of the walk: `x, y, z` moved north by `step`, at HEIGHT over the top of
--- what `ground(x, y)` finds there; with nothing found, the player keeps its height.
-function hover.next(x, y, z, step, ground)
+-- what `ground(x, y)` finds there, or over `water` where the top is under it, so that the camera stays
+-- out of the water; with nothing found, the player keeps its height.
+function hover.next(x, y, z, step, ground, water)
     local north = y + step
     local top = ground(x, north)
     if top then
-        return x, north, top + hover.HEIGHT
+        return x, north, math.max(top, water) + hover.HEIGHT
     end
     return x, north, z
 end
