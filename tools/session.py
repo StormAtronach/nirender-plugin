@@ -338,7 +338,8 @@ class Run:
         spec.update(values)
         return spec
 
-    def launch(self, spec, timeout, tag, mods=(), disable=(), facts=(), full_dump=False, enable=(), plugins=(), stop=None, before_restore=None):
+    def launch(self, spec, timeout, tag, mods=(), disable=(), facts=(), full_dump=False, enable=(), plugins=(), stop=None, before_restore=None,
+               stall_watch=True):
         """Starts the game with `spec` and follows it until the scenario says DONE.
 
         `mods` are the other mods of the run, as (name, {path in the mod: source file}); the
@@ -352,6 +353,7 @@ class Run:
         keeps a copy of the live mgeXE.log (`keep_live_mge_log`).
         `before_restore`: the step that harness.run_game calls after the game and Mod Organizer are closed and before
         the restore (the distant land of the run, `distant_land.RunLand.end`).
+        `stall_watch` False: the harness's stall watch only measures (`harness.run_game` stall_seconds None; W63).
 
         A run is a background run unless NIRENDER_FOREGROUND=1 (the owner, 2026-10-20): the
         runner stages MWSE.json with RunInBackground = true (stage_mwse_config) and does
@@ -390,6 +392,9 @@ class Run:
 
             # The step goes only when there is one, so that a harness from before the step (docs 4511166d) still runs the rest.
             step = {"before_restore": before_restore} if before_restore else {}
+            # The same for the stall watch (W63): only a harness with the watch gets the switch.
+            if not stall_watch and hasattr(harness, "STALL_SECONDS"):
+                step["stall_seconds"] = None
             done = harness.run_game(self.progress, timeout, tag, deployment, self.started, foreground=foreground, facts=facts, stop=watch, **step)
         finally:
             # run_game also restores. This restore is for a failure before run_game gets to
