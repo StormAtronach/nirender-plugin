@@ -792,6 +792,7 @@ fn split_touch(touch: Option<super::split::Touch>, drawing: bool) -> Option<supe
 #[cfg(test)]
 mod tests {
     use super::{sorted_lost, split_touch, SortedLost};
+    use crate::objects::{Create, CreateView};
     use crate::player::split::Touch;
     use crate::WaitingKind;
 
@@ -836,5 +837,191 @@ mod tests {
         // A read of the back buffer runs every item, and so does a frame that is not drawn.
         assert!(split_touch(None, true).is_none());
         assert!(split_touch(read_of_a_texture(), false).is_none());
+    }
+
+    /// A player on a device of this machine, in a frame of a 64 x 64 back buffer.
+    fn player_in_a_frame() -> crate::Player {
+        let (renderer, _) = crate::Renderer::new(
+            wgpu::Backends::all(),
+            None,
+            wgpu::TextureFormat::Rgba8Unorm,
+            crate::extension::extension_shaders(None),
+            0,
+            1,
+        )
+        .expect("a device");
+        let mut player = crate::Player::new(renderer);
+        let device = player.renderer.device.clone();
+        let texture = |format, usage| {
+            device.counted_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 64,
+                    height: 64,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let attachment =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
+        let color = texture(wgpu::TextureFormat::Rgba8Unorm, attachment);
+        let depth = texture(player.renderer.depth_format, attachment);
+        player.begin_frame(&color, std::rc::Rc::new(depth.counted_view(&Default::default())), false);
+        player
+    }
+
+    /// The start of a scene of the world camera into the back buffer, as the plugin sends it.
+    fn begin_world_scene(player: &mut crate::Player) {
+        let mut data = vec![0u8; 512];
+        data[4..8].copy_from_slice(&crate::scene::SCENE_WORLD.to_le_bytes());
+        data[20..24].copy_from_slice(&(crate::SCENE_BACK_BUFFER | crate::SCENE_WORLD_CAMERA).to_le_bytes());
+        player.feed(crate::tag::SCENE_BEGIN, &data);
+    }
+
+    /// The state of a picture that [`crate::Player::picture_start`] resets, field by field.
+    fn picture_state(player: &crate::Player) -> Vec<(&'static str, String)> {
+        vec![
+            ("world_draws", player.world_draws.len().to_string()),
+            ("world_prepared", player.world_prepared.to_string()),
+            ("held_draws", player.held_draws.len().to_string()),
+            ("taken", player.taken.len().to_string()),
+            ("held_sorted_wait", player.held_sorted_wait.len().to_string()),
+            ("frame_sorted", player.frame_sorted.len().to_string()),
+            ("replaced", player.replaced.to_string()),
+            ("world_end_facts", player.world_end_facts.is_some().to_string()),
+            ("plane_ahead", format!("{:?}", player.plane_ahead)),
+            ("split", format!("{:?}", player.split)),
+            ("phase_world", player.phase_world.to_string()),
+            ("phase_posted", player.phase_posted.to_string()),
+            ("world_matrices", format!("{:?}", player.world_matrices)),
+            ("world_start_view", format!("{:?}", player.world_start_view)),
+            ("world_depth_kept", player.world_depth_kept.to_string()),
+            ("world_depth_projection", format!("{:?}", player.world_depth_projection)),
+            ("first_person_drawn", player.first_person_drawn.to_string()),
+            ("shadow_casters_drawn", player.shadow_casters_drawn.to_string()),
+            ("before_depth_kept", player.before_depth_kept.to_string()),
+            ("before_kept", player.before_kept.to_string()),
+        ]
+    }
+
+    /// The fields of [`picture_state`] that [`dirty`] fills: all but `taken` and
+    /// `held_sorted_wait`, which hold shapes of an extension.
+    const FILLED: usize = 18;
+
+    /// Gives each field of the picture's state that a test can fill a value that a new picture
+    /// does not have.
+    fn dirty(player: &mut crate::Player) {
+        let device = player.renderer.device.clone();
+        let buffer = || {
+            std::rc::Rc::new(device.counted_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 16,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
+                mapped_at_creation: false,
+            }))
+        };
+        player.world_draws.push(std::rc::Rc::new(crate::Draw {
+            class: 0,
+            world: true,
+            key: crate::PipelineKey {
+                fvf: 0,
+                stride: 0,
+                topology: 0,
+                blend: [0; 3],
+                depth: [0; 3],
+                cull: 0,
+                fill: 0,
+                stencil: [0; 7],
+                color_write: 0,
+                samples: 1,
+                stages: 0,
+                debug: 0,
+            },
+            stencil_reference: 0,
+            data: bytemuck::Zeroable::zeroed(),
+            origin: None,
+            vertices: buffer(),
+            indexes: buffer(),
+            texture_handles: [0; crate::STAGES],
+            sampler_values: [[0; 5]; crate::STAGES],
+            range: (0, 0),
+            base_vertex: 0,
+            instances: (0, 0),
+        }));
+        player.world_prepared = true;
+        player.held_draws.push(crate::Item::SortedBlends(9));
+        player.frame_sorted.push((crate::Waiting::Table(7), 0));
+        player.replaced = 5;
+        player.world_end_facts = Some(player.world_facts(false));
+        player.plane_ahead = Some([1.0, 2.0, 3.0, 4.0]);
+        player.split = Some([5.0, 6.0, 7.0, 8.0]);
+        player.phase_world = true;
+        player.phase_posted = true;
+        player.world_matrices = Some(([2.0; 16], [3.0; 16]));
+        player.world_start_view = Some(([4.0; 16], [5.0; 16]));
+        player.world_depth_kept = true;
+        player.world_depth_projection = Some([6.0; 16]);
+        player.first_person_drawn = true;
+        player.shadow_casters_drawn = true;
+        player.before_depth_kept = true;
+        player.before_kept = true;
+    }
+
+    /// The fields whose values differ between two states.
+    fn differing(a: &[(&'static str, String)], b: &[(&'static str, String)]) -> Vec<&'static str> {
+        a.iter().zip(b).filter(|(x, y)| x.1 != y.1).map(|(x, _)| x.0).collect()
+    }
+
+    /// W166 (gap G1 of the planted faults of form D): at the player's level, a read of the back
+    /// buffer ends the picture, and the next world scene starts a new one. The feed's scene record
+    /// gives the plan's [`crate::plan::Step::NewPicture`], and the player's state of the picture is
+    /// that of a new picture: each field equals the field of a player whose frame began with the
+    /// same world scene. A blend place of the table that waited is counted as lost. The null: a
+    /// second world scene without the read keeps every value. Needs a GPU:
+    /// `cargo test -- --ignored world_scene_after_a_read` in `host`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_world_scene_after_a_read_of_the_back_buffer_starts_a_new_picture() {
+        let mut fresh = player_in_a_frame();
+        begin_world_scene(&mut fresh);
+        let new_picture = picture_state(&fresh);
+
+        let mut player = player_in_a_frame();
+        begin_world_scene(&mut player);
+        dirty(&mut player);
+        let filled = picture_state(&player);
+        let shown = differing(&filled, &new_picture);
+        assert_eq!(shown.len(), FILLED, "each filled field differs from a new picture: {shown:?}");
+
+        // The null: another world scene of the same picture keeps the state.
+        begin_world_scene(&mut player);
+        assert_eq!(
+            differing(&picture_state(&player), &filled),
+            Vec::<&str>::new(),
+            "no read, no new picture"
+        );
+
+        let lost = player.renderer.counts.places_sorted_lost;
+        assert!(player.read_pixels(0).is_some(), "the read of the back buffer");
+        // The read runs every item, and each run of the items sets `plane_ahead` from the frame
+        // (`run_items_inner`): fill it again, so that only the new picture can reset it.
+        player.plane_ahead = Some([1.0, 2.0, 3.0, 4.0]);
+        begin_world_scene(&mut player);
+        assert_eq!(
+            differing(&picture_state(&player), &new_picture),
+            Vec::<&str>::new(),
+            "the state of a new picture"
+        );
+        assert_eq!(
+            player.renderer.counts.places_sorted_lost,
+            lost + 1,
+            "the waiting place of the table"
+        );
     }
 }
