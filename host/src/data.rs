@@ -498,6 +498,9 @@ pub(crate) struct Counts {
     /// The pinned slots in use that held a texture and took another one under the same
     /// handle (`set_texture`): with other facts (size, levels, format), with the same.
     pub(crate) pinned_replaced: [u32; 2],
+    /// The pinned slots that took another view of the same texture (W632: a texture's view of
+    /// level 0, or of all its levels once its chain is in them).
+    pub(crate) pinned_new_view: u32,
     /// The indirect calls, the draws in them, and the draws drawn one by one because the
     /// buffer of the arguments was full.
     pub(crate) indirect_calls: u32,
@@ -507,6 +510,19 @@ pub(crate) struct Counts {
     pub(crate) no_layout: u32,
     pub(crate) textures: u32,
     pub(crate) texture_updates: u32,
+    /// W632: the textures with one level made with all the levels below it, the bytes of
+    /// those levels, the updates of their level 0 (each a new job), the jobs given and those
+    /// not taken (no worker), the chains put in and those dropped as stale, the worker's CPU
+    /// time, and the most frames from a job to its chain in the texture.
+    pub(crate) chain_textures: u32,
+    pub(crate) chain_bytes: u64,
+    pub(crate) chain_updates: u32,
+    pub(crate) chain_jobs: u32,
+    pub(crate) chain_jobs_lost: u32,
+    pub(crate) chain_swaps: u32,
+    pub(crate) chain_stale: u32,
+    pub(crate) chain_seconds: f64,
+    pub(crate) chain_most_delay: u32,
     pub(crate) render_textures: u32,
     /// The rendered textures made smaller than the game asked: the device has no texture of
     /// that size ([`crate::picture::target_size`]).

@@ -433,6 +433,40 @@ impl Player {
             "texture levels written again {}, not written {}; textures with a block format made as pixels {}",
             c.texture_updates, c.texture_updates_lost, c.textures_decoded
         );
+        // W632: the chains of the one-level textures, and those of them that a material with
+        // the alpha test names (a box filter thins their cut-out at a distance).
+        let r = &self.renderer;
+        let shown: Vec<u32> = r
+            .chains
+            .iter()
+            .filter(|(_, state)| state.full.is_some())
+            .map(|(&handle, _)| handle)
+            .collect();
+        let alpha_tested = shown
+            .iter()
+            .filter(|&&handle| {
+                r.materials.values().any(|m| {
+                    m.flags & crate::material::ALPHA_TEST != 0
+                        && m.maps.iter().any(|map| map.present && map.texture == handle)
+                })
+            })
+            .count();
+        println!(
+            "mipmaps for one level ({}): {} textures made with the levels below level 0 ({:.1} MB of them), {} updates of their level 0; jobs {} given, {} with no worker; chains {} put in, {} stale; the worker {:.3} s; the most frames from a job to its chain {}; pinned slots that took another view of the same texture {}; {} textures show their chain now, {} of them named by a material with the alpha test",
+            if r.mipmaps_for_one_level { "on" } else { "off" },
+            c.chain_textures,
+            c.chain_bytes as f64 / 1e6,
+            c.chain_updates,
+            c.chain_jobs,
+            c.chain_jobs_lost,
+            c.chain_swaps,
+            c.chain_stale,
+            c.chain_seconds,
+            c.chain_most_delay,
+            c.pinned_new_view,
+            shown.len(),
+            alpha_tested
+        );
         for (reason, count) in &c.lost_reasons {
             println!("  not written: {reason}: {count}");
         }

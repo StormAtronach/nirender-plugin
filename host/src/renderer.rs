@@ -6,6 +6,16 @@ use super::*;
 use crate::objects::{Create, CreateView};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// The view of level 0 of a texture that takes a chain (W632, the Architect's W1): the engine's
+/// look of a texture with one level, until the texture's chain is in its levels. The view has
+/// one level, so a sampler with a mip filter samples level 0 only, as with the filter off.
+fn level0_view(texture: &wgpu::Texture) -> Rc<wgpu::TextureView> {
+    Rc::new(texture.counted_view(&wgpu::TextureViewDescriptor {
+        mip_level_count: Some(1),
+        ..Default::default()
+    }))
+}
+
 /// The bind group of the frame: the resources of the extension, the clusters of the lights,
 /// the lights and the bones of the frame, and the buffers of the retained instances.
 #[track_caller]
@@ -771,6 +781,7 @@ impl Renderer {
             target_format,
             present_modes,
             anisotropy: 1,
+            mipmaps_for_one_level: true,
             samples,
             depth_format,
             multisample,
@@ -822,6 +833,10 @@ impl Renderer {
             textures: FxHashMap::default(),
             texture_objects: FxHashMap::default(),
             decoded: Default::default(),
+            chains: Default::default(),
+            chain_worker: None,
+            chain_generation: 0,
+            wait_for_chains: false,
             targets: FxHashMap::default(),
             surfaces: HashMap::new(),
             white,
@@ -919,7 +934,11 @@ impl Renderer {
                 // same object with new content (a map tile). Other facts (size, levels,
                 // format) mark a handle that named two objects: the instances of the slot
                 // draw the wrong texture (the fault of 2026-10-27, addresses as handles).
-                if pinned.uses != 0 && !Rc::ptr_eq(&pinned.view, &self.white) {
+                if pinned.uses != 0 && pinned.view.texture() == view.texture() {
+                    // W632: another view of the same texture (its level 0, or all its levels
+                    // once its chain is in them): the same object, not a handle that named two.
+                    self.counts.pinned_new_view += 1;
+                } else if pinned.uses != 0 && !Rc::ptr_eq(&pinned.view, &self.white) {
                     let (old, new) = (pinned.view.texture(), view.texture());
                     let facts = |t: &wgpu::Texture| (t.width(), t.height(), t.mip_level_count(), t.format());
                     let same = facts(old) == facts(new);
@@ -1425,6 +1444,24 @@ impl Renderer {
                 }
             }
         }
+        // W632: a texture with one level is made with all its levels, the levels below level 0
+        // with zeros, and shows through a view of level 0 (the engine's look) until the worker's
+        // chain is in it. A record that comes without its pixels gives its job at the update
+        // of level 0.
+        let mut made_levels = levels as u32;
+        self.chains.remove(&handle);
+        let chain =
+            levels == 1 && self.mipmaps_for_one_level && width.max(height) > 1 && crate::mip_chain::takes_chain(d3d_format);
+        let level0 = (chain && !pixels.is_empty()).then(|| bytes.clone());
+        if chain {
+            let below = crate::mip_chain::zero_levels_below(d3d_format, decode, width, height);
+            made_levels += below.len() as u32;
+            for level in &below {
+                bytes.extend_from_slice(level);
+                self.counts.chain_bytes += level.len() as u64;
+            }
+            self.counts.chain_textures += 1;
+        }
         let texture = self.device.counted_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
@@ -1434,7 +1471,7 @@ impl Renderer {
                     height,
                     depth_or_array_layers: 1,
                 },
-                mip_level_count: levels as u32,
+                mip_level_count: made_levels,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
@@ -1444,9 +1481,106 @@ impl Renderer {
             wgpu::util::TextureDataOrder::MipMajor,
             &bytes,
         );
-        self.set_texture(handle, Rc::new(texture.counted_view(&Default::default())));
+        let view = if chain {
+            level0_view(&texture)
+        } else {
+            Rc::new(texture.counted_view(&Default::default()))
+        };
+        self.set_texture(handle, view);
         self.texture_objects.insert(handle, (texture, d3d_format));
         self.counts.textures += 1;
+        if chain {
+            self.chains.insert(
+                handle,
+                crate::mip_chain::ChainState {
+                    generation: 0,
+                    d3d_format,
+                    decoded: decode,
+                    width,
+                    height,
+                    given: 0,
+                    full: None,
+                },
+            );
+            if let Some(level0) = level0 {
+                self.give_chain(handle, level0);
+            }
+        }
+    }
+
+    /// Gives the job of a texture's chain (W632): a new generation, so that a chain of an
+    /// earlier job is stale.
+    fn give_chain(&mut self, handle: u32, level0: Vec<u8>) {
+        let Some(state) = self.chains.get_mut(&handle) else { return };
+        self.chain_generation += 1;
+        state.generation = self.chain_generation;
+        state.given = self.counts.frames;
+        let job = crate::mip_chain::Job {
+            handle,
+            generation: state.generation,
+            d3d_format: state.d3d_format,
+            decoded: state.decoded,
+            width: state.width,
+            height: state.height,
+            level0,
+        };
+        let worker = self.chain_worker.get_or_insert_with(crate::mip_chain::Worker::start);
+        if worker.give(job) {
+            self.counts.chain_jobs += 1;
+        } else {
+            self.counts.chain_jobs_lost += 1;
+        }
+    }
+
+    /// The chains that the worker made, at a frame's start (W632): each goes into the levels of
+    /// its texture, and the texture then shows through the view of all its levels. A chain of an
+    /// earlier generation (the texture was made again or its level 0 written since) is dropped.
+    /// The replay waits for every job given before ([`Renderer::wait_for_chains`]).
+    pub(crate) fn take_chains(&mut self) {
+        let Some(worker) = self.chain_worker.as_mut() else { return };
+        for done in worker.take(self.wait_for_chains) {
+            self.counts.chain_seconds += done.seconds;
+            let current = self.chains.get(&done.handle).is_some_and(|s| s.generation == done.generation);
+            let Some((texture, _)) = self.texture_objects.get(&done.handle).filter(|_| current) else {
+                self.counts.chain_stale += 1;
+                continue;
+            };
+            let texture = texture.clone();
+            let state = &self.chains[&done.handle];
+            let (d3d_format, decoded, width, height, given) =
+                (state.d3d_format, state.decoded, state.width, state.height, state.given);
+            for (index, bytes) in done.levels.iter().enumerate() {
+                let level = 1 + index as u32;
+                let (w, h) = crate::mip_chain::size_of_level(width, height, level);
+                let (row, rows, extent) = crate::mip_chain::level_layout(d3d_format, decoded, w, h);
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: level,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(row),
+                        rows_per_image: Some(rows),
+                    },
+                    wgpu::Extent3d {
+                        width: extent.0,
+                        height: extent.1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            let full = Rc::new(texture.counted_view(&Default::default()));
+            self.set_texture(done.handle, full.clone());
+            if let Some(state) = self.chains.get_mut(&done.handle) {
+                state.full = Some(full);
+            }
+            self.counts.chain_swaps += 1;
+            self.counts.chain_most_delay = self.counts.chain_most_delay.max(self.counts.frames.saturating_sub(given));
+        }
     }
 
     /// The pipeline for a draw in screen coordinates: a frame of a film. It does not blend:
@@ -1561,6 +1695,8 @@ impl Renderer {
         } else {
             self.decoded.remove(&handle);
         }
+        // A texture that the game makes keeps the game's levels.
+        self.chains.remove(&handle);
         let all = 32 - width.max(height).leading_zeros();
         let levels = if levels == 0 { all } else { levels.min(all) };
         let texture = self.device.counted_texture(&wgpu::TextureDescriptor {
@@ -1615,6 +1751,7 @@ impl Renderer {
         let view = Rc::new(texture.counted_view(&Default::default()));
         self.set_texture(handle, view.clone());
         self.texture_objects.remove(&handle);
+        self.chains.remove(&handle);
         self.targets.insert(
             handle,
             RenderTexture {
@@ -1748,6 +1885,18 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+        // W632, the Architect's W2: a new level 0 of a texture that takes a chain. Its levels
+        // below hold the old picture, so it shows through the view of level 0 again from this
+        // frame, until the job of the new level 0 is done.
+        if level == 0 && self.chains.contains_key(&handle) {
+            let one = level0_view(texture);
+            let level0 = pixels.into_owned();
+            if self.chains.get_mut(&handle).and_then(|state| state.full.take()).is_some() {
+                self.set_texture(handle, one);
+            }
+            self.give_chain(handle, level0);
+            self.counts.chain_updates += 1;
+        }
         self.counts.texture_updates += 1;
     }
 
@@ -1990,6 +2139,7 @@ impl Renderer {
             self.texture_objects.remove(&handle);
             self.targets.remove(&handle);
             self.decoded.remove(&handle);
+            self.chains.remove(&handle);
             // The arrays stay from frame to frame: a slot of the frame's own part lets the
             // texture go. A pinned slot goes with its last use (`unpin_texture`).
             if let Some(&slot) = self.frame_texture_slots.get(&handle) {
@@ -3224,6 +3374,45 @@ mod link_decode_tests {
         let scope = renderer.device.push_error_scope(wgpu::ErrorFilter::Validation);
         renderer.texture_update(&update_record(handle, width, height));
         pollster::block_on(scope.pop())
+    }
+
+    /// W632, the Architect's W2: a texture that takes a chain shows its view of level 0 until its
+    /// job is done; an update of its level 0 shows the view of level 0 again, from that frame
+    /// until the new job is done, and a chain of the old job is stale. Needs a GPU:
+    /// `cargo test -p nirender-host -- --ignored chain_view --test-threads=1`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn chain_view_an_update_shows_level_0_until_its_new_chain() {
+        let mut renderer = renderer();
+        renderer.texture(&texture_record(9, 8, 8));
+        let shows = |r: &Renderer, view: &Rc<wgpu::TextureView>| Rc::ptr_eq(&r.textures[&9], view);
+        assert!(renderer.chains[&9].full.is_none(), "a full view before the job is done");
+        let level0 = renderer.textures[&9].clone();
+        renderer.wait_for_chains = true;
+        renderer.take_chains();
+        let full = renderer.chains[&9].full.clone().expect("the chain is in");
+        assert!(shows(&renderer, &full) && !shows(&renderer, &level0));
+        assert_eq!(renderer.textures[&9].texture().mip_level_count(), 4);
+        // An update of level 0: the view of level 0 again, and a new job.
+        assert!(update(&mut renderer, 9, 8, 8).is_none());
+        assert!(renderer.chains[&9].full.is_none() && !shows(&renderer, &full));
+        // Two updates before a take: the first job's chain is stale.
+        assert!(update(&mut renderer, 9, 8, 8).is_none());
+        renderer.take_chains();
+        let c = &renderer.counts;
+        assert_eq!((c.chain_jobs, c.chain_swaps, c.chain_stale, c.chain_updates), (3, 2, 1, 2));
+        assert!(renderer.chains[&9].full.as_ref().is_some_and(|full| shows(&renderer, full)));
+    }
+
+    /// The switch off: a texture with one level keeps its one level, with no job.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn chain_view_the_switch_off_keeps_one_level() {
+        let mut renderer = renderer();
+        renderer.mipmaps_for_one_level = false;
+        renderer.texture(&texture_record(9, 8, 8));
+        assert!(!renderer.chains.contains_key(&9) && renderer.chain_worker.is_none());
+        assert_eq!(renderer.textures[&9].texture().mip_level_count(), 1);
     }
 
     /// A link texture that this program decodes is marked, so that its update is decoded too and
