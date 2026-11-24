@@ -587,6 +587,24 @@ impl Instance {
             points,
         }
     }
+
+    /// Its handles are current for the tables' `generation`: the next note is due again only
+    /// after a raise or a mark, and the mark of path B (`texture_paths`) ends.
+    fn handles_current(&mut self, generation: u32) {
+        self.generation = generation;
+        self.freed_mark = false;
+    }
+
+    /// The path of a freed texture (`texture_paths`) that alone makes the next note due, for
+    /// the tables' `generation`. `other_due`: another cause makes the note due. `rechecked`:
+    /// the recheck of this display gave another generation.
+    fn texture_path(&self, generation: u32, other_due: bool, rechecked: bool) -> Option<usize> {
+        (self.generation != generation && !other_due && !rechecked).then_some(if self.freed_mark {
+            crate::texture_paths::FREED
+        } else {
+            crate::texture_paths::RAISE
+        })
+    }
 }
 
 impl Tables {
@@ -1245,7 +1263,7 @@ pub unsafe fn consider(
         return;
     }
     if let Some(instance) = t.instances.get_mut(&shape) {
-        instance.generation = t.generation;
+        instance.handles_current(t.generation);
         if instance.geometry != geometry || instance.material != material || instance.class != class {
             instance.geometry = geometry;
             instance.material = material;
@@ -2638,11 +2656,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     // The path of a freed texture that alone made the note due (W454, `texture_paths`): the
     // mark of path B, else a raise of the generation (path A). A recheck also gives another
     // generation, and `reset` clears `sent`: neither is a path's.
-    let texture_path = (instance.generation != generation && !other_due && !rechecked).then_some(if instance.freed_mark {
-        crate::texture_paths::FREED
-    } else {
-        crate::texture_paths::RAISE
-    });
+    let texture_path = instance.texture_path(generation, other_due, rechecked);
     let due = event_due || id.wrapping_add(frame).is_multiple_of(CHECK_FRAMES);
     if due && !event_due && periodic_reject(mt, t, shape, property_state) {
         return false;
@@ -2672,8 +2686,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             reject_at_record(mt, t, shape, cause);
             return false;
         }
-        instance.generation = generation;
-        instance.freed_mark = false;
+        instance.handles_current(generation);
         if effects_changed && instance.sent && instance.effect_versions != [(0, 0); 2] {
             t.effect_notes += 1;
         }
@@ -3605,6 +3618,29 @@ mod tests {
         assert!(instances[0].2 && instances[2].2);
         // Material 8 named no freed texture: unchanged.
         assert_eq!(instances[1], (8, 5, false));
+    }
+
+    #[test]
+    fn a_marked_instance_made_current_counts_a_later_raise_as_path_a() {
+        use crate::texture_paths::{FREED, RAISE};
+        let mut instance = Instance::new(80, 0, 1, 2, 5, false, false, false);
+        let gone: HashSet<u32> = [2u32].into_iter().collect();
+        let marked = mark_for_note(
+            core::iter::once((instance.material, &mut instance.generation, &mut instance.freed_mark)),
+            &gone,
+            5,
+        );
+        assert_eq!(marked, 1);
+        // The mark alone makes the note due: path B.
+        assert_eq!(instance.texture_path(5, false, false), Some(FREED));
+        // Another cause, or a recheck, makes the note due: no path.
+        assert_eq!(instance.texture_path(5, true, false), None);
+        assert_eq!(instance.texture_path(5, false, true), None);
+        // The engine records it again (`consider`) before its note: the handles are current
+        // and the mark ends, so a raise after it is path A.
+        instance.handles_current(5);
+        assert_eq!(instance.texture_path(5, false, false), None);
+        assert_eq!(instance.texture_path(6, false, false), Some(RAISE));
     }
 
     #[test]
