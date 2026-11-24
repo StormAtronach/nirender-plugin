@@ -108,8 +108,8 @@ const MIP_FILTER_LINEAR: u32 = 2;
 ///   engine's read reads level 0 only, as the engine reads such a map. Every other filter, the area
 ///   read among them, gets a linear filter between the levels that the map has, so that a read can
 ///   get to the level that it names.
-/// - Any other texture with one level gets no filter between levels. [I] The engine's filter for a
-///   texture with one level was not read.
+/// - Any other texture with one level gets no filter between levels. The engine's filter for a
+///   texture with one level was not read (an inference).
 /// - Any other texture with levels keeps the material's filter.
 pub(crate) fn level_filter(sampler: &mut [u32; 5], levels: u32, sky: Option<SkyMapFilter>) {
     sampler[4] = match sky {
