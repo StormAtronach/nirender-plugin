@@ -404,11 +404,11 @@ impl Renderer {
             .filter_map(|(index, map)| {
                 let texture = self.textures.get(&map.texture)?.clone();
                 let mut sampler = material::sampler_states(map.clamp, map.filter);
-                // A texture with one level gets no mip filter [I: the engine's filter for a
-                // texture with one level was not read].
-                if texture.texture().mip_level_count() <= 1 {
-                    sampler[4] = 0;
-                }
+                crate::mip_chain::level_filter(
+                    &mut sampler,
+                    texture.texture().mip_level_count(),
+                    self.chains.contains_key(&map.texture),
+                );
                 Some(HeldMap {
                     map: index,
                     texture,
@@ -1475,7 +1475,12 @@ impl Renderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                // A test reads the levels back.
+                usage: if cfg!(test) {
+                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC
+                } else {
+                    wgpu::TextureUsages::TEXTURE_BINDING
+                },
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::MipMajor,
@@ -3410,6 +3415,102 @@ mod link_decode_tests {
         let c = &renderer.counts;
         assert_eq!((c.chain_jobs, c.chain_swaps, c.chain_stale, c.chain_updates), (3, 2, 1, 2));
         assert!(renderer.chains[&9].full.as_ref().is_some_and(|full| shows(&renderer, full)));
+    }
+
+    /// The bytes of one level of a block texture, read back: `rows` rows of blocks of `row` bytes.
+    fn read_level(renderer: &Renderer, texture: &wgpu::Texture, level: u32, row: u32, rows: u32, extent: u32) -> Vec<u8> {
+        const ALIGN: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded = row.div_ceil(ALIGN) * ALIGN;
+        let buffer = renderer.device.counted_buffer(&wgpu::BufferDescriptor {
+            label: Some("a test's level"),
+            size: (padded * rows) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = renderer.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(rows),
+                },
+            },
+            wgpu::Extent3d {
+                width: extent,
+                height: extent,
+                depth_or_array_layers: 1,
+            },
+        );
+        renderer.queue.submit([encoder.finish()]);
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |result| result.expect("the read of a level"));
+        let _ = renderer.device.poll(wgpu::PollType::wait_indefinitely());
+        let mapped = buffer.slice(..).get_mapped_range().expect("the bytes of a level");
+        (0..rows as usize)
+            .flat_map(|r| mapped[r * padded as usize..r * padded as usize + row as usize].to_vec())
+            .collect()
+    }
+
+    /// The Architect's check of W632: the chain leaves level 0 as the record has it, byte for byte,
+    /// and its level 1 decodes near the 2 x 2 mean of level 0. A DXT5 texture of 8 x 8 with one
+    /// level: a grey ramp with an alpha ramp, encoded. The null: a level 0 that the chain wrote
+    /// again, or in another form, differs in its bytes. Needs a GPU:
+    /// `cargo test -p nirender-host -- --ignored chain_view --test-threads=1`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn chain_view_level_0_stays_the_records() {
+        const DXT5: u32 = 0x3554_5844;
+        let pixels: Vec<u8> = (0..64usize)
+            .flat_map(|i| {
+                // A grey ramp (colours on one line, as a DXT block fits them) and an alpha ramp, both
+                // gentle: a block's 4 colours then step less than the bound below.
+                let (x, y) = ((i % 8) as u8, (i / 8) as u8);
+                let grey = 60 + (x + y) * 3;
+                [grey, grey, grey, 255 - x * 5]
+            })
+            .collect();
+        let level0 = crate::mip_chain::encode(DXT5, 8, 8, &pixels);
+        assert_eq!(level0.len(), 64);
+        let words = [9, 0, 8, 8, 1, DXT5, 0, 0, 0, 0, 64, 8, 8];
+        let mut record: Vec<u8> = words.iter().flat_map(|word: &u32| word.to_le_bytes()).collect();
+        record.extend_from_slice(&level0);
+        let mut renderer = renderer();
+        renderer.texture(&record);
+        renderer.wait_for_chains = true;
+        renderer.take_chains();
+        assert!(renderer.chains[&9].full.is_some(), "the chain is in");
+        let texture = renderer.texture_objects[&9].0.clone();
+        // Level 0: 2 rows of 2 blocks of 16 bytes.
+        assert_eq!(read_level(&renderer, &texture, 0, 32, 2, 8), level0);
+        // Level 1: 1 block for 4 x 4 pixels: the worker's bytes, and near the 2 x 2 mean of level
+        // 0's decoded pixels.
+        let level1 = read_level(&renderer, &texture, 1, 16, 1, 4);
+        assert_eq!(level1, crate::mip_chain::levels_below(DXT5, false, 8, 8, &level0)[0]);
+        let source = crate::d3d::decode_dxt(DXT5, 8, 8, &level0);
+        let made = crate::d3d::decode_dxt(DXT5, 4, 4, &level1);
+        let mut most = 0i32;
+        for y in 0..4 {
+            for x in 0..4 {
+                for c in 0..4 {
+                    let at = |px: usize, py: usize| source[(py * 8 + px) * 4 + c] as i32;
+                    let mean =
+                        (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1) + 2) / 4;
+                    most = most.max((made[(y * 4 + x) * 4 + c] as i32 - mean).abs());
+                }
+            }
+        }
+        // The bound of the encoder's plane test (mip_chain::tests::the_blocks_decode_near_their_pixels).
+        assert!(most <= 10, "level 1 is {most} levels from the 2 x 2 mean");
+        println!("level 1: the largest difference from the 2 x 2 mean, {most} levels");
     }
 
     /// The switch off: a texture with one level keeps its one level, with no job.

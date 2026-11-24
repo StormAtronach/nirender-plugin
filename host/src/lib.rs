@@ -559,6 +559,7 @@ impl Pass {
         pass: usize,
         m: &material::Material,
         textures: &FxHashMap<u32, Rc<wgpu::TextureView>>,
+        chains: &FxHashMap<u32, mip_chain::ChainState>,
         effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>,
     ) -> Pass {
         const NONE: PassStage = PassStage {
@@ -603,10 +604,12 @@ impl Pass {
                 source => (m.map_of_source(source).clamp, m.map_of_source(source).filter),
             };
             let mut sampler = material::sampler_states(clamp, filter);
-            // A texture with one level gets no mip filter. [I] The engine's filter for a
-            // texture with one level was not read.
-            if textures.get(&st.texture).is_some_and(|t| t.texture().mip_level_count() <= 1) {
-                sampler[4] = 0;
+            if let Some(view) = textures.get(&st.texture) {
+                mip_chain::level_filter(
+                    &mut sampler,
+                    view.texture().mip_level_count(),
+                    chains.contains_key(&st.texture),
+                );
             }
             *stage = PassStage {
                 color: st.color,

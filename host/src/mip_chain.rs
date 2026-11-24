@@ -25,6 +25,26 @@ pub(crate) fn takes_chain(d3d_format: u32) -> bool {
     matches!(d3d_format, DXT1 | DXT3 | DXT5 | 21 | 22)
 }
 
+/// D3DTEXF_NONE and D3DTEXF_LINEAR, the filter between levels (D3DTSS_MIPFILTER).
+const MIP_FILTER_NONE: u32 = 0;
+const MIP_FILTER_LINEAR: u32 = 2;
+
+/// The filter between the levels of a stage's texture, in `sampler[4]` (the Architect's W632 ruling (b)).
+///
+/// - A texture whose levels this program made (`chained`) gets a linear filter between them, whatever
+///   filter the material names. Its file has one level, so in the engine a filter between levels has
+///   nothing to filter: BILERP and TRILERP give the same picture for it. The moons are such a case:
+///   `NiTexturingProperty::ctor_fromFile` (0x6E1910) gives their map FILTER_BILERP (0x6E19B3).
+/// - Any other texture with one level gets none.
+/// - A texture with levels of its own keeps the material's filter.
+pub(crate) fn level_filter(sampler: &mut [u32; 5], levels: u32, chained: bool) {
+    if chained {
+        sampler[4] = MIP_FILTER_LINEAR;
+    } else if levels <= 1 {
+        sampler[4] = MIP_FILTER_NONE;
+    }
+}
+
 /// True when the levels are blocks: a block format that is not decoded into 4 bytes a pixel.
 fn as_blocks(d3d_format: u32, decoded: bool) -> bool {
     !decoded && matches!(d3d_format, DXT1 | DXT3 | DXT5)
@@ -240,7 +260,7 @@ fn half(pixels: &[u8], width: usize, height: usize) -> (Vec<u8>, usize, usize) {
 }
 
 /// The blocks of a level of 4 bytes a pixel. A block past the edge repeats the edge's pixels.
-fn encode(d3d_format: u32, width: usize, height: usize, pixels: &[u8]) -> Vec<u8> {
+pub(crate) fn encode(d3d_format: u32, width: usize, height: usize, pixels: &[u8]) -> Vec<u8> {
     let block_bytes = if d3d_format == DXT1 { 8 } else { 16 };
     let (across, down) = (width.div_ceil(4), height.div_ceil(4));
     let mut out = Vec::with_capacity(across * down * block_bytes);
@@ -457,6 +477,24 @@ mod tests {
         // Decoded: 4 bytes a pixel.
         let below = levels_below(DXT5, true, 6, 6, &vec![0u8; 6 * 6 * 4]);
         assert_eq!(below.iter().map(Vec::len).collect::<Vec<_>>(), vec![3 * 3 * 4, 4]);
+    }
+
+    /// The Architect's ruling (b): a chained texture filters between its levels whatever the material
+    /// names; another texture with one level gets no such filter; a texture with levels of its own
+    /// keeps the material's filter (the null: BILERP's 0 and TRILERP's 2 stay as they are).
+    #[test]
+    fn a_chained_texture_filters_between_its_levels() {
+        let bilerp = crate::material::sampler_states(3, 1);
+        let trilerp = crate::material::sampler_states(3, 2);
+        let with = |mut sampler: [u32; 5], levels, chained| {
+            level_filter(&mut sampler, levels, chained);
+            sampler[4]
+        };
+        assert_eq!((bilerp[4], trilerp[4]), (0, 2));
+        assert_eq!(with(bilerp, 12, true), 2);
+        assert_eq!(with(trilerp, 1, false), 0);
+        assert_eq!(with(bilerp, 12, false), 0);
+        assert_eq!(with(trilerp, 12, false), 2);
     }
 
     /// The null: a texture of one colour gives levels of that colour.
