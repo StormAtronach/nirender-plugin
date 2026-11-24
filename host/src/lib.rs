@@ -553,7 +553,8 @@ impl Pass {
     /// `effects` is the stages of the environment map and of the fog map from the shape
     /// record (the texture pass of the game makes them from the effect and the camera of
     /// the frame); without them a stage of an effect gets the generation of its kind and no
-    /// transform.
+    /// transform. `sky` is true for a draw of the sky with `graphics.sky_mip_filter` on
+    /// ([`Renderer::sky_levels`]): its textures with levels filter between them.
     fn new(
         d: &material::Derived,
         pass: usize,
@@ -561,6 +562,7 @@ impl Pass {
         textures: &FxHashMap<u32, Rc<wgpu::TextureView>>,
         chains: &FxHashMap<u32, mip_chain::ChainState>,
         effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>,
+        sky: bool,
     ) -> Pass {
         const NONE: PassStage = PassStage {
             color: [1, 0, 0],
@@ -609,6 +611,7 @@ impl Pass {
                     &mut sampler,
                     view.texture().mip_level_count(),
                     chains.contains_key(&st.texture),
+                    sky,
                 );
             }
             *stage = PassStage {
@@ -790,6 +793,10 @@ struct Renderer {
     /// the extension's settings (`graphics.mipmaps_for_one_level`) or the replay's
     /// `--mipmaps-for-one-level`.
     mipmaps_for_one_level: bool,
+    /// The draws of the sky filter between the levels of their textures ([`Renderer::sky_levels`];
+    /// the Architect's W632 re-ruling), from the extension's settings (`graphics.sky_mip_filter`) or
+    /// the replay's `--sky-mip-filter`.
+    sky_mip_filter: bool,
     /// The samples for each pixel of the targets of the frame ([`Extension::samples`], cut to
     /// what the adapter has), and the pipelines of the resolves with more than one.
     samples: u32,

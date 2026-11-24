@@ -157,10 +157,18 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         Some("off") => false,
         _ => extension.as_ref().is_none_or(|extension| extension.mipmaps_for_one_level()),
     };
+    // The Architect's W632 re-ruling: the draws of the sky filter between the levels of their
+    // textures; the argument names the arm of an A/B.
+    let sky_mip_filter = match option(&args, "--sky-mip-filter").as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        _ => extension.as_ref().is_some_and(|extension| extension.sky_mip_filter()),
+    };
     println!(
-        "{} records, {frames} frames, frame {wanted} into {width} x {height}, mipmaps for one level {}",
+        "{} records, {frames} frames, frame {wanted} into {width} x {height}, mipmaps for one level {}, sky mip filter {}",
         records.len(),
-        if mipmaps_for_one_level { "on" } else { "off" }
+        if mipmaps_for_one_level { "on" } else { "off" },
+        if sky_mip_filter { "on" } else { "off" }
     );
 
     // The samples of the extension's settings, as in the live mode; `MGE_XE_SAMPLES` is for a test.
@@ -191,6 +199,7 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         .or(extension.as_ref().map(|extension| extension.anisotropy()))
         .unwrap_or(1);
     player.renderer.mipmaps_for_one_level = mipmaps_for_one_level;
+    player.renderer.sky_mip_filter = sky_mip_filter;
     // W632, the Architect's W5: the replay waits at each frame's start for the chains of the
     // jobs given before, so that its picture is the same at each run. So a replay shows a chain
     // as early as a frame can, and a live run some frames later: a replay A/B measures the

@@ -611,6 +611,8 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
     ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
     ap.add_argument("--mipmaps-for-one-level", choices=("on", "off"), default=None,
                     help="the levels below a texture with one level (W632); without this, the setting of the mgeXE.toml")
+    ap.add_argument("--sky-mip-filter", choices=("on", "off"), default=None,
+                    help="the sky's draws filter between the levels of their textures (W632); without this, the setting of the mgeXE.toml")
     ap.add_argument("--marks-every", type=int, default=None, help="a mark after every N frames: the helper's time for each frame by part")
     ap.add_argument("--debug-view", nargs="+", metavar=("NAME", "TERM"), help="the shader view of the replay, and its term for water and post")
     ap.add_argument("--debug-lines", metavar="NAME,NAME", help="the line sources of the replay, with commas (no lines are drawn before piece 3 of the debug views)")
@@ -674,6 +676,8 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
         command += ["--anisotropy", str(args.anisotropy)]
     if args.mipmaps_for_one_level is not None:
         command += ["--mipmaps-for-one-level", args.mipmaps_for_one_level]
+    if args.sky_mip_filter is not None:
+        command += ["--sky-mip-filter", args.sky_mip_filter]
     if args.marks_every:
         command += ["--marks-every", str(args.marks_every)]
     # The helper checks the names and the term.

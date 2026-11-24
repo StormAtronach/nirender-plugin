@@ -394,6 +394,13 @@ pub(crate) enum WindowTarget {
 }
 
 impl Renderer {
+    /// True when a draw of this object class (MGE_LINK_CLASS_*) filters between the levels of its
+    /// textures: a class of the sky (1 to 7, not the sun's glare) with `graphics.sky_mip_filter` on.
+    /// The plugin gives the class from the weather controller's nodes, not from a texture's name.
+    pub(crate) fn sky_levels(&self, class: u32) -> bool {
+        self.sky_mip_filter && crate::engine::scene::sky_class(class)
+    }
+
     /// The maps of a material that have a texture, for a shape that the extension holds
     /// ([`HeldDraw::maps`]): `sets` is the number of texture coordinate sets of its geometry.
     pub(crate) fn held_maps(&self, m: &material::Material, sets: u32) -> Vec<HeldMap> {
@@ -408,6 +415,8 @@ impl Renderer {
                     &mut sampler,
                     texture.texture().mip_level_count(),
                     self.chains.contains_key(&map.texture),
+                    // The extension holds no draw of the sky (`hold_shape`).
+                    false,
                 );
                 Some(HeldMap {
                     map: index,
@@ -782,6 +791,7 @@ impl Renderer {
             present_modes,
             anisotropy: 1,
             mipmaps_for_one_level: true,
+            sky_mip_filter: false,
             samples,
             depth_format,
             multisample,

@@ -35,10 +35,13 @@ const MIP_FILTER_LINEAR: u32 = 2;
 ///   filter the material names. Its file has one level, so in the engine a filter between levels has
 ///   nothing to filter: BILERP and TRILERP give the same picture for it. The moons are such a case:
 ///   `NiTexturingProperty::ctor_fromFile` (0x6E1910) gives their map FILTER_BILERP (0x6E19B3).
+/// - A texture of a sky draw (`sky`: a class of the sky, with `graphics.sky_mip_filter` on) that has
+///   levels gets a linear filter between them too: the Architect's W632 re-ruling. The engine gives
+///   the sky's maps no filter between levels, so a large level 0 drawn small reads only level 0.
 /// - Any other texture with one level gets none.
-/// - A texture with levels of its own keeps the material's filter.
-pub(crate) fn level_filter(sampler: &mut [u32; 5], levels: u32, chained: bool) {
-    if chained {
+/// - Any other texture with levels of its own keeps the material's filter.
+pub(crate) fn level_filter(sampler: &mut [u32; 5], levels: u32, chained: bool, sky: bool) {
+    if chained || (sky && levels > 1) {
         sampler[4] = MIP_FILTER_LINEAR;
     } else if levels <= 1 {
         sampler[4] = MIP_FILTER_NONE;
@@ -487,7 +490,7 @@ mod tests {
         let bilerp = crate::material::sampler_states(3, 1);
         let trilerp = crate::material::sampler_states(3, 2);
         let with = |mut sampler: [u32; 5], levels, chained| {
-            level_filter(&mut sampler, levels, chained);
+            level_filter(&mut sampler, levels, chained, false);
             sampler[4]
         };
         assert_eq!((bilerp[4], trilerp[4]), (0, 2));
@@ -495,6 +498,24 @@ mod tests {
         assert_eq!(with(trilerp, 1, false), 0);
         assert_eq!(with(bilerp, 12, false), 0);
         assert_eq!(with(trilerp, 12, false), 2);
+    }
+
+    /// The Architect's W632 re-ruling: a texture of a sky draw with levels (its own or a chain's)
+    /// filters between them, also under BILERP; a sky texture with one level and no chain gets no
+    /// filter between levels.
+    #[test]
+    fn a_sky_texture_with_levels_filters_between_them() {
+        let bilerp = crate::material::sampler_states(3, 1);
+        let trilerp = crate::material::sampler_states(3, 2);
+        let with = |mut sampler: [u32; 5], levels, chained| {
+            level_filter(&mut sampler, levels, chained, true);
+            sampler[4]
+        };
+        assert_eq!(with(bilerp, 7, false), 2);
+        assert_eq!(with(bilerp, 12, true), 2);
+        assert_eq!(with(bilerp, 1, false), 0);
+        assert_eq!(with(trilerp, 1, false), 0);
+        assert_eq!(with(trilerp, 7, false), 2);
     }
 
     /// The null: a texture of one colour gives levels of that colour.

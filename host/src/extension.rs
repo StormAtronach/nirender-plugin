@@ -575,6 +575,12 @@ pub trait Extension {
         true
     }
 
+    /// True when the draws of the sky filter between the levels of their textures (the
+    /// Architect's W632 re-ruling), from the settings of the extension.
+    fn sky_mip_filter(&self) -> bool {
+        false
+    }
+
     /// The frames that may wait for the GPU before the window shows them, from the settings of
     /// the extension (1 to 3). Fewer frames is less lag of the mouse when the GPU is behind;
     /// more frames keep a slow GPU busier. The window asks one time, when it is made.
