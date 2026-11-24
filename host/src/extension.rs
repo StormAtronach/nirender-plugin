@@ -565,9 +565,6 @@ pub struct HostReadiness {
     /// those sent that it has not given back. The keys of the uber set of a start with no list are
     /// not in it. 0 when the stage shaders are off and when the list is made.
     pub list_jobs: usize,
-    /// The jobs of the mip chains of the textures given since the last game load (W632); 0 until
-    /// the renderer has such jobs.
-    pub chain_jobs: usize,
 }
 
 /// A program that draws more than the game does: for example the distant land of MGE XE.
