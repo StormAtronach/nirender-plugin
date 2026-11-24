@@ -415,6 +415,7 @@ impl Player {
         self.retained.clear_shown();
         self.renderer.counts.view_times.frame_start(self.renderer.counts.frames);
         self.renderer.counts.close_write_frame();
+        self.renderer.counts.close_busy_frame();
         // W632: the chains that the worker made go into their textures before the frame's draws.
         self.renderer.take_chains();
         // The shade of the last frame, for a view of another camera before any view of the

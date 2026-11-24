@@ -1527,6 +1527,7 @@ impl Renderer {
         let worker = self.chain_worker.get_or_insert_with(crate::mip_chain::Worker::start);
         if worker.give(job) {
             self.counts.chain_jobs += 1;
+            self.counts.note_chain_frame(1, 0);
         } else {
             self.counts.chain_jobs_lost += 1;
         }
@@ -1538,7 +1539,12 @@ impl Renderer {
     /// The replay waits for every job given before ([`Renderer::wait_for_chains`]).
     pub(crate) fn take_chains(&mut self) {
         let Some(worker) = self.chain_worker.as_mut() else { return };
-        for done in worker.take(self.wait_for_chains) {
+        let finished = worker.take(self.wait_for_chains);
+        if finished.is_empty() {
+            return;
+        }
+        let clock = ticks::Clock::now();
+        for done in finished {
             self.counts.chain_seconds += done.seconds;
             let current = self.chains.get(&done.handle).is_some_and(|s| s.generation == done.generation);
             let Some((texture, _)) = self.texture_objects.get(&done.handle).filter(|_| current) else {
@@ -1579,8 +1585,10 @@ impl Renderer {
                 state.full = Some(full);
             }
             self.counts.chain_swaps += 1;
+            self.counts.note_chain_frame(0, 1);
             self.counts.chain_most_delay = self.counts.chain_most_delay.max(self.counts.frames.saturating_sub(given));
         }
+        self.counts.times[crate::TIME_CHAINS] += clock.elapsed();
     }
 
     /// The pipeline for a draw in screen coordinates: a frame of a film. It does not blend:

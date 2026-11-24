@@ -44,6 +44,11 @@ impl Player {
         for ((name, now), before) in TIME_NAMES.iter().zip(counts.times).zip(self.mark_times) {
             println!("  {:6.3}  {name}", per_frame(now - before));
         }
+        let (worst, worst_frame) = counts.busy_worst;
+        println!(
+            "  the busiest frame: {:.3} ms (frame {worst_frame})",
+            ticks::duration(worst).as_secs_f64() * 1000.0
+        );
         let timed = counts.gpu_frames - self.mark_gpu.2;
         if timed != 0 {
             let per_frame = |now: f64, before: f64| (now - before) / 1e6 / timed as f64;
@@ -84,6 +89,7 @@ impl Player {
         self.mark_frames = counts.frames;
         self.mark_draws = counts.draws;
         self.mark_runs = counts.pipeline_runs;
+        self.renderer.counts.busy_worst = (0, 0);
     }
 
     pub(crate) fn print_counts(&self) {
@@ -467,6 +473,27 @@ impl Player {
             shown.len(),
             alpha_tested
         );
+        // The chain work by frame: a load gives one run, a cell that the play loads later gives
+        // a run of its own. A run ends at a gap of more than 60 frames.
+        if !c.chain_frames.is_empty() {
+            const SHOWN_RUNS: usize = 24;
+            let runs = c.chain_runs(60);
+            let mut text: Vec<String> = runs
+                .iter()
+                .take(SHOWN_RUNS)
+                .map(|(first, last, jobs, swaps)| format!("frames {first}-{last}: jobs {jobs}, chains {swaps}"))
+                .collect();
+            if runs.len() > SHOWN_RUNS {
+                text.push(format!("{} more runs", runs.len() - SHOWN_RUNS));
+            }
+            let (most_frame, most_swaps) = c.chain_most_swaps().unwrap_or((0, 0));
+            println!(
+                "  mipmaps for one level by frame: {}; the most chains of a frame: {} in frame {}",
+                text.join("; "),
+                most_swaps,
+                most_frame
+            );
+        }
         for (reason, count) in &c.lost_reasons {
             println!("  not written: {reason}: {count}");
         }
