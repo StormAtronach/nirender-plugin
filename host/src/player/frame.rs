@@ -510,6 +510,8 @@ impl Player {
     /// first world scene after a read of the back buffer ([`plan::Step::NewPicture`]), where the
     /// game draws a second picture before its Present. The plan resets itself. The GPU frame
     /// stays: the encoder, the scene slots, the frame's arrays and the extension's answers.
+    /// A field that this function resets also goes into `picture_state` of the tests below
+    /// (and into `dirty` when a test can fill it): the test of W166 checks only that list.
     pub(crate) fn picture_start(&mut self) {
         self.world_draws.clear();
         self.world_prepared = false;
