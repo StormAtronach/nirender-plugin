@@ -50,7 +50,8 @@ struct Stage {
     // A bump stage with luminance: the scale and the offset of the luminance.
     luminance: vec4f,
     // The texture and the sampler of the stage among the arrays of the frame (with the
-    // arrays on: see `array_shader`).
+    // arrays on: see `array_shader`), and the entry of its texture effect (0 for none). The w
+    // of stage 0 of a record: the distance to the draw's overflow record (`stage_record`).
     slots: vec4u,
 }
 
@@ -90,9 +91,11 @@ struct Draw {
     // an entry of `cluster_indexes` is the slot in its high half and the index in `lights`
     // in its low half, and a pixel takes the light only when the draw has its bit.
     light_mask: array<vec4u, 2>,
-    stages: array<Stage, 6>,
-    // The texture transform of each stage.
-    texture_transforms: array<mat4x4f, 6>,
+    // The first RECORD_STAGES stages; the later stages are in the overflow record
+    // (`stage_record`).
+    stages: array<Stage, RECORD_STAGES>,
+    // The texture transform of each of these stages.
+    texture_transforms: array<mat4x4f, RECORD_STAGES>,
     // 1 / width and -1 / height of the viewport.
     pixel: vec4f,
     // The values of the extension for its sky functions.
@@ -211,12 +214,16 @@ const FIXED_COLOR_2: u32 = 0u;
 const FIXED_COLOR_3: u32 = 0u;
 const FIXED_COLOR_4: u32 = 0u;
 const FIXED_COLOR_5: u32 = 0u;
+const FIXED_COLOR_6: u32 = 0u;
+const FIXED_COLOR_7: u32 = 0u;
 const FIXED_ALPHA_0: u32 = 0u;
 const FIXED_ALPHA_1: u32 = 0u;
 const FIXED_ALPHA_2: u32 = 0u;
 const FIXED_ALPHA_3: u32 = 0u;
 const FIXED_ALPHA_4: u32 = 0u;
 const FIXED_ALPHA_5: u32 = 0u;
+const FIXED_ALPHA_6: u32 = 0u;
+const FIXED_ALPHA_7: u32 = 0u;
 // STAGE FACTS END
 // The bits of `counts.w` that a stage key holds (`stage_shaders::SHADE_BITS`), and the sky's bits
 // among them, which the scene's part never has (`stage_shaders::SKY_BITS`).
@@ -257,6 +264,27 @@ fn stage_count() -> u32 {
 fn stage_codes(word: u32) -> vec4u {
     return vec4u(word & 255u, (word >> 8u) & 255u, (word >> 16u) & 255u, word >> 24u);
 }
+// The stages of a draw in its record. A draw of more stages has an overflow record with the
+// later stages from its stage 0, at the distance in `slots.w` of the record's stage 0 from the
+// record (0 when the draw has none).
+const RECORD_STAGES: u32 = 6u;
+
+// The record that holds stage `index` of the draw.
+fn stage_record(index: u32) -> u32 {
+    if index < RECORD_STAGES {
+        return record;
+    }
+    return record + draws[record].stages[0].slots.w;
+}
+
+// The place of stage `index` in the stages of its record (`stage_record`).
+fn stage_place(index: u32) -> u32 {
+    if index < RECORD_STAGES {
+        return index;
+    }
+    return index - RECORD_STAGES;
+}
+
 // The colour operation and its arguments 1, 2 and 0 of stage `index` (`stage.color`).
 fn stage_color(index: u32) -> vec4u {
     if FIXED {
@@ -266,10 +294,12 @@ fn stage_color(index: u32) -> vec4u {
             case 2u: { return stage_codes(FIXED_COLOR_2); }
             case 3u: { return stage_codes(FIXED_COLOR_3); }
             case 4u: { return stage_codes(FIXED_COLOR_4); }
-            default: { return stage_codes(FIXED_COLOR_5); }
+            case 5u: { return stage_codes(FIXED_COLOR_5); }
+            case 6u: { return stage_codes(FIXED_COLOR_6); }
+            default: { return stage_codes(FIXED_COLOR_7); }
         }
     }
-    return draws[record].stages[index].color;
+    return draws[stage_record(index)].stages[stage_place(index)].color;
 }
 // The alpha operation and its arguments 1 and 2 of stage `index` (`stage.alpha`).
 fn stage_alpha(index: u32) -> vec3u {
@@ -280,10 +310,12 @@ fn stage_alpha(index: u32) -> vec3u {
             case 2u: { return stage_codes(FIXED_ALPHA_2).xyz; }
             case 3u: { return stage_codes(FIXED_ALPHA_3).xyz; }
             case 4u: { return stage_codes(FIXED_ALPHA_4).xyz; }
-            default: { return stage_codes(FIXED_ALPHA_5).xyz; }
+            case 5u: { return stage_codes(FIXED_ALPHA_5).xyz; }
+            case 6u: { return stage_codes(FIXED_ALPHA_6).xyz; }
+            default: { return stage_codes(FIXED_ALPHA_7).xyz; }
         }
     }
-    return draws[record].stages[index].alpha.xyz;
+    return draws[stage_record(index)].stages[stage_place(index)].alpha.xyz;
 }
 // Whether the plane `plane` of the draw can clip: a key without a plane has none.
 fn draw_has_plane(plane: vec4f) -> bool {
@@ -475,31 +507,107 @@ struct VertexIn {
     @location(13) record: vec2u,
 }
 
+// The values of a vertex and of a pixel, as the stages of the shader and the extensions
+// (`extension_shade`) read them. The shader sends them from the vertex stage to the fragment
+// stage packed, in a `StageOut`.
 struct VertexOut {
+    // The position in the clip space; in the fragment stage, the position of the pixel.
+    clip: vec4f,
+    color: vec4f,
+    // The texture coordinate of each stage, before the divide of a projected one.
+    coordinate0: vec4f,
+    coordinate1: vec4f,
+    coordinate2: vec4f,
+    coordinate3: vec4f,
+    coordinate4: vec4f,
+    coordinate5: vec4f,
+    coordinate6: vec4f,
+    coordinate7: vec4f,
+    fog: f32,
+    // For the light of a pixel: the position and the normal in the space of the lights, and
+    // the colour of the vertex.
+    world_position: vec3f,
+    world_normal: vec3f,
+    vertex_color: vec4f,
+    record: u32,
+    // Flat shading (bit 16 of `light_range.w`, a material with NiShadeProperty off): the
+    // lit colour and the normal of the first vertex of the triangle, as Direct3D 8 drew it
+    // (D3DSHADE_FLAT). The same values as `color` and `world_normal`, not blended.
+    color_flat: vec4f,
+    world_normal_flat: vec3f,
+    // A particle lit at its corners (CORNER_LIGHT_BIT): the light its corners take, for the
+    // lights view; 0 for any other draw.
+    corner_light: vec3f,
+}
+
+// A `VertexOut` between the stages. Two pairs of values share a location, so that the
+// coordinates of all the stages fit in the locations of the downlevel profile (15):
+// - the fog depth is the w of the world position (both interpolated with the perspective);
+// - the record is the w of the flat normal (both flat, of the first vertex). It is a float:
+//   a float holds each whole number below 2^24 exactly, and the records of one binding are
+//   fewer (`RECORD_SIZE` in data.rs). A record cast bit for bit would be a subnormal float,
+//   which a driver can make 0.
+struct StageOut {
     @builtin(position) clip: vec4f,
     @location(0) color: vec4f,
-    // The texture coordinate of each stage, before the divide of a projected one.
     @location(1) coordinate0: vec4f,
     @location(2) coordinate1: vec4f,
     @location(3) coordinate2: vec4f,
     @location(4) coordinate3: vec4f,
     @location(5) coordinate4: vec4f,
     @location(6) coordinate5: vec4f,
-    @location(7) fog: f32,
-    // For the light of a pixel: the position and the normal in the space of the lights, and
-    // the colour of the vertex.
-    @location(8) world_position: vec3f,
-    @location(9) world_normal: vec3f,
-    @location(10) vertex_color: vec4f,
-    @location(11) @interpolate(flat) record: u32,
-    // Flat shading (bit 16 of `light_range.w`, a material with NiShadeProperty off): the
-    // lit colour and the normal of the first vertex of the triangle, as Direct3D 8 drew it
-    // (D3DSHADE_FLAT). The same values as `color` and `world_normal`, not blended.
-    @location(12) @interpolate(flat, first) color_flat: vec4f,
-    @location(13) @interpolate(flat, first) world_normal_flat: vec3f,
-    // A particle lit at its corners (CORNER_LIGHT_BIT): the light its corners take, for the
-    // lights view; 0 for any other draw.
-    @location(14) corner_light: vec3f,
+    @location(7) world_position_fog: vec4f,
+    @location(8) world_normal: vec3f,
+    @location(9) vertex_color: vec4f,
+    @location(10) @interpolate(flat, first) color_flat: vec4f,
+    @location(11) @interpolate(flat, first) world_normal_flat_record: vec4f,
+    @location(12) corner_light: vec3f,
+    @location(13) coordinate6: vec4f,
+    @location(14) coordinate7: vec4f,
+}
+
+fn stage_out(v: VertexOut) -> StageOut {
+    var s: StageOut;
+    s.clip = v.clip;
+    s.color = v.color;
+    s.coordinate0 = v.coordinate0;
+    s.coordinate1 = v.coordinate1;
+    s.coordinate2 = v.coordinate2;
+    s.coordinate3 = v.coordinate3;
+    s.coordinate4 = v.coordinate4;
+    s.coordinate5 = v.coordinate5;
+    s.coordinate6 = v.coordinate6;
+    s.coordinate7 = v.coordinate7;
+    s.world_position_fog = vec4f(v.world_position, v.fog);
+    s.world_normal = v.world_normal;
+    s.vertex_color = v.vertex_color;
+    s.color_flat = v.color_flat;
+    s.world_normal_flat_record = vec4f(v.world_normal_flat, f32(v.record));
+    s.corner_light = v.corner_light;
+    return s;
+}
+
+fn vertex_out(s: StageOut) -> VertexOut {
+    var v: VertexOut;
+    v.clip = s.clip;
+    v.color = s.color;
+    v.coordinate0 = s.coordinate0;
+    v.coordinate1 = s.coordinate1;
+    v.coordinate2 = s.coordinate2;
+    v.coordinate3 = s.coordinate3;
+    v.coordinate4 = s.coordinate4;
+    v.coordinate5 = s.coordinate5;
+    v.coordinate6 = s.coordinate6;
+    v.coordinate7 = s.coordinate7;
+    v.fog = s.world_position_fog.w;
+    v.world_position = s.world_position_fog.xyz;
+    v.world_normal = s.world_normal;
+    v.vertex_color = s.vertex_color;
+    v.record = u32(s.world_normal_flat_record.w);
+    v.color_flat = s.color_flat;
+    v.world_normal_flat = s.world_normal_flat_record.xyz;
+    v.corner_light = s.corner_light;
+    return v;
 }
 
 // The colour of a particle's corner after its lights (`extension_corner_shade` of the
@@ -533,7 +641,9 @@ struct ParticlePixel {
 
 // The texture coordinate of a stage, as the fixed-function pipeline makes it.
 fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view_normal: vec3f, world_position: vec3f, world_normal: vec3f) -> vec4f {
-    let how = draws[record].stages[index].coordinate;
+    let holder = stage_record(index);
+    let place = stage_place(index);
+    let how = draws[holder].stages[place].coordinate;
     var sets = uvs;
     var value: vec4f;
     switch how.x {
@@ -561,11 +671,11 @@ fn stage_coordinate(index: u32, uvs: array<vec2f, 4>, view_position: vec3f, view
         default: { value = vec4f(sets[how.y & 3u], 1.0, 0.0); }
     }
     if how.z != 0u {
-        let entry = draws[record].stages[index].slots.z;
+        let entry = draws[holder].stages[place].slots.z;
         if entry != 0u {
             value = effect_entries[entry - 1u] * value;
         } else {
-            value = draws[record].texture_transforms[index] * value;
+            value = draws[holder].texture_transforms[place] * value;
         }
     }
     return value;
@@ -580,7 +690,7 @@ fn skin_bone(index: u32) -> mat4x4f {
 }
 
 @vertex
-fn vs(in: VertexIn) -> VertexOut {
+fn vs(in: VertexIn) -> StageOut {
     record = in.record.x;
     var local = vec4f(in.position, 1.0);
     if (draw_counts_w() & 4u) != 0u {
@@ -680,6 +790,8 @@ fn vs(in: VertexIn) -> VertexOut {
     out.coordinate3 = stage_coordinate(3u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
     out.coordinate4 = stage_coordinate(4u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
     out.coordinate5 = stage_coordinate(5u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
+    out.coordinate6 = stage_coordinate(6u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
+    out.coordinate7 = stage_coordinate(7u, uvs, view_position.xyz, view_normal, world_position.xyz, world_normal);
 
     var vertex_color = vec4f(1.0);
     if draws[record].flags.z != 0u {
@@ -771,7 +883,7 @@ fn vs(in: VertexIn) -> VertexOut {
     if draw_fog().w != 0.0 {
         out.fog = length(view_position.xyz);
     }
-    return out;
+    return stage_out(out);
 }
 
 // An argument of a stage: D3DTA_*.
@@ -838,7 +950,7 @@ fn compare(function: u32, value: f32, reference: f32) -> bool {
 // The two parts of a texture coordinate that the texture read uses. A projected coordinate
 // is divided by the last part that its texture transform gives.
 fn final_coordinate(index: u32, value: vec4f) -> vec2f {
-    let how = draws[record].stages[index].coordinate;
+    let how = draws[stage_record(index)].stages[stage_place(index)].coordinate;
     var divisor = 1.0;
     if how.w != 0u && how.z >= 2u {
         divisor = value[min(how.z, 4u) - 1u];
@@ -870,7 +982,7 @@ fn bump_move(index: u32, texel: vec4f) -> vec2f {
     if index >= stage_count() || (op != 22u && op != 23u) {
         return vec2f(0.0);
     }
-    let stage = draws[record].stages[index];
+    let stage = draws[stage_record(index)].stages[stage_place(index)];
     return vec2f(texel.r * stage.bump.x + texel.g * stage.bump.z, texel.r * stage.bump.y + texel.g * stage.bump.w);
 }
 
@@ -883,12 +995,12 @@ fn bump_light(index: u32, bump_texel: vec4f, texel: vec4f) -> vec4f {
     if index >= stage_count() || stage_color(index).x != 23u {
         return texel;
     }
-    let stage = draws[record].stages[index];
+    let stage = draws[stage_record(index)].stages[stage_place(index)];
     let light = clamp(bump_texel.b * stage.luminance.x + stage.luminance.y, 0.0, 1.0);
     return vec4f(texel.rgb * light, texel.a);
 }
 
-// The texel of stage `index` (1 to 5) for a stage pipeline: white at and past the key's count,
+// The texel of stage `index` (1 to 7) for a stage pipeline: white at and past the key's count,
 // where no stage reads it, so that the compiler drops the read. The general shader keeps the
 // read.
 fn stage_texel(index: u32, texel: vec4f) -> vec4f {
@@ -925,7 +1037,8 @@ fn stage_step(color: vec4u, alpha: vec3u, texel: vec4f, diffuse: vec4f, current:
 }
 
 @fragment
-fn fs(in: VertexOut) -> @location(0) vec4f {
+fn fs(stage_in: StageOut) -> @location(0) vec4f {
+    let in = vertex_out(stage_in);
     record = in.record;
     var inp = in;
     if draw_flat() {
@@ -936,7 +1049,7 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     // gradients of the first stage's coordinate are made here for the same reason.
     first_stage_dx = dpdx(final_coordinate(0u, inp.coordinate0));
     first_stage_dy = dpdy(final_coordinate(0u, inp.coordinate0));
-    var texels: array<vec4f, 6>;
+    var texels: array<vec4f, 8>;
     // A bump stage moves the coordinate of the stage after it.
     texels[0] = textureSample(textures[draws[record].stages[0].slots.x], samplers[draws[record].stages[0].slots.y], final_coordinate(0u, inp.coordinate0));
     texels[1] = stage_texel(1u, bump_light(0u, texels[0], textureSample(textures[draws[record].stages[1].slots.x], samplers[draws[record].stages[1].slots.y], final_coordinate(1u, inp.coordinate1) + bump_move(0u, texels[0]))));
@@ -944,6 +1057,10 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
     texels[3] = stage_texel(3u, bump_light(2u, texels[2], textureSample(textures[draws[record].stages[3].slots.x], samplers[draws[record].stages[3].slots.y], final_coordinate(3u, inp.coordinate3) + bump_move(2u, texels[2]))));
     texels[4] = stage_texel(4u, bump_light(3u, texels[3], textureSample(textures[draws[record].stages[4].slots.x], samplers[draws[record].stages[4].slots.y], final_coordinate(4u, inp.coordinate4) + bump_move(3u, texels[3]))));
     texels[5] = stage_texel(5u, bump_light(4u, texels[4], textureSample(textures[draws[record].stages[5].slots.x], samplers[draws[record].stages[5].slots.y], final_coordinate(5u, inp.coordinate5) + bump_move(4u, texels[4]))));
+    // Stages 6 and 7 are the first two of the overflow record. A draw without one reads its own
+    // stage 0 there, and no stage uses that texel.
+    texels[6] = stage_texel(6u, bump_light(5u, texels[5], textureSample(textures[draws[stage_record(6u)].stages[0].slots.x], samplers[draws[stage_record(6u)].stages[0].slots.y], final_coordinate(6u, inp.coordinate6) + bump_move(5u, texels[5]))));
+    texels[7] = stage_texel(7u, bump_light(6u, texels[6], textureSample(textures[draws[stage_record(7u)].stages[1].slots.x], samplers[draws[stage_record(7u)].stages[1].slots.y], final_coordinate(7u, inp.coordinate7) + bump_move(6u, texels[6]))));
 
     if (draw_counts_w() & 4u) != 0u {
         if DEBUG_VIEW == VIEW_FOG {
@@ -984,6 +1101,8 @@ fn fs(in: VertexOut) -> @location(0) vec4f {
         if FIXED_COUNT > 3u { current = stage_step(stage_color(3u), stage_alpha(3u), texels[3], diffuse, current); }
         if FIXED_COUNT > 4u { current = stage_step(stage_color(4u), stage_alpha(4u), texels[4], diffuse, current); }
         if FIXED_COUNT > 5u { current = stage_step(stage_color(5u), stage_alpha(5u), texels[5], diffuse, current); }
+        if FIXED_COUNT > 6u { current = stage_step(stage_color(6u), stage_alpha(6u), texels[6], diffuse, current); }
+        if FIXED_COUNT > 7u { current = stage_step(stage_color(7u), stage_alpha(7u), texels[7], diffuse, current); }
     } else {
         for (var i = 0u; i < stage_count(); i++) {
             current = stage_step(stage_color(i), stage_alpha(i), texels[i], diffuse, current);

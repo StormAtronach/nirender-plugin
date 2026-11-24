@@ -413,7 +413,8 @@ impl Player {
                     false
                 }
                 Item::Draw(draw) if (!world || posted) && target.is_none() => {
-                    slots.extend(draw.data.stages.iter().map(|stage| stage.slots[0]));
+                    let count = (draw.data.counts[1] as usize).min(STAGES);
+                    slots.extend((0..count).map(|stage| draw.data.stage(stage).slots[0]));
                     true
                 }
                 _ => false,
@@ -439,7 +440,7 @@ impl Player {
     /// [`None`] when the records are full (the draw then binds the whole arrays).
     fn small_copy_of(&mut self, draw: &Draw, remap: &FxHashMap<u32, u32>) -> Option<u32> {
         let mut data = draw.data;
-        for stage in data.stages.iter_mut() {
+        for stage in data.stages_mut() {
             stage.slots[0] = remap.get(&stage.slots[0]).copied().unwrap_or(0);
         }
         let record = self.renderer.record(&data)?;

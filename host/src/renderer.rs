@@ -530,7 +530,7 @@ impl Renderer {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count,
         };
-        // Group 1: the binding arrays of tier A, or the 6 textures and 6 samplers of tier C.
+        // Group 1: the binding arrays of tier A, or the 8 textures and 8 samplers of tier C.
         let array_entries: Vec<wgpu::BindGroupLayoutEntry> = match tier {
             request::TextureTier::A => vec![
                 texture_entry(0, std::num::NonZeroU32::new(array_cap)),
@@ -764,6 +764,7 @@ impl Renderer {
         let record_limit = ((device.limits().max_storage_buffer_binding_size as u64).min(device.limits().max_buffer_size)
             as usize
             / RECORD_SIZE)
+            .min(MOST_RECORDS)
             .min(switches::switches().record_limit.unwrap_or(usize::MAX));
         println!(
             "draw records: room for {record_limit} in one binding ({} MB)",
@@ -1335,7 +1336,8 @@ impl Renderer {
     /// limit of a storage binding: the draw is then not drawn (counted, and said once), and
     /// the rest of the frame draws.
     pub(crate) fn record(&mut self, data: &DrawData) -> Option<u32> {
-        if self.retained_records + self.record_count >= self.record_limit {
+        let count = data.frame_record_count();
+        if self.retained_records + self.record_count + count > self.record_limit {
             if self.counts.records_over_limit == 0 {
                 println!(
                     "draw records: the frame reached the limit of {} records; draws past it are not drawn",
@@ -1345,9 +1347,12 @@ impl Renderer {
             self.counts.records_over_limit += 1;
             return None;
         }
-        self.record_staging.extend_from_slice(bytemuck::bytes_of(data));
-        self.record_count += 1;
-        Some((self.retained_records + self.record_count - 1) as u32)
+        let index = self.retained_records + self.record_count;
+        data.frame_records(&mut self.record_staging);
+        self.record_count += count;
+        self.counts.overflow_records += (count - 1) as u64;
+        self.counts.draws_by_stages[(data.counts[1] as usize).min(STAGES)] += 1;
+        Some(index as u32)
     }
 
     /// Puts the records made since the last upload on the GPU, with room after them for
@@ -1375,13 +1380,17 @@ impl Renderer {
     /// A record made while the frame draws, written at once, from the end of the room:
     /// its index, or [`None`] when the room is full.
     pub(crate) fn record_now(&mut self, data: &DrawData) -> Option<u32> {
-        if self.retained_records + self.record_count + self.record_extras >= self.record_capacity {
+        let count = data.frame_record_count();
+        if self.retained_records + self.record_count + self.record_extras + count > self.record_capacity {
             return None;
         }
-        self.record_extras += 1;
+        self.record_extras += count;
+        self.counts.overflow_records += (count - 1) as u64;
         let index = self.record_capacity - self.record_extras;
+        let mut bytes = Vec::with_capacity(count * RECORD_SIZE);
+        data.frame_records(&mut bytes);
         self.queue
-            .write_buffer(&self.record_buffer, (index * RECORD_SIZE) as u64, bytemuck::bytes_of(data));
+            .write_buffer(&self.record_buffer, (index * RECORD_SIZE) as u64, &bytes);
         Some(index as u32)
     }
 

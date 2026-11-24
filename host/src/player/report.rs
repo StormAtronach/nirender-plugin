@@ -457,6 +457,18 @@ impl Player {
             self.renderer.record_limit, c.records_over_limit, c.retained_over_limit
         );
         println!(
+            "draws of more than {} stages: overflow records of the frames {}, overflow slots of the table now {}",
+            crate::data::RECORD_STAGES,
+            c.overflow_records,
+            self.retained.counts.overflow_slots
+        );
+        println!(
+            "draws by their stages, 0 to {}: of the frames {:?}, slots made in the table {:?}",
+            crate::data::STAGES,
+            c.draws_by_stages,
+            self.retained.counts.slots_by_stages
+        );
+        println!(
             "indirect calls {}, draws in them {}, draws one by one for want of room {}",
             c.indirect_calls, c.indirect_draws, c.indirect_over
         );
