@@ -113,7 +113,8 @@ stages of render-link: the tests of the helper and mge-config; the helper's GPU 
   tips of the target branches of BOTH repos with the round's MWSE commit (a set that exists and passes its check is taken as it is), and
   `instance A/B grass` replays a capture of Outlander-test with the base set (--base-build), the round's set
   (--now-build) and the base set again, on the same data, and compares the pictures and the hash lines of the grass
-  calls. NOT RUN is not a PASS: it counts as a stage that did not pass (exit code 5 of the tool). The base set is made
+  calls. It gets the round's render-link tree (--render-link) for the pinned pack files of its game folder
+  (tools/instance-packs.txt, W609 step 5). NOT RUN is not a PASS: it counts as a stage that did not pass (exit code 5 of the tool). The base set is made
   at <tip> for the tree's repo and at the sibling's commit that passed with <tip>: the pair as it passed, so the A/B
   shows the change of both repos since that pass. The sibling's HEAD is not the base, as it can hold code that <tip>
   lacks (a render-link that needs a newer nirender fails the base set). When the base pair has no set (the round that
@@ -698,7 +699,8 @@ def stages_for(kind, repo, paths, baseline=BASELINE, tips=None, mwse_commit=None
             base_set = base_commits or round_set(tips, mwse_commit)
             stages.append(set_stage(BASE_STAGE, plugin, base_set, label))
             stages.append((INSTANCE_STAGE, plugin, tool("instance_ab.py", "run", "--stage", "grass", "--baseline", baseline, "--base-build", set_folder_of(base_set),
-                                                        "--now-build", folder, "--out", os.path.join(plugin, "target", "merge-step-instance"))))
+                                                        "--now-build", folder, "--out", os.path.join(plugin, "target", "merge-step-instance"),
+                                                        "--render-link", mge)))
         if light or touches(paths, LIGHT_PATHS[kind]):
             # W611: after the base set and the A/B, before the accept. With no base set the stage is NOT RUN (run_stages).
             base_folder = set_folder_of(base_set) if tips else NO_BASE_SET
@@ -2933,6 +2935,8 @@ def self_test():
         run = by_name[INSTANCE_STAGE][1]
         assert run[run.index("--base-build") + 1] == os.path.join(sets.SETS, "s-11111111-22222222-cccccccc") and run[run.index("--now-build") + 1] == the_set, run
         assert run[run.index("--baseline") + 1] == BASELINE and not run[run.index("--out") + 1].startswith(BASELINE)
+        # W609 step 5: the A/B reads its pinned pack files from the render-link tree of the gate folder's make.
+        assert run[run.index("--render-link") + 1] == by_name[GAME_FOLDER_STAGE][1][-1], run
         assert [name for name, _, _ in stages_for("plugin", plugin, ["src/lib.rs"], BASELINE, tips, mwse)] == base + deploy_tail, "no gate, no A/B stage"
         assert [name for name, _, _ in stages_for("plugin", plugin, ["host/src/material.rs"], BASELINE)][-1] == HELPER_SOURCES_STAGE, "no base pair, no A/B stage"
         # deploy rest gets the commits under test (the tree's and the sibling's at the start of the round), not HEADs.

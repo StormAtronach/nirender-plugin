@@ -1,6 +1,6 @@
 """The A/B stages of the merge step that need the data of a game instance, such as the grass of Outlander-test.
 
-    python -I tools/instance_ab.py run --stage grass --baseline DIR --base-build DIR --now-build DIR --out DIR
+    python -I tools/instance_ab.py run --stage grass --baseline DIR --base-build DIR --now-build DIR --out DIR --render-link TREE
     python -I tools/instance_ab.py --self-test    # the tests of the pure parts: no build, no game
 
 The replay gate (validate_retained.py baseline) replays captures of the testing instance, which holds one grass place,
@@ -12,6 +12,14 @@ merge. The stage compares two builds on the same data, on the same day:
 - the BASE set (--base-build), the sealed set of tools/build_set.py of the base pair of both repos, which the merge step
   makes in its round (the stage "base set"). Its manifest names its commits;
 - the set UNDER TEST (--now-build), the round's set, which the replay gate replays too (W521).
+
+The replays read the post shaders of the chain of the stage's mgeXE.toml as .wgsl files only (W609 step 5): from the
+set, or from the game folder. The instance's Stock Game Folder holds none, as MO2 gives the files of its mods to the game
+only. So a stage pins the pack files of its chain that the set does not hold (`packs`; grass: tools/instance-packs.txt,
+the form of gate-packs.txt), and the stage replays with a game folder of tools/gate_game.py: links of the stage's game
+folder, and the pinned files, read from the render-link commit of the set under test in the --render-link tree with the
+list's md5. Without --render-link such a stage is NOT RUN; a pin with another md5, or a fault of the folder, is a FAIL.
+The folder is `<out>/gate-game-instance-<stage>`, and the stage removes it at its end.
 
 `run` replays the capture with the base, with the build under test and with the base again, in that order, each with
 `--frames-at`. The second replay of the base is the null test: the base must equal itself, or the stage says "noise" and
@@ -51,10 +59,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import gate_game  # noqa: E402  (the game folder with the pinned packs, W609 step 5)
 from common import (BUILD_PARTS, DIFFERS_EXIT, FORMAT_CHANGE_EXIT, NOT_RUN_EXIT, REFUSED_FORMAT_EXITS, build_missing,  # noqa: E402
                     capture_format_in, docs_place, docs_root, format_change, local, missing_docs_text)
 
@@ -81,6 +90,9 @@ class InstanceStage:
     instance_dir: str = ""
     # The profile of the instance, whose mod list names its resting distant land mod.
     profile: str = ""
+    # The pinned post files of the replays' game folder (the form of gate-packs.txt), for the chain shaders of its
+    # mgeXE.toml that the game folder does not hold: run_stage makes the folder with tools/gate_game.py. "" for none.
+    packs: str = ""
 
     def land(self):
         """The distant land of the replays: `distant_land` when the stage names one (a test), else the distantland folder
@@ -103,7 +115,7 @@ GRASS = InstanceStage(name="grass", capture="outlander-pelagiad.nircap", config=
                       game_dir=local("outlander_game_dir", OUTLANDER + "/Stock Game Folder"),
                       frames="1,15,29", guard=("generation_report.toml", "generation_state.bin"),
                       env={"MGE_XE_GRASS_HASH": "1"}, instance="Outlander-test", instance_dir=local("outlander_dir", OUTLANDER),
-                      profile="Outlander")
+                      profile="Outlander", packs=os.path.join(HERE, "instance-packs.txt"))
 STAGES = {stage.name: stage for stage in (GRASS,)}
 
 
@@ -411,6 +423,52 @@ def run_stage(args, out=print, lines_of_game=slot_lines, compare=picture_compare
         out("NOT RUN %s: %s" % (stage.name, blocker))
         return NOT_RUN
 
+    made, problem = pack_folder(stage, args, out)
+    if problem:
+        code, line = problem
+        out("%s %s: %s" % ("NOT RUN" if code == NOT_RUN else "FAIL", stage.name, line))
+        return code
+    if made:
+        # The replays read the folder in place of the game folder; the checks above read the instance's own folder.
+        stage = replace(stage, game_dir=made)
+    try:
+        return replays_and_judge(stage, folder, args, out, compare)
+    finally:
+        if made:
+            try:
+                gate_game.remove(made)
+            except (OSError, gate_game.GateGameError) as error:
+                out("FAULT: the game folder %s with the packs is not removed: %s" % (made, error))
+
+
+def pack_folder(stage, args, out):
+    """The game folder of the replays of a stage that pins pack files (`stage.packs`, the form of gate-packs.txt): the
+    folder of tools/gate_game.py, made from the stage's game folder, with the pinned post files read from the render-link
+    commit of the set under test in the --render-link tree. Returns (folder, None), (None, None) for a stage with no
+    pins, or (None, (exit code, line)): NOT RUN without --render-link, a FAIL when a pin or the folder is at fault."""
+    if not stage.packs:
+        return None, None
+    tree = getattr(args, "render_link", None)
+    if not tree:
+        return None, (NOT_RUN, "the stage pins the pack files of %s and needs --render-link" % os.path.basename(stage.packs))
+    folder = os.path.join(args.out, gate_game.NAME_START + "instance-" + stage.name)
+    try:
+        entries = gate_game.read_list(stage.packs)
+        files = gate_game.pinned_files(entries, tree, gate_game.render_link_commit(args.now_build))
+        gate_game.make(folder, stage.game_dir, files, gate_game.pinned_textures(entries))
+        problems = gate_game.check(folder, stage.game_dir, entries, [args.now_build, args.base_build])
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError, gate_game.GateGameError) as error:
+        return None, (FAIL, "the game folder with the packs of %s: %s" % (os.path.basename(stage.packs), error))
+    if problems:
+        gate_game.remove(folder)
+        return None, (FAIL, "the game folder with the packs of %s: %s" % (os.path.basename(stage.packs), "; ".join(problems)))
+    out("game folder: %s, links to %s, with the pinned files of %s: %s" % (
+        folder, stage.game_dir, os.path.basename(stage.packs), ", ".join(name for name, _, _ in gate_game.posts_of(entries))))
+    return folder, None
+
+
+def replays_and_judge(stage, folder, args, out, compare):
+    """The three replays of a stage and the verdict, after the checks of run_stage."""
     guarded = [os.path.join(stage.land(), name) for name in stage.guard]
     before = file_state(guarded)
     runs = {}
@@ -635,6 +693,49 @@ def self_test():
                 said = []
                 assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == FAIL, said
                 assert "FAIL g: the replay of the base exited with code 12" in said, said
+
+                # W609 step 5: a stage that pins pack files. Without --render-link it is NOT RUN before any replay. With
+                # it, each replay reads the gate folder as its game folder, the pinned file is in it, and the folder is
+                # gone at the end, also after a FAIL; the game's file behind a link stays. The null: a pin with another
+                # md5 is a FAIL, and no replay runs.
+                os.makedirs(os.path.join(full.game_dir, "Data Files"), exist_ok=True)
+                with open(os.path.join(full.game_dir, "Data Files", "Morrowind.esm"), "w") as file:
+                    file.write("x")
+                data = b"//! interface: mge-xe-wgsl 1\n"
+                listed = os.path.join(root, "packs.txt")
+                with open(listed, "w", encoding="utf-8") as file:
+                    file.write("pk\tports/P/shaders/XEshaders/pk.wgsl\t%s\n" % gate_game.md5_of(data))
+                STAGES["g"] = replace(full, packs=listed)
+                seen = []
+
+                def seeing(stage, folder, build, out, tag):
+                    pinned = os.path.join(stage.game_dir, "Data Files", "shaders", "XEshaders", "pk.wgsl")
+                    seen.append((tag, stage.game_dir, os.path.isfile(pinned)))
+                    return 1, "", root
+
+                replay = seeing
+                real_commit, real_pinned = gate_game.render_link_commit, gate_game.pinned_files
+                gate_game.render_link_commit = lambda _set: "c0ffee"
+                gate_game.pinned_files = lambda entries, tree, commit: real_pinned(entries, tree, commit, show=lambda _t, _c, _p: data)
+                try:
+                    said = []
+                    assert run_stage(gargs, said.append, lambda: ["game: free"], same, lambda: []) == NOT_RUN and not seen, (said, seen)
+                    assert said[-1] == "NOT RUN g: the stage pins the pack files of packs.txt and needs --render-link", said
+                    packed = argparse.Namespace(render_link=os.path.join(root, "rl"), **vars(gargs))
+                    made = os.path.join(gargs.out, gate_game.NAME_START + "instance-g")
+                    said = []
+                    assert run_stage(packed, said.append, lambda: ["game: free"], same, lambda: []) == FAIL, said
+                    assert seen == [("base", made, True)], seen
+                    assert not os.path.lexists(made), "the folder stays after the stage"
+                    assert os.path.isfile(os.path.join(full.game_dir, "Data Files", "Morrowind.esm")), "the remover went through a link"
+                    with open(listed, "w", encoding="utf-8") as file:
+                        file.write("pk\tports/P/shaders/XEshaders/pk.wgsl\t%s\n" % ("0" * 32))
+                    seen.clear()
+                    said = []
+                    assert run_stage(packed, said.append, lambda: ["game: free"], same, lambda: []) == FAIL and not seen, (said, seen)
+                    assert said[-1].startswith("FAIL g: the game folder with the packs of packs.txt: the pack file") and not os.path.lexists(made), said
+                finally:
+                    gate_game.render_link_commit, gate_game.pinned_files = real_commit, real_pinned
             finally:
                 replay = real_replay
         finally:
@@ -664,6 +765,7 @@ def main():
     parser.add_argument("--baseline")
     parser.add_argument("--base-build", help="the base set: a sealed set of tools/build_set.py")
     parser.add_argument("--now-build", help="the set under test")
+    parser.add_argument("--render-link", help="the render-link tree that has the commit of the set under test: the pinned pack files of a stage")
     parser.add_argument("--self-test", action="store_true", help="the tests of the pure parts: no build, no game")
     args = parser.parse_args()
     if args.self_test:
