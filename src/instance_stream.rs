@@ -2638,12 +2638,10 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     // The path of a freed texture that alone made the note due (W454, `texture_paths`): the
     // mark of path B, else a raise of the generation (path A). A recheck also gives another
     // generation, and `reset` clears `sent`: neither is a path's.
-    let texture_path = (instance.generation != generation && !other_due && !rechecked).then(|| {
-        if instance.freed_mark {
-            crate::texture_paths::FREED
-        } else {
-            crate::texture_paths::RAISE
-        }
+    let texture_path = (instance.generation != generation && !other_due && !rechecked).then_some(if instance.freed_mark {
+        crate::texture_paths::FREED
+    } else {
+        crate::texture_paths::RAISE
     });
     let due = event_due || id.wrapping_add(frame).is_multiple_of(CHECK_FRAMES);
     if due && !event_due && periodic_reject(mt, t, shape, property_state) {
