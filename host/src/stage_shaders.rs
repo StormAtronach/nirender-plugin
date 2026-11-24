@@ -647,6 +647,19 @@ struct Job {
     module: ModuleId,
     source: Option<String>,
     constants: Option<StageConstants>,
+    /// A pipeline of the list: the test switch [`LIST_SLOW_VARIABLE`] slows it.
+    of_list: bool,
+}
+
+/// The test switch of W640 part 3: a sleep of this many milliseconds on the thread before each
+/// pipeline of the list, so that a run can make the list end after the distant statics (a cold
+/// driver's time for each pipeline is about 30 ms). Off when not set or 0.
+const LIST_SLOW_VARIABLE: &str = "MGE_XE_STAGE_SLOW_MS";
+
+/// The sleep of [`LIST_SLOW_VARIABLE`] in its text, or None.
+fn list_slow(value: Option<&str>) -> Option<std::time::Duration> {
+    let milliseconds: u64 = value?.trim().parse().ok()?;
+    (milliseconds > 0).then(|| std::time::Duration::from_millis(milliseconds))
 }
 
 /// The constants of a job or a pipeline as the slice that the pipeline takes.
@@ -971,10 +984,20 @@ impl StageShaders {
         }
         let (jobs, job_receiver) = mpsc::channel::<Job>();
         let (done_sender, done) = mpsc::channel::<Done>();
+        let slow = list_slow(std::env::var(LIST_SLOW_VARIABLE).ok().as_deref());
+        if let Some(slow) = slow {
+            println!(
+                "stage shaders: the test switch {LIST_SLOW_VARIABLE}: {} ms before each pipeline of the list",
+                slow.as_millis()
+            );
+        }
         let spawned = std::thread::Builder::new().name(THREAD_NAME.into()).spawn(move || {
             let mut modules: HashMap<ModuleId, Option<wgpu::ShaderModule>> = HashMap::new();
             while let Ok(job) = job_receiver.recv() {
                 let started = std::time::Instant::now();
+                if let (true, Some(slow)) = (job.of_list, slow) {
+                    std::thread::sleep(slow);
+                }
                 let id = job.module;
                 if let Some(source) = job.source {
                     // The first module of a variant drops the modules of the variant before it.
@@ -1042,6 +1065,7 @@ impl StageShaders {
                     module: UBER_MODULE,
                     source: source.take(),
                     constants: None,
+                    of_list: false,
                 })
                 .is_err()
             {
@@ -1159,7 +1183,7 @@ impl StageShaders {
             if id == 0 || self.pending.contains(&key) {
                 continue;
             }
-            if self.send(key) {
+            if self.send_job(key, true) {
                 self.from_list += 1;
                 self.list_pending.insert(key);
             } else if self.failed_sources.contains(&self.module_of(&key)) {
@@ -1168,8 +1192,14 @@ impl StageShaders {
         }
     }
 
-    /// Sends a pipeline to the thread; false when the thread is gone.
+    /// Sends a pipeline of first use to the thread; false when the thread is gone.
     fn send(&mut self, key: PipelineKey) -> bool {
+        self.send_job(key, false)
+    }
+
+    /// Sends a pipeline to the thread, `of_list` for a pipeline of the list; false when the thread
+    /// is gone.
+    fn send_job(&mut self, key: PipelineKey, of_list: bool) -> bool {
         // The module's text goes with the first pipeline of its text and variant; a key
         // whose text the rewrite cannot make is not sent.
         let id = self.module_of(&key);
@@ -1194,6 +1224,7 @@ impl StageShaders {
                 module: id,
                 source,
                 constants,
+                of_list,
             })
             .is_err()
         {
@@ -1426,6 +1457,17 @@ impl StageShaders {
     /// those sent that it has not given back.
     pub(crate) fn list_left(&self) -> (usize, usize) {
         (self.queued.len(), self.list_pending.len())
+    }
+
+    /// What the stage shaders still make for the frames to come, for the extension
+    /// ([`crate::Extension::host_readiness`]): the list's pipelines not made yet. The mip chains
+    /// are not the stage shaders': their field is 0 here.
+    pub(crate) fn readiness(&self) -> crate::HostReadiness {
+        let (queued, sent) = self.list_left();
+        crate::HostReadiness {
+            list_jobs: queued + sent,
+            chain_jobs: 0,
+        }
     }
 
     /// After a frame: writes the list when it changed, at most every [`SAVE_FRAMES`] frames.
@@ -3010,5 +3052,71 @@ mod tests {
                 ..UberDraws::default()
             }
         );
+    }
+
+    /// The readiness of W640 part 3: the list's pipelines not sent and those sent and not given back,
+    /// down to 0 when the thread gave back the last one. The list's jobs carry the list's mark; a key of
+    /// first use does not.
+    #[test]
+    fn the_readiness_counts_the_lists_pipelines_until_the_last_comes_back() {
+        let (mut shaders, job_receiver) = live_shaders();
+        let (done_sender, done) = mpsc::channel();
+        shaders.done = Some(done);
+        for cull in 1..=5 {
+            shaders.queued.push_back((
+                PipelineKey {
+                    cull,
+                    ..pipeline_key(0, 0)
+                },
+                key(1, 0),
+            ));
+        }
+        assert_eq!(
+            shaders.readiness(),
+            crate::HostReadiness {
+                list_jobs: 5,
+                chain_jobs: 0
+            }
+        );
+        shaders.send_queued();
+        assert_eq!(shaders.list_left(), (1, LIST_BATCH));
+        assert_eq!(shaders.readiness().list_jobs, 5);
+        let jobs: Vec<Job> = job_receiver.try_iter().collect();
+        assert!(jobs.iter().all(|job| job.of_list));
+
+        let give_back = |key: PipelineKey| {
+            done_sender
+                .send(Done {
+                    key,
+                    pipeline: None,
+                    thread: std::time::Duration::ZERO,
+                })
+                .unwrap()
+        };
+        jobs.iter().for_each(|job| give_back(job.key));
+        shaders.receive(&mut rustc_hash::FxHashMap::default());
+        // The receive sent the last one.
+        assert_eq!(shaders.readiness().list_jobs, 1);
+        let last: Vec<Job> = job_receiver.try_iter().collect();
+        assert_eq!(last.len(), 1);
+        give_back(last[0].key);
+        shaders.receive(&mut rustc_hash::FxHashMap::default());
+        assert_eq!(shaders.readiness(), crate::HostReadiness::default());
+
+        // A key of first use is no job of the list.
+        let id = shaders.intern(key(2, 0));
+        assert!(shaders.send(pipeline_key(id, 0)));
+        assert!(job_receiver.try_iter().all(|job| !job.of_list));
+        assert_eq!(shaders.readiness().list_jobs, 0);
+    }
+
+    /// The test switch of W640 part 3: a number of milliseconds above 0, else off.
+    #[test]
+    fn the_slow_switch_of_the_list_reads_milliseconds() {
+        assert_eq!(list_slow(Some("30")), Some(std::time::Duration::from_millis(30)));
+        assert_eq!(list_slow(Some(" 7 ")), Some(std::time::Duration::from_millis(7)));
+        for off in [None, Some(""), Some("0"), Some("-5"), Some("slow")] {
+            assert_eq!(list_slow(off), None, "{off:?}");
+        }
     }
 }
