@@ -47,7 +47,7 @@ pub(crate) struct FrameFacts {
     /// The timed parts of the helper in the frame, in ms.
     pub(crate) busy_ms: f64,
     /// With `MGE_XE_GPU_TIME=1`: the sum of the GPU's frame times read back in the session, in
-    /// ms, and their count.
+    /// nanoseconds (`Counts::gpu_frame`), and their count.
     pub(crate) gpu: Option<(f64, u32)>,
     /// The pipelines that the stage thread gave back in the frame.
     pub(crate) received: Received,
@@ -77,8 +77,9 @@ impl LoadWatch {
         self.last_end = Some(now);
         let draws = draws_since(&self.draws, &facts.draws);
         self.draws = facts.draws;
+        // The line gives the GPU time in ms.
         let gpu = facts.gpu.map(|(sum, count)| {
-            let read = (sum - self.gpu.0, count.wrapping_sub(self.gpu.1));
+            let read = ((sum - self.gpu.0) / 1e6, count.wrapping_sub(self.gpu.1));
             self.gpu = (sum, count);
             read
         });
@@ -186,13 +187,14 @@ mod tests {
     }
 
     /// The draws and the GPU times are those of the frame: the counts of the session less those
-    /// of the frame before, also of a frame outside the window.
+    /// of the frame before, also of a frame outside the window. The GPU sums come in nanoseconds,
+    /// as `Counts::gpu_frame` keeps them, and the line gives ms.
     #[test]
     fn the_counts_are_those_of_the_frame() {
         let zero = Instant::now();
         let mut watch = LoadWatch::default();
-        assert!(watch.frame_end(zero, &facts(1, true, 10, Some((30.0, 10)))).is_empty());
-        let line = watch.frame_end(zero + Duration::from_millis(20), &facts(2, false, 14, Some((34.5, 12))));
+        assert!(watch.frame_end(zero, &facts(1, true, 10, Some((30.0e6, 10)))).is_empty());
+        let line = watch.frame_end(zero + Duration::from_millis(20), &facts(2, false, 14, Some((34.5e6, 12))));
         assert_eq!(
             line,
             ["load watch: frame 2, world no, interval 20.00 ms, busy 2.50 ms, gpu 4.500 ms in 2 frames read; uber-shader draws with a stage key: 4 not made, 0 after a failed pipeline, 0 after a failed rewrite, 0 past the cap, 0 with no key; pipelines given back: 0 of the uber set, 2 of the list, 0 of first use, 0 failed, in 7.00 ms of the thread; the list: 5 not sent, 3 sent and not given back"]
