@@ -1,0 +1,14 @@
+# The pinned post files of the instance A/B's game folder (tools/instance_ab.py, stage grass; W609 step 5). The form is
+# the form of gate-packs.txt (tools/gate_game.py): one line for each file, the chain name, the path, and its md5, split by
+# tabs. A post file's path is in render-link; a texture's path is its keep copy on E:.
+# The chain of the stage's mgeXE.toml names 11 shaders. The set holds 4 of them (Sunshafts, Underwater Effects,
+# Underwater Interior Effects, Eye Adaptation (HDR)); the other 7 are pack files of the Outlander-test mods, which its
+# Stock Game Folder does not hold. Without them each replay skips the 7 (W609 step 5: a helper reads .wgsl files only).
+MGG SSAO	ports/Morrowind Graphics Guide Shaders - wgpu shaders/shaders/XEshaders/MGG SSAO.wgsl	9bc3fb64eb0fc1088dd6ea9e14909dcc
+oj_me_fog_box	ports/Magicka Expanded - wgpu shaders/shaders/XEshaders/oj_me_fog_box.wgsl	5ed09d1f20ef44b9618191cdd0e37343
+tew_fogbox	ports/Vapourmist - wgpu shaders/shaders/XEshaders/tew_fogbox.wgsl	4459ca02952cf4978fc943a3ce659941
+ColorMood	ports/STEP Shaders Compilation - wgpu shaders/shaders/XEshaders/ColorMood.wgsl	3d30300c65befe38018895bdcfea9f1e
+MGG darker interiors	ports/Morrowind Graphics Guide Shaders - wgpu shaders/shaders/XEshaders/MGG darker interiors.wgsl	1ee80a8f6e32af2be2e664df52fb4d02
+heathaze	ports/Heat Haze - wgpu shaders/shaders/XEshaders/heathaze.wgsl	8d863a82638490dee484e81d8b9e738e
+heathaze	E:/nirender-keep/gate-pack-files/heathaze_nm.dds	6805a622d645769d21a9044ef6277aa5
+Special Process	ports/Outlander Configuration - wgpu shaders/shaders/XEshaders/Special Process.wgsl	fcceea6475ea75cbd19796ebd086d283
