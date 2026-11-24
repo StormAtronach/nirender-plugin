@@ -80,7 +80,12 @@ Stages (capture, baseline and only by default, in this order):
            tour's) with the base set and with --mge-build at that value: 0 pixels may differ in frame 1 and in
            the last frame. Then the cost: 6 replays of narsis.nircap with each set at each value, in turn, with
            MGE_XE_GPU_TIME=1 and a mark every 14 frames; the marks after the first give the GPU frame time and
-           the helper's busy time. The median of the round's set may be at most the base's + max(0.1 ms, 5 %).
+           the helper's busy time. The median of the round's set may be at most the base's + max(0.1 ms, 5 %);
+           a median above it is a rise only when the rounds show it too: the rank test of the 6 rounds of
+           each set (rank_rise) gives a one-sided p of at most 0.05 (W644). A median above the limit that the
+           rounds do not show gets 6 more rounds of each set, up to 18; then it is NOT RUN, for a person.
+           A picture name of the gate list
+           ("<capture>.png", "<capture>-last.png") plans the change of that picture here too (W644).
            A replay with no gpu line, or a game that runs (Morrowind.exe or numidium.exe), makes the cost NOT RUN. The numbers go into <now>/fade-numbers.txt. The merge step
            runs it after the base set when the change touches the lights (LIGHT_PATHS and LIGHT_NAMES of
            merge_step.py, or --light). It accepts nothing.
@@ -819,7 +824,10 @@ def self_test_fade_stage():
     value, with the key missing too. The pictures: equal passes; a change fails unless the gate list plans it; a planned
     change that did not come fails, and so does a fade line of the gate's own value or of no capture. The cost: the
     medians against the limit; a rise fails unless the gate list plans it; a planned rise that did not come fails; a
-    replay with no gpu line is NOT RUN."""
+    replay with no gpu line is NOT RUN. W644: a picture name of the gate list plans that picture's change, the hook
+    pass's name does not; a median above the limit whose rounds mix with the base's (the busy rounds of round e4c4cb6)
+    gets more rounds and then is NOT RUN, never a pass; a steady rise is a rise, at once with one slow round of the
+    base, and after more rounds with two (the Reviewer's case, verdict 792)."""
     global run_code, build_missing, game_running
     import picture_diff
 
@@ -830,8 +838,9 @@ def self_test_fade_stage():
     gate_config =("[render]\nx = 1\n\n[distant_land]\nper_pixel_lighting = true\nper_pixel_light_fade = true  # the install's\n"
                    "per_pixel_light_fade_radius = 1.75\n\n[water]\ny = 2\n")
 
-    def plant(pictures=None, costs=None):
-        """A run_code whose replays draw frame 1 grey and frame 29 in `pictures(name, arm, value)` (None: grey), and whose
+    def plant(pictures=None, costs=None, first=None):
+        """A run_code whose replays draw frame 1 in `first(name, arm, value)` and frame 29 in `pictures(name, arm, value)`
+        (None, or no function: grey), and whose
         cost replays print two marks, the loads (9 ms) and then `costs(arm, value)`: (GPU frame ms, busy ms), or a text
         that replaces the output. `run.calls` holds (capture, arm, value, a cost replay, env) of each replay."""
         calls = []
@@ -851,20 +860,24 @@ def self_test_fade_stage():
                 return 0, "".join("mark replay frame %d: 14 frames, 100.0 draws in 50.0 pipeline runs for each frame, busy %.3f ms for each frame:\n"
                                   "   0.100  feed\n  gpu: 1.000 ms in the passes, %.3f ms the frame, for each of 14 timed frames\n" % (
                                       14 * (index + 1), result[1] if index else 9.0, result[0] if index else 9.0) for index in range(2)) + "gpu: 9.000 ms in the passes, 9.000 ms the frame, for each of 28 timed frames\n"
-            colour = (pictures(os.path.basename(command[2])[:-len(".nircap")], arm, value) if pictures else None) or grey
-            for frame, shade in ((1, grey), (29, colour)):
+            capture = os.path.basename(command[2])[:-len(".nircap")]
+            colour = (pictures(capture, arm, value) if pictures else None) or grey
+            opening = (first(capture, arm, value) if first else None) or grey
+            for frame, shade in ((1, opening), (29, colour)):
                 picture_diff.Image.new("RGB", (8, 8), shade).save("%s-%05d.png" % (command[3], frame))
             return 0, "frame 29\n"
 
         run.calls = calls
         return run
 
-    def stage(folder, tool, config=gate_config, fades=(), costs=None):
-        """(passed, printed, exit code of a stage that did not pass)."""
+    def stage(folder, tool, config=gate_config, fades=(), costs=None, names=()):
+        """(passed, printed, exit code of a stage that did not pass). `names` are the gate list's picture names."""
         global run_code
         run_code = tool
         FAILS[0] = 0
         del NOT_RUN_LINES[:]
+        GATE_LIST.clear()
+        GATE_LIST.update(names)
         GATE_FADE.clear()
         GATE_FADE.update(fades)
         GATE_COST.clear()
@@ -944,6 +957,21 @@ def self_test_fade_stage():
             # A planned change that did not come fails.
             passed, said, _code = stage(folder, plant(change), fades={("a", False), ("narsis", False)})
             assert not passed and "FAIL narsis at the fade-off: base and now are equal, and the gate list plans a change (narsis fade-off)" in said, said
+            # W644: the list's picture names, as the replay gate's plain pass reads them, plan the change of that picture
+            # here too: the last frame changed, and "a-last.png" names it. Frame 1 alone, or the hook pass's name, does not.
+            passed, said, _code = stage(folder, plant(change), names={"a-last.png"})
+            assert passed and "ok   a at the fade-off: base and now differ (the last frame: " in said and "the gate list names the pictures for the replay gate" in said, said
+            for names in ({"a.png"}, {"hooks/a-last.png"}):
+                passed, said, _code = stage(folder, plant(change), names=names)
+                assert not passed and "FAIL a at the fade-off: base and now differ (the last frame: " in said and "the gate list plans no change of it" in said, (names, said)
+            # Both frames changed and only the last is named: frame 1 fails, by name.
+            whole = lambda name, arm, value: other if (name, arm) == ("a", "now") else None  # noqa: E731
+            passed, said, _code = stage(folder, plant(whole, first=whole), names={"a-last.png"})
+            failed = [line for line in said.splitlines() if line.startswith("  FAIL a at the fade-off")]
+            assert not passed and len(failed) == 1 and "(frame 1: " in failed[0] and "the last frame" not in failed[0], said
+            # A picture that the list names for the replay gate may stay equal at this value.
+            passed, said, _code = stage(folder, plant(), names={"a-last.png", "narsis.png"})
+            assert passed and "ok   a at the fade-off: base and now equal" in said, said
             # A fade line of the gate's own value, or of no capture of the folder, fails before any replay.
             for fades, said_here in (({("a", True)}, "the gate list names a fade-on: the replay gate tests that value"),
                                      ({("t", False)}, "the gate list names t fade-off, and the baseline folder has no t.nircap")):
@@ -969,6 +997,54 @@ def self_test_fade_stage():
             assert passed and "spread base 0.000, now 7.000" in said, said
             passed, said, _code = stage(folder, plant(costs=lambda arm, value: (1.0, 0.9) if arm == "now" and not value else (2.0, 1.0)))
             assert passed and "narsis at the fade-off, GPU frame: base 2.000, now 1.000 ms (-1.000;" in said, said
+            # W644: the rank test. Exact on small arms, ties a half.
+            assert rank_rise([1.0, 2.0], [3.0, 4.0]) == (4, 4, 1 / 6) and rank_rise([1.0, 1.0], [1.0, 1.0]) == (2.0, 4, 1.0)
+            assert rank_rise([1.0] * 6, [2.0] * 6)[2] == 1 / 924
+
+            def rounds_of(values):
+                """A costs function that gives the rounds of `values` {arm: [busy ms]} in their order at each value, again
+                from the first after the last (the batches of more rounds), with the GPU frame 2 ms. `calls` counts the
+                rounds of each arm at each value."""
+                taken = {}
+
+                def costs(arm, value):
+                    index = taken.get((arm, value), 0)
+                    taken[(arm, value)] = index + 1
+                    return 2.0, values[arm][index % len(values[arm])]
+                costs.calls = taken
+                return costs
+
+            # The busy rounds of narsis at the fade-off in round e4c4cb6: the median 0.162 ms above the base's, over the
+            # limit of 0.119, and the rounds mix (20 of 36 pairs, p 0.409). That is no pass: the stage runs two more batches
+            # of 6 rounds of each set, and when 18 rounds still do not tell (these rounds again: p 0.289), it is NOT RUN.
+            noise = {"base": [3.393, 2.397, 3.517, 2.349, 2.281, 2.377], "now": [2.567, 2.262, 2.530, 2.968, 2.579, 2.410]}
+            assert rank_rise(noise["base"], noise["now"])[:2] == (20, 36)
+            costs = rounds_of(noise)
+            passed, said, code = stage(folder, plant(costs=costs))
+            assert not passed and code == NOT_RUN_EXIT and costs.calls == {(arm, value): 18 for arm in ("base", "now") for value in (True, False)}, (costs.calls, said)
+            assert "narsis at the fade-off: the median of the busy is above the limit, and 6 rounds of each set do not show a rise: 6 more rounds of each" in said, said
+            assert "narsis at the fade-off, busy: base 2.387, now 2.548 ms (+0.162; medians of 18;" in said and "now above base in 180 of 324 pairs, p 0.289" in said, said
+            assert "narsis at the fade-off: the median of the busy is above the limit, and 18 rounds of each set can not tell a rise from the noise" in said, said
+            assert "ok   narsis at the fade-off: no rise" not in said, said
+            # The Reviewer's case (verdict 792): two slow rounds of six in the base cap the count at 24 of 36 (p 0.197),
+            # whatever the rise. A steady rise of 0.5 ms is no pass: at 18 rounds of each it is a rise (216 of 324, p 0.045).
+            fast = [2.397, 2.349, 2.281, 2.377, 2.30, 2.35]
+            capped = {"base": noise["base"], "now": [value + 0.5 for value in fast]}
+            assert rank_rise(capped["base"], capped["now"]) == (24, 36, rank_rise(capped["base"], capped["now"])[2]) and rank_rise(capped["base"], capped["now"])[2] > FADE_COST_P
+            passed, said, _code = stage(folder, plant(costs=rounds_of(capped)))
+            assert not passed and "FAIL narsis at the fade-off: a rise above the limit, and the gate list plans none: narsis at the fade-off, busy: " in said, said
+            assert "now above base in 216 of 324 pairs, p 0.045" in said and "ok   narsis at the fade-off: no rise" not in said, said
+            # A steady rise of 0.2 ms fails at once, also with one slow round of the base among its rounds (30 of 36 pairs).
+            calm = [2.30, 2.32, 2.31, 2.33, 2.29, 2.30]
+            steady = {"base": calm[:5] + [3.4], "now": [value + 0.2 for value in calm]}
+            assert rank_rise(steady["base"], steady["now"])[:2] == (30, 36) and rank_rise(steady["base"], steady["now"])[2] <= FADE_COST_P
+            costs = rounds_of(steady)
+            passed, said, _code = stage(folder, plant(costs=costs))
+            assert not passed and "FAIL narsis at the fade-on: a rise above the limit, and the gate list plans none: narsis at the fade-on, busy: " in said, said
+            assert set(costs.calls.values()) == {6}, costs.calls
+            # The normal approximation past RANK_EXACT_SPLITS: a full rise of 12 and 12 rounds has a p near 0.
+            assert rank_rise([1.0] * 12, [2.0] * 12)[:2] == (144, 144) and rank_rise([1.0] * 12, [2.0] * 12)[2] < 0.001
+            assert rank_rise([1.0] * 12, [1.0] * 12) == (72.0, 144, 1.0)
             # A planned rise that did not come fails; a cost line of another capture fails before any replay.
             passed, said, _code = stage(folder, plant(), costs={("narsis", False): "x"})
             assert not passed and "FAIL narsis at the fade-off: no rise, and the gate list plans one (x): the planned rise did not come" in said, said
@@ -2506,6 +2582,14 @@ FADE_COST_ROUNDS = 6
 FADE_MARKS_EVERY = 14
 FADE_COST_ENV = {"MGE_XE_GPU_TIME": "1"}
 FADE_COST_FLOOR_MS, FADE_COST_SHARE = 0.1, 0.05
+# W644: a rise counts only when the rounds show it too: the rank test of `rank_rise` gives a one-sided p of at most this.
+# With 6 rounds in each arm, that is at least 29 of the 36 pairs with now above base (p 0.047); 36 of 36 gives p 0.001.
+FADE_COST_P = 0.05
+# W644: a median above the limit that the rounds do not show gets more rounds, in batches of FADE_COST_ROUNDS, up to this
+# number of rounds of each set; then it is NOT RUN.
+FADE_COST_MOST = 18
+# W644: rank_rise is exact up to this many splits of the pooled rounds (6 and 6: 924); past it, the normal approximation.
+RANK_EXACT_SPLITS = 5000
 MARK_LINE = re.compile(r"^mark .+?: (\d+) frames, .*busy ([0-9.]+) ms for each frame:")
 GPU_LINE = re.compile(r"^\s+gpu: [0-9.]+ ms in the passes, ([0-9.]+) ms the frame, for each of (\d+) timed frames")
 
@@ -2565,9 +2649,47 @@ def cost_of(output):
     return gpu, busy
 
 
+def rank_rise(base, now):
+    """W644: the rank test of a rise of `now` over `base` (Mann-Whitney): (the count, the pairs, the one-sided p). The
+    count takes each pair of a round of now and a round of base: 1 when now is larger, a half when they are equal. Up to
+    RANK_EXACT_SPLITS splits the p is exact: the share of all splits of the pooled rounds into two arms of these sizes
+    whose count is at least as large. Past that (the batches of 12 and 18 rounds), the normal approximation with the
+    correction for ties and for continuity. One slow round moves the count by one place only: the busy time of a replay
+    has single rounds a second slower (narsis, round e4c4cb6: the fade-off base had 3.393 and 3.517 ms among rounds of
+    about 2.3 ms)."""
+    import itertools
+    import math
+
+    def count(of_base, of_now):
+        return sum((high > low) + 0.5 * (high == low) for high in of_now for low in of_base)
+
+    observed = count(base, now)
+    pooled = list(base) + list(now)
+    pairs = len(base) * len(now)
+    if math.comb(len(pooled), len(now)) <= RANK_EXACT_SPLITS:
+        total = at_least = 0
+        for chosen in itertools.combinations(range(len(pooled)), len(now)):
+            picked = set(chosen)
+            total += 1
+            at_least += count([pooled[i] for i in range(len(pooled)) if i not in picked], [pooled[i] for i in chosen]) >= observed - 1e-9
+        return observed, pairs, at_least / total
+    size = len(pooled)
+    ties = sum(times ** 3 - times for times in (pooled.count(value) for value in set(pooled)))
+    variance = pairs / 12 * ((size + 1) - ties / (size * (size - 1)))
+    if variance <= 0:
+        return observed, pairs, 1.0
+    z = (observed - pairs / 2 - 0.5) / math.sqrt(variance)
+    return observed, pairs, 0.5 * math.erfc(z / math.sqrt(2))
+
+
 def fade_pictures(capture, out, mge_build, base_build, root, value):
     """The pictures of one capture at the fade `value` (the config folder `root`) with the base set and the round's set:
-    True when they are equal, or when they differ and the gate list plans it; False else."""
+    True when they are equal, or when they differ and the gate list plans it; False else. The list plans it with a fade
+    line (`<capture> fade-on|fade-off`), or, for each picture, with the picture's name as the replay gate's plain pass
+    reads it (`baseline_pass`, W644): "<capture>.png" for frame 1, "<capture>-last.png" for the last frame. A change
+    that the replay gate plans at its own value is planned here too. These replays have the core mods off (GATE_ENV), as
+    the plain pass, so a "hooks/" name does not count here. A picture that the list names for the replay gate may stay
+    equal at this value."""
     name = os.path.basename(capture)[:-len(".nircap")]
     word = FADE_WORDS[value]
     made = {}
@@ -2581,11 +2703,14 @@ def fade_pictures(capture, out, mge_build, base_build, root, value):
     (base_prefix, base_made), (now_prefix, now_made) = made["base"], made["now"]
     if base_made != now_made or "" not in base_made:
         return check(False, "%s at the %s: the pictured frames differ between base and now" % (name, word))
-    differ = []
+    differ, unplanned = [], []
     for suffix in base_made:
         same, said = equal_pictures(base_prefix + suffix + ".png", now_prefix + suffix + ".png")
         if not same:
-            differ.append("%s: %s" % ("frame 1" if suffix == "" else "the last frame", said))
+            text = "%s: %s" % ("frame 1" if suffix == "" else "the last frame", said)
+            differ.append(text)
+            if name + suffix + ".png" not in GATE_LIST:
+                unplanned.append(text)
     listed = (name, value) in GATE_FADE
     if not differ:
         if listed:
@@ -2594,7 +2719,10 @@ def fade_pictures(capture, out, mge_build, base_build, root, value):
         return check(True, "%s at the %s: base and now equal (%d pictures)" % (name, word, len(base_made)))
     if listed:
         return check(True, "%s at the %s: base and now differ (%s); listed: a planned change" % (name, word, "; ".join(differ)))
-    return check(False, "%s at the %s: base and now differ (%s), and the gate list plans no change of it" % (name, word, "; ".join(differ)))
+    if not unplanned:
+        return check(True, "%s at the %s: base and now differ (%s); the gate list names the pictures for the replay gate: a planned "
+                     "change" % (name, word, "; ".join(differ)))
+    return check(False, "%s at the %s: base and now differ (%s), and the gate list plans no change of it" % (name, word, "; ".join(unplanned)))
 
 
 def game_running():
@@ -2609,11 +2737,35 @@ def game_running():
     return None
 
 
+def judge_cost(name, word, times):
+    """W644: the cost of `name` at the fade `word` from the rounds `times` {"base": [(GPU frame, busy)], "now": [...]}:
+    (the table's lines, the lines of the rises, the parts that are unclear). A part is a rise when its median is above
+    the limit and the rounds show it (rank_rise, p at most FADE_COST_P). A median above the limit whose rounds do not show
+    it is unclear, not a pass: two slow rounds of six in the base cap the count at 24 of 36 pairs (p 0.197), whatever the
+    rise (the Reviewer, verdict 792)."""
+    import statistics
+    lines, rises, unclear = [], [], []
+    for part, index in (("GPU frame", 0), ("busy", 1)):
+        base_values, now_values = ([round_times[index] for round_times in times[arm]] for arm in ("base", "now"))
+        base, now = statistics.median(base_values), statistics.median(now_values)
+        limit = base + max(FADE_COST_FLOOR_MS, FADE_COST_SHARE * base)
+        above, pairs, p = rank_rise(base_values, now_values)
+        line = "%s at the %s, %s: base %.3f, now %.3f ms (%+.3f; medians of %d; spread base %.3f, now %.3f); the limit %.3f; now above base in %g of %d pairs, p %.3f" % (
+            name, word, part, base, now, now - base, len(base_values), max(base_values) - min(base_values), max(now_values) - min(now_values), limit,
+            above, pairs, p)
+        if now > limit and p <= FADE_COST_P:
+            rises.append(line)
+        elif now > limit:
+            line += " (above the limit; the rounds do not show a rise: p above %g)" % FADE_COST_P
+            unclear.append(part)
+        lines.append(line)
+    return lines, rises, unclear
+
+
 def fade_cost(capture, out, mge_build, base_build, roots):
     """The cost of `capture` at both fade values (`roots`: {value: config folder}), base against now: (passed, the table's
     lines). A replay with no cost lines is NOT RUN, and so is the cost while a game runs (`game_running`), before and
     after its replays."""
-    import statistics
     name = os.path.basename(capture)[:-len(".nircap")]
     passed, table = True, []
     running = game_running()
@@ -2623,39 +2775,42 @@ def fade_cost(capture, out, mge_build, base_build, roots):
     for value in (True, False):
         word = FADE_WORDS[value]
         times = {"base": [], "now": []}
-        for number in range(1, FADE_COST_ROUNDS + 1):
-            for arm, build in (("base", base_build), ("now", mge_build)):
-                picture = os.path.join(out, "cost-%s-%s-%d.png" % (word, arm, number))
-                code, output = run_code([PY, os.path.join(HERE, "replay.py"), capture, picture, "--marks-every", str(FADE_MARKS_EVERY),
-                                         "--config-root", roots[value]] + build_option(build), dict(GATE_ENV, **FADE_COST_ENV))
-                keep_replay_output(picture, code, output)
-                if os.path.isfile(picture):
-                    os.remove(picture)
-                if not ran((code, output), "replay.py of %s for the cost, the %s set at the %s, round %d" % (name, arm, word, number)):
-                    return False, table
-                gpu, busy = cost_of(output)
-                if gpu is None or busy is None:
-                    return not_run("the cost of %s, the %s set at the %s, round %d: the replay printed no %s after its first mark "
-                                   "(--marks-every %d, MGE_XE_GPU_TIME=1)" % (name, arm, word, number, "gpu line" if busy is not None else "mark",
-                                                                              FADE_MARKS_EVERY)), table
-                times[arm].append((gpu, busy))
-        rises = []
-        for part, index in (("GPU frame", 0), ("busy", 1)):
-            base_values, now_values = ([round_times[index] for round_times in times[arm]] for arm in ("base", "now"))
-            base, now = statistics.median(base_values), statistics.median(now_values)
-            limit = base + max(FADE_COST_FLOOR_MS, FADE_COST_SHARE * base)
-            line = "%s at the %s, %s: base %.3f, now %.3f ms (%+.3f; medians of %d; spread base %.3f, now %.3f); the limit %.3f" % (
-                name, word, part, base, now, now - base, FADE_COST_ROUNDS, max(base_values) - min(base_values), max(now_values) - min(now_values), limit)
-            table.append(line)
-            if now > limit:
-                rises.append(line)
+        # W644: rounds in batches of FADE_COST_ROUNDS. A median above the limit that the rounds do not show (`judge_cost`)
+        # gets another batch of each set, up to FADE_COST_MOST rounds; then it is NOT RUN, for a person.
+        while True:
+            for number in range(len(times["base"]) + 1, len(times["base"]) + FADE_COST_ROUNDS + 1):
+                for arm, build in (("base", base_build), ("now", mge_build)):
+                    picture = os.path.join(out, "cost-%s-%s-%d.png" % (word, arm, number))
+                    code, output = run_code([PY, os.path.join(HERE, "replay.py"), capture, picture, "--marks-every", str(FADE_MARKS_EVERY),
+                                             "--config-root", roots[value]] + build_option(build), dict(GATE_ENV, **FADE_COST_ENV))
+                    keep_replay_output(picture, code, output)
+                    if os.path.isfile(picture):
+                        os.remove(picture)
+                    if not ran((code, output), "replay.py of %s for the cost, the %s set at the %s, round %d" % (name, arm, word, number)):
+                        return False, table
+                    gpu, busy = cost_of(output)
+                    if gpu is None or busy is None:
+                        return not_run("the cost of %s, the %s set at the %s, round %d: the replay printed no %s after its first mark "
+                                       "(--marks-every %d, MGE_XE_GPU_TIME=1)" % (name, arm, word, number, "gpu line" if busy is not None else "mark",
+                                                                                  FADE_MARKS_EVERY)), table
+                    times[arm].append((gpu, busy))
+            lines, rises, unclear = judge_cost(name, word, times)
+            if not unclear or len(times["base"]) >= FADE_COST_MOST:
+                break
+            print("       %s at the %s: the median of the %s is above the limit, and %d rounds of each set do not show a rise: %d more "
+                  "rounds of each" % (name, word, " and the ".join(unclear), len(times["base"]), FADE_COST_ROUNDS), flush=True)
+        table.extend(lines)
         reason = GATE_COST.get((name, value))
-        for line in table[-2:]:
+        for line in lines:
             print("       " + line, flush=True)
         if rises and reason is not None:
             check(True, "%s at the %s: a rise; listed: a planned rise (%s)" % (name, word, reason))
         elif rises:
             passed &= check(False, "%s at the %s: a rise above the limit, and the gate list plans none: %s" % (name, word, "; ".join(rises)))
+        elif unclear:
+            passed &= not_run("%s at the %s: the median of the %s is above the limit, and %d rounds of each set can not tell a rise from "
+                              "the noise (p above %g): a person judges the lines above" % (name, word, " and the ".join(unclear), len(times["base"]),
+                                                                                          FADE_COST_P))
         elif reason is not None:
             passed &= check(False, "%s at the %s: no rise, and the gate list plans one (%s): the planned rise did not come, or the list is "
                             "wrong" % (name, word, reason))
