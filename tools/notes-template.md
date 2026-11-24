@@ -3,6 +3,8 @@ Test build of MGE XE G7 with the wgpu renderer. Read `MGE XE Renderer Readme.md`
 ## Before you install
 
 - **Check the download.** The SHA-256 of the archive is `{sha256}`; the file `<archive>.sha256` beside it holds the same (`sha256sum -c`, or `certutil -hashfile <archive> SHA256` on Windows). `MANIFEST.txt` inside the archive lists each file with its SHA-256.
+- **Check who made it.** This build is {signature}.
+  (release.py fills the token: with `--sign-key`, the key's fingerprint, its line for a file `release-signers` and the `ssh-keygen -Y verify` command; with `--no-sign`, "not signed (a test build)")
 - **Install the whole archive.** The game's plugin (`akulakhan.dll`) and the renderer (`numidium.exe`) must come from the same archive.
 - **MWSE.dll is in the archive, and you need it.** (Say whether it changed since the last build.)
 - **Do not run `MWSE-Update.exe`** while you test this build. It puts the public MWSE.dll back, and the renderer then turns off.
