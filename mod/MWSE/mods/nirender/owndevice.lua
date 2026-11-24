@@ -599,18 +599,20 @@ return function(nirender, spec)
             tes3.player.orientation = tes3vector3.new(o.x, o.y, o.z + 0.3)
         end },
         -- The player goes north over the borders of exterior cells, a small step in each
-        -- frame, as on foot but faster. The game then loads the cells in front of the player
+        -- frame, faster than on foot, and 512 units over what is under it (hover.lua), so that
+        -- no rock, tree or wall stops it. The game then loads the cells in front of the player
         -- on its second thread while the main thread draws.
         { "walk", spec.walkSeconds or 25, function()
+            local hover = require("nirender.hover")
             local last = os.clock()
             local from = tes3.player.cell.editorName
             scenario.eachFrame = function(now)
                 local step = math.min(now - last, 0.1) * (spec.walkSpeed or 2500)
                 last = now
                 local at = tes3.player.position
-                tes3.player.position = tes3vector3.new(at.x, at.y + step, at.z + 0)
+                tes3.player.position = tes3vector3.new(hover.next(at.x, at.y, at.z, step, hover.ground, hover.water()))
             end
-            say("walk from '%s'", from)
+            say("walk from '%s', %d units over the ground", from, hover.HEIGHT)
         end },
         { "walk-end", 3.0, function()
             scenario.eachFrame = nil
