@@ -2873,7 +2873,7 @@ impl Player {
                     &self.renderer.chains,
                     effects.as_ref(),
                     // The claim is never for the sky (above).
-                    false,
+                    None,
                 );
                 DrawFacts {
                     class: r.class,
@@ -2887,7 +2887,7 @@ impl Player {
             })
             .filter(|facts| self.extension.as_ref().is_some_and(|extension| extension.claims(facts)));
         let mut slots = Vec::new();
-        let sky = self.renderer.sky_levels(r.class);
+        let sky = self.renderer.sky_filter(r.class);
         for pass in 0..derived.passes.len() {
             let p = Pass::new(
                 &derived,

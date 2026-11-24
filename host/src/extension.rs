@@ -575,10 +575,11 @@ pub trait Extension {
         true
     }
 
-    /// True when the draws of the sky filter between the levels of their textures (the
-    /// Architect's W632 re-ruling), from the settings of the extension.
-    fn sky_mip_filter(&self) -> bool {
-        false
+    /// How the draws of the sky read their BILERP maps (W632: the moons' faces and shadow shapes,
+    /// the sun's glare), from the settings of the extension (`graphics.sky_map_filter`):
+    /// [`crate::SkyMapFilter::Engine`] or [`crate::SkyMapFilter::Area`].
+    fn sky_map_filter(&self) -> crate::SkyMapFilter {
+        crate::SkyMapFilter::Engine
     }
 
     /// The frames that may wait for the GPU before the window shows them, from the settings of

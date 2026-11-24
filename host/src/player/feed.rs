@@ -1312,7 +1312,7 @@ impl Player {
         // A draw that cannot change the picture (the faders at rest): `draw` leaves it out once
         // the frame's plan, the extension's classes and its sky have seen it.
         self.stream.shape_keeps = material::draw_keeps_picture(flags, &m, colours[13], derived.passes.len());
-        let sky = self.renderer.sky_levels(self.stream.object_class);
+        let sky = self.renderer.sky_filter(self.stream.object_class);
         for pass in 0..derived.passes.len() {
             let state = Pass::new(
                 &derived,
@@ -1408,7 +1408,7 @@ impl Player {
         else {
             return false;
         };
-        let sky = self.renderer.sky_levels(class);
+        let sky = self.renderer.sky_filter(class);
         let pass = Pass::new(derived, 0, m, &self.renderer.textures, &self.renderer.chains, effects, sky);
         let facts = DrawFacts {
             class,

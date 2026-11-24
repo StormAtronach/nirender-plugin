@@ -1099,7 +1099,10 @@ impl App {
             .extension
             .as_ref()
             .is_none_or(|extension| extension.mipmaps_for_one_level());
-        player.renderer.sky_mip_filter = player.extension.as_ref().is_some_and(|extension| extension.sky_mip_filter());
+        player.renderer.sky_map_filter = player
+            .extension
+            .as_ref()
+            .map_or(crate::SkyMapFilter::Engine, |extension| extension.sky_map_filter());
         let setting = player.extension.as_ref().and_then(|extension| extension.table_order());
         player.take_table_order(setting);
         player.film_shot = self.shot_film.take();

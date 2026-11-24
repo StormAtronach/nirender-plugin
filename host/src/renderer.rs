@@ -394,10 +394,10 @@ pub(crate) enum WindowTarget {
 }
 
 impl Renderer {
-    /// True when a draw of this object class (MGE_LINK_CLASS_*) filters between the levels of its
-    /// textures ([`crate::mip_chain::sky_levels`]).
-    pub(crate) fn sky_levels(&self, class: u32) -> bool {
-        crate::mip_chain::sky_levels(self.sky_mip_filter, class)
+    /// The read of the BILERP maps of a draw of this object class (MGE_LINK_CLASS_*): the sky's
+    /// filter for a class of the sky, None for any other ([`crate::sky_read::of_class`]).
+    pub(crate) fn sky_filter(&self, class: u32) -> Option<SkyMapFilter> {
+        crate::sky_read::of_class(self.sky_map_filter, class)
     }
 
     /// The maps of a material that have a texture, for a shape that the extension holds
@@ -415,7 +415,7 @@ impl Renderer {
                     texture.texture().mip_level_count(),
                     self.chains.contains_key(&map.texture),
                     // The extension holds no draw of the sky (`hold_shape`).
-                    false,
+                    None,
                 );
                 Some(HeldMap {
                     map: index,
@@ -790,7 +790,7 @@ impl Renderer {
             present_modes,
             anisotropy: 1,
             mipmaps_for_one_level: true,
-            sky_mip_filter: false,
+            sky_map_filter: SkyMapFilter::Engine,
             samples,
             depth_format,
             multisample,

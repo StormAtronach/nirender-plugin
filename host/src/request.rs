@@ -125,7 +125,8 @@ impl TextureTier {
 /// replaced by 6 textures (`t0` to `t5`, bindings 0 to 5) and 6 samplers (`s0` to `s5`,
 /// bindings 6 to 11), and each stage sampling its own pair. Every stage of a draw samples
 /// its pair: an unused stage has the white texture and a plain sampler in its group. A
-/// stage's pair may be read in more than one place (`cloud_texture` reads the first).
+/// stage's pair may be read in more than one place (`cloud_texture` reads the first), and its
+/// texture may be queried alone (`first_map_size` reads the first's size).
 pub fn tier_c_shader_source(source: &str) -> String {
     let mut out = source.replacen("enable wgpu_binding_array;\n", "", 1);
     let arrays = "@group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;\n@group(1) @binding(1) var samplers: binding_array<sampler>;\n";
@@ -146,6 +147,11 @@ pub fn tier_c_shader_source(source: &str) -> String {
             format!("textures[draws[record].stages[{stage}].slots.x], samplers[draws[record].stages[{stage}].slots.y]");
         assert!(out.contains(&indexed), "stage {stage} does not sample the arrays");
         out = out.replace(&indexed, &format!("t{stage}, s{stage}"));
+        // A query of the texture alone (its size and levels: `first_map_size`, `first_map_levels`).
+        out = out.replace(
+            &format!("textures[draws[record].stages[{stage}].slots.x]"),
+            &format!("t{stage}"),
+        );
     }
     assert!(
         !out.contains("textures[") && !out.contains("samplers["),

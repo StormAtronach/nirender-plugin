@@ -473,7 +473,7 @@ impl Player {
             shown.len(),
             alpha_tested
         );
-        println!("sky mip filter: {}", if r.sky_mip_filter { "on" } else { "off" });
+        println!("sky map filter: {}", r.sky_map_filter.name());
         // The chain work by frame: a load gives one run, a cell that the play loads later gives
         // a run of its own. A run ends at a gap of more than 60 frames.
         if !c.chain_frames.is_empty() {

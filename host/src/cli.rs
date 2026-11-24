@@ -157,18 +157,25 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         Some("off") => false,
         _ => extension.as_ref().is_none_or(|extension| extension.mipmaps_for_one_level()),
     };
-    // The Architect's W632 re-ruling: the draws of the sky filter between the levels of their
-    // textures; the argument names the arm of an A/B.
-    let sky_mip_filter = match option(&args, "--sky-mip-filter").as_deref() {
-        Some("on") => true,
-        Some("off") => false,
-        _ => extension.as_ref().is_some_and(|extension| extension.sky_mip_filter()),
+    // W632: how the draws of the sky read their BILERP maps; the argument names the arm of a test
+    // (engine, trilinear, bias with `--sky-lod-bias`, area, area-tent).
+    let bias = option(&args, "--sky-lod-bias")
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(-1.0);
+    let sky_map_filter = match option(&args, "--sky-map-filter") {
+        Some(name) => SkyMapFilter::parse(&name, bias).unwrap_or_else(|| {
+            eprintln!("--sky-map-filter {name}: engine, trilinear, bias, area or area-tent");
+            std::process::exit(2);
+        }),
+        None => extension
+            .as_ref()
+            .map_or(SkyMapFilter::Engine, |extension| extension.sky_map_filter()),
     };
     println!(
-        "{} records, {frames} frames, frame {wanted} into {width} x {height}, mipmaps for one level {}, sky mip filter {}",
+        "{} records, {frames} frames, frame {wanted} into {width} x {height}, mipmaps for one level {}, sky map filter {}",
         records.len(),
         if mipmaps_for_one_level { "on" } else { "off" },
-        if sky_mip_filter { "on" } else { "off" }
+        sky_map_filter.name()
     );
 
     // The samples of the extension's settings, as in the live mode; `MGE_XE_SAMPLES` is for a test.
@@ -199,7 +206,7 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         .or(extension.as_ref().map(|extension| extension.anisotropy()))
         .unwrap_or(1);
     player.renderer.mipmaps_for_one_level = mipmaps_for_one_level;
-    player.renderer.sky_mip_filter = sky_mip_filter;
+    player.renderer.sky_map_filter = sky_map_filter;
     // W632, the Architect's W5: the replay waits at each frame's start for the chains of the
     // jobs given before, so that its picture is the same at each run. So a replay shows a chain
     // as early as a frame can, and a live run some frames later: a replay A/B measures the

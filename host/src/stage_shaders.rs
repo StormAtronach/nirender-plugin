@@ -60,7 +60,9 @@ const STAGES: usize = 6;
 const LIST_HEADER: &str = "numidium stage pipelines";
 /// The format of the list's lines; it is in the list's file name too ([`list_name`]). 3: the
 /// key's shade bits have [`crate::NO_LIGHTS_BIT`]. 4: the key has the add bit (`adds`). 5: the
-/// key has the flat and the plane bits, and its shade bits have the sky bits 4 and 8 (W300).
+/// key has the flat and the plane bits, and its shade bits have the sky bits 4 and 8 (W300). The
+/// area bit 8192 (W632, [`crate::AREA_READ_BIT`]) is in the shade word; a line of format 5 written
+/// before it reads as before, so the format does not change.
 const LIST_FORMAT: u32 = 5;
 /// The frames between two writes of a changed list.
 const SAVE_FRAMES: u32 = 600;
@@ -173,8 +175,9 @@ const UBER_SET: [PipelineKey; 48] = [
 /// extension's shade (1 the extension shades, 2, the sky's [`SKY_BITS`], 16, 32 the sun's
 /// shadow, 128 the light for each pixel, 512, and this crate's [`crate::CLOUDS_HOOK_BIT`], 1024:
 /// the clouds with the extension's colour, [`crate::PARTICLE_HOOK_BIT`], 2048: a particle with
-/// the extension's colour, [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit at its corners,
-/// and [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained table also takes
+/// the extension's colour, [`crate::AREA_READ_BIT`], 8192: stage 0 reads a sky map with W632's
+/// read, [`crate::CORNER_LIGHT_BIT`], 16384: a particle lit at its corners, and
+/// [`crate::NO_LIGHTS_BIT`], 32768: no light loop). A draw of the retained table also takes
 /// the bits of its kind from the scene (`draw_counts_w`): those stay values of the frame, but
 /// for the sky's bits. The key keeps the bits in a `u16`.
 const SHADE_BITS: u32 = 1
@@ -186,6 +189,7 @@ const SHADE_BITS: u32 = 1
     | 512
     | crate::CLOUDS_HOOK_BIT
     | crate::PARTICLE_HOOK_BIT
+    | crate::AREA_READ_BIT
     | crate::CORNER_LIGHT_BIT
     | crate::NO_LIGHTS_BIT;
 /// The sky's bits of `counts.w`: 4 the dome, 8 the shadow of a moon. Only the stream sets them
@@ -223,6 +227,13 @@ pub(crate) struct StageKey {
     /// record of a draw takes its plane after its key, so the places that give it one take the
     /// key again ([`StageShaders::id_with_plane`]).
     plane: bool,
+}
+
+/// The shade word of a line of the list as the key's shade bits, or None when the word has a bit
+/// outside `bits` (the shade bits of the build that reads it, [`SHADE_BITS`]): such a line is not a
+/// key of this build.
+fn shade_of(word: u32, bits: u32) -> Option<u16> {
+    u16::try_from(word).ok().filter(|&shade| shade as u32 & !bits == 0)
 }
 
 impl StageKey {
@@ -309,9 +320,7 @@ impl StageKey {
             return None;
         }
         let small = |value: u32| u8::try_from(value).ok();
-        let shade = u16::try_from(words[2])
-            .ok()
-            .filter(|&shade| shade as u32 & !SHADE_BITS == 0)?;
+        let shade = shade_of(words[2], SHADE_BITS)?;
         let flag = |word: u32| match word {
             0 => Some(false),
             1 => Some(true),
@@ -2045,6 +2054,62 @@ mod tests {
         let mut words = pipeline_words(&pipeline);
         words.push(0);
         assert_eq!(pipeline_from_words(&words), Some(pipeline));
+    }
+
+    /// Lines of a list of format 5 written before W632 (the run of 2026-11-24 12:41 in Outlander-test,
+    /// numidium-stage-pipelines-5-88e8546d1bca4a32.txt, one line of each of six shade words). The shade
+    /// words of its 248 lines are 0, 4, 8, 657, 659, 689, 1024 and 33425: none has the area bit.
+    const LIST_LINES_BEFORE_W632: [&str; 6] = [
+        "338 36 4 1 5 6 1 0 4 2 3 0 0 0 0 0 0 0 15 1 0 1 0 0 1 1 0 0 0 0 4 2 0 1 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+        "338 36 4 1 5 6 1 0 8 2 3 0 0 0 0 0 0 0 7 4 0 1 0 8 1 1 0 0 0 0 4 2 0 1 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+        "338 36 4 1 5 6 1 0 4 2 3 0 0 0 0 0 0 0 7 4 0 2 0 657 1 1 0 0 0 1 4 2 0 1 4 2 0 7 2 1 1 1 2 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+        "274 32 4 0 2 1 1 1 4 2 3 0 0 0 0 0 0 0 7 4 0 1 0 689 1 1 0 0 0 0 4 2 0 1 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+        "338 36 4 1 5 6 1 0 8 2 3 0 0 0 0 0 0 0 7 4 0 1 0 1024 1 1 0 0 0 0 4 2 0 1 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+        "274 32 4 1 5 6 1 0 4 1 3 0 0 0 0 0 0 0 7 4 0 1 0 33425 1 1 0 0 0 1 4 2 0 1 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+    ];
+
+    fn list_words(line: &str) -> Vec<u32> {
+        line.split_whitespace().map(|word| word.parse().unwrap()).collect()
+    }
+
+    /// The Architect's list ruling for W632 (a): a line of format 5 written before the area bit reads to
+    /// the same pipeline and the same key, with no area read, and writes back the same words: the area
+    /// bit needs no new format.
+    #[test]
+    fn a_list_line_from_before_the_area_bit_reads_as_before() {
+        for line in LIST_LINES_BEFORE_W632 {
+            let words = list_words(line);
+            assert_eq!(words.len(), 21 + KEY_WORDS, "{line}");
+            let pipeline = pipeline_from_words(&words[..21]).expect(line);
+            let key = StageKey::from_words(&words[21..]).expect(line);
+            assert_eq!(key.shade as u32 & crate::AREA_READ_BIT, 0, "{line}");
+            // The list writes 0 in the place of the stage key's id (`StageShaders::save`).
+            let mut again = pipeline_words(&pipeline);
+            again.push(0);
+            again.extend(key.words());
+            assert_eq!(again, words, "{line}");
+        }
+    }
+
+    /// (b): a key with the area bit writes its words and reads back equal, and the bit is a fact of the
+    /// key: it splits a key from the same key without it. (c): a build without the bit (the shade
+    /// bits before W632) drops a line with it, and only such lines.
+    #[test]
+    fn the_area_bit_goes_through_the_list() {
+        let mut data = DrawData::zeroed();
+        data.counts[3] = 1 | 128 | crate::AREA_READ_BIT;
+        let with = StageKey::of(&data).unwrap();
+        assert_eq!(with.shade as u32, 1 | 128 | crate::AREA_READ_BIT);
+        assert_eq!(StageKey::from_words(&with.words()), Some(with));
+        data.counts[3] = 1 | 128;
+        assert_ne!(StageKey::of(&data), Some(with));
+        let before = SHADE_BITS & !crate::AREA_READ_BIT;
+        assert_eq!(shade_of(with.words()[2], before), None);
+        for line in LIST_LINES_BEFORE_W632 {
+            let shade = list_words(line)[23];
+            assert_eq!(shade_of(shade, before), shade_of(shade, SHADE_BITS), "{line}");
+            assert!(shade_of(shade, before).is_some(), "{line}");
+        }
     }
 
     #[test]
