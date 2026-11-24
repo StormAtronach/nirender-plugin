@@ -341,12 +341,25 @@ impl Player {
             c.light_missing
         );
         println!(
-            "clusters: {:.1} lights and {:.0} entries for each frame, {} frames with more lights than a mask holds, {} entries dropped from a full cluster; {:.3} ms of the helper for each frame (with the world mode's shade of the table's lights)",
+            "clusters: {:.1} lights and {:.0} entries for each frame, {} frames with more lights than a mask holds; {:.3} ms of the helper for each frame (with the world mode's shade of the table's lights)",
             c.cluster_lights as f64 / c.frames.max(1) as f64,
             c.cluster_entries as f64 / c.frames.max(1) as f64,
             c.cluster_frames_many,
-            c.cluster_dropped,
             ticks::duration(c.times[TIME_CLUSTERS]).as_secs_f64() * 1000.0 / c.frames.max(1) as f64
+        );
+        let full = |name: &str, d: &crate::lights::ClusterDrops| {
+            format!(
+                "{name}: {} entries dropped, {} full clusters, {} frames with a full cluster, at most {} lights in a cluster",
+                d.entries, d.clusters, d.frames, d.most
+            )
+        };
+        let drops = &c.cluster_drops;
+        println!(
+            "full clusters (the strongest {} lights stay): {}; {}; {}",
+            crate::lights::CLUSTER_LIGHTS,
+            full("draws", &drops[crate::lights::DRAWS_BINNING]),
+            full("extension", &drops[crate::lights::EXTENSION_BINNING]),
+            full("world", &drops[crate::lights::WORLD_BINNING])
         );
         println!(
             "lights for the extension: {:.1} for each frame",

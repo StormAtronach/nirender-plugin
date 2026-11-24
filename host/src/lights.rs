@@ -35,23 +35,98 @@ pub(crate) struct ClusterData {
 /// [`ClusterData::grid`] w of the clusters of the lights of the world.
 pub(crate) const GRID_WORLD_LIGHTS: u32 = 3;
 
+/// The binnings that count their full clusters apart ([`crate::Counts::cluster_drops`]): the
+/// clusters of the draws, of the extension's lights, and of the lights of the world.
+pub(crate) const DRAWS_BINNING: usize = 0;
+pub(crate) const EXTENSION_BINNING: usize = 1;
+pub(crate) const WORLD_BINNING: usize = 2;
+
+/// The full clusters of one binning (W31).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ClusterDrops {
+    /// The entries that a full cluster did not keep: the new light, or the weakest one that it
+    /// replaced.
+    pub(crate) entries: u64,
+    /// The clusters that were full, once in each binning of a frame.
+    pub(crate) clusters: u64,
+    /// The binnings (frames) with a full cluster.
+    pub(crate) frames: u64,
+    /// The most lights that one cluster was asked to hold.
+    pub(crate) most: u32,
+}
+
+/// What a full cluster keeps a light by (W31): the luminance of its colour and the terms of its
+/// attenuation, as the shaders light with them (`shader.wgsl`: `1 / max(a0 + a1 d + a2 d^2,
+/// 0.0001)`, nothing past the range `direction[3]`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LightPower {
+    pub(crate) luminance: f32,
+    pub(crate) attenuation: [f32; 3],
+    pub(crate) range: f32,
+}
+
+impl LightPower {
+    pub(crate) fn of(light: &LightData) -> LightPower {
+        let [r, g, b, _] = light.diffuse;
+        LightPower {
+            luminance: (0.2126 * r + 0.7152 * g + 0.0722 * b).abs(),
+            attenuation: [light.attenuation[0], light.attenuation[1], light.attenuation[2]],
+            range: light.direction[3],
+        }
+    }
+
+    /// The light at `distance` from it, or its luminance for a directional light ([`None`]).
+    fn at(&self, distance: Option<f32>) -> f32 {
+        let Some(d) = distance else {
+            return self.luminance;
+        };
+        if d > self.range {
+            return 0.0;
+        }
+        let [a0, a1, a2] = self.attenuation;
+        // max(0) also makes a NaN (a light of no number) the weakest.
+        (self.luminance / (a0 + a1 * d + a2 * d * d).max(0.0001)).max(0.0)
+    }
+}
+
+/// The distance from `point` to the nearest point of a box, in the space of the view.
+fn distance_to_box(point: [f32; 3], low: [f32; 3], high: [f32; 3]) -> f32 {
+    (0..3)
+        .map(|axis| {
+            let outside = (low[axis] - point[axis]).max(point[axis] - high[axis]).max(0.0);
+            outside * outside
+        })
+        .sum::<f32>()
+        .sqrt()
+}
+
 /// Bins lights into the grid of the clusters of a projection of Direct3D. Each item is the
 /// entry of a light, its centre in the space of the view ([`None`] for a directional light,
-/// which is in each cluster) and its reach. `lists` has a list for each cluster. Returns the
-/// table (the first entry and the number for each cluster), the entries, and the values for
-/// the shader with `w` in the grid. An entry that finds its cluster full goes into `dropped`.
+/// which is in each cluster), its reach and its power. `lists` has a list for each cluster.
+/// Returns the table (the first entry and the number for each cluster), the entries, and the
+/// values for the shader with `w` in the grid.
+///
+/// A full cluster ([`CLUSTER_LIGHTS`]) keeps the strongest lights (W31): a new light replaces
+/// the weakest one in it when it is stronger at the cluster's point nearest to each light.
+/// At the same strength the lower entry stays; each binning gives its entries by slot, so the
+/// lower slot stays, the same in each frame and on each replay. `drops` counts what a full
+/// cluster did not keep.
 pub(crate) fn bin_lights(
     lists: &mut [Vec<u32>],
-    items: impl Iterator<Item = (u32, Option<[f32; 3]>, f32)>,
+    items: impl Iterator<Item = (u32, Option<[f32; 3]>, f32, LightPower)>,
     projection: &[f32; 16],
     depth_range: [f32; 2],
     size: (u32, u32),
     w: u32,
-    dropped: &mut u64,
+    drops: &mut ClusterDrops,
 ) -> (Vec<[u32; 2]>, Vec<u32>, ClusterData) {
     for list in lists.iter_mut() {
         list.clear();
     }
+    // The lists hold the places of the items in `seen`; the table gets their entries.
+    let mut seen: Vec<(u32, Option<[f32; 3]>, LightPower)> = Vec::new();
+    // The full clusters of this binning, with the lights each did not keep.
+    let mut full: Vec<(usize, u32)> = Vec::new();
     let (gx, gy, gz) = (CLUSTER_GRID[0] as usize, CLUSTER_GRID[1] as usize, CLUSTER_GRID[2] as usize);
     // The near and far planes of the camera ([`crate::WorldFacts::depth_range`]); a frustum of
     // no depth (a camera whose record has none) still gives slices.
@@ -60,7 +135,28 @@ pub(crate) fn bin_lights(
     let depth_scale = gz as f32 / (far / near).ln();
     let slice_of = |z: f32| ((z.max(near) / near).ln() * depth_scale).floor().clamp(0.0, gz as f32 - 1.0) as usize;
     let (sx, sy) = (projection[0], projection[5]);
-    for (entry, centre, reach) in items {
+    // The box of a cluster in the space of the view: its tile at the near and the far depth of
+    // its slice. A pixel of the cluster is in the box, so no light is weaker there than at the
+    // box's nearest point.
+    let cluster_box = |x: usize, y: usize, z: usize| -> ([f32; 3], [f32; 3]) {
+        let depth = |slice: usize| near * (slice as f32 / depth_scale).exp();
+        let (z_low, z_high) = (depth(z), depth(z + 1));
+        let ndc_x = [-1.0 + 2.0 * x as f32 / gx as f32, -1.0 + 2.0 * (x + 1) as f32 / gx as f32];
+        let ndc_y = [1.0 - 2.0 * (y + 1) as f32 / gy as f32, 1.0 - 2.0 * y as f32 / gy as f32];
+        let (mut low, mut high) = ([f32::MAX, f32::MAX, z_low], [f32::MIN, f32::MIN, z_high]);
+        for z_view in [z_low, z_high] {
+            for ndc in ndc_x {
+                let view = ndc * z_view / sx;
+                (low[0], high[0]) = (low[0].min(view), high[0].max(view));
+            }
+            for ndc in ndc_y {
+                let view = ndc * z_view / sy;
+                (low[1], high[1]) = (low[1].min(view), high[1].max(view));
+            }
+        }
+        (low, high)
+    };
+    for (entry, centre, reach, power) in items {
         let (x0, x1, y0, y1, z0, z1);
         match centre {
             None => (x0, x1, y0, y1, z0, z1) = (0, gx - 1, 0, gy - 1, 0, gz - 1),
@@ -94,14 +190,42 @@ pub(crate) fn bin_lights(
                 }
             }
         }
+        let item = seen.len() as u32;
+        seen.push((entry, centre, power));
         for z in z0..=z1 {
             for y in y0..=y1 {
                 for x in x0..=x1 {
-                    let list = &mut lists[(z * gy + y) * gx + x];
+                    let cluster = (z * gy + y) * gx + x;
+                    let list = &mut lists[cluster];
                     if list.len() < CLUSTER_LIGHTS {
-                        list.push(entry);
-                    } else {
-                        *dropped += 1;
+                        list.push(item);
+                        continue;
+                    }
+                    // Full: the strength and the entry of each light; the weaker of two is the
+                    // one with less strength, or the higher entry at the same strength.
+                    let (low, high) = cluster_box(x, y, z);
+                    let rank = |place: u32| {
+                        let (entry, centre, power) = seen[place as usize];
+                        (power.at(centre.map(|c| distance_to_box(c, low, high))), entry)
+                    };
+                    let weaker = |a: (f32, u32), b: (f32, u32)| a.0 < b.0 || (a.0 == b.0 && a.1 > b.1);
+                    let (mut weakest, mut weakest_rank) = (0, rank(list[0]));
+                    for (k, &place) in list.iter().enumerate().skip(1) {
+                        let candidate = rank(place);
+                        if weaker(candidate, weakest_rank) {
+                            (weakest, weakest_rank) = (k, candidate);
+                        }
+                    }
+                    // The list keeps the order of the items: the weakest goes out and the new
+                    // light, the last item so far, goes to the end.
+                    if weaker(weakest_rank, rank(item)) {
+                        list.remove(weakest);
+                        list.push(item);
+                    }
+                    drops.entries += 1;
+                    match full.iter_mut().find(|(c, _)| *c == cluster) {
+                        Some((_, lost)) => *lost += 1,
+                        None => full.push((cluster, 1)),
                     }
                 }
             }
@@ -109,9 +233,19 @@ pub(crate) fn bin_lights(
     }
     let mut table: Vec<[u32; 2]> = Vec::with_capacity(lists.len());
     let mut indexes: Vec<u32> = Vec::new();
+    let mut most = 0;
     for list in lists.iter() {
         table.push([indexes.len() as u32, list.len() as u32]);
-        indexes.extend_from_slice(list);
+        indexes.extend(list.iter().map(|&place| seen[place as usize].0));
+        most = most.max(list.len() as u32);
+    }
+    for &(_, lost) in &full {
+        most = most.max(CLUSTER_LIGHTS as u32 + lost);
+    }
+    drops.most = drops.most.max(most);
+    drops.clusters += full.len() as u64;
+    if !full.is_empty() {
+        drops.frames += 1;
     }
     let data = ClusterData {
         grid: [CLUSTER_GRID[0], CLUSTER_GRID[1], CLUSTER_GRID[2], w],
@@ -272,7 +406,12 @@ impl Clusters {
             // attenuation ends (`cluster_reach`). These clusters have masks: a draw takes only
             // the lights of its own set, so a reach past the objects the game attached the light
             // to lights nothing more.
-            Some((index | slot << 16, centre, crate::extension::cluster_reach(light)))
+            Some((
+                index | slot << 16,
+                centre,
+                crate::extension::cluster_reach(light),
+                LightPower::of(light),
+            ))
         });
         let (table, indexes, data) = bin_lights(
             &mut self.lists,
@@ -281,7 +420,7 @@ impl Clusters {
             depth_range,
             size,
             1,
-            &mut counts.cluster_dropped,
+            &mut counts.cluster_drops[DRAWS_BINNING],
         );
         self.unique.clear();
         self.write(device, queue, &table, &indexes, &data, counts);
@@ -342,7 +481,7 @@ impl Clusters {
                 (p[2] as f64 + to_scene[2]) as f32,
                 p[3],
             ];
-            Some((slot, Some(view_point(&view, centre)), reach))
+            Some((slot, Some(view_point(&view, centre)), reach, LightPower::of(light)))
         });
         let (table, indexes, mut data) = bin_lights(
             &mut self.lists,
@@ -351,7 +490,7 @@ impl Clusters {
             depth_range,
             size,
             GRID_WORLD_LIGHTS,
-            &mut counts.cluster_dropped,
+            &mut counts.cluster_drops[WORLD_BINNING],
         );
         data.offset = [to_scene[0] as f32, to_scene[1] as f32, to_scene[2] as f32, 0.0];
         data.origin = [to_world[0] as f32, to_world[1] as f32, to_world[2] as f32, 0.0];
@@ -534,7 +673,7 @@ impl ExtensionLights {
                 }
                 view_point(&view, light.position)
             });
-            items.push((lights.len() as u32, centre, light_reach(&light)));
+            items.push((lights.len() as u32, centre, light_reach(&light), LightPower::of(&light)));
             lights.push(light);
         }
         let (table, indexes, data) = bin_lights(
@@ -544,7 +683,7 @@ impl ExtensionLights {
             depth_range,
             size,
             2,
-            &mut counts.cluster_dropped,
+            &mut counts.cluster_drops[EXTENSION_BINNING],
         );
         if lights.len() > self.light_capacity {
             self.light_capacity = lights.len().next_power_of_two();
@@ -788,30 +927,55 @@ mod tests {
         p
     }
 
-    /// The entries that a number of lights at one place make, and the entries dropped.
-    fn bin_at_one_place(lights: u32, centre: [f32; 3], reach: f32) -> (usize, u64) {
+    /// A light of the same strength at each distance in its range.
+    fn power(luminance: f32) -> LightPower {
+        LightPower {
+            luminance,
+            attenuation: [1.0, 0.0, 0.0],
+            range: 1000.0,
+        }
+    }
+
+    /// Bins lights (entry, power) at one place; returns the entries of each cluster that has
+    /// lights, and the counters.
+    fn bin_planted(lights: &[(u32, LightPower)], centre: [f32; 3], reach: f32) -> (Vec<Vec<u32>>, ClusterDrops) {
         let cells = (CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]) as usize;
         let mut lists: Vec<Vec<u32>> = (0..cells).map(|_| Vec::new()).collect();
-        let mut dropped = 0;
-        let (_, indexes, _) = bin_lights(
+        let mut drops = ClusterDrops::default();
+        let (table, indexes, _) = bin_lights(
             &mut lists,
-            (0..lights).map(|entry| (entry, Some(centre), reach)),
+            lights.iter().map(|&(entry, power)| (entry, Some(centre), reach, power)),
             &projection(),
             [1.0, 1000.0],
             (1024, 1024),
             1,
-            &mut dropped,
+            &mut drops,
         );
-        (indexes.len(), dropped)
+        let clusters = table
+            .iter()
+            .filter(|&&[_, count]| count > 0)
+            .map(|&[first, count]| indexes[first as usize..(first + count) as usize].to_vec())
+            .collect();
+        (clusters, drops)
+    }
+
+    /// The entries that a number of lights of one strength at one place make, and the entries
+    /// dropped.
+    fn bin_at_one_place(lights: u32, centre: [f32; 3], reach: f32) -> (usize, u64) {
+        let planted: Vec<(u32, LightPower)> = (0..lights).map(|entry| (entry, power(1.0))).collect();
+        let (clusters, drops) = bin_planted(&planted, centre, reach);
+        (clusters.iter().map(Vec::len).sum(), drops.entries)
     }
 
     fn entries(centre: [f32; 3], reach: f32) -> usize {
         bin_at_one_place(1, centre, reach).0
     }
 
+    const PLACE: ([f32; 3], f32) = ([0.0, 0.0, 100.0], 10.0);
+
     #[test]
     fn a_full_cluster_counts_the_light_that_it_drops() {
-        let (centre, reach) = ([0.0, 0.0, 100.0], 10.0);
+        let (centre, reach) = PLACE;
         let clusters = entries(centre, reach);
         assert!(clusters > 0);
         let full = CLUSTER_LIGHTS as u32;
@@ -821,6 +985,175 @@ mod tests {
             bin_at_one_place(full + 1, centre, reach),
             (clusters * CLUSTER_LIGHTS, clusters as u64)
         );
+    }
+
+    /// 70 lights in the clusters of one place, with the luminance that `luminance` gives each
+    /// entry: each cluster keeps the 64 strongest, in the order of the entries, and loses the 6
+    /// weakest.
+    fn keeps_the_strongest(luminance: impl Fn(u32) -> f32) {
+        let (centre, reach) = PLACE;
+        let clusters = entries(centre, reach);
+        let planted: Vec<(u32, LightPower)> = (0..70).map(|entry| (entry, power(luminance(entry)))).collect();
+        let mut strongest: Vec<(u32, LightPower)> = planted.clone();
+        strongest.sort_by(|a, b| b.1.luminance.total_cmp(&a.1.luminance));
+        let mut kept: Vec<u32> = strongest[..CLUSTER_LIGHTS].iter().map(|&(entry, _)| entry).collect();
+        kept.sort_unstable();
+        let (lists, drops) = bin_planted(&planted, centre, reach);
+        assert_eq!(lists.len(), clusters);
+        for list in &lists {
+            assert_eq!(list, &kept);
+        }
+        let expected = ClusterDrops {
+            entries: (clusters * 6) as u64,
+            clusters: clusters as u64,
+            frames: 1,
+            most: 70,
+        };
+        assert_eq!(drops, expected);
+    }
+
+    #[test]
+    fn a_full_cluster_keeps_the_strongest_lights_when_the_weak_ones_have_the_low_slots() {
+        keeps_the_strongest(|entry| 1.0 + entry as f32);
+    }
+
+    #[test]
+    fn a_full_cluster_keeps_the_strongest_lights_when_the_weak_ones_have_the_high_slots() {
+        keeps_the_strongest(|entry| 100.0 - entry as f32);
+    }
+
+    #[test]
+    fn a_full_cluster_keeps_the_strongest_lights_in_any_order_of_the_slots() {
+        // 37 and 70 have no common factor: each luminance from 1 to 70 once, in a mixed order.
+        keeps_the_strongest(|entry| 1.0 + ((entry * 37) % 70) as f32);
+    }
+
+    #[test]
+    fn a_cluster_that_is_not_full_keeps_all_its_lights_in_their_order() {
+        let (centre, reach) = PLACE;
+        let clusters = entries(centre, reach);
+        // Strengths in a mixed order: no light is replaced, so the order stays that of the entries.
+        let planted: Vec<(u32, LightPower)> = (0..CLUSTER_LIGHTS as u32)
+            .map(|entry| (entry, power(1.0 + ((entry * 37) % 64) as f32)))
+            .collect();
+        let (lists, drops) = bin_planted(&planted, centre, reach);
+        let all: Vec<u32> = (0..CLUSTER_LIGHTS as u32).collect();
+        assert_eq!(lists.len(), clusters);
+        for list in &lists {
+            assert_eq!(list, &all);
+        }
+        assert_eq!(
+            drops,
+            ClusterDrops {
+                entries: 0,
+                clusters: 0,
+                frames: 0,
+                most: CLUSTER_LIGHTS as u32
+            }
+        );
+    }
+
+    #[test]
+    fn at_the_same_strength_the_lower_slot_stays() {
+        let (centre, reach) = PLACE;
+        let full = CLUSTER_LIGHTS as u32;
+        // The last light ties with all the others: it is the highest entry, so it goes.
+        let planted: Vec<(u32, LightPower)> = (0..=full).map(|entry| (entry, power(1.0))).collect();
+        let (lists, _) = bin_planted(&planted, centre, reach);
+        let low: Vec<u32> = (0..full).collect();
+        assert!(lists.iter().all(|list| list == &low));
+        // The same lights with the lowest entry last: it replaces the highest entry.
+        let reversed: Vec<(u32, LightPower)> = planted.iter().rev().copied().collect();
+        let (lists, _) = bin_planted(&reversed, centre, reach);
+        let mut kept: Vec<u32> = (1..full).rev().collect();
+        kept.push(0);
+        assert!(lists.iter().all(|list| list == &kept));
+        // A tie with the weakest light, not with all: entry 0 is as weak as the new light, and stays.
+        let mut planted: Vec<(u32, LightPower)> = (0..full).map(|entry| (entry, power(2.0))).collect();
+        planted[0].1 = power(1.0);
+        planted.push((full, power(1.0)));
+        let (lists, drops) = bin_planted(&planted, centre, reach);
+        assert!(lists.iter().all(|list| list == &low));
+        assert_eq!(drops.entries, lists.len() as u64);
+    }
+
+    #[test]
+    fn the_strength_of_a_light_is_that_of_the_shaders_at_the_nearest_point() {
+        let light = LightPower {
+            luminance: 2.0,
+            attenuation: [1.0, 0.5, 0.25],
+            range: 100.0,
+        };
+        // 2 / (1 + 0.5 * 2 + 0.25 * 4) = 2 / 3.
+        assert!((light.at(Some(2.0)) - 2.0 / 3.0).abs() < 1e-6);
+        assert_eq!(light.at(Some(101.0)), 0.0);
+        assert_eq!(light.at(None), 2.0);
+        // No attenuation: the shaders' floor of 0.0001.
+        let bright = LightPower {
+            luminance: 1.0,
+            attenuation: [0.0; 3],
+            range: 100.0,
+        };
+        assert!((bright.at(Some(5.0)) - 10000.0).abs() < 1e-2);
+        // Inside the box: 0; beside it on two axes: the diagonal.
+        let (low, high) = ([0.0, 0.0, 10.0], [10.0, 10.0, 20.0]);
+        assert_eq!(distance_to_box([5.0, 5.0, 15.0], low, high), 0.0);
+        assert!((distance_to_box([13.0, 14.0, 15.0], low, high) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_nearer_light_of_less_luminance_can_be_the_stronger() {
+        // 64 lights at the place, each of luminance 1 at any distance; one more of luminance
+        // 1000 whose attenuation falls with the square of the distance, 400 units deeper. It is
+        // dimmer at the clusters of the place (less than 1000 / 360^2), so it goes; a light of
+        // the same kind at the place itself (its clusters are within about 15 units) is
+        // stronger there, and it stays.
+        let (centre, reach) = PLACE;
+        let far = LightPower {
+            luminance: 1000.0,
+            attenuation: [0.0, 0.0, 1.0],
+            range: 1000.0,
+        };
+        let clusters = entries(centre, reach);
+        let cells = (CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]) as usize;
+        let mut lists: Vec<Vec<u32>> = (0..cells).map(|_| Vec::new()).collect();
+        let full = CLUSTER_LIGHTS as u32;
+        let near_lights = (0..full).map(|entry| (entry, Some(centre), reach, power(1.0)));
+        let mut drops = ClusterDrops::default();
+        let deep = [centre[0], centre[1], centre[2] + 400.0];
+        let count = |indexes: &[u32]| indexes.iter().filter(|&&entry| entry == full).count();
+        // Alone, the deep light is in each cluster of the place too (its sphere reaches them).
+        let (_, indexes, _) = bin_lights(
+            &mut lists,
+            [(full, Some(deep), 500.0, far)].into_iter(),
+            &projection(),
+            [1.0, 1000.0],
+            (1024, 1024),
+            1,
+            &mut drops,
+        );
+        let alone = count(&indexes);
+        let (_, indexes, _) = bin_lights(
+            &mut lists,
+            near_lights.clone().chain([(full, Some(deep), 500.0, far)]),
+            &projection(),
+            [1.0, 1000.0],
+            (1024, 1024),
+            1,
+            &mut drops,
+        );
+        assert_eq!(count(&indexes), alone - clusters);
+        assert_eq!(drops.entries, clusters as u64);
+        let (_, indexes, _) = bin_lights(
+            &mut lists,
+            near_lights.chain([(full, Some(centre), reach, far)]),
+            &projection(),
+            [1.0, 1000.0],
+            (1024, 1024),
+            1,
+            &mut drops,
+        );
+        assert_eq!(count(&indexes), clusters);
     }
 
     #[test]
