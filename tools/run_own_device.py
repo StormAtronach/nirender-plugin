@@ -2944,6 +2944,19 @@ def self_test_mgeview():
     assert done.returncode == 0 and "mgeview check: ok" in done.stdout, done.stdout + done.stderr
 
 
+def self_test_hover():
+    """W3: the runner's walk holds the player 512 units over what is under it (mod nirender/hover.lua):
+    tools/hover_check.lua with the LuaJIT of the Lua checks."""
+    luajit = lua_checks.luajit()
+    if not os.path.isfile(luajit):
+        print("run_own_device self-test: the hover check is skipped, no LuaJIT at %s" % luajit)
+        return
+    check = os.path.join(REPO, "tools", "hover_check.lua")
+    hover = os.path.join(REPO, "mod", "MWSE", "mods", "nirender", "hover.lua")
+    done = subprocess.run([luajit, check, hover], capture_output=True, text=True, errors="replace")
+    assert done.returncode == 0 and "hover check: ok" in done.stdout, done.stdout + done.stderr
+
+
 
 def self_test():
     """The tests of the argument handling: no game, no build."""
@@ -2976,6 +2989,7 @@ def self_test():
     self_test_use_instance()
     self_test_set()
     self_test_mgeview()
+    self_test_hover()
     assert env_of([]) == {}
     assert env_of(["MGE_XE_BOX_SECONDS=90", "A=1=2", "B=", "A=3"]) == {"MGE_XE_BOX_SECONDS": "90", "A": "3", "B": ""}
     for bad in ["NOVALUE", "=1"] + ["%s=E:/x" % name for name in RUNNER_VARIABLES]:
