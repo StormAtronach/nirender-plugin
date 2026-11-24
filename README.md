@@ -11,8 +11,8 @@ nirender is in test. Each release is a test build of MGE XE G7 with nirender, fo
 the plugin's switches below are never for a player.
 
 The last test build is
-[v0.3.9](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.3.9)
-(MGE XE G7 0.21.0 with nirender 0.3.9, 2026-11-17). Its release notes list the changes, the
+[v0.4.0](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.4.0)
+(MGE XE G7 0.21.0 with nirender 0.4.0, 2026-11-24). Its release notes list the changes, the
 known issues and the checks to do by hand.
 
 ## What it needs
@@ -434,9 +434,9 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
 - `MGE_XE_REPLAY_DEBUG=1`: a line for each draw a replay issues, and the values of the
   world's start.
 
-## Since v0.3.9
+## Since v0.4.0
 
-The last release is v0.3.9 (the tag on c38312d, 2026-11-17). No merge on master came after it
+The last release is v0.4.0 (the tag on 142a981, 2026-11-24). No merge on master came after it
 yet.
 
 Work that is not merged is not in this list.
