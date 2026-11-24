@@ -550,6 +550,9 @@ def notes_problems(notes, gated):
 SIGN_PRINCIPAL = "nirender-release"
 SIGN_NAMESPACE = "nirender-release"
 SIGNERS = os.path.join(HERE, "release-signers")
+# The fingerprint of the release key in release-signers, as `ssh-keygen -l` gives it (the owner's key of D662): a change
+# of the file's key fails the self-test until this changes too.
+RELEASE_KEY_FINGERPRINT = "SHA256:hVqY/r/0Tq0Ww7czvry8g8FpYUnMSyt60+HLlwE9Qpc"
 SIGNATURE_TOKEN = "{signature}"
 # The programs of Windows' OpenSSH, by their paths: Git's ssh-keygen is first on PATH and does not use the Windows
 # agent [I]. Without SSH_AUTH_SOCK they ask the Windows agent's own pipe (`agent_environment`).
@@ -979,12 +982,18 @@ def test_signature_rules():
     # release-signers: the key of the principal; comments, another principal and the repository's file with no key.
     signers = "# a comment\n%s\nsomeone ssh-ed25519 %s\n" % (signers_line(key), other)
     assert signer_keys(signers) == [key] and signer_keys("a,nirender-release ssh-ed25519 %s\n" % blob) == [key]
-    assert signer_keys(open(SIGNERS, encoding="utf-8").read()) == [], "tools/release-signers names a key before the owner sent it"
+    # The repository's file names one key, the release key of the owner (D662), and it parses as a public key.
+    released = signer_keys(open(SIGNERS, encoding="utf-8").read())
+    assert len(released) == 1 and public_key("%s %s\n" % released[0]) == released[0], released
+    assert fingerprint(released[0]) == RELEASE_KEY_FINGERPRINT, fingerprint(released[0])
+    assert base64.b64decode(released[0][1])[:15] == b"\0\0\0\x0bssh-ed25519" and len(base64.b64decode(released[0][1])) == 51
     assert sign_key_problems("ssh-ed25519 %s\n" % blob, signers) == (key, [])
     found, problems = sign_key_problems("ssh-ed25519 %s\n" % other, signers)
     assert found and problems == ["tools/release-signers does not name the release key %s for nirender-release (it names %s)" % (
         fingerprint(found), fingerprint(key))], problems
-    assert sign_key_problems("ssh-ed25519 %s\n" % blob, open(SIGNERS, encoding="utf-8").read())[1][0].endswith("(it names no key)")
+    assert sign_key_problems("ssh-ed25519 %s\n" % blob, "# comments only\n")[1][0].endswith("(it names no key)")
+    assert sign_key_problems("ssh-ed25519 %s\n" % blob, open(SIGNERS, encoding="utf-8").read())[1][0].endswith(
+        "(it names %s)" % RELEASE_KEY_FINGERPRINT), "a key that is not the release key passes the repository's file"
     assert sign_key_problems("not a key", signers) == (None, ["--sign-key does not name one ed25519 public key (a .pub file)"])
     # The options: one of the two.
     assert sign_options_problem("k.pub", False) is None and sign_options_problem(None, True) is None
