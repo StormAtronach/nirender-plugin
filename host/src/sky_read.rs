@@ -13,7 +13,7 @@
 
 use crate::material::FILTER_BILERP;
 
-/// How a draw of the sky reads its BILERP maps: the sampler of the stage ([`level_filter`]) and, for
+/// How a draw of the sky reads its BILERP maps: the sampler of the stage (`level_filter`) and, for
 /// stage 0, the read of `shader.wgsl` (`sky_map_read`, with [`crate::AREA_READ_BIT`] in the record).
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum SkyMapFilter {
