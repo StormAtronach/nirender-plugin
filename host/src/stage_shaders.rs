@@ -30,10 +30,16 @@
 //! of the uber-shader and not a hitch [I: wgpu's own locks can still hold the frame]. A
 //! replay makes them at once, so that its frames are the same from the first. The pipelines
 //! of a live session go to a list in the user's folder (`%LOCALAPPDATA%\MGE XE`, never the
-//! game folder), one file for each world shader and format of the list. The next start makes
-//! them in its first frames, behind the keys of first use, and the list's keys take at most half
-//! of the cap. A list that cannot be read, that a build with another world shader wrote, or that
-//! cannot be written, leaves each key to its first use, with a line in the log.
+//! game folder), one file for each install and format of the list (W640 part 1). The install is the
+//! helper's working folder, the Morrowind folder ([`install_text`]); an install that moves starts
+//! with no list. The next start makes them in its first frames, behind the keys of first use, and
+//! the list's keys take at most half of the cap. The keys are draw states, so a list of another
+//! world text is read: a new `shader.wgsl`, a changed core mod, tier C and each switch of the world
+//! text (W317) keep the keys of the sessions before them, and each key is made with the text of
+//! this start. The world text's hash stays in the list's first line as a record only. A list key
+//! that this text cannot make is counted apart in the report, and the next write drops it. A list
+//! that cannot be read, of another format, or that cannot be written, leaves each key to its first
+//! use, with a line in the log.
 //!
 //! A live start with no list sends the uber-shader's own pipelines of a fixed set ([`UBER_SET`]) to
 //! the thread. They are the keys of the uber-shader that the frame thread made in a start with no
@@ -712,6 +718,8 @@ pub(crate) struct StageShaders {
     failed: HashSet<PipelineKey>,
     jobs: Option<mpsc::Sender<Job>>,
     done: Option<mpsc::Receiver<Done>>,
+    /// The install's folder that names the list ([`install_text`]), for the list's log lines.
+    install: Option<String>,
     list: Option<PathBuf>,
     /// The pipelines of the list not yet sent to the thread (`stages` 0), with their stage keys.
     queued: VecDeque<(PipelineKey, StageKey)>,
@@ -728,6 +736,10 @@ pub(crate) struct StageShaders {
     pub(crate) from_list: u32,
     /// The list's pipelines left out: their stage key is past the list's share of the cap.
     pub(crate) list_left_out: u32,
+    /// The list's pipelines whose text the rewrite of this world text refused, and those whose
+    /// pipeline failed on the thread: apart from the keys of first use, so that stale keys show.
+    pub(crate) list_refused: u32,
+    pub(crate) list_failed: u32,
     /// The stage keys whose text the rewrite could not make, by id, each with its refusal.
     refused: BTreeMap<u32, String>,
     /// The stage keys with a text whose module or pipeline failed, by id.
@@ -782,6 +794,7 @@ impl StageShaders {
             failed: HashSet::new(),
             jobs: None,
             done: None,
+            install: None,
             list: None,
             queued: VecDeque::new(),
             list_pending: HashSet::new(),
@@ -792,6 +805,8 @@ impl StageShaders {
             made_count: 0,
             from_list: 0,
             list_left_out: 0,
+            list_refused: 0,
+            list_failed: 0,
             refused: BTreeMap::new(),
             failed_pipelines: BTreeSet::new(),
             draws_refused: 0,
@@ -983,7 +998,8 @@ impl StageShaders {
         self.jobs = Some(jobs);
         self.done = Some(done);
         self.sync = false;
-        self.list = list_path(self.world_hash);
+        self.install = install_folder();
+        self.list = list_path(self.install.as_deref());
         self.load_list();
         self.send_uber_set(frame_samples);
     }
@@ -1043,9 +1059,21 @@ impl StageShaders {
         pipeline
     }
 
+    /// The list's file and the install that it serves, for the list's log lines.
+    fn list_place(&self, path: &std::path::Path) -> String {
+        format!(
+            "{} (the install {})",
+            path.display(),
+            self.install.as_deref().unwrap_or("not known")
+        )
+    }
+
     fn load_list(&mut self) {
         let Some(path) = self.list.clone() else {
-            println!("stage shaders: no folder for the list (LOCALAPPDATA); each key is made at its first use");
+            println!(
+                "stage shaders: no folder for the list (LOCALAPPDATA, or the working folder: the install {}); each key is made at its first use",
+                self.install.as_deref().unwrap_or("not known")
+            );
             return;
         };
         let text = match std::fs::read_to_string(&path) {
@@ -1053,19 +1081,27 @@ impl StageShaders {
             Err(_) => {
                 println!(
                     "stage shaders: no list at {}; each key is made at its first use",
-                    path.display()
+                    self.list_place(&path)
                 );
                 return;
             }
         };
         let mut lines = text.lines();
-        let header = format!("{LIST_HEADER} {LIST_FORMAT} {:016x}", self.world_hash);
-        if lines.next() != Some(header.as_str()) {
+        // The first line: the header, the format, and the hash of the world text that wrote the list.
+        let format = format!("{LIST_HEADER} {LIST_FORMAT} ");
+        let Some(written_for) = lines.next().and_then(|line| line.strip_prefix(format.as_str())) else {
             println!(
-                "stage shaders: the list at {} is of another world shader or format; it is not used",
-                path.display()
+                "stage shaders: the list at {} is of another format; it is not used",
+                self.list_place(&path)
             );
             return;
+        };
+        let world = format!("{:016x}", self.world_hash);
+        if written_for != world {
+            println!(
+                "stage shaders: the list at {} was written for another world text ({written_for}, now {world}); its keys are made with this text",
+                self.list_place(&path)
+            );
         }
         let mut dropped = 0;
         for line in lines {
@@ -1081,12 +1117,15 @@ impl StageShaders {
             self.queued.push_back(entry);
         }
         if dropped != 0 {
-            println!("stage shaders: {dropped} lines of the list at {} not read", path.display());
+            println!(
+                "stage shaders: {dropped} lines of the list at {} not read",
+                self.list_place(&path)
+            );
         }
         println!(
             "stage shaders: {} pipelines of the list at {} are made behind the keys of first use",
             self.queued.len(),
-            path.display()
+            self.list_place(&path)
         );
     }
 
@@ -1109,9 +1148,14 @@ impl StageShaders {
                 }
             };
             let key = PipelineKey { stages: id, ..pipeline };
-            if id != 0 && !self.pending.contains(&key) && self.send(key) {
+            if id == 0 || self.pending.contains(&key) {
+                continue;
+            }
+            if self.send(key) {
                 self.from_list += 1;
                 self.list_pending.insert(key);
+            } else if self.failed_sources.contains(&self.module_of(&key)) {
+                self.list_refused += 1;
             }
         }
     }
@@ -1193,7 +1237,12 @@ impl StageShaders {
                         }
                     }
                 }
-                None => failed.push(key),
+                None => {
+                    if of_list {
+                        self.list_failed += 1;
+                    }
+                    failed.push(key);
+                }
             }
         }
         for key in failed {
@@ -1385,7 +1434,7 @@ impl StageShaders {
             return;
         }
         self.changed = false;
-        let Some(path) = &self.list else { return };
+        let Some(path) = self.list.clone() else { return };
         let mut text = format!("{LIST_HEADER} {LIST_FORMAT} {:016x}\n", self.world_hash);
         let entries: HashSet<&(PipelineKey, StageKey)> = self.made.iter().chain(self.queued.iter()).collect();
         for (pipeline, stage) in entries {
@@ -1401,11 +1450,11 @@ impl StageShaders {
         let written = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|_| std::fs::write(path, text));
+            .and_then(|_| std::fs::write(&path, text));
         if let Err(error) = written {
             println!(
                 "stage shaders: the list at {} cannot be written ({error}); the next start makes each key at its first use",
-                path.display()
+                self.list_place(&path)
             );
             self.list = None;
         }
@@ -1422,11 +1471,13 @@ impl StageShaders {
             (false, _) => "made on a thread, with a list".to_string(),
         };
         format!(
-            "stage shaders: {} ({made}), {} stage keys (cap {MAX_KEYS}), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap); {}; {}; draws on the uber-shader with a stage key: {} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made; {} draws past the cap, {} draws with no key",
+            "stage shaders: {} ({made}), {} stage keys (cap {MAX_KEYS}), {} pipelines made ({} sent from the list, {} of the list refused by the rewrite, {} of the list failed, {} of the list left out past its share of the cap); {}; {}; draws on the uber-shader with a stage key: {} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made; {} draws past the cap, {} draws with no key",
             if self.on { "on" } else { "off" },
             self.keys.len() - 1,
             self.made_count,
             self.from_list,
+            self.list_refused,
+            self.list_failed,
             self.list_left_out,
             self.refused_text(),
             self.failed_pipelines_text(),
@@ -1495,19 +1546,38 @@ impl Drop for StageShaders {
     }
 }
 
-/// The list: `MGE_XE_PIPELINE_LIST` when set, else [`list_name`] in `%LOCALAPPDATA%\MGE XE`.
-fn list_path(world_hash: u64) -> Option<PathBuf> {
+/// The list: `MGE_XE_PIPELINE_LIST` when set, else [`list_name`] of the install in `%LOCALAPPDATA%\MGE XE`.
+/// None with no such folder or no install.
+fn list_path(install: Option<&str>) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MGE_XE_PIPELINE_LIST") {
         return Some(PathBuf::from(path));
     }
-    std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE").join(list_name(world_hash)))
+    let install = install?;
+    std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE").join(list_name(install)))
 }
 
-/// The list's file name, with the list's format and the hash of the world shader: two installs,
-/// two texture tiers or two builds with another format of the key do not write over each other's
-/// list.
-fn list_name(world_hash: u64) -> String {
-    format!("numidium-stage-pipelines-{LIST_FORMAT}-{world_hash:016x}.txt")
+/// The install of this helper: its working folder, the Morrowind folder, as [`install_text`]; None when the
+/// folder cannot be read.
+fn install_folder() -> Option<String> {
+    std::env::current_dir().ok().map(|folder| install_text(&folder))
+}
+
+/// The text of an install's folder that names its list: absolute, lower case (a Windows path does not depend on
+/// case), with backslashes and no separator at the end. Two spellings of one folder give one text.
+fn install_text(folder: &std::path::Path) -> String {
+    let absolute = std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf());
+    let text = absolute.to_string_lossy().replace('/', "\\").to_lowercase();
+    text.trim_end_matches('\\').to_string()
+}
+
+/// The list's file name, with the list's format and the hash of the install's folder: two installs and two
+/// builds with another format of the key do not write over each other's list, and one install keeps one list
+/// across its world texts. The hash is FNV-1a, so that a new toolchain keeps the name.
+fn list_name(install: &str) -> String {
+    let hash = install.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("numidium-stage-pipelines-{LIST_FORMAT}-{hash:016x}.txt")
 }
 
 #[cfg(test)]
@@ -2133,14 +2203,130 @@ mod tests {
         assert_eq!(pipeline_from_words(&words), Some(pipeline));
     }
 
+    /// The list is named by the install's folder and the format (W640 part 1): two spellings of one folder give
+    /// one file, two folders two files, and the format is in the name.
     #[test]
-    fn the_list_of_another_format_is_another_file() {
+    fn the_list_is_named_by_the_install_and_the_format() {
+        let one = install_text(std::path::Path::new(r"D:\Modlists\Outlander-test\Stock Game Folder"));
+        assert_eq!(one, r"d:\modlists\outlander-test\stock game folder");
+        let spellings = [
+            r"d:\modlists\outlander-test\stock game folder\",
+            "D:/Modlists/Outlander-test/Stock Game Folder",
+            "D:/Modlists/Outlander-test/Stock Game Folder/",
+        ];
+        for spelling in spellings {
+            assert_eq!(install_text(std::path::Path::new(spelling)), one, "{spelling}");
+        }
+        let other = install_text(std::path::Path::new(r"D:\GOG\Morrowind\Morrowind"));
+        assert_ne!(list_name(&one), list_name(&other));
+        // The FNV-1a hash of the text: a new toolchain keeps the name.
         assert_eq!(
-            list_name(0x1234),
-            format!("numidium-stage-pipelines-{LIST_FORMAT}-0000000000001234.txt")
+            list_name(""),
+            format!("numidium-stage-pipelines-{LIST_FORMAT}-cbf29ce484222325.txt")
         );
-        // The name of the list of the builds before the format was in the name.
-        assert_ne!(list_name(0x1234), "numidium-stage-pipelines-0000000000001234.txt");
+        assert!(list_name(&one).starts_with(&format!("numidium-stage-pipelines-{LIST_FORMAT}-")));
+    }
+
+    /// A file of a test's list in the temporary folder, apart for each process and test.
+    fn test_list(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("nirender-stage-list-{}-{name}.txt", std::process::id()))
+    }
+
+    /// Stage shaders whose list is `path`, with one made pipeline that the list keeps.
+    fn writer_of(world_source: &str, path: &std::path::Path) -> StageShaders {
+        let mut shaders = StageShaders::new(true, world_source);
+        shaders.list = Some(path.to_path_buf());
+        shaders.made.insert((pipeline_key(0, 0), key(1, 0)));
+        shaders.changed = true;
+        shaders
+    }
+
+    /// A list that another world text wrote is read, and its keys go to the thread (W640 part 1). The null: the
+    /// list's world hash is not this text's.
+    #[test]
+    fn a_list_of_another_world_text_is_read_and_sent() {
+        let path = test_list("another-text");
+        writer_of(&world(), &path).save();
+        let other_text = format!("{}\n// an update\n", world());
+        let (mut shaders, job_receiver) = live_shaders_of(&other_text);
+        assert_ne!(shaders.world_hash, text_hash(&world()));
+        shaders.list = Some(path.clone());
+        shaders.load_list();
+        assert_eq!(shaders.queued.len(), 1);
+        shaders.send_queued();
+        let jobs: Vec<Job> = job_receiver.try_iter().collect();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            PipelineKey {
+                stages: 0,
+                ..jobs[0].key
+            },
+            pipeline_key(0, 0)
+        );
+        assert_eq!(shaders.keys[jobs[0].key.stages as usize], key(1, 0));
+        assert_eq!(shaders.from_list, 1);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A list of another format of the lines is not read; a format whose number starts with this one's is another.
+    #[test]
+    fn a_list_of_another_format_is_not_read() {
+        let path = test_list("another-format");
+        writer_of(&world(), &path).save();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let this_format = format!("{LIST_HEADER} {LIST_FORMAT} ");
+        assert!(written.starts_with(&this_format));
+        for other in [
+            format!("{LIST_HEADER} {} ", LIST_FORMAT - 1),
+            format!("{LIST_HEADER} {LIST_FORMAT}0 "),
+        ] {
+            std::fs::write(&path, written.replacen(&this_format, &other, 1)).unwrap();
+            let mut shaders = StageShaders::new(true, &world());
+            shaders.list = Some(path.clone());
+            shaders.load_list();
+            assert!(shaders.queued.is_empty(), "{other}");
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A switch of the world text (W317) writes the old text's keys to the install's one list, and the new text's
+    /// start reads them from it: the list's path does not depend on the text.
+    #[test]
+    fn a_switch_of_the_world_text_keeps_the_list() {
+        let path = test_list("switch");
+        let old = writer_of(&world(), &path);
+        let switched_text = format!("{}\n// switched\n", world());
+        // The old value drops in `switched` and its drop writes the list.
+        let mut switched = old.switched(&switched_text);
+        assert!(path.is_file());
+        switched.list = Some(path.clone());
+        switched.load_list();
+        assert_eq!(switched.queued.len(), 1);
+        assert_eq!(switched.queued[0], (pipeline_key(0, 0), key(1, 0)));
+        switched.list = None;
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A key of the list whose text the rewrite refuses counts as the list's, apart from a key of first use; a
+    /// key of the list whose pipeline fails on the thread too.
+    #[test]
+    fn a_list_key_that_this_text_cannot_make_is_counted_as_the_lists() {
+        let broken = world().replacen(STAGE_FACTS_END, "", 1);
+        let (mut shaders, _jobs) = live_shaders_of(&broken);
+        shaders.queued.push_back((pipeline_key(0, 0), key(1, 0)));
+        shaders.queued.push_back((
+            PipelineKey {
+                cull: 2,
+                ..pipeline_key(0, 0)
+            },
+            key(1, 0),
+        ));
+        shaders.send_queued();
+        assert_eq!((shaders.list_refused, shaders.list_failed, shaders.from_list), (2, 0, 0));
+        assert!(shaders.report().contains(
+            "(0 sent from the list, 2 of the list refused by the rewrite, 0 of the list failed, 0 of the list left out"
+        ));
+        assert_eq!(shaders.draws_refused, 0, "no draw yet");
     }
 
     #[test]
@@ -2370,7 +2556,12 @@ mod tests {
 
     /// A shaders of a live session with a channel of its own in place of the thread.
     fn live_shaders() -> (StageShaders, mpsc::Receiver<Job>) {
-        let mut shaders = StageShaders::new(true, &world());
+        live_shaders_of(&world())
+    }
+
+    /// [`live_shaders`] of the world text `world_source`.
+    fn live_shaders_of(world_source: &str) -> (StageShaders, mpsc::Receiver<Job>) {
+        let mut shaders = StageShaders::new(true, world_source);
         let (jobs, job_receiver) = mpsc::channel::<Job>();
         shaders.jobs = Some(jobs);
         shaders.sync = false;
@@ -2731,6 +2922,8 @@ mod tests {
             .unwrap();
         shaders.receive(&mut rustc_hash::FxHashMap::default());
         assert_eq!(shaders.list_left(), (0, 0));
+        // The report counts it as the list's failure (W640 part 1).
+        assert_eq!((shaders.list_failed, shaders.list_refused), (1, 0));
         assert_eq!(
             shaders.take_received(),
             Received {
