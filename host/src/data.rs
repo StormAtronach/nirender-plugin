@@ -383,6 +383,25 @@ impl RenderTexture {
     }
 }
 
+impl Counts {
+    /// The end of a frame for the per-draw writes (W125): its writes and its time go into the
+    /// most of a frame, and the next frame starts at 0.
+    pub(crate) fn close_write_frame(&mut self) {
+        self.frame_writes_most = self.frame_writes_most.max(self.frame_writes);
+        self.frame_write_seconds_most = self.frame_write_seconds_most.max(self.frame_write_seconds);
+        self.frame_writes = 0;
+        self.frame_write_seconds = 0.0;
+    }
+
+    /// The most writes and the most time of a frame, the frame in progress too.
+    pub(crate) fn write_frame_most(&self) -> (u64, f64) {
+        (
+            self.frame_writes_most.max(self.frame_writes),
+            self.frame_write_seconds_most.max(self.frame_write_seconds),
+        )
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Counts {
     pub(crate) draws: u32,
@@ -421,6 +440,16 @@ pub(crate) struct Counts {
     /// instances that the copies wrote (W125).
     pub(crate) draw_copies: [u64; 2],
     pub(crate) draw_copy_instances: u64,
+    /// The time in `Renderer::copy_of_draw` (W125, verdict 753 5.2).
+    pub(crate) draw_copy_seconds: f64,
+    /// The writes of the copies and of the changed slots' records in the frame in progress, and
+    /// the most of a frame; the time of the copies and of the case "changed" of the table upload
+    /// in the frame in progress, and the most of a frame (W125, verdict 753 5.1 and 5.2).
+    /// [`Counts::close_write_frame`] at each frame's start.
+    pub(crate) frame_writes: u64,
+    pub(crate) frame_writes_most: u64,
+    pub(crate) frame_write_seconds: f64,
+    pub(crate) frame_write_seconds_most: f64,
     pub(crate) instance_entries_moved: u64,
     pub(crate) instance_gap_bytes: u64,
     /// The textures that came again for a handle with a slot of the arrays.
@@ -847,6 +876,23 @@ mod tests {
     #[test]
     fn the_screen_shader_is_valid_wgsl() {
         crate::assert_wgsl("screen draw", &SCREEN_SHADER);
+    }
+
+    /// W125: the most of a frame keeps the frame with the most writes and the frame with the most
+    /// time, also when they are not the same frame, and counts the frame in progress.
+    #[test]
+    fn the_most_writes_of_a_frame_are_kept() {
+        let mut counts = Counts::default();
+        counts.frame_writes = 12;
+        counts.frame_write_seconds = 0.001;
+        counts.close_write_frame();
+        counts.frame_writes = 30;
+        counts.frame_write_seconds = 0.0002;
+        counts.close_write_frame();
+        assert_eq!((counts.frame_writes, counts.frame_write_seconds), (0, 0.0));
+        assert_eq!(counts.write_frame_most(), (30, 0.001));
+        counts.frame_writes = 41;
+        assert_eq!(counts.write_frame_most(), (41, 0.001));
     }
 
     fn instance(record: u32) -> Instance {
