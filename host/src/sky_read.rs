@@ -445,7 +445,7 @@ fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {{
                 },
             ],
         });
-        let mut draw = |shift: f32, arm: u32| -> Vec<[f32; 4]> {
+        let draw = |shift: f32, arm: u32| -> Vec<[f32; 4]> {
             let values = [shift.to_bits(), arm, (TEXELS_A_PIXEL / MAP as f32).to_bits(), 0];
             queue.write_buffer(&uniform, 0, bytemuck::cast_slice(&values));
             let mut encoder = device.create_command_encoder(&Default::default());

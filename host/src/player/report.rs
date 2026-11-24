@@ -320,10 +320,17 @@ impl Player {
             c.instance_upload_bytes as f64 / 1e6,
             c.instance_gap_bytes as f64 / 1e6
         );
-        let (most_writes, most_seconds) = c.write_frame_most();
+        let ((most_writes, writes_frame), (most_seconds, seconds_frame)) = c.write_frame_most();
         println!(
-            "draw copies (W125): {} for a plane split, {} for an extension's pass of kept draws, 2 writes each; {} instances; {:.3} s; the most of a frame: {} writes (copies and changed records), {:.3} ms (copies and the case changed)",
-            c.draw_copies[0], c.draw_copies[1], c.draw_copy_instances, c.draw_copy_seconds, most_writes, most_seconds * 1e3
+            "draw copies (W125): {} for a plane split, {} for an extension's pass of kept draws, 2 writes each; {} instances; {:.3} s; the most of a frame: {} writes (copies and changed records) in frame {}, {:.3} ms (copies and the case changed) in frame {}",
+            c.draw_copies[0],
+            c.draw_copies[1],
+            c.draw_copy_instances,
+            c.draw_copy_seconds,
+            most_writes,
+            writes_frame,
+            most_seconds * 1e3,
+            seconds_frame
         );
         println!(
             "rules of the engine not followed: {} shapes with flat shading, {} shapes with specular lighting",
@@ -517,6 +524,18 @@ impl Player {
         println!(
             "draw records: room for {} in one binding; draws not drawn past it {}, retained slots past it {}",
             self.renderer.record_limit, c.records_over_limit, c.retained_over_limit
+        );
+        println!(
+            "draws of more than {} stages: overflow records of the frames {}, overflow slots of the table now {}",
+            crate::data::RECORD_STAGES,
+            c.overflow_records,
+            self.retained.counts.overflow_slots
+        );
+        println!(
+            "draws by their stages, 0 to {}: of the frames {:?}, slots made in the table {:?}",
+            crate::data::STAGES,
+            c.draws_by_stages,
+            self.retained.counts.slots_by_stages
         );
         println!(
             "indirect calls {}, draws in them {}, draws one by one for want of room {}",

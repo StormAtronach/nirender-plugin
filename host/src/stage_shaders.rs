@@ -30,10 +30,16 @@
 //! of the uber-shader and not a hitch [I: wgpu's own locks can still hold the frame]. A
 //! replay makes them at once, so that its frames are the same from the first. The pipelines
 //! of a live session go to a list in the user's folder (`%LOCALAPPDATA%\MGE XE`, never the
-//! game folder), one file for each world shader and format of the list. The next start makes
-//! them in its first frames, behind the keys of first use, and the list's keys take at most half
-//! of the cap. A list that cannot be read, that a build with another world shader wrote, or that
-//! cannot be written, leaves each key to its first use, with a line in the log.
+//! game folder), one file for each install and format of the list (W640 part 1). The install is the
+//! helper's working folder, the Morrowind folder ([`install_text`]); an install that moves starts
+//! with no list. The next start makes them in its first frames, behind the keys of first use, and
+//! the list's keys take at most half of the cap. The keys are draw states, so a list of another
+//! world text is read: a new `shader.wgsl`, a changed core mod, tier C and each switch of the world
+//! text (W317) keep the keys of the sessions before them, and each key is made with the text of
+//! this start. The world text's hash stays in the list's first line as a record only. A list key
+//! that this text cannot make is counted apart in the report, and the next write drops it. A list
+//! that cannot be read, of another format, or that cannot be written, leaves each key to its first
+//! use, with a line in the log.
 //!
 //! A live start with no list sends the uber-shader's own pipelines of a fixed set ([`UBER_SET`]) to
 //! the thread. They are the keys of the uber-shader that the frame thread made in a start with no
@@ -51,19 +57,18 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use crate::data::{DrawData, PipelineKey};
+use crate::data::{DrawData, PipelineKey, STAGES};
 
 /// The most stage keys of a session; a draw of a key past them takes the uber-shader.
 pub(crate) const MAX_KEYS: usize = 256;
-const STAGES: usize = 6;
 /// The first line of the list, then [`LIST_FORMAT`] and the hash of the world shader's text.
 const LIST_HEADER: &str = "numidium stage pipelines";
 /// The format of the list's lines; it is in the list's file name too ([`list_name`]). 3: the
 /// key's shade bits have [`crate::NO_LIGHTS_BIT`]. 4: the key has the add bit (`adds`). 5: the
-/// key has the flat and the plane bits, and its shade bits have the sky bits 4 and 8 (W300). The
-/// area bit 8192 (W632, [`crate::AREA_READ_BIT`]) is in the shade word; a line of format 5 written
-/// before it reads as before, so the format does not change.
-const LIST_FORMAT: u32 = 5;
+/// key has the flat and the plane bits, and its shade bits have the sky bits 4 and 8 (W300). 6:
+/// the key has 8 stages (W20). The area bit 8192 (W632, [`crate::AREA_READ_BIT`]) is in the shade
+/// word; a line of format 6 written before it reads as before, so the format does not change.
+const LIST_FORMAT: u32 = 6;
 /// The frames between two writes of a changed list.
 const SAVE_FRAMES: u32 = 600;
 /// The list's pipelines go to the thread while it has fewer jobs than this, so that a key of
@@ -258,7 +263,7 @@ impl StageKey {
             ..Default::default()
         };
         for stage in 0..count as usize {
-            let s = &data.stages[stage];
+            let s = data.stage(stage);
             for part in 0..4 {
                 key.color[stage][part] = small(s.color[part])?;
             }
@@ -375,12 +380,16 @@ const FACT_NAMES: [&str; 10 + 2 * STAGES] = [
     "FIXED_COLOR_3",
     "FIXED_COLOR_4",
     "FIXED_COLOR_5",
+    "FIXED_COLOR_6",
+    "FIXED_COLOR_7",
     "FIXED_ALPHA_0",
     "FIXED_ALPHA_1",
     "FIXED_ALPHA_2",
     "FIXED_ALPHA_3",
     "FIXED_ALPHA_4",
     "FIXED_ALPHA_5",
+    "FIXED_ALPHA_6",
+    "FIXED_ALPHA_7",
 ];
 
 /// The constants of a stage pipeline's fragment stage ([`StageKey::constants`]).
@@ -717,6 +726,8 @@ pub(crate) struct StageShaders {
     failed: HashSet<PipelineKey>,
     jobs: Option<mpsc::Sender<Job>>,
     done: Option<mpsc::Receiver<Done>>,
+    /// The install's folder that names the list ([`install_text`]), for the list's log lines.
+    install: Option<String>,
     list: Option<PathBuf>,
     /// The pipelines of the list not yet sent to the thread (`stages` 0), with their stage keys.
     queued: VecDeque<(PipelineKey, StageKey)>,
@@ -733,6 +744,10 @@ pub(crate) struct StageShaders {
     pub(crate) from_list: u32,
     /// The list's pipelines left out: their stage key is past the list's share of the cap.
     pub(crate) list_left_out: u32,
+    /// The list's pipelines whose text the rewrite of this world text refused, and those whose
+    /// pipeline failed on the thread: apart from the keys of first use, so that stale keys show.
+    pub(crate) list_refused: u32,
+    pub(crate) list_failed: u32,
     /// The stage keys whose text the rewrite could not make, by id, each with its refusal.
     refused: BTreeMap<u32, String>,
     /// The stage keys with a text whose module or pipeline failed, by id.
@@ -787,6 +802,7 @@ impl StageShaders {
             failed: HashSet::new(),
             jobs: None,
             done: None,
+            install: None,
             list: None,
             queued: VecDeque::new(),
             list_pending: HashSet::new(),
@@ -797,6 +813,8 @@ impl StageShaders {
             made_count: 0,
             from_list: 0,
             list_left_out: 0,
+            list_refused: 0,
+            list_failed: 0,
             refused: BTreeMap::new(),
             failed_pipelines: BTreeSet::new(),
             draws_refused: 0,
@@ -988,7 +1006,8 @@ impl StageShaders {
         self.jobs = Some(jobs);
         self.done = Some(done);
         self.sync = false;
-        self.list = list_path(self.world_hash);
+        self.install = install_folder();
+        self.list = list_path(self.install.as_deref());
         self.load_list();
         self.send_uber_set(frame_samples);
     }
@@ -1048,9 +1067,21 @@ impl StageShaders {
         pipeline
     }
 
+    /// The list's file and the install that it serves, for the list's log lines.
+    fn list_place(&self, path: &std::path::Path) -> String {
+        format!(
+            "{} (the install {})",
+            path.display(),
+            self.install.as_deref().unwrap_or("not known")
+        )
+    }
+
     fn load_list(&mut self) {
         let Some(path) = self.list.clone() else {
-            println!("stage shaders: no folder for the list (LOCALAPPDATA); each key is made at its first use");
+            println!(
+                "stage shaders: no folder for the list (LOCALAPPDATA, or the working folder: the install {}); each key is made at its first use",
+                self.install.as_deref().unwrap_or("not known")
+            );
             return;
         };
         let text = match std::fs::read_to_string(&path) {
@@ -1058,19 +1089,27 @@ impl StageShaders {
             Err(_) => {
                 println!(
                     "stage shaders: no list at {}; each key is made at its first use",
-                    path.display()
+                    self.list_place(&path)
                 );
                 return;
             }
         };
         let mut lines = text.lines();
-        let header = format!("{LIST_HEADER} {LIST_FORMAT} {:016x}", self.world_hash);
-        if lines.next() != Some(header.as_str()) {
+        // The first line: the header, the format, and the hash of the world text that wrote the list.
+        let format = format!("{LIST_HEADER} {LIST_FORMAT} ");
+        let Some(written_for) = lines.next().and_then(|line| line.strip_prefix(format.as_str())) else {
             println!(
-                "stage shaders: the list at {} is of another world shader or format; it is not used",
-                path.display()
+                "stage shaders: the list at {} is of another format; it is not used",
+                self.list_place(&path)
             );
             return;
+        };
+        let world = format!("{:016x}", self.world_hash);
+        if written_for != world {
+            println!(
+                "stage shaders: the list at {} was written for another world text ({written_for}, now {world}); its keys are made with this text",
+                self.list_place(&path)
+            );
         }
         let mut dropped = 0;
         for line in lines {
@@ -1086,12 +1125,15 @@ impl StageShaders {
             self.queued.push_back(entry);
         }
         if dropped != 0 {
-            println!("stage shaders: {dropped} lines of the list at {} not read", path.display());
+            println!(
+                "stage shaders: {dropped} lines of the list at {} not read",
+                self.list_place(&path)
+            );
         }
         println!(
             "stage shaders: {} pipelines of the list at {} are made behind the keys of first use",
             self.queued.len(),
-            path.display()
+            self.list_place(&path)
         );
     }
 
@@ -1114,9 +1156,14 @@ impl StageShaders {
                 }
             };
             let key = PipelineKey { stages: id, ..pipeline };
-            if id != 0 && !self.pending.contains(&key) && self.send(key) {
+            if id == 0 || self.pending.contains(&key) {
+                continue;
+            }
+            if self.send(key) {
                 self.from_list += 1;
                 self.list_pending.insert(key);
+            } else if self.failed_sources.contains(&self.module_of(&key)) {
+                self.list_refused += 1;
             }
         }
     }
@@ -1198,7 +1245,12 @@ impl StageShaders {
                         }
                     }
                 }
-                None => failed.push(key),
+                None => {
+                    if of_list {
+                        self.list_failed += 1;
+                    }
+                    failed.push(key);
+                }
             }
         }
         for key in failed {
@@ -1390,7 +1442,7 @@ impl StageShaders {
             return;
         }
         self.changed = false;
-        let Some(path) = &self.list else { return };
+        let Some(path) = self.list.clone() else { return };
         let mut text = format!("{LIST_HEADER} {LIST_FORMAT} {:016x}\n", self.world_hash);
         let entries: HashSet<&(PipelineKey, StageKey)> = self.made.iter().chain(self.queued.iter()).collect();
         for (pipeline, stage) in entries {
@@ -1406,11 +1458,11 @@ impl StageShaders {
         let written = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|_| std::fs::write(path, text));
+            .and_then(|_| std::fs::write(&path, text));
         if let Err(error) = written {
             println!(
                 "stage shaders: the list at {} cannot be written ({error}); the next start makes each key at its first use",
-                path.display()
+                self.list_place(&path)
             );
             self.list = None;
         }
@@ -1427,11 +1479,13 @@ impl StageShaders {
             (false, _) => "made on a thread, with a list".to_string(),
         };
         format!(
-            "stage shaders: {} ({made}), {} stage keys (cap {MAX_KEYS}), {} pipelines made ({} sent from the list, {} of the list left out past its share of the cap); {}; {}; draws on the uber-shader with a stage key: {} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made; {} draws past the cap, {} draws with no key",
+            "stage shaders: {} ({made}), {} stage keys (cap {MAX_KEYS}), {} pipelines made ({} sent from the list, {} of the list refused by the rewrite, {} of the list failed, {} of the list left out past its share of the cap); {}; {}; draws on the uber-shader with a stage key: {} after a failed rewrite, {} after a failed pipeline, {} with a pipeline not made; {} draws past the cap, {} draws with no key",
             if self.on { "on" } else { "off" },
             self.keys.len() - 1,
             self.made_count,
             self.from_list,
+            self.list_refused,
+            self.list_failed,
             self.list_left_out,
             self.refused_text(),
             self.failed_pipelines_text(),
@@ -1500,24 +1554,44 @@ impl Drop for StageShaders {
     }
 }
 
-/// The list: `MGE_XE_PIPELINE_LIST` when set, else [`list_name`] in `%LOCALAPPDATA%\MGE XE`.
-fn list_path(world_hash: u64) -> Option<PathBuf> {
+/// The list: `MGE_XE_PIPELINE_LIST` when set, else [`list_name`] of the install in `%LOCALAPPDATA%\MGE XE`.
+/// None with no such folder or no install.
+fn list_path(install: Option<&str>) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MGE_XE_PIPELINE_LIST") {
         return Some(PathBuf::from(path));
     }
-    std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE").join(list_name(world_hash)))
+    let install = install?;
+    std::env::var_os("LOCALAPPDATA").map(|folder| PathBuf::from(folder).join("MGE XE").join(list_name(install)))
 }
 
-/// The list's file name, with the list's format and the hash of the world shader: two installs,
-/// two texture tiers or two builds with another format of the key do not write over each other's
-/// list.
-fn list_name(world_hash: u64) -> String {
-    format!("numidium-stage-pipelines-{LIST_FORMAT}-{world_hash:016x}.txt")
+/// The install of this helper: its working folder, the Morrowind folder, as [`install_text`]; None when the
+/// folder cannot be read.
+fn install_folder() -> Option<String> {
+    std::env::current_dir().ok().map(|folder| install_text(&folder))
+}
+
+/// The text of an install's folder that names its list: absolute, lower case (a Windows path does not depend on
+/// case), with backslashes and no separator at the end. Two spellings of one folder give one text.
+fn install_text(folder: &std::path::Path) -> String {
+    let absolute = std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf());
+    let text = absolute.to_string_lossy().replace('/', "\\").to_lowercase();
+    text.trim_end_matches('\\').to_string()
+}
+
+/// The list's file name, with the list's format and the hash of the install's folder: two installs and two
+/// builds with another format of the key do not write over each other's list, and one install keeps one list
+/// across its world texts. The hash is FNV-1a, so that a new toolchain keeps the name.
+fn list_name(install: &str) -> String {
+    let hash = install.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("numidium-stage-pipelines-{LIST_FORMAT}-{hash:016x}.txt")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::RECORD_STAGES;
     use crate::debug_lines::view_id;
     use bytemuck::Zeroable;
 
@@ -1613,7 +1687,7 @@ mod tests {
         high.alpha = [[255; 3]; STAGES];
         let constants = high.constants();
         assert_eq!(constants[10], ("FIXED_COLOR_0", f64::from(u32::MAX)));
-        assert_eq!(constants[16], ("FIXED_ALPHA_0", f64::from(0x00ff_ffffu32)));
+        assert_eq!(constants[10 + STAGES], ("FIXED_ALPHA_0", f64::from(0x00ff_ffffu32)));
         with_constants(&source, &constants).unwrap();
         let error = with_constants(&world, &key(1, 0).constants()).unwrap_err();
         assert!(error.contains("not found in the shader"), "{error}");
@@ -2139,7 +2213,8 @@ mod tests {
 
     /// Lines of a list of format 5 written before W632 (the run of 2026-11-24 12:41 in Outlander-test,
     /// numidium-stage-pipelines-5-88e8546d1bca4a32.txt, one line of each of six shade words). The shade
-    /// words of its 248 lines are 0, 4, 8, 657, 659, 689, 1024 and 33425: none has the area bit.
+    /// words of its 248 lines are 0, 4, 8, 657, 659, 689, 1024 and 33425: none has the area bit. Format 6
+    /// (W20) adds two stages to a key; [`list_words`] gives the same keys in format 6.
     const LIST_LINES_BEFORE_W632: [&str; 6] = [
         "338 36 4 1 5 6 1 0 4 2 3 0 0 0 0 0 0 0 15 1 0 1 0 0 1 1 0 0 0 0 4 2 0 1 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
         "338 36 4 1 5 6 1 0 8 2 3 0 0 0 0 0 0 0 7 4 0 1 0 8 1 1 0 0 0 0 4 2 0 1 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
@@ -2149,11 +2224,15 @@ mod tests {
         "274 32 4 1 5 6 1 0 4 1 3 0 0 0 0 0 0 0 7 4 0 1 0 33425 1 1 0 0 0 1 4 2 0 1 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
     ];
 
+    /// The words of a line of [`LIST_LINES_BEFORE_W632`] in format 6: the stages past the six of format 5
+    /// are unused, 7 words of 0 each.
     fn list_words(line: &str) -> Vec<u32> {
-        line.split_whitespace().map(|word| word.parse().unwrap()).collect()
+        let mut words: Vec<u32> = line.split_whitespace().map(|word| word.parse().unwrap()).collect();
+        words.extend(std::iter::repeat_n(0, (STAGES - 6) * 7));
+        words
     }
 
-    /// The Architect's list ruling for W632 (a): a line of format 5 written before the area bit reads to
+    /// The Architect's list ruling for W632 (a): a line written before the area bit reads to
     /// the same pipeline and the same key, with no area read, and writes back the same words: the area
     /// bit needs no new format.
     #[test]
@@ -2193,14 +2272,130 @@ mod tests {
         }
     }
 
+    /// The list is named by the install's folder and the format (W640 part 1): two spellings of one folder give
+    /// one file, two folders two files, and the format is in the name.
     #[test]
-    fn the_list_of_another_format_is_another_file() {
+    fn the_list_is_named_by_the_install_and_the_format() {
+        let one = install_text(std::path::Path::new(r"D:\Modlists\Outlander-test\Stock Game Folder"));
+        assert_eq!(one, r"d:\modlists\outlander-test\stock game folder");
+        let spellings = [
+            r"d:\modlists\outlander-test\stock game folder\",
+            "D:/Modlists/Outlander-test/Stock Game Folder",
+            "D:/Modlists/Outlander-test/Stock Game Folder/",
+        ];
+        for spelling in spellings {
+            assert_eq!(install_text(std::path::Path::new(spelling)), one, "{spelling}");
+        }
+        let other = install_text(std::path::Path::new(r"D:\GOG\Morrowind\Morrowind"));
+        assert_ne!(list_name(&one), list_name(&other));
+        // The FNV-1a hash of the text: a new toolchain keeps the name.
         assert_eq!(
-            list_name(0x1234),
-            format!("numidium-stage-pipelines-{LIST_FORMAT}-0000000000001234.txt")
+            list_name(""),
+            format!("numidium-stage-pipelines-{LIST_FORMAT}-cbf29ce484222325.txt")
         );
-        // The name of the list of the builds before the format was in the name.
-        assert_ne!(list_name(0x1234), "numidium-stage-pipelines-0000000000001234.txt");
+        assert!(list_name(&one).starts_with(&format!("numidium-stage-pipelines-{LIST_FORMAT}-")));
+    }
+
+    /// A file of a test's list in the temporary folder, apart for each process and test.
+    fn test_list(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("nirender-stage-list-{}-{name}.txt", std::process::id()))
+    }
+
+    /// Stage shaders whose list is `path`, with one made pipeline that the list keeps.
+    fn writer_of(world_source: &str, path: &std::path::Path) -> StageShaders {
+        let mut shaders = StageShaders::new(true, world_source);
+        shaders.list = Some(path.to_path_buf());
+        shaders.made.insert((pipeline_key(0, 0), key(1, 0)));
+        shaders.changed = true;
+        shaders
+    }
+
+    /// A list that another world text wrote is read, and its keys go to the thread (W640 part 1). The null: the
+    /// list's world hash is not this text's.
+    #[test]
+    fn a_list_of_another_world_text_is_read_and_sent() {
+        let path = test_list("another-text");
+        writer_of(&world(), &path).save();
+        let other_text = format!("{}\n// an update\n", world());
+        let (mut shaders, job_receiver) = live_shaders_of(&other_text);
+        assert_ne!(shaders.world_hash, text_hash(&world()));
+        shaders.list = Some(path.clone());
+        shaders.load_list();
+        assert_eq!(shaders.queued.len(), 1);
+        shaders.send_queued();
+        let jobs: Vec<Job> = job_receiver.try_iter().collect();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            PipelineKey {
+                stages: 0,
+                ..jobs[0].key
+            },
+            pipeline_key(0, 0)
+        );
+        assert_eq!(shaders.keys[jobs[0].key.stages as usize], key(1, 0));
+        assert_eq!(shaders.from_list, 1);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A list of another format of the lines is not read; a format whose number starts with this one's is another.
+    #[test]
+    fn a_list_of_another_format_is_not_read() {
+        let path = test_list("another-format");
+        writer_of(&world(), &path).save();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let this_format = format!("{LIST_HEADER} {LIST_FORMAT} ");
+        assert!(written.starts_with(&this_format));
+        for other in [
+            format!("{LIST_HEADER} {} ", LIST_FORMAT - 1),
+            format!("{LIST_HEADER} {LIST_FORMAT}0 "),
+        ] {
+            std::fs::write(&path, written.replacen(&this_format, &other, 1)).unwrap();
+            let mut shaders = StageShaders::new(true, &world());
+            shaders.list = Some(path.clone());
+            shaders.load_list();
+            assert!(shaders.queued.is_empty(), "{other}");
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A switch of the world text (W317) writes the old text's keys to the install's one list, and the new text's
+    /// start reads them from it: the list's path does not depend on the text.
+    #[test]
+    fn a_switch_of_the_world_text_keeps_the_list() {
+        let path = test_list("switch");
+        let old = writer_of(&world(), &path);
+        let switched_text = format!("{}\n// switched\n", world());
+        // The old value drops in `switched` and its drop writes the list.
+        let mut switched = old.switched(&switched_text);
+        assert!(path.is_file());
+        switched.list = Some(path.clone());
+        switched.load_list();
+        assert_eq!(switched.queued.len(), 1);
+        assert_eq!(switched.queued[0], (pipeline_key(0, 0), key(1, 0)));
+        switched.list = None;
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A key of the list whose text the rewrite refuses counts as the list's, apart from a key of first use; a
+    /// key of the list whose pipeline fails on the thread too.
+    #[test]
+    fn a_list_key_that_this_text_cannot_make_is_counted_as_the_lists() {
+        let broken = world().replacen(STAGE_FACTS_END, "", 1);
+        let (mut shaders, _jobs) = live_shaders_of(&broken);
+        shaders.queued.push_back((pipeline_key(0, 0), key(1, 0)));
+        shaders.queued.push_back((
+            PipelineKey {
+                cull: 2,
+                ..pipeline_key(0, 0)
+            },
+            key(1, 0),
+        ));
+        shaders.send_queued();
+        assert_eq!((shaders.list_refused, shaders.list_failed, shaders.from_list), (2, 0, 0));
+        assert!(shaders.report().contains(
+            "(0 sent from the list, 2 of the list refused by the rewrite, 0 of the list failed, 0 of the list left out"
+        ));
+        assert_eq!(shaders.draws_refused, 0, "no draw yet");
     }
 
     #[test]
@@ -2430,7 +2625,12 @@ mod tests {
 
     /// A shaders of a live session with a channel of its own in place of the thread.
     fn live_shaders() -> (StageShaders, mpsc::Receiver<Job>) {
-        let mut shaders = StageShaders::new(true, &world());
+        live_shaders_of(&world())
+    }
+
+    /// [`live_shaders`] of the world text `world_source`.
+    fn live_shaders_of(world_source: &str) -> (StageShaders, mpsc::Receiver<Job>) {
+        let mut shaders = StageShaders::new(true, world_source);
         let (jobs, job_receiver) = mpsc::channel::<Job>();
         shaders.jobs = Some(jobs);
         shaders.sync = false;
@@ -2567,16 +2767,21 @@ mod tests {
             "fn draw_alpha_test() -> u32 {",
             "fn stage_count() -> u32 {",
             "fn stage_codes(word: u32) -> vec4u {",
+            "fn stage_record(index: u32) -> u32 {",
+            "fn stage_place(index: u32) -> u32 {",
             "fn stage_color(index: u32) -> vec4u {",
             "fn stage_alpha(index: u32) -> vec3u {",
         ]
         .map(function)
         .concat();
-        // The pixel holds four values in its bytes: the alpha test, the stage count, argument 0 of
-        // the colour of stage 2, and argument 1 of the alpha of stage 4.
+        // The pixel holds four values in the bytes of its red: the alpha test, the stage count,
+        // argument 0 of the colour of stage 2, and argument 1 of the alpha of stage 4. Its green
+        // holds argument 0 of the colour and argument 1 of the alpha of the last stage (W20),
+        // which is in the overflow record.
         let general = format!(
-            "struct Stage {{ color: vec4u, alpha: vec4u }}\n\
-             struct Draw {{ more: vec4u, counts: vec4u, stages: array<Stage, 6> }}\n\
+            "struct Stage {{ color: vec4u, alpha: vec4u, slots: vec4u }}\n\
+             struct Draw {{ more: vec4u, counts: vec4u, stages: array<Stage, RECORD_STAGES> }}\n\
+             const RECORD_STAGES: u32 = {RECORD_STAGES}u;\n\
              @group(0) @binding(0) var<storage, read> draws: array<Draw>;\n\
              var<private> record: u32;\n\
              {block}{functions}\
@@ -2585,8 +2790,10 @@ mod tests {
              \x20   return vec4f(corner, 0.0, 1.0);\n\
              }}\n\
              @fragment fn fs() -> @location(0) vec4u {{\n\
-             \x20   return vec4u(draw_alpha_test() | (stage_count() << 8u) | (stage_color(2u).w << 16u) | (stage_alpha(4u).y << 24u), 0u, 0u, 1u);\n\
-             }}\n"
+             \x20   let last = {last}u;\n\
+             \x20   return vec4u(draw_alpha_test() | (stage_count() << 8u) | (stage_color(2u).w << 16u) | (stage_alpha(4u).y << 24u), stage_color(last).w | (stage_alpha(last).y << 8u), 0u, 1u);\n\
+             }}\n",
+            last = STAGES - 1
         );
         let stage = stage_facts_as_overrides(&general).unwrap();
 
@@ -2595,13 +2802,29 @@ mod tests {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter");
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a device");
-        // The record: the alpha test 3, the count 1, argument 0 of the colour of stage 2 is 9, argument
-        // 1 of the alpha of stage 4 is 11. The key's constants say 5, 6, 13 and 17.
-        let mut words = vec![0u32; 8 + 8 * STAGES];
+        // The record and its overflow record after it. A stage is 12 words: the colour, the alpha
+        // and the slots. The record: the alpha test 3, the count 1, argument 0 of the colour of
+        // stage 2 is 9, argument 1 of the alpha of stage 4 is 11. The key's constants say 5, 6, 13
+        // and 17.
+        const RECORD_WORDS: usize = 8 + 12 * RECORD_STAGES;
+        let stage_word = |stage: usize| {
+            if stage < RECORD_STAGES {
+                8 + stage * 12
+            } else {
+                RECORD_WORDS + 8 + (stage - RECORD_STAGES) * 12
+            }
+        };
+        let mut words = vec![0u32; 2 * RECORD_WORDS];
         words[2] = 3;
         words[5] = 1;
-        words[8 + 2 * 8 + 3] = 9;
-        words[8 + 4 * 8 + 4 + 1] = 11;
+        words[stage_word(2) + 3] = 9;
+        words[stage_word(4) + 4 + 1] = 11;
+        // The overflow record is the next: slots.w of stage 0.
+        words[stage_word(0) + 8 + 3] = 1;
+        // The last stage: argument 0 of its colour is 29, argument 1 of its alpha 31. The key says
+        // 19 and 23.
+        words[stage_word(STAGES - 1) + 3] = 29;
+        words[stage_word(STAGES - 1) + 4 + 1] = 31;
         let record = device.counted_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("the record"),
             contents: bytemuck::cast_slice(&words),
@@ -2617,7 +2840,7 @@ mod tests {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
+            format: wgpu::TextureFormat::Rg32Uint,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -2627,7 +2850,7 @@ mod tests {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let pixel = |source: &str, constants: &[(&str, f64)]| -> u32 {
+        let pixel = |source: &str, constants: &[(&str, f64)]| -> [u32; 2] {
             let module = device.counted_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("the null"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -2651,7 +2874,7 @@ mod tests {
                         constants,
                         ..Default::default()
                     },
-                    targets: &[Some(wgpu::TextureFormat::R32Uint.into())],
+                    targets: &[Some(wgpu::TextureFormat::Rg32Uint.into())],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -2703,20 +2926,25 @@ mod tests {
             queue.submit([encoder.finish()]);
             read.slice(..).map_async(wgpu::MapMode::Read, |result| result.unwrap());
             device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            let value = bytemuck::cast_slice::<u8, u32>(&read.slice(..).get_mapped_range().expect("the pixel")[..4])[0];
+            let mapped = read.slice(..).get_mapped_range().expect("the pixel");
+            let words = bytemuck::cast_slice::<u8, u32>(&mapped[..8]);
+            let value = [words[0], words[1]];
+            drop(mapped);
             read.unmap();
             value
         };
 
         let mut key = StageKey {
             alpha_test: 5,
-            count: 6,
+            count: STAGES as u8,
             ..key(1, 0)
         };
         key.color[2][3] = 13;
         key.alpha[4][1] = 17;
-        let of_key = 5 | (6 << 8) | (13 << 16) | (17 << 24);
-        let of_record = 3 | (1 << 8) | (9 << 16) | (11 << 24);
+        key.color[STAGES - 1][3] = 19;
+        key.alpha[STAGES - 1][1] = 23;
+        let of_key = [5 | ((STAGES as u32) << 8) | (13 << 16) | (17 << 24), 19 | (23 << 8)];
+        let of_record = [3 | (1 << 8) | (9 << 16) | (11 << 24), 29 | (31 << 8)];
         assert_eq!(pixel(&stage, &key.constants()), of_key, "the constants");
         assert_eq!(pixel(&stage, &[]), of_record, "no constant: the record");
         assert_eq!(pixel(&general, &[]), of_record, "the general text: the record");
@@ -2763,6 +2991,8 @@ mod tests {
             .unwrap();
         shaders.receive(&mut rustc_hash::FxHashMap::default());
         assert_eq!(shaders.list_left(), (0, 0));
+        // The report counts it as the list's failure (W640 part 1).
+        assert_eq!((shaders.list_failed, shaders.list_refused), (1, 0));
         assert_eq!(
             shaders.take_received(),
             Received {

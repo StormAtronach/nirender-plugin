@@ -36,7 +36,7 @@ impl Player {
             data.clip_plane = plane_of_draw(plane, draw.origin);
             key.stages = renderer.stage_shaders.id_with_plane(&data, false);
             if let Some((_, remap)) = small {
-                for stage in data.stages.iter_mut() {
+                for stage in data.stages_mut() {
                     stage.slots[0] = remap.get(&stage.slots[0]).copied().unwrap_or(0);
                 }
             }
@@ -119,7 +119,7 @@ impl Player {
                 draw.key.blend,
                 draw.key.depth,
                 draw.texture_handles,
-                draw.data.stages.map(|stage| stage.slots[1]),
+                (0..STAGES).map(|stage| draw.data.stage(stage).slots[1]).collect::<Vec<_>>(),
                 Rc::as_ptr(&draw.vertices),
                 Rc::as_ptr(&draw.indexes),
                 draw.range,
@@ -731,22 +731,26 @@ impl Player {
         let clock = ticks::Clock::now();
         let mut handles = [0u32; STAGES];
         let mut sampler_values = [[0u32; 5]; STAGES];
-        for stage in 0..STAGES {
+        // The stages that the draw uses: its shader reads no stage after them.
+        let count = (draw_data.counts[1] as usize).min(STAGES);
+        for stage in 0..count {
             let handle = pass.stages[stage].texture;
-            let used = stage < draw_data.counts[1] as usize && handle != 0;
-            if used && !renderer.textures.contains_key(&handle) {
+            if handle != 0 && !renderer.textures.contains_key(&handle) {
                 renderer.counts.missing_textures += 1;
-            } else if used {
+            } else if handle != 0 {
                 handles[stage] = handle;
                 sampler_values[stage] = pass.stages[stage].sampler;
             }
         }
         // The textures and the samplers of the draw in the arrays of the frame: the record
-        // names their slots.
-        for stage in 0..STAGES {
+        // names their slots. A stage that the draw does not use names slot 0.
+        for stage in 0..count {
             let texture = renderer.frame_texture_slot(handles[stage]);
             let sampler = renderer.frame_sampler_slot(sampler_values[stage]);
-            draw_data.stages[stage].slots = [texture, sampler, 0, 0];
+            draw_data.stage_mut(stage).slots = [texture, sampler, 0, 0];
+        }
+        for stage in count..STAGES {
+            draw_data.stage_mut(stage).slots = [0; 4];
         }
         renderer.counts.times[TIME_DRAW_GROUPS] += clock.elapsed();
         if self.target.is_some() {

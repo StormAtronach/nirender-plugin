@@ -418,9 +418,12 @@ one, or `MGE_XE_CORE_MODS=0` with `off`.
   `host/src/lib.rs`). The build of that key with the extension's built-in text fails too, and
   the extension drops no core mod. The other values of the switch are MGE XE's (RENDERER.md).
 - `MGE_XE_PIPELINE_LIST=<file>`: the list of the stage pipelines of a live session, in place of
-  `%LOCALAPPDATA%\MGE XE\numidium-stage-pipelines.txt`. The next start makes the pipelines of
-  the list on the helper's thread before they are needed; a list that is missing, of another
-  world shader, or that cannot be written leaves each pipeline to its first use.
+  `%LOCALAPPDATA%\MGE XE\numidium-stage-pipelines-<format>-<install>.txt`. The install part is a
+  hash of the helper's working folder (the Morrowind folder): each install has one list, which
+  a new world shader or a changed core mod keeps (W640 part 1). An install that moves starts
+  with no list. The next start makes the pipelines of the list on the helper's thread before
+  they are needed; a list that is missing, of another format, or that cannot be written leaves
+  each pipeline to its first use.
 - `MGE_XE_GRASS_HASH=1`: the helper prints one line for each grass call with the hash of its records (MGE XE's
   RENDERER.md has the form). `tools/instance_ab.py` sets it for its replays.
 - `MGE_XE_RUNS_DUMP=1`: the runs of the table of each frame.

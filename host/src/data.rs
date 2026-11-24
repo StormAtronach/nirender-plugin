@@ -190,11 +190,24 @@ pub struct StageData {
     pub coordinate: [u32; 4],
     pub bump: [f32; 4],
     pub luminance: [f32; 4],
-    /// The texture and the sampler of the stage among the arrays of the frame.
+    /// The texture and the sampler of the stage among the arrays of the frame, and the entry of
+    /// its texture effect. `slots[3]` of stage 0 in a record is the distance to the draw's
+    /// overflow record (0: none): see [`DrawData::with_overflow_at`].
     pub slots: [u32; 4],
 }
 
-/// The uniform of a draw: `Draw` in `shader.wgsl`, where each field has its meaning.
+/// The stages of a draw after the `RECORD_STAGES` of its record, and their texture
+/// transforms. The shader reads them from an overflow record of the draw: a record of its own
+/// in the same array, whose first stages and transforms are these.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct LaterStages {
+    pub stages: [StageData; STAGES - RECORD_STAGES],
+    pub texture_transforms: [[f32; 16]; STAGES - RECORD_STAGES],
+}
+
+/// The data of a draw. Its first `RECORD_SIZE` bytes are the record of the draw, `Draw` in
+/// `shader.wgsl`, where each field has its meaning; [`DrawData::later`] is not in the record.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct DrawData {
@@ -237,10 +250,12 @@ pub struct DrawData {
     /// slot (`Clusters::note`): a pixel of the draw takes a light of its cluster only when
     /// the draw has it, as the engine lights a draw with the lights of its effect state.
     pub light_mask: [[u32; 4]; 2],
-    pub stages: [StageData; 6],
-    /// The texture transform of each stage. A stage of the table's texture effect has a
-    /// `slots[2]` and takes its matrix from `effect_entries`, one for each effect.
-    pub texture_transforms: [[f32; 16]; 6],
+    /// The first `RECORD_STAGES` stages: [`DrawData::stage`] reads every stage.
+    pub stages: [StageData; RECORD_STAGES],
+    /// The texture transform of each of the first `RECORD_STAGES` stages. A stage of the
+    /// table's texture effect has a `slots[2]` and takes its matrix from `effect_entries`, one
+    /// for each effect.
+    pub texture_transforms: [[f32; 16]; RECORD_STAGES],
     /// 1 / width and -1 / height of the viewport.
     pub pixel: [f32; 4],
     /// The values of [`FrameParameters::sky`].
@@ -248,6 +263,89 @@ pub struct DrawData {
     /// A plane in the space of the world of the draw: a pixel on its negative side is not
     /// drawn. All 0: no plane.
     pub clip_plane: [f32; 4],
+    /// The stages after the first `RECORD_STAGES`: not in the record.
+    pub later: LaterStages,
+}
+
+impl DrawData {
+    /// Stage `index` of the draw (below `STAGES`).
+    pub fn stage(&self, index: usize) -> &StageData {
+        match index.checked_sub(RECORD_STAGES) {
+            None => &self.stages[index],
+            Some(later) => &self.later.stages[later],
+        }
+    }
+
+    pub fn stage_mut(&mut self, index: usize) -> &mut StageData {
+        match index.checked_sub(RECORD_STAGES) {
+            None => &mut self.stages[index],
+            Some(later) => &mut self.later.stages[later],
+        }
+    }
+
+    /// The texture transform of stage `index` (below `STAGES`).
+    pub fn texture_transform(&self, index: usize) -> &[f32; 16] {
+        match index.checked_sub(RECORD_STAGES) {
+            None => &self.texture_transforms[index],
+            Some(later) => &self.later.texture_transforms[later],
+        }
+    }
+
+    pub fn texture_transform_mut(&mut self, index: usize) -> &mut [f32; 16] {
+        match index.checked_sub(RECORD_STAGES) {
+            None => &mut self.texture_transforms[index],
+            Some(later) => &mut self.later.texture_transforms[later],
+        }
+    }
+
+    /// Every stage of the draw, in order.
+    pub fn stages_mut(&mut self) -> impl Iterator<Item = &mut StageData> {
+        self.stages.iter_mut().chain(self.later.stages.iter_mut())
+    }
+
+    /// Whether the draw uses a stage after the record's: it then needs an overflow record.
+    pub fn overflows(&self) -> bool {
+        self.counts[1] as usize > RECORD_STAGES
+    }
+
+    /// The record of the draw: the first `RECORD_SIZE` bytes.
+    pub fn record_bytes(&self) -> &[u8] {
+        &bytemuck::bytes_of(self)[..RECORD_SIZE]
+    }
+
+    /// The draw with `distance` in stage 0's `slots[3]`: the index of its overflow record less
+    /// the index of its own, as the shader adds them (a u32 that wraps). For a draw that
+    /// [`DrawData::overflows`]; a record keeps its distance when the records move.
+    pub fn with_overflow_at(&self, distance: u32) -> DrawData {
+        let mut main = *self;
+        main.stages[0].slots[3] = distance;
+        main
+    }
+
+    /// The overflow record of the draw: [`DrawData::later`] as its first stages and transforms,
+    /// the rest 0.
+    pub fn overflow_record(&self) -> DrawData {
+        let mut overflow = DrawData::zeroed();
+        overflow.stages[..STAGES - RECORD_STAGES].copy_from_slice(&self.later.stages);
+        overflow.texture_transforms[..STAGES - RECORD_STAGES].copy_from_slice(&self.later.texture_transforms);
+        overflow
+    }
+
+    /// The records that a draw of the frame writes in a row: its record, and its overflow
+    /// record next to it when it [`DrawData::overflows`] (the distance 1).
+    pub fn frame_records(&self, out: &mut Vec<u8>) {
+        if self.overflows() {
+            out.extend_from_slice(self.with_overflow_at(1).record_bytes());
+            out.extend_from_slice(self.overflow_record().record_bytes());
+        } else {
+            out.extend_from_slice(self.record_bytes());
+        }
+    }
+
+    /// The number of records that [`DrawData::frame_records`] writes.
+    pub fn frame_record_count(&self) -> usize {
+        1 + self.overflows() as usize
+    }
 }
 
 /// The shader for a draw in screen coordinates: the colour of the vertex times the texture.
@@ -391,20 +489,34 @@ impl RenderTexture {
 
 impl Counts {
     /// The end of a frame for the per-draw writes (W125): its writes and its time go into the
-    /// most of a frame, and the next frame starts at 0.
+    /// most of a frame with the frame's number, and the next frame starts at 0. The frame that
+    /// ended is number `frames - 1`: the end of a frame counts it before the next frame starts.
     pub(crate) fn close_write_frame(&mut self) {
-        self.frame_writes_most = self.frame_writes_most.max(self.frame_writes);
-        self.frame_write_seconds_most = self.frame_write_seconds_most.max(self.frame_write_seconds);
+        let ended = self.frames.saturating_sub(1);
+        if self.frame_writes > self.frame_writes_most.0 {
+            self.frame_writes_most = (self.frame_writes, ended);
+        }
+        if self.frame_write_seconds > self.frame_write_seconds_most.0 {
+            self.frame_write_seconds_most = (self.frame_write_seconds, ended);
+        }
         self.frame_writes = 0;
         self.frame_write_seconds = 0.0;
     }
 
-    /// The most writes and the most time of a frame, the frame in progress too.
-    pub(crate) fn write_frame_most(&self) -> (u64, f64) {
-        (
-            self.frame_writes_most.max(self.frame_writes),
-            self.frame_write_seconds_most.max(self.frame_write_seconds),
-        )
+    /// The most writes and the most time of a frame, each with its frame's number, the frame in
+    /// progress (number `frames`) too.
+    pub(crate) fn write_frame_most(&self) -> ((u64, u32), (f64, u32)) {
+        let writes = if self.frame_writes > self.frame_writes_most.0 {
+            (self.frame_writes, self.frames)
+        } else {
+            self.frame_writes_most
+        };
+        let seconds = if self.frame_write_seconds > self.frame_write_seconds_most.0 {
+            (self.frame_write_seconds, self.frames)
+        } else {
+            self.frame_write_seconds_most
+        };
+        (writes, seconds)
     }
 
     /// The end of a frame for the worst busy frame (W632): the busy time since the last call is
@@ -483,6 +595,11 @@ pub(crate) struct Counts {
     /// storage binding (`record_limit`), and the retained slots past it.
     pub(crate) records_over_limit: u32,
     pub(crate) retained_over_limit: u32,
+    /// The overflow records that the frames wrote for their draws of more than
+    /// [`RECORD_STAGES`] stages, in all frames.
+    pub(crate) overflow_records: u64,
+    /// The draws of the frames by their number of stages (0 to [`STAGES`]), in all frames.
+    pub(crate) draws_by_stages: [u64; STAGES + 1],
     /// The uploads of the retained segment of the instances: whole, and as runs of changed
     /// slots with their bytes (`retained_upload`).
     pub(crate) instance_uploads_whole: u64,
@@ -512,12 +629,12 @@ pub(crate) struct Counts {
     pub(crate) draw_copy_seconds: f64,
     /// The writes of the copies and of the changed slots' records in the frame in progress, and
     /// the most of a frame; the time of the copies and of the case "changed" of the table upload
-    /// in the frame in progress, and the most of a frame (W125, verdict 753 5.1 and 5.2).
-    /// [`Counts::close_write_frame`] at each frame's start.
+    /// in the frame in progress, and the most of a frame with that frame's number (W125, verdict
+    /// 753 5.1 and 5.2, and A1.1). [`Counts::close_write_frame`] at each frame's start.
     pub(crate) frame_writes: u64,
-    pub(crate) frame_writes_most: u64,
+    pub(crate) frame_writes_most: (u64, u32),
     pub(crate) frame_write_seconds: f64,
-    pub(crate) frame_write_seconds_most: f64,
+    pub(crate) frame_write_seconds_most: (f64, u32),
     pub(crate) instance_entries_moved: u64,
     pub(crate) instance_gap_bytes: u64,
     /// The textures that came again for a handle with a slot of the arrays.
@@ -891,7 +1008,15 @@ pub(crate) struct Counts {
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
-pub(crate) const STAGES: usize = 6;
+/// The texture stages of a draw: the most that the engine puts in one pass (Direct3D 8's limit;
+/// the engine packs up to the adapter's `MaxSimultaneousTextures`).
+pub(crate) const STAGES: usize = 8;
+
+/// The stages that a draw's record holds. A draw with more stages has an overflow record
+/// ([`LaterStages`]): so a draw of 6 stages or fewer writes and copies the record of 6.
+pub(crate) const RECORD_STAGES: usize = 6;
+
+const _: () = assert!(RECORD_STAGES <= STAGES && STAGES - RECORD_STAGES <= RECORD_STAGES);
 
 /// The lights that the light buffer of a frame holds at first.
 pub(crate) const LIGHTS_AT_FIRST: usize = 4096;
@@ -927,10 +1052,20 @@ impl Instance {
 
 pub(crate) const INSTANCE_SIZE: usize = core::mem::size_of::<Instance>();
 
-/// The size of a record of a draw: [`DrawData`], as the shader's `array<Draw>` has it.
-pub(crate) const RECORD_SIZE: usize = core::mem::size_of::<DrawData>();
+/// The size of a record of a draw: the part of [`DrawData`] before [`DrawData::later`], as the
+/// shader's `array<Draw>` has it.
+pub(crate) const RECORD_SIZE: usize = core::mem::offset_of!(DrawData, later);
+
+const _: () = assert!(RECORD_SIZE + core::mem::size_of::<LaterStages>() == core::mem::size_of::<DrawData>());
 
 const _: () = assert!(INSTANCE_SIZE == 80 && RECORD_SIZE % 16 == 0);
+
+/// The most draw records in one binding. The index of a record goes from the vertex stage to
+/// the fragment stage as a float (`StageOut` of shader.wgsl), and a float holds each whole
+/// number below 2^24 exactly.
+pub(crate) const MOST_RECORDS: usize = 1 << 24;
+
+const _: () = assert!(MOST_RECORDS <= 1 << f32::MANTISSA_DIGITS);
 
 pub(crate) const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
@@ -978,21 +1113,103 @@ mod tests {
         crate::assert_wgsl("screen draw", &SCREEN_SHADER);
     }
 
+    /// The world shader's `Draw` is the record that [`DrawData`] writes: the same size, and
+    /// [`RECORD_STAGES`] stages and texture transforms. A change of the stage count of the record
+    /// changes both.
+    #[test]
+    fn the_shaders_record_has_the_size_and_the_stages_of_draw_data() {
+        use wgpu::naga::{ArraySize, TypeInner};
+        let source = crate::request::world_shader_source(&crate::extension::extension_shaders(None));
+        let module = crate::parse_wgsl("the world shader", &source);
+        let draw = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("Draw"))
+            .map(|(_, ty)| ty)
+            .expect("the world shader has the struct Draw");
+        let TypeInner::Struct { members, span } = &draw.inner else {
+            panic!("Draw is a struct");
+        };
+        assert_eq!(*span as usize, RECORD_SIZE);
+        for name in ["stages", "texture_transforms"] {
+            let member = members
+                .iter()
+                .find(|member| member.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("Draw has {name}"));
+            let TypeInner::Array { size, .. } = module.types[member.ty].inner else {
+                panic!("{name} is an array");
+            };
+            assert_eq!(
+                size,
+                ArraySize::Constant((RECORD_STAGES as u32).try_into().unwrap()),
+                "{name}"
+            );
+        }
+        assert_eq!(RECORD_SIZE, 1712, "the record of a draw of 6 stages");
+    }
+
+    /// A draw of more than [`RECORD_STAGES`] stages writes its record with the index of its
+    /// overflow record, and the overflow record has its later stages first.
+    #[test]
+    fn the_overflow_record_holds_the_stages_after_the_records() {
+        let mut data = DrawData::zeroed();
+        data.counts[1] = STAGES as u32;
+        for stage in 0..STAGES {
+            data.stage_mut(stage).color = [stage as u32 + 1, 0, 0, 0];
+            data.texture_transform_mut(stage)[0] = stage as f32 + 1.0;
+        }
+        assert!(data.overflows());
+        assert_eq!(data.frame_record_count(), 2);
+        let mut bytes = Vec::new();
+        data.frame_records(&mut bytes);
+        assert_eq!(bytes.len(), 2 * RECORD_SIZE);
+        let read = |part: &[u8]| {
+            let mut d = DrawData::zeroed();
+            bytemuck::bytes_of_mut(&mut d)[..RECORD_SIZE].copy_from_slice(part);
+            d
+        };
+        let (main, more) = (read(&bytes[..RECORD_SIZE]), read(&bytes[RECORD_SIZE..]));
+        assert_eq!(main.stages[0].slots[3], 1, "the overflow record is the next");
+        assert_eq!(data.with_overflow_at(3u32.wrapping_neg()).stages[0].slots[3], u32::MAX - 2);
+        assert_eq!(main.stages[RECORD_STAGES - 1].color[0], RECORD_STAGES as u32);
+        for later in 0..STAGES - RECORD_STAGES {
+            assert_eq!(more.stages[later].color[0], (RECORD_STAGES + later) as u32 + 1);
+            assert_eq!(more.texture_transforms[later][0], (RECORD_STAGES + later) as f32 + 1.0);
+        }
+        // The draw's own data keeps no index: a copy of it writes its own.
+        assert_eq!(data.stages[0].slots[3], 0);
+        data.counts[1] = RECORD_STAGES as u32;
+        assert!(!data.overflows());
+        let mut bytes = Vec::new();
+        data.frame_records(&mut bytes);
+        assert_eq!(bytes.len(), RECORD_SIZE, "a draw of 6 stages writes one record of 1712 bytes");
+    }
+
     /// W125: the most of a frame keeps the frame with the most writes and the frame with the most
     /// time, also when they are not the same frame, and counts the frame in progress.
     #[test]
     fn the_most_writes_of_a_frame_are_kept() {
+        // As the player does it: the end of frame N counts it (`frames` N + 1), then the start of
+        // the next frame closes frame N.
         let mut counts = Counts::default();
         counts.frame_writes = 12;
         counts.frame_write_seconds = 0.001;
+        counts.frames = 1;
         counts.close_write_frame();
         counts.frame_writes = 30;
         counts.frame_write_seconds = 0.0002;
+        counts.frames = 2;
         counts.close_write_frame();
         assert_eq!((counts.frame_writes, counts.frame_write_seconds), (0, 0.0));
-        assert_eq!(counts.write_frame_most(), (30, 0.001));
+        assert_eq!(counts.write_frame_most(), ((30, 1), (0.001, 0)));
+        // A tie keeps the first frame.
+        counts.frame_writes = 30;
+        counts.frames = 3;
+        counts.close_write_frame();
+        assert_eq!(counts.write_frame_most(), ((30, 1), (0.001, 0)));
+        // The frame in progress is number `frames`.
         counts.frame_writes = 41;
-        assert_eq!(counts.write_frame_most(), (41, 0.001));
+        assert_eq!(counts.write_frame_most(), ((41, 3), (0.001, 0)));
     }
 
     /// W632: the chain work of a frame is one entry, the runs split at a gap over the bound, and

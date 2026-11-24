@@ -1381,6 +1381,13 @@ pub(crate) fn assert_wgsl(label: &str, source: &str) {
     }
 }
 
+/// The module of a WGSL source of this program, for a test that reads its types: a source that
+/// does not parse fails with naga's message.
+#[cfg(test)]
+pub(crate) fn parse_wgsl(label: &str, source: &str) -> wgpu::naga::Module {
+    wgpu::naga::front::wgsl::parse_str(source).unwrap_or_else(|error| panic!("{label}: {}", error.emit_to_string(source)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{adds_bit, adds_to_picture, VertexLayout, ADDS_BIT};

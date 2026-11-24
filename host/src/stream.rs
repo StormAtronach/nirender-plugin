@@ -212,7 +212,7 @@ impl Stream {
                     counts.coordinate_work += 1;
                 }
                 // The result argument of a stage is D3DTA_CURRENT (1).
-                data.stages[stages] = StageData {
+                *data.stage_mut(stages) = StageData {
                     color: [stage.color[0], stage.color[1], stage.color[2], 1],
                     alpha: [stage.alpha[0], stage.alpha[1], stage.alpha[2], 0],
                     coordinate: [
@@ -225,7 +225,7 @@ impl Stream {
                     luminance: [stage.bump[4], stage.bump[5], 0.0, 0.0],
                     slots: [0; 4],
                 };
-                data.texture_transforms[stages] = stage.texture_transform;
+                *data.texture_transform_mut(stages) = stage.texture_transform;
             }
             stages += 1;
         }

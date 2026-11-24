@@ -541,8 +541,8 @@ pub fn derive(m: &Material, sets: u32, envmap_lit: bool) -> Derived {
         };
     }
 
-    // The stages. The engine allows 8 stages in a pass. The helper binds 6 (`STAGES`): a draw
-    // with more loses the rest, counted in `more_stages`.
+    // The stages. The engine allows 8 stages in a pass, and the helper binds 8 (`STAGES`). A
+    // draw with more would lose the rest, counted in `more_stages`.
     let stage = |map: usize, slot: u32, first: bool| -> Stage {
         let mp = m.maps[map];
         let (color, alpha) = ops(slot, first, apply, mp.texture != 0);

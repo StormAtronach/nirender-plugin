@@ -86,7 +86,10 @@ impl<G: Clone> StageGroups<G> {
 mod tests {
     use super::*;
 
-    fn key(textures: [u32; STAGES]) -> StageKey {
+    /// The key of a set with these textures in its first stages and none in the others.
+    fn key<const N: usize>(first: [u32; N]) -> StageKey {
+        let mut textures = [0; STAGES];
+        textures[..N].copy_from_slice(&first);
         StageKey {
             textures,
             samplers: [[0; 5]; STAGES],
@@ -99,27 +102,27 @@ mod tests {
         let mut groups = StageGroups::default();
         // A long-lived texture 7 with a texture of each cell that comes and goes.
         for cell in 100..200 {
-            groups.insert(key([7, cell, 0, 0, 0, 0]), cell);
+            groups.insert(key([7, cell]), cell);
             groups.forget(cell);
         }
         assert_eq!(groups.len(), 0);
         assert_eq!(groups.keys_held(), 0, "the set of handle 7 kept the keys of groups that went");
 
-        groups.insert(key([7, 1, 0, 0, 0, 0]), 1);
-        groups.insert(key([7, 2, 0, 0, 0, 0]), 2);
-        groups.insert(key([3, 0, 0, 0, 0, 0]), 3);
+        groups.insert(key([7, 1]), 1);
+        groups.insert(key([7, 2]), 2);
+        groups.insert(key([3, 0]), 3);
         assert_eq!((groups.len(), groups.keys_held()), (3, 5));
         groups.forget(7);
-        assert_eq!(groups.get(&key([7, 1, 0, 0, 0, 0])), None);
-        assert_eq!(groups.get(&key([3, 0, 0, 0, 0, 0])), Some(3));
+        assert_eq!(groups.get(&key([7, 1])), None);
+        assert_eq!(groups.get(&key([3, 0])), Some(3));
         assert_eq!((groups.len(), groups.keys_held()), (1, 1));
     }
 
     #[test]
     fn a_set_with_one_handle_twice_is_kept_once() {
         let mut groups = StageGroups::default();
-        groups.insert(key([5, 5, 0, 0, 0, 0]), 1);
-        groups.insert(key([5, 5, 0, 0, 0, 0]), 1);
+        groups.insert(key([5, 5]), 1);
+        groups.insert(key([5, 5]), 1);
         assert_eq!((groups.len(), groups.keys_held()), (1, 1));
         groups.forget(5);
         assert_eq!((groups.len(), groups.keys_held()), (0, 0));
