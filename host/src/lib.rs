@@ -1275,7 +1275,7 @@ struct Player {
     mark_frames: u32,
     mark_draws: u32,
     mark_runs: u32,
-    mark_gpu: (f64, f64, u32),
+    mark_gpu: data::GpuMark,
     /// [`gpu::work()`] and [`gpu::errors()`] at the last mark.
     mark_work: [u64; 4],
     /// The census of the passes at the last mark (`gpu::passes`).
