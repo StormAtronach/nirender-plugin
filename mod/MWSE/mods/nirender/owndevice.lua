@@ -610,7 +610,7 @@ return function(nirender, spec)
                 local step = math.min(now - last, 0.1) * (spec.walkSpeed or 2500)
                 last = now
                 local at = tes3.player.position
-                tes3.player.position = tes3vector3.new(hover.next(at.x, at.y, at.z, step, hover.ground))
+                tes3.player.position = tes3vector3.new(hover.next(at.x, at.y, at.z, step, hover.ground, hover.water()))
             end
             say("walk from '%s', %d units over the ground", from, hover.HEIGHT)
         end },
