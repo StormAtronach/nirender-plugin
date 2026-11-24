@@ -189,6 +189,9 @@ struct Instance {
     filled: bool,
     /// The generation of the tables at the last check of the handles.
     generation: u32,
+    /// Its material named a freed texture of the cell worker (`note_materials_again`): the
+    /// next note is path B's (`texture_paths`), until the note.
+    freed_mark: bool,
     /// A skinned shape (an actor). In mode gpu the helper draws it from its table, and its
     /// display sends its bones in each frame the engine displays it (`send_bones`).
     skinned: bool,
@@ -571,6 +574,7 @@ impl Instance {
             relative: false,
             filled: false,
             generation,
+            freed_mark: false,
             skinned,
             live,
             recheck: false,
@@ -861,6 +865,12 @@ pub unsafe fn textures_changed(mt: &MainThread) {
     let mut tables_open = tables(mt);
     let t = &mut *tables_open;
     t.generation = t.generation.wrapping_add(1);
+    crate::texture_paths::raise(mt);
+}
+
+/// The frame of the instance tables (the numbers of `texture_paths`).
+pub fn frame(mt: &MainThread) -> u32 {
+    tables(mt).frame
 }
 
 /// The start of a draw of the engine: a pending draw that no shape record took (a skinned
@@ -2170,7 +2180,9 @@ pub fn note_materials_again(mt: &MainThread, materials: &[u32]) {
     let t = &mut *tables_open;
     let generation = t.generation;
     let marked = mark_for_note(
-        t.instances.values_mut().map(|i| (i.material, &mut i.generation)),
+        t.instances
+            .values_mut()
+            .map(|i| (i.material, &mut i.generation, &mut i.freed_mark)),
         &gone,
         generation,
     );
@@ -2178,12 +2190,18 @@ pub fn note_materials_again(mt: &MainThread, materials: &[u32]) {
 }
 
 /// Gives each instance whose material is in `gone` another generation than `generation`, so
-/// that its next display notes its handles (`display_work`). Returns their number.
-fn mark_for_note<'a>(instances: impl Iterator<Item = (u32, &'a mut u32)>, gone: &HashSet<u32>, generation: u32) -> u64 {
+/// that its next display notes its handles (`display_work`), and the mark of path B
+/// (`texture_paths`). Returns their number.
+fn mark_for_note<'a>(
+    instances: impl Iterator<Item = (u32, &'a mut u32, &'a mut bool)>,
+    gone: &HashSet<u32>,
+    generation: u32,
+) -> u64 {
     let mut marked = 0;
-    for (material, instance_generation) in instances {
+    for (material, instance_generation, freed_mark) in instances {
         if gone.contains(&material) {
             *instance_generation = generation.wrapping_sub(1);
+            *freed_mark = true;
             marked += 1;
         }
     }
@@ -2519,10 +2537,11 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
     let renderer = crate::engine::renderer();
     let property_state: usize = rd(shape, GEOMETRY_PROPERTY_STATE);
     let effect_state: usize = rd(shape, GEOMETRY_EFFECT_STATE);
-    let (frame, generation, id, live) = {
+    let (frame, generation, id, live, rechecked) = {
         let mut tables_open = tables(mt);
         let t = &mut *tables_open;
         let (frame, generation) = (t.frame, t.generation);
+        let mut rechecked = false;
         let properties = if property_state != 0 {
             core::array::from_fn(|i| rd(property_state, PS::propAlpha + i * 4))
         } else {
@@ -2552,6 +2571,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
                 }
                 instance.live = live || was_live;
                 instance.generation = instance.generation.wrapping_sub(1);
+                rechecked = true;
             }
         }
         let Some(instance) = t.instances.get_mut(&shape) else {
@@ -2563,7 +2583,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         }
         instance.properties = properties;
         instance.sorted_blend = alpha_sorts(instance.properties[0]);
-        (frame, generation, instance.id, instance.live)
+        (frame, generation, instance.id, instance.live, rechecked)
     };
     // The controllers of a live shape run before its draw, as the engine's display runs
     // them (`NiTriShape::Display`): a morpher writes its vertices then. A controller is
@@ -2613,12 +2633,18 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         );
     let software_changed = instance.software != software;
     instance.software = software;
-    let event_due = note_every()
-        || instance.live
-        || !instance.sent
-        || effects_changed
-        || software_changed
-        || instance.generation != generation;
+    let other_due = note_every() || instance.live || !instance.sent || effects_changed || software_changed;
+    let event_due = other_due || instance.generation != generation;
+    // The path of a freed texture that alone made the note due (W454, `texture_paths`): the
+    // mark of path B, else a raise of the generation (path A). A recheck also gives another
+    // generation, and `reset` clears `sent`: neither is a path's.
+    let texture_path = (instance.generation != generation && !other_due && !rechecked).then(|| {
+        if instance.freed_mark {
+            crate::texture_paths::FREED
+        } else {
+            crate::texture_paths::RAISE
+        }
+    });
     let due = event_due || id.wrapping_add(frame).is_multiple_of(CHECK_FRAMES);
     if due && !event_due && periodic_reject(mt, t, shape, property_state) {
         return false;
@@ -2631,8 +2657,12 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
         COST_NOTES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         // A skinned geometry is packed with the bone influences of its skin.
         let skin = if instance.skinned { rd(shape, GEOMETRY_SKIN) } else { 0 };
+        let note_start = texture_path.map(|_| capture::ticks());
         let geometry = crate::geometry_stream::note(mt, kind, rd(shape, GEOMETRY_MODEL_DATA), skin, shape);
         let material = crate::material_stream::note(mt, renderer, property_state, effect_state);
+        if let (Some(path), Some(start)) = (texture_path, note_start) {
+            crate::texture_paths::note(mt, path, frame, capture::ticks() - start);
+        }
         if geometry == 0 || material == 0 || !crate::material_stream::last_modelled(mt) {
             let cause = if geometry == 0 {
                 LATER_GEOMETRY
@@ -2645,6 +2675,7 @@ unsafe fn display_work(mt: &MainThread, shape: usize, kind: u32) -> bool {
             return false;
         }
         instance.generation = generation;
+        instance.freed_mark = false;
         if effects_changed && instance.sent && instance.effect_versions != [(0, 0); 2] {
             t.effect_notes += 1;
         }
@@ -3014,6 +3045,7 @@ pub unsafe fn report(mt: &MainThread) -> String {
             "sorted queue: {} blends of the table taken, {} places written at the flush, {} places of shapes under a queued node; {} places of blends in the walk\n",
             queue_counts[0], queue_counts[1], queue_counts[2], walk_places
         )
+        + &crate::texture_paths::report_line(mt)
         + &{
             let engine = crate::shape_stream::engine_particle_records(mt);
             format!(
@@ -3565,14 +3597,16 @@ mod tests {
     #[test]
     fn a_freed_texture_marks_only_the_instances_of_its_materials() {
         let gone: HashSet<u32> = [7u32, 9].into_iter().collect();
-        let mut instances = vec![(7u32, 5u32), (8, 5), (9, 4)];
-        let marked = mark_for_note(instances.iter_mut().map(|(m, g)| (*m, g)), &gone, 5);
+        let mut instances = vec![(7u32, 5u32, false), (8, 5, false), (9, 4, false)];
+        let marked = mark_for_note(instances.iter_mut().map(|(m, g, f)| (*m, g, f)), &gone, 5);
         assert_eq!(marked, 2);
-        // Material 7 and 9: another generation than the tables', so a note at the next display.
+        // Material 7 and 9: another generation than the tables', so a note at the next display,
+        // and the mark of path B (W454).
         assert_ne!(instances[0].1, 5);
         assert_ne!(instances[2].1, 5);
+        assert!(instances[0].2 && instances[2].2);
         // Material 8 named no freed texture: unchanged.
-        assert_eq!(instances[1].1, 5);
+        assert_eq!(instances[1], (8, 5, false));
     }
 
     #[test]

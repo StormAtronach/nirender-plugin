@@ -344,6 +344,11 @@ fn by_texture<'a>(t: &'a MainThread) -> Open<'a, HashMap<u32, Vec<u32>>> {
 /// thread.
 pub unsafe fn drain_freed_textures(t: &MainThread) {
     let freed = crate::own_host::take_freed_textures();
+    if freed.is_empty() {
+        return;
+    }
+    // Path B of a freed texture (W454, `texture_paths`): the drain's time, with the marks.
+    let start = crate::capture::ticks();
     let mut gone = Vec::new();
     for texture in freed {
         let Some(materials) = by_texture(t).remove(&texture) else {
@@ -363,6 +368,8 @@ pub unsafe fn drain_freed_textures(t: &MainThread) {
     if !gone.is_empty() {
         crate::instance_stream::note_materials_again(t, &gone);
     }
+    let frame = crate::instance_stream::frame(t);
+    crate::texture_paths::drain(t, frame, crate::capture::ticks() - start);
 }
 
 /// The handles of records that went with their textures leave the table when no instance

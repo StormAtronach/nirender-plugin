@@ -644,10 +644,19 @@ unsafe extern "C" fn note_every(l: LuaState) -> i32 {
 /// `nirender.displayCost()`: the skipped displays since the last call, the notes among
 /// them and their time in ms, as text; the counters reset. Two more words, `0.000 0`, stand
 /// where a build with the views' closes gives their time and their visits, so that the walk
-/// card (`bob-walk-cost.lua`) reads the same five words from both builds of an A/B.
+/// card (`bob-walk-cost.lua`) reads the same five words from both builds of an A/B. Then the
+/// paths of a freed texture since the last call (W454, `texture_paths`): the ms of path A, the
+/// ms of path B, and the raises of the generation.
 unsafe extern "C" fn display_cost(l: LuaState) -> i32 {
     let cost = crate::instance_stream::display_cost();
-    push_str(l, &format!("{} {} {:.3} 0.000 0", cost.displays, cost.notes, cost.display_ms));
+    let (raise_ms, freed_ms, raises) = crate::texture_paths::take_frame();
+    push_str(
+        l,
+        &format!(
+            "{} {} {:.3} 0.000 0 {:.3} {:.3} {}",
+            cost.displays, cost.notes, cost.display_ms, raise_ms, freed_ms, raises
+        ),
+    );
     1
 }
 
