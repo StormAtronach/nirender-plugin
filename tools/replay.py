@@ -609,8 +609,6 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
     ap.add_argument("--backend", default="vulkan")
     ap.add_argument("--core-mods", metavar="FOLDER|off", help="the core mods only from this folder, or off: none")
     ap.add_argument("--anisotropy", type=int, default=None, help="the anisotropic filter of the textures the game filters (1 without this)")
-    ap.add_argument("--mipmaps-for-one-level", choices=("on", "off"), default=None,
-                    help="the levels below a texture with one level (W632); without this, the setting of the mgeXE.toml")
     ap.add_argument("--sky-map-filter", choices=("engine", "trilinear", "bias", "area", "area-tent"), default=None,
                     help="how the sky's draws read their BILERP maps (W632); without this, the setting of the mgeXE.toml")
     ap.add_argument("--sky-lod-bias", type=float, default=None,
@@ -676,8 +674,6 @@ def main(argv=None, start=start_helper, verify=None, current=None, local_path=No
         command += ["--frame", str(args.frame)]
     if args.anisotropy is not None:
         command += ["--anisotropy", str(args.anisotropy)]
-    if args.mipmaps_for_one_level is not None:
-        command += ["--mipmaps-for-one-level", args.mipmaps_for_one_level]
     if args.sky_map_filter is not None:
         command += ["--sky-map-filter", args.sky_map_filter]
     if args.sky_lod_bias is not None:

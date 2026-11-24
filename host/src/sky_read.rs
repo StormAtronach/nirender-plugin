@@ -13,13 +13,11 @@
 
 use crate::material::FILTER_BILERP;
 
-/// How a draw of the sky reads its BILERP maps: the sampler of the stage
-/// (`mip_chain::level_filter`) and, for stage 0, the read of `shader.wgsl` (`sky_map_read`, with
-/// [`crate::AREA_READ_BIT`] in the record).
+/// How a draw of the sky reads its BILERP maps: the sampler of the stage ([`level_filter`]) and, for
+/// stage 0, the read of `shader.wgsl` (`sky_map_read`, with [`crate::AREA_READ_BIT`] in the record).
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum SkyMapFilter {
-    /// The engine's read: level 0 with a bilinear filter, a chain of this program's too
-    /// (`graphics.sky_map_filter = "engine"`).
+    /// The engine's read: level 0 with a bilinear filter (`graphics.sky_map_filter = "engine"`).
     #[default]
     Engine,
     /// A filter between the levels in each stage: the sky rule that the owner rejected. A replay arm
@@ -99,6 +97,29 @@ pub(crate) fn of_stage(sky: Option<SkyMapFilter>, filter: u32, stage: usize) -> 
     })
 }
 
+/// D3DTEXF_NONE and D3DTEXF_LINEAR, the filter between levels (D3DTSS_MIPFILTER).
+const MIP_FILTER_NONE: u32 = 0;
+const MIP_FILTER_LINEAR: u32 = 2;
+
+/// The filter between the levels of a stage's texture, in `sampler[4]`: `levels` is the number of
+/// levels of the texture, and `sky` is the read of its map ([`of_stage`]).
+///
+/// - A BILERP map of a draw of the sky takes W632's `sky_map_filter` (the design's section 4). The
+///   engine's read reads level 0 only, as the engine reads such a map. Every other filter, the area
+///   read among them, gets a linear filter between the levels that the map has, so that a read can
+///   get to the level that it names.
+/// - Any other texture with one level gets no filter between levels. [I] The engine's filter for a
+///   texture with one level was not read.
+/// - Any other texture with levels keeps the material's filter.
+pub(crate) fn level_filter(sampler: &mut [u32; 5], levels: u32, sky: Option<SkyMapFilter>) {
+    sampler[4] = match sky {
+        Some(SkyMapFilter::Engine) => MIP_FILTER_NONE,
+        _ if levels <= 1 => MIP_FILTER_NONE,
+        Some(_) => MIP_FILTER_LINEAR,
+        None => sampler[4],
+    };
+}
+
 /// The grid of the area read for a footprint of `f` texels of level 0 on a map of `levels` levels:
 /// the level `s` and the reads `n` on each axis, or None for f <= 1 (the stage's own read). `s` is
 /// ceil(log2(f / 4)), from 0 to the last level, so that the footprint is at most 4 texels of level s
@@ -130,9 +151,9 @@ mod tests {
     use super::*;
     use crate::objects::{Create, CreateView};
 
-    /// The rows of the design's table (section 3): IT Masser, IT Secunda, Lunar Lorkhan's Secunda with
-    /// the chain and without it; a footprint over 6.0 on Masser's map takes 4 x 4; a footprint of at
-    /// most one texel keeps the stage's own read.
+    /// The rows of the design's table (section 3): IT Masser, IT Secunda, Lunar Lorkhan's Secunda on a
+    /// map of 12 levels and on its own map of one level; a footprint over 6.0 on Masser's map takes
+    /// 4 x 4; a footprint of at most one texel keeps the stage's own read.
     #[test]
     fn the_grid_of_the_area_read_follows_the_designs_table() {
         assert_eq!(area_grid(6.0, 12), Some((1, 3)));
@@ -197,6 +218,36 @@ mod tests {
         assert_eq!(SkyMapFilter::parse("bias", -0.5), Some(SkyMapFilter::Bias(-0.5)));
         assert_eq!(SkyMapFilter::Bias(-1.0).name(), "bias -1");
         assert_eq!(SkyMapFilter::parse("on", 0.0), None);
+    }
+
+    /// The design's section 4: on a sky BILERP map the engine's read gets no filter between levels,
+    /// and every other filter gets a linear one when the map has levels; a map with one level gets
+    /// none. The null: a map that does not take the sky's filter keeps the material's filter
+    /// (BILERP's 0, TRILERP's 2) when it has levels, and gets none with one level.
+    #[test]
+    fn a_sky_map_takes_the_sky_map_filter() {
+        let bilerp = crate::material::sampler_states(3, 1);
+        let trilerp = crate::material::sampler_states(3, 2);
+        let with = |mut sampler: [u32; 5], levels, sky| {
+            level_filter(&mut sampler, levels, sky);
+            sampler[4]
+        };
+        assert_eq!((bilerp[4], trilerp[4]), (0, 2));
+        for levels in [12, 1] {
+            assert_eq!(with(bilerp, levels, Some(SkyMapFilter::Engine)), 0, "{levels} levels");
+        }
+        for sky in [
+            SkyMapFilter::Trilinear,
+            SkyMapFilter::Bias(-1.0),
+            SkyMapFilter::Area,
+            SkyMapFilter::AreaTent,
+        ] {
+            assert_eq!(with(bilerp, 7, Some(sky)), 2, "{sky:?}");
+            assert_eq!(with(bilerp, 1, Some(sky)), 0, "{sky:?}");
+        }
+        assert_eq!(with(bilerp, 12, None), 0);
+        assert_eq!(with(trilerp, 12, None), 2);
+        assert_eq!(with(trilerp, 1, None), 0);
     }
 
     /// The pixels of each side of the GPU test, and the texels a pixel.

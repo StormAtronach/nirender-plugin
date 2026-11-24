@@ -7,10 +7,7 @@
 //! draws a capture file without the game, or the ring in a window of its own:
 //!
 //! ```text
-//! nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N] [--anisotropy N] [--mipmaps-for-one-level on|off]
-//!
-//! A replay waits at each frame's start for the chains of the one-level textures given before
-//! (W632, `mip_chain`), so it shows a chain one frame or more earlier than a live run can.
+//! nirender-host <capture file> <picture.png> [--backend vulkan|dx12] [--frame N] [--anisotropy N]
 //! nirender-host --live <name of the shared memory> [--backend vulkan|dx12] [--frames N] [--shot picture.png]
 //!               [--embed] [--window-shots]
 //! ```
@@ -99,7 +96,6 @@ pub use d3d::{d3d_compare, d3d_stencil_operation};
 mod bound;
 mod light_keys;
 mod lights;
-mod mip_chain;
 mod sky_read;
 use influences::FVF_INFLUENCES;
 use lights::{light_buffer, storage_buffer, Clusters, ExtensionLights};
@@ -574,7 +570,6 @@ impl Pass {
         pass: usize,
         m: &material::Material,
         textures: &FxHashMap<u32, Rc<wgpu::TextureView>>,
-        chains: &FxHashMap<u32, mip_chain::ChainState>,
         effects: Option<&[[u32; EFFECT_STAGE_WORDS]; 2]>,
         sky: Option<SkyMapFilter>,
     ) -> Pass {
@@ -623,12 +618,7 @@ impl Pass {
             let mut sampler = material::sampler_states(clamp, filter);
             let read = sky_read::of_stage(sky, filter, index);
             if let Some(view) = textures.get(&st.texture) {
-                mip_chain::level_filter(
-                    &mut sampler,
-                    view.texture().mip_level_count(),
-                    chains.contains_key(&st.texture),
-                    read,
-                );
+                sky_read::level_filter(&mut sampler, view.texture().mip_level_count(), read);
             }
             if index == 0 && st.texture != 0 {
                 first_read = read.filter(|read| read.code() != 0);
@@ -809,10 +799,6 @@ struct Renderer {
     /// The anisotropic filter that MGE XE forces, for a comparison with its picture. 1 for the
     /// filters that the game asks for.
     anisotropy: u16,
-    /// A texture record with one level gets the levels below it ([`mip_chain`]; W632), from
-    /// the extension's settings (`graphics.mipmaps_for_one_level`) or the replay's
-    /// `--mipmaps-for-one-level`.
-    mipmaps_for_one_level: bool,
     /// How the draws of the sky read their BILERP maps ([`Renderer::sky_filter`]; W632), from the
     /// extension's settings (`graphics.sky_map_filter`) or the replay's `--sky-map-filter`.
     sky_map_filter: SkyMapFilter,
@@ -946,16 +932,6 @@ struct Renderer {
     /// The textures with a block format that this program made the pixels of: their size is
     /// not a multiple of 4.
     decoded: std::collections::HashSet<u32>,
-    /// The textures that take a chain ([`mip_chain`], W632): made with all their levels, shown
-    /// through a view of level 0 until the worker's chain is in them.
-    chains: FxHashMap<u32, mip_chain::ChainState>,
-    /// The thread that makes the chains, from the first job on.
-    chain_worker: Option<mip_chain::Worker>,
-    /// The last generation given to a texture's job.
-    chain_generation: u64,
-    /// The replay waits at each frame's start for the chains of the jobs given before, so that
-    /// its pictures are the same at each run; the live mode never waits.
-    wait_for_chains: bool,
     /// The textures themselves, for a write of a level later.
     texture_objects: FxHashMap<u32, (wgpu::Texture, u32)>,
     white: Rc<wgpu::TextureView>,

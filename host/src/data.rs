@@ -382,14 +382,9 @@ pub(crate) const TIME_NAMES: [&str; TIME_COUNT] = [
     "clusters of the lights",
     "buffers made for a frame (geometry records, particles, films)",
     "extension: the parts of a view of its own",
-    "mipmaps for one level: the chains put in",
 ];
 
-pub(crate) const TIME_COUNT: usize = 19;
-
-/// The chains of the textures with one level put in at a frame's start (W632), without the
-/// replay's wait for the worker.
-pub(crate) const TIME_CHAINS: usize = 18;
+pub(crate) const TIME_COUNT: usize = 18;
 
 pub(crate) const TIME_BUFFERS: usize = 16;
 
@@ -518,57 +513,6 @@ impl Counts {
         };
         (writes, seconds)
     }
-
-    /// The end of a frame for the worst busy frame (W632): the busy time since the last call is
-    /// the time of the frame that ended, number `frames - 1`.
-    pub(crate) fn close_busy_frame(&mut self) {
-        let busy: u64 = self.times.iter().sum();
-        let frame_busy = busy - self.busy_frame_start;
-        if frame_busy > self.busy_worst.0 {
-            self.busy_worst = (frame_busy, self.frames.saturating_sub(1));
-        }
-        self.busy_frame_start = busy;
-    }
-
-    /// W632: notes chain work in the frame now: `jobs` jobs given and `swaps` chains put in.
-    pub(crate) fn note_chain_frame(&mut self, jobs: u32, swaps: u32) {
-        let frame = self.frames;
-        match self.chain_frames.last_mut() {
-            Some(last) if last.0 == frame => {
-                last.1 += jobs;
-                last.2 += swaps;
-            }
-            _ => self.chain_frames.push((frame, jobs, swaps)),
-        }
-    }
-
-    /// W632: the runs of frames with chain work, where no gap between two frames of a run is
-    /// more than `gap` frames: (first frame, last frame, jobs given, chains put in).
-    pub(crate) fn chain_runs(&self, gap: u32) -> Vec<(u32, u32, u32, u32)> {
-        let mut runs: Vec<(u32, u32, u32, u32)> = Vec::new();
-        for &(frame, jobs, swaps) in &self.chain_frames {
-            match runs.last_mut() {
-                Some(run) if frame - run.1 <= gap => {
-                    run.1 = frame;
-                    run.2 += jobs;
-                    run.3 += swaps;
-                }
-                _ => runs.push((frame, frame, jobs, swaps)),
-            }
-        }
-        runs
-    }
-
-    /// W632: the frame with the most chains put in, the first of them: (frame, chains).
-    pub(crate) fn chain_most_swaps(&self) -> Option<(u32, u32)> {
-        let mut most: Option<(u32, u32)> = None;
-        for &(frame, _, swaps) in &self.chain_frames {
-            if swaps > most.map_or(0, |(_, s)| s) {
-                most = Some((frame, swaps));
-            }
-        }
-        most
-    }
 }
 
 /// The GPU totals of [`Counts`] at a mark, for the times between two marks.
@@ -683,9 +627,6 @@ pub(crate) struct Counts {
     /// The pinned slots in use that held a texture and took another one under the same
     /// handle (`set_texture`): with other facts (size, levels, format), with the same.
     pub(crate) pinned_replaced: [u32; 2],
-    /// The pinned slots that took another view of the same texture (W632: a texture's view of
-    /// level 0, or of all its levels once its chain is in them).
-    pub(crate) pinned_new_view: u32,
     /// The indirect calls, the draws in them, and the draws drawn one by one because the
     /// buffer of the arguments was full.
     pub(crate) indirect_calls: u32,
@@ -695,21 +636,6 @@ pub(crate) struct Counts {
     pub(crate) no_layout: u32,
     pub(crate) textures: u32,
     pub(crate) texture_updates: u32,
-    /// W632: the textures with one level made with all the levels below it, the bytes of
-    /// those levels, the updates of their level 0 (each a new job), the jobs given and those
-    /// not taken (no worker), the chains put in and those dropped as stale, the worker's CPU
-    /// time, and the most frames from a job to its chain in the texture.
-    pub(crate) chain_textures: u32,
-    pub(crate) chain_bytes: u64,
-    pub(crate) chain_updates: u32,
-    pub(crate) chain_jobs: u32,
-    pub(crate) chain_jobs_lost: u32,
-    pub(crate) chain_swaps: u32,
-    pub(crate) chain_stale: u32,
-    pub(crate) chain_seconds: f64,
-    pub(crate) chain_most_delay: u32,
-    /// W632: the frames with chain work, in frame order: (frame, jobs given, chains put in).
-    pub(crate) chain_frames: Vec<(u32, u32, u32)>,
     pub(crate) render_textures: u32,
     /// The rendered textures made smaller than the game asked: the device has no texture of
     /// that size ([`crate::picture::target_size`]).
@@ -734,10 +660,6 @@ pub(crate) struct Counts {
     pub(crate) depth_copies: u32,
     /// Where the time of the program goes, in the order of [`TIME_NAMES`], in ticks (`ticks`).
     pub(crate) times: [u64; TIME_COUNT],
-    /// The sum of `times` at the start of the frame in progress, and the busiest frame since
-    /// the last mark: (ticks, frame). [`Counts::close_busy_frame`] at each frame's start (W632).
-    pub(crate) busy_frame_start: u64,
-    pub(crate) busy_worst: (u64, u32),
     /// The frames that are complete.
     pub(crate) frames: u32,
     /// The records that the player was given, the refused ones too.
@@ -1210,40 +1132,6 @@ mod tests {
         // The frame in progress is number `frames`.
         counts.frame_writes = 41;
         assert_eq!(counts.write_frame_most(), ((41, 3), (0.001, 0)));
-    }
-
-    /// W632: the chain work of a frame is one entry, the runs split at a gap over the bound, and
-    /// the frame with the most chains put in is the first such frame.
-    #[test]
-    fn the_chain_work_is_kept_by_frame() {
-        let mut counts = Counts::default();
-        assert_eq!(counts.chain_most_swaps(), None);
-        for (frame, jobs, swaps) in [(3, 2, 0), (3, 1, 0), (4, 0, 2), (10, 0, 1), (200, 1, 0), (201, 0, 2)] {
-            counts.frames = frame;
-            counts.note_chain_frame(jobs, swaps);
-        }
-        assert_eq!(
-            counts.chain_frames,
-            vec![(3, 3, 0), (4, 0, 2), (10, 0, 1), (200, 1, 0), (201, 0, 2)]
-        );
-        assert_eq!(counts.chain_runs(60), vec![(3, 10, 3, 3), (200, 201, 1, 2)]);
-        assert_eq!(counts.chain_runs(5), vec![(3, 4, 3, 2), (10, 10, 0, 1), (200, 201, 1, 2)]);
-        assert_eq!(counts.chain_most_swaps(), Some((4, 2)));
-    }
-
-    /// W632: the busiest frame is the frame with the most busy time between two frame starts,
-    /// named by its number, and a frame of less time does not replace it.
-    #[test]
-    fn the_busiest_frame_is_kept() {
-        let mut counts = Counts::default();
-        for (frame, read, chains) in [(1, 5, 0), (2, 3, 9), (3, 2, 1)] {
-            counts.times[TIME_READ] += read;
-            counts.times[TIME_CHAINS] += chains;
-            counts.frames = frame;
-            counts.close_busy_frame();
-        }
-        assert_eq!(counts.busy_worst, (12, 1));
-        assert_eq!(counts.busy_frame_start, 20);
     }
 
     fn instance(record: u32) -> Instance {

@@ -569,12 +569,6 @@ pub trait Extension {
         1
     }
 
-    /// True when a texture with one level gets the levels below it (W632), from the settings of
-    /// the extension.
-    fn mipmaps_for_one_level(&self) -> bool {
-        true
-    }
-
     /// How the draws of the sky read their BILERP maps (W632: the moons' faces and shadow shapes,
     /// the sun's glare), from the settings of the extension (`graphics.sky_map_filter`):
     /// [`crate::SkyMapFilter::Engine`] or [`crate::SkyMapFilter::Area`].

@@ -1314,15 +1314,7 @@ impl Player {
         self.stream.shape_keeps = material::draw_keeps_picture(flags, &m, colours[13], derived.passes.len());
         let sky = self.renderer.sky_filter(self.stream.object_class);
         for pass in 0..derived.passes.len() {
-            let state = Pass::new(
-                &derived,
-                pass,
-                &m,
-                &self.renderer.textures,
-                &self.renderer.chains,
-                effects,
-                sky,
-            );
+            let state = Pass::new(&derived, pass, &m, &self.renderer.textures, effects, sky);
             // The flag 128: the draw goes into the picture of the character with the Code
             // Patch, which draws a pass that blends in a way of its own. The alpha of the
             // material is the last of its colours.
@@ -1409,7 +1401,7 @@ impl Player {
             return false;
         };
         let sky = self.renderer.sky_filter(class);
-        let pass = Pass::new(derived, 0, m, &self.renderer.textures, &self.renderer.chains, effects, sky);
+        let pass = Pass::new(derived, 0, m, &self.renderer.textures, effects, sky);
         let facts = DrawFacts {
             class,
             blend_enable: pass.blend[0] != 0,

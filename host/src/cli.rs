@@ -150,15 +150,9 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
     if width == 0 || height == 0 {
         (width, height) = (1280, 720);
     }
-    // W632: the levels below a texture with one level, as in the live mode; the argument names
-    // the arm of an A/B. The header line names the choice.
-    let mipmaps_for_one_level = match option(&args, "--mipmaps-for-one-level").as_deref() {
-        Some("on") => true,
-        Some("off") => false,
-        _ => extension.as_ref().is_none_or(|extension| extension.mipmaps_for_one_level()),
-    };
     // W632: how the draws of the sky read their BILERP maps; the argument names the arm of a test
-    // (engine, trilinear, bias with `--sky-lod-bias`, area, area-tent).
+    // (engine, trilinear, bias with `--sky-lod-bias`, area, area-tent). The header line names the
+    // choice.
     let bias = option(&args, "--sky-lod-bias")
         .and_then(|text| text.parse().ok())
         .unwrap_or(-1.0);
@@ -172,9 +166,8 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
             .map_or(SkyMapFilter::Engine, |extension| extension.sky_map_filter()),
     };
     println!(
-        "{} records, {frames} frames, frame {wanted} into {width} x {height}, mipmaps for one level {}, sky map filter {}",
+        "{} records, {frames} frames, frame {wanted} into {width} x {height}, sky map filter {}",
         records.len(),
-        if mipmaps_for_one_level { "on" } else { "off" },
         sky_map_filter.name()
     );
 
@@ -205,13 +198,7 @@ pub fn run_with(args: Vec<String>, make_extension: impl FnOnce() -> Option<Box<d
         .and_then(|text| text.parse().ok())
         .or(extension.as_ref().map(|extension| extension.anisotropy()))
         .unwrap_or(1);
-    player.renderer.mipmaps_for_one_level = mipmaps_for_one_level;
     player.renderer.sky_map_filter = sky_map_filter;
-    // W632, the Architect's W5: the replay waits at each frame's start for the chains of the
-    // jobs given before, so that its picture is the same at each run. So a replay shows a chain
-    // as early as a frame can, and a live run some frames later: a replay A/B measures the
-    // look of the chains, not their time.
-    player.renderer.wait_for_chains = true;
     // The order of the extension's settings (the mgeXE.toml beside this program), as in the
     // live mode; `MGE_XE_TABLE_ORDER` goes over it.
     player.take_table_order(extension.as_ref().and_then(|extension| extension.table_order()));
