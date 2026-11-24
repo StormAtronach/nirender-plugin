@@ -603,6 +603,45 @@ def registry_shadows(read=read_registry_dword):
     return stored, "VirtualStore"
 
 
+def read_registry_value(root, path, view, name):
+    """A value of a registry key as (value, kind), or None when the key or the value is missing."""
+    try:
+        with winreg.OpenKey(root, path, 0, winreg.KEY_READ | view) as key:
+            return winreg.QueryValueEx(key, name)
+    except OSError:
+        return None
+
+
+def registry_window_line(read=read_registry_value):
+    """The line of a run's start that names the game's window in the registry (D666). The game reads
+    these values at its start and writes them back at its exit and at the OK of an Options menu:
+    Screen Width, Screen Height (REG_DWORD) and Fullscreen (one byte, REG_BINARY) in
+    `NiApplication::WriteSettings` 0x4F5840; Screen X and Screen Y (REG_DWORD) of a windowed game in
+    `NiDX8Application::writeRegistrySettings` 0x4293A0. A drag of the window in play restarts the renderer
+    at the new size (src/resolution.rs), so the next start can have another size. The HKLM key only, as
+    the game reads it (GAME_REGISTRY_KEY). A run reads the values and never writes them."""
+    def value(name):
+        found = read(winreg.HKEY_LOCAL_MACHINE, GAME_REGISTRY_KEY, winreg.KEY_WOW64_32KEY, name)
+        if found is None:
+            return None
+        data, kind = found
+        if kind == winreg.REG_DWORD:
+            return data - (1 << 32) if data >= 1 << 31 else data
+        if kind == winreg.REG_BINARY and data:
+            return data[0]
+        return None
+
+    def shown(data):
+        return "missing" if data is None else str(data)
+
+    fullscreen = value("Fullscreen")
+    line = "window: registry Screen Width %s, Screen Height %s, Fullscreen %s" % (
+        shown(value("Screen Width")), shown(value("Screen Height")), shown(fullscreen))
+    if not fullscreen:
+        line += ", Screen X %s, Screen Y %s" % (shown(value("Screen X")), shown(value("Screen Y")))
+    return line + " (HKLM)"
+
+
 def ini_shadows(ini_bytes):
     """"Number of Shadows" of [General] in the bytes of a Morrowind.ini, as GetPrivateProfileIntA
     reads it: the first such key, the digits at the start of its value, 0 for a negative value and
@@ -1638,6 +1677,25 @@ def self_test_shadows():
     value, source = registry_shadows()
     assert (value is None or isinstance(value, int)) and source.startswith(("VirtualStore", "HKLM")), (value, source)
 
+    # The window's line (D666): the types that the game writes, a position left of the screen, and missing values.
+    def window_reader(values):
+        def read(root, path, view, name):
+            assert root == winreg.HKEY_LOCAL_MACHINE and path == GAME_REGISTRY_KEY and view == winreg.KEY_WOW64_32KEY, (root, path, view)
+            return values.get(name)
+        return read
+
+    windowed = {"Screen Width": (1916, winreg.REG_DWORD), "Screen Height": (2041, winreg.REG_DWORD),
+                "Fullscreen": (b"\x00", winreg.REG_BINARY), "Screen X": (0xFFFFFFF8, winreg.REG_DWORD),
+                "Screen Y": (12, winreg.REG_DWORD)}
+    line = registry_window_line(window_reader(windowed))
+    assert line == "window: registry Screen Width 1916, Screen Height 2041, Fullscreen 0, Screen X -8, Screen Y 12 (HKLM)", line
+    full = dict(windowed, Fullscreen=(b"\x01", winreg.REG_BINARY))
+    line = registry_window_line(window_reader(full))
+    assert line == "window: registry Screen Width 1916, Screen Height 2041, Fullscreen 1 (HKLM)", "no place for a fullscreen game: " + line
+    line = registry_window_line(window_reader({"Screen Width": (1920, winreg.REG_SZ)}))
+    assert line == "window: registry Screen Width missing, Screen Height missing, Fullscreen missing, Screen X missing, Screen Y missing (HKLM)", line
+    assert registry_window_line().startswith("window: registry Screen Width "), "the machine's own key reads"
+
 
 def self_test_weather():
     """The weather line of the summary, and the warning of a timing run that leaves the weather to the game."""
@@ -1999,12 +2057,29 @@ def self_test_live_mge_log():
             with open(run.path("mgeXE.log"), encoding="utf-8", newline="") as file:
                 assert file.read() == text, "the call after a failed copy did not copy"
 
-            # The stall watch (W63): run_game gets stall_seconds None only for a launch with stall_watch False.
+            # The stall watch (W63): run_game gets stall_seconds None only for a launch with stall_watch False, and only
+            # from a harness with the watch; a harness from before it gets no such argument. Both harnesses are planted,
+            # so that the test passes with either one (the round of afbc1b4 ran it with a harness from before the watch).
             calls = []
             session.harness.run_game = lambda *arguments, **options: calls.append(options) or True
-            for stall_watch in (True, False):
-                assert session.Run("stall-watch-test-%s" % stall_watch).launch({}, 10, "[t] ", stall_watch=stall_watch)
-            assert "stall_seconds" not in calls[0] and calls[1]["stall_seconds"] is None, calls
+            had_watch = hasattr(session.harness, "STALL_SECONDS")
+            saved_limit = getattr(session.harness, "STALL_SECONDS", None)
+            try:
+                for with_watch in (True, False):
+                    if with_watch:
+                        session.harness.STALL_SECONDS = 120
+                    elif hasattr(session.harness, "STALL_SECONDS"):
+                        del session.harness.STALL_SECONDS
+                    del calls[:]
+                    for stall_watch in (True, False):
+                        assert session.Run("stall-watch-test-%s-%s" % (with_watch, stall_watch)).launch({}, 10, "[t] ", stall_watch=stall_watch)
+                    expected_off = {"stall_seconds": None} if with_watch else {}
+                    assert "stall_seconds" not in calls[0] and {k: v for k, v in calls[1].items() if k == "stall_seconds"} == expected_off, (with_watch, calls)
+            finally:
+                if had_watch:
+                    session.harness.STALL_SECONDS = saved_limit
+                elif hasattr(session.harness, "STALL_SECONDS"):
+                    del session.harness.STALL_SECONDS
         finally:
             (session.harness.Deployment, session.harness.run_game, session.harness.copy_logs, session.ring_problem_of_instance,
              session.RESULTS, session.stage_mwse_config, session.MGE_LOGS) = saved
@@ -2148,10 +2223,22 @@ def self_test_ending():
     # The stall watch's end (W63): its own line, the ending of a timeout; no line for the other ends.
     assert "after step a: the stall watch ended the run" in stalled_line({"reason": "stalled", "codes": []}, "a")
     assert stalled_line({"reason": "timeout", "codes": []}, "a") is None and stalled_line({}, "a") is None
-    stall_args = argparse.Namespace(no_stall_watch=False)
-    assert stall_note(stall_args) == "stall watch: %d s after the first mod line (--no-stall-watch stops it)" % session.harness.STALL_SECONDS
-    stall_args.no_stall_watch = True
-    assert stall_note(stall_args) == "stall watch: off, it only measures (--no-stall-watch)"
+    # The header line with a harness that has the watch (planted 120 s) and with one from before it.
+    had_watch = hasattr(session.harness, "STALL_SECONDS")
+    saved_limit = getattr(session.harness, "STALL_SECONDS", None)
+    try:
+        session.harness.STALL_SECONDS = 120
+        stall_args = argparse.Namespace(no_stall_watch=False)
+        assert stall_note(stall_args) == "stall watch: 120 s after the first mod line (--no-stall-watch stops it)"
+        stall_args.no_stall_watch = True
+        assert stall_note(stall_args) == "stall watch: off, it only measures (--no-stall-watch)"
+        del session.harness.STALL_SECONDS
+        assert stall_note(stall_args) == "stall watch: none (the harness has none)"
+    finally:
+        if had_watch:
+            session.harness.STALL_SECONDS = saved_limit
+        elif hasattr(session.harness, "STALL_SECONDS"):
+            del session.harness.STALL_SECONDS
     assert run_ending(False, {}, [], "a") == ENDED_OTHER, "a harness with no LAST_END"
     assert [run_exit_code(False, False, *pair) for pair in ((True, ENDED_DONE), (False, ENDED_BY_HAND), (False, ENDED_OTHER))] == [0, 3, 1]
     assert run_exit_code(True, True, False, ENDED_BY_HAND) == 2, "a reference run that loaded the plugin"
@@ -3135,6 +3222,7 @@ def main():
         print("run_own_device: the arguments are good; nothing started (--check)")
         print("run_own_device: " + build_line)
         print("run_own_device: " + shadows)
+        print("run_own_device: " + registry_window_line())
         print("run_own_device: plugin: %s" % ("none" if no_plugin else "the archive's" if args.archive else "the set's"))
         for note in enable_notes:
             print("run_own_device: " + note)
@@ -3201,6 +3289,8 @@ def main():
     registry, source = registry_shadows()
     shadows, level = shadow_level_line(registry, ini_shadows(read_profile_ini()), source)
     print("run_own_device: " + shadows, flush=True)
+    window = registry_window_line()
+    print("run_own_device: " + window, flush=True)
     problem = shadow_problem(args, level, shadows)
     if problem:
         raise SystemExit("run_own_device: " + problem)
@@ -3271,7 +3361,7 @@ def main():
     except distant_land.Problem as problem:
         raise SystemExit("run_own_device: %s" % problem)
     with PluginWatch(path=run.path("plugin-watch.txt")) as watch:
-        done = launch_run(run, spec, args, mods, facts=[build_line, shadows, videos_note(args), stall_note(args)], land=land)
+        done = launch_run(run, spec, args, mods, facts=[build_line, shadows, window, videos_note(args), stall_note(args)], land=land)
 
     print()
     progress = run.progress_lines(TAG)

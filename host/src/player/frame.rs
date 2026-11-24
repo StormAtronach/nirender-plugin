@@ -147,7 +147,7 @@ impl Player {
             mark_frames: 0,
             mark_draws: 0,
             mark_runs: 0,
-            mark_gpu: (0.0, 0.0, 0),
+            mark_gpu: Default::default(),
             mark_work: [0; 4],
             mark_passes: [0; crate::gpu::PASS_COUNTS],
             mark_named: Default::default(),
@@ -565,7 +565,14 @@ impl Player {
         };
         let in_frame = self.drawing();
         self.close_pass();
-        if let Some(encoder) = self.encoder.take() {
+        if let Some(mut encoder) = self.encoder.take() {
+            // The end of this part of the frame for its GPU time (W635); the next part begins
+            // in the new encoder below.
+            if in_frame {
+                if let Some(timing) = self.renderer.timing.as_mut() {
+                    timing.part_end(&mut encoder);
+                }
+            }
             // The first part of a frame: the back buffer has the last complete picture
             // until these commands run. A copy of it stays for the window (see
             // `shown_picture`).
@@ -585,7 +592,11 @@ impl Player {
         }
         let result = between(self);
         if in_frame {
-            self.encoder = Some(self.renderer.device.create_command_encoder(&Default::default()));
+            let mut encoder = self.renderer.device.create_command_encoder(&Default::default());
+            if let Some(timing) = self.renderer.timing.as_mut() {
+                timing.part_begin(&mut encoder);
+            }
+            self.encoder = Some(encoder);
             self.open_pass(crate::gpu::PassReason::Flush, None, None, None);
         }
         if !held.is_empty() {
