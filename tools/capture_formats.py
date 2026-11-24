@@ -114,7 +114,8 @@ def capture_formats(path, numbers):
 
 def gate_captures(baseline):
     """The captures that the replay gate replays: those of the baseline folder, then those of its tour (not the
-    instance A/B's)."""
+    instance A/B's). The same list as `order_captures` of validate_retained.py, which the gate's stages read; a change
+    of one is a change of the other (verdict 752 4.1)."""
     found = []
     for folder in (baseline, os.path.join(baseline, "tour")):
         if os.path.isdir(folder):
