@@ -26,9 +26,9 @@ The known issues that a player meets first (the release notes have the full list
   that it uses.
 - The sun shadow ends at the game's view range (7168 units). The distant land and the
   distant statics take no sun shadow yet.
-- After a door, a travel, Recall or coc, the distant statics can appear as they arrive: the
+- After a door, a travel, Recall or coc, the distant statics can show as they arrive: the
   move does not wait for them.
-- The game can still crash or hang at its close, after play has ended. Play is not affected.
+- The game can still crash or hang at its close, after play has ended. This does not change play.
 - MGE XE on Direct3D 9 (`renderer_wgpu = false`) is frozen: the build is not tested with it.
 - MSOC, the occlusion culling mod for MWSE, is not supported with the new renderer: switch it
   off.
@@ -36,9 +36,11 @@ The known issues that a player meets first (the release notes have the full list
 ## What it needs
 
 - Morrowind with MWSE and the Morrowind Code Patch, on 64-bit Windows 10 or 11.
-- A graphics card and driver that wgpu can use with Vulkan or Direct3D 12.
+- A graphics card with Vulkan 1.3 and its current driver (the renderer can also use Direct3D
+  12).
 - The `MWSE.dll` of the release archive. It is a build of our MWSE fork: the public MWSE does
-  not have the parts that the renderer uses, and with it the game runs on its own Direct3D 8.
+  not have the parts that the renderer uses. With the public `MWSE.dll`, the game runs on its
+  own Direct3D 8, and a box says why.
 
 ## How to install and use it
 
@@ -69,12 +71,13 @@ download the two archives:
 3. Check that the mod has the `.dll` files `MWSE\lib\akulakhan.dll` and
    `MWSE\lib\watervolumes.dll`. Without them the game runs without the renderer, and a box
    says so.
-4. Install each shader pack that you need as a mod of its own, after the mod that it ports,
+4. In the plugin list, enable `Water Volumes Kit.esm` only when a mod needs it.
+5. Install each shader pack that you need as a mod of its own, after the mod that it ports,
    and only with that mod. Install one water pack only, and one pack of Watch the Skies
    only. The `README.md` of the packs archive names the mod of each pack. Without its pack,
    the post shader of a mod is off on the new renderer.
-5. Add `MGEXEgui.exe` as an executable of Mod Organizer 2, and always start it from there.
-6. Do not run `MWSE-Update.exe` while you use this build. It puts the public `MWSE.dll` back,
+6. Add `MGEXEgui.exe` as an executable of Mod Organizer 2, and always start it from there.
+7. Do not run `MWSE-Update.exe` while you use this build. It puts the public `MWSE.dll` back,
    and the renderer turns off.
 
 ### The first start
@@ -105,8 +108,8 @@ line.
 - To name the backend, add `renderer_backend = "vulkan"` or `"dx12"` below `[runtime]`. The
   default is `"auto"`. A window capture of the game (OBS) needs `"dx12"`.
 - To play with MGE XE on Direct3D 9, set `renderer_wgpu = false`. That path is frozen and not
-  tested with this build. The archive has no `d3d9.dll`; `MGE XE Renderer Readme.md` says where
-  to get one.
+  tested with this build. It then runs with the `d3d9.dll` of Windows. For the DXVK build of
+  MGE XE G7, take its `d3d9.dll` from the MGE XE G7 archive, not from an official DXVK release.
 - To play the game without MGE XE, set `disabled = true` below `[runtime]`. To remove the
   build, follow "Uninstall" in `MGE XE Renderer Readme.md`, and put your copy of `MWSE.dll`
   back.
