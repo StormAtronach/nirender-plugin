@@ -62,7 +62,8 @@ download the two archives:
 1. Make a copy of your `MWSE.dll`. The archive has its own `MWSE.dll`, which replaces yours.
 2. Make one mod from the main archive, with all of its files. `akulakhan.dll`, `numidium.exe`
    and `d3d8.dll` check each other at the start. Mod Organizer 2 gives the game only
-   `Data Files`. The files that belong in the Morrowind folder need one of these two ways:
+   `Data Files`. Put the files that belong in the Morrowind folder there in one of these two
+   ways:
    - With the Root Builder plugin: put `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`,
      `numidium.exe`, `MWSE.dll` and the folder `mge3` into a folder `Root` of the mod, and the
      content of `Data Files` at the top of the mod.
