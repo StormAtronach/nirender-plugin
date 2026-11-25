@@ -2,13 +2,13 @@
 
 nirender gives The Elder Scrolls III: Morrowind a new renderer. The game keeps its own world,
 its scripts and its mods, but it does not draw the picture. A plugin in the game sends each
-frame to a 64-bit program, `numidium.exe` of a fork of MGE XE G7, which draws it with wgpu on Vulkan or
-Direct3D 12 (the setting `renderer_backend`).
+frame to a 64-bit program, `numidium.exe`. That program is part of our fork of MGE XE G7, and
+it draws the frame with wgpu on Vulkan or Direct3D 12 (the setting `renderer_backend`).
 
 ## The state
 
-nirender is in test. Each release is a test build of MGE XE G7 with nirender, for testers, and
-the plugin's switches below are never for a player.
+nirender is in test. Each release is a test build of MGE XE G7 with nirender, for testers. The
+plugin's switches below are never for a player.
 
 The last test build is
 [v0.4.1](https://github.com/StormAtronach/nirender-plugin/releases/tag/v0.4.1)
@@ -26,11 +26,11 @@ The known issues that a player meets first (the release notes have the full list
   that it uses.
 - The sun shadow ends at the game's view range (7168 units). The distant land and the
   distant statics take no sun shadow yet.
-- After a door, a travel, Recall or coc, the distant statics can show as they arrive: the
-  move does not wait for them.
+- After a door, a travel, Recall or coc, the distant statics can show as they arrive,
+  because the move does not wait for them.
 - The game can still crash or hang at its close, after play has ended. This does not change play.
-- MGE XE on Direct3D 9 (`renderer_wgpu = false`) is frozen: the build is not tested with it.
-- MSOC, the occlusion culling mod for MWSE, is not supported with the new renderer: switch it
+- MGE XE on Direct3D 9 (`renderer_wgpu = false`) is frozen. We did not test this build with it.
+- The new renderer does not support MSOC, the occlusion culling mod for MWSE. Switch MSOC
   off.
 
 ## What it needs
@@ -38,7 +38,7 @@ The known issues that a player meets first (the release notes have the full list
 - Morrowind with MWSE and the Morrowind Code Patch, on 64-bit Windows 10 or 11.
 - A graphics card with Vulkan 1.3 and its current driver (the renderer can also use Direct3D
   12).
-- The `MWSE.dll` of the release archive. It is a build of our MWSE fork: the public MWSE does
+- The `MWSE.dll` of the release archive. It is a build of our MWSE fork. The public MWSE does
   not have the parts that the renderer uses. With the public `MWSE.dll`, the game runs on its
   own Direct3D 8, and a box says why.
 
@@ -60,9 +60,9 @@ download the two archives:
 ### Install with Mod Organizer 2
 
 1. Make a copy of your `MWSE.dll`. The archive has its own `MWSE.dll`, which replaces yours.
-2. Make one mod from the main archive. Install the whole archive: `akulakhan.dll`,
-   `numidium.exe` and `d3d8.dll` check each other at the start. Mod Organizer 2 gives the
-   game only `Data Files`, so the files of the Morrowind folder must get there:
+2. Make one mod from the main archive, with all of its files. `akulakhan.dll`, `numidium.exe`
+   and `d3d8.dll` check each other at the start. Mod Organizer 2 gives the game only
+   `Data Files`. The files that belong in the Morrowind folder need one of these two ways:
    - With the Root Builder plugin: put `d3d8.dll`, `dinput8.dll`, `MGEXEgui.exe`,
      `numidium.exe`, `MWSE.dll` and the folder `mge3` into a folder `Root` of the mod, and the
      content of `Data Files` at the top of the mod.
@@ -84,10 +84,10 @@ download the two archives:
 
 1. Start `MGEXEgui.exe` from Mod Organizer 2. Set the resolution on the Graphics tab, and
    generate the distant land on the Distant Land tab. You do this one time.
-2. Start the game from Mod Organizer 2. With `automatic_rebuild = true` (a new mgeXE.toml
-   has it), the game generates the distant land again at the start when your load order or
+2. Start the game from Mod Organizer 2. A new mgeXE.toml has `automatic_rebuild = true`.
+   With it, the game generates the distant land again at the start when your load order or
    the generation settings change. That start can take some minutes.
-3. To see that the new renderer is in use: `mgeXE.log` has the line
+3. When the new renderer is in use, `mgeXE.log` has the line
    `>> Using the wgpu renderer: no Direct3D device`, and the Morrowind folder has the file
    `nirender-host.log`.
 
@@ -116,14 +116,14 @@ line.
 
 ### The MGE XE options menu
 
-Open it in the game from the mod configuration menu: "MGE XE", then "Open settings window".
+In the game, open the mod configuration menu, select "MGE XE", then "Open settings window".
 
 - The page Rendering has the shader list. Click the name of a shader to switch it on or off.
   The list scrolls when it is longer than the page, and so does each page that is taller
   than the menu.
 - The button "Parameters" of a row opens a window with an editor for each number of that
-  shader. A change shows in the picture at once. The values are not saved: they are for a
-  look by eye. While the new renderer draws the game, the rows "(renderer)" open the
+  shader. A change shows in the picture at once. The window does not save the values. Use it
+  to try a look by eye. While the new renderer draws the game, the rows "(renderer)" open the
   parameters of the renderer itself (water, lights, statics, shadow, grass).
 - "Save" writes the settings of the menu into mgeXE.toml.
 
@@ -136,7 +136,7 @@ archive that you installed.
 - Attach `mgeXE.log`, `MWSE.log` and `nirender-host.log` from the Morrowind folder (with Root
   Builder, from `overwrite\Root` of the instance after the game has ended).
 - After a crash, attach `MWSE_MiniDump.dmp` too, and `numidium.dmp` if it is there. Copy
-  `MWSE_MiniDump.dmp` first: the next start of the game deletes it.
+  `MWSE_MiniDump.dmp` before you start the game again, because the next start deletes it.
 - Zip your mgeXE.toml and a save (`.ess`) and attach the zip. GitHub does not take those
   file types as they are.
 - For a wrong picture, press F11 at the place. The plugin writes a capture file into the
@@ -183,7 +183,7 @@ feature/wgpu-renderer; the tools expect its worktree next to this repo as
   test/abi-fixes-25 of [StormAtronach/MWSE](https://github.com/StormAtronach/MWSE)). Stock MWSE does not have the native ABI that the plugin
   and MGE XE use. It also does not have the fixes of the MWSE risks that the project closed in
   the fork (risks 25, 31 and 36; the owner's D158).
-- **The list of the fork-only changes** is kept apart from this repo. It is checked each week
+- **The list of the fork-only changes** is kept apart from this repo. We check it each week
   against MWSE upstream (the owner's D157).
 - **The project may keep the MWSE fork for a while** (the owner's D159).
 
@@ -236,8 +236,8 @@ feature/wgpu-renderer; the tools expect its worktree next to this repo as
 - The comparison rig (the cargo feature `rig`, not in a player's build): a port can also
   run in the mode shadow, which runs the Rust and the engine function both and compares
   them call by call (`src/shadow.rs`), and the frame comparison compares the device calls
-  of two frames (`src/frame.rs`). The rig needs a real Direct3D 8 device: a test run with
-  `tools/rig/`, never a player's game.
+  of two frames (`src/frame.rs`). The rig needs a real Direct3D 8 device, so it runs only in a
+  test run with `tools/rig/`, never in a player's game.
 
 ## Build and test
 
